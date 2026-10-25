@@ -1,0 +1,9 @@
+[package]
+name = "base"
+description = "The base game, written as a mod on the public API only."
+edition.workspace = true
+version.workspace = true
+publish.workspace = true
+
+[dependencies]
+api.workspace = true

@@ -1,0 +1,24 @@
+[workspace]
+resolver = "3"
+members = ["crates/api", "crates/sim", "crates/client", "crates/base", "crates/game"]
+
+[workspace.package]
+edition = "2024"
+version = "0.1.0"
+publish = false
+
+[workspace.dependencies]
+api = { path = "crates/api" }
+sim = { path = "crates/sim" }
+client = { path = "crates/client" }
+base = { path = "crates/base" }
+# Pinned to the glam version Bevy 0.18 uses, so math types cross the render boundary without conversion.
+glam = "0.30.7"
+bevy = "0.18.1"
+
+# Bevy is slow unoptimized; optimize dependencies even in dev builds.
+[profile.dev]
+opt-level = 1
+
+[profile.dev.package."*"]
+opt-level = 3

@@ -1,0 +1,15 @@
+[package]
+name = "game"
+description = "The game binary: loads the base mod into the engine and opens the client."
+edition.workspace = true
+version.workspace = true
+publish.workspace = true
+
+[[bin]]
+name = "boxel"
+path = "src/main.rs"
+
+[dependencies]
+sim.workspace = true
+client.workspace = true
+base.workspace = true
