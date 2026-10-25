@@ -15,6 +15,10 @@ We work one vertical slice at a time. Each slice goes through these stages in or
 4. **Verify.** Check the slice's "Done when" criteria one by one. Run the game when the slice is visual or interactive, and have the user try it. Report each criterion as met or not met.
 5. **Close.** Update `SLICES.md` (mark the slice done, record decisions, anything deferred and any new API debt), update the design doc if a decision changed, and offer to commit.
 
+### Git
+
+Each slice or toy gets its own feature branch off `master` (for example `slice-1-minimum-engine`, `toy-movement`). Commit there, and when the slice is closed, merge it into `master` with `--no-ff` so each slice stays visible in the history. Never commit directly to `master`.
+
 ### At the start of every session
 
 1. Read `SLICES.md` and find the current slice: the one in progress, or in phase 2 the current toy.

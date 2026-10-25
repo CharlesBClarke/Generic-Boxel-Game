@@ -12,7 +12,7 @@ One slice: just enough engine to walk around in and start playing.
 
 ### Slice 1: Minimum playable engine
 
-**Stage:** Not started
+**Stage:** Done (2026-10-25)
 
 **Goal:** You can walk around a small boxel test area.
 
@@ -37,6 +37,56 @@ One slice: just enough engine to walk around in and start playing.
 - Walking at coordinates in the millions looks and feels the same as near zero (a test, plus a teleport to check it in game).
 - The engine crates contain no block definitions; they all come from `base` through `api`.
 - Movement doesn't jitter at frame rates above or below 60.
+
+**Approved plan** (2026-10-25)
+
+*Decisions:* Bevy 0.18.1 (the version best known; upgrade later). `sim` is plain Rust with no Bevy. Blocks use flat colors this slice; Minetest textures come with the data-mods seam.
+
+*Crates*
+- `crates/api`: plain types and traits mods see. Depends only on glam (pinned to Bevy's version).
+- `crates/sim`: world storage, registry, 60 Hz tick, player physics. No Bevy.
+- `crates/client`: Bevy window, input, meshing, render origin, camera, interpolation.
+- `crates/base`: content mod, depends only on `api`.
+- `crates/game`: binary that wires `base` into `sim` and `client`. Engine crates never depend on `base`.
+
+*Key types*
+- Positions (`api`): `BoxelPos(I64Vec3)`, `ChunkPos(I64Vec3)`, `LocalPos` (0..32), `WorldPos { cell: I64Vec3, offset: Vec3 }` with the offset kept in [0,1). All movement goes through `WorldPos::translate`, which carries whole units into the cell.
+- Addressing: `GridId`, `Universe { grids }`, `Grid { chunks: HashMap<ChunkPos, Chunk> }`, `Chunk { blocks: Layer<BlockId> }`, where `Layer<T>` is `Uniform(T)` or `Dense(Box<[T; 32768]>)`.
+- Registry by name (`"base:stone"`). `BlockDef { name, solid, color }`. Runtime `BlockId(u16)` is assigned at startup and isn't identity. `BlockId::EMPTY` is reserved and isn't a block definition.
+- Mod API: `trait Mod { fn register(&self, r: &mut Registrar); fn build_world(&self, w: &mut dyn WorldEdit); }`. `base` registers stone, dirt, grass and a marker, then builds the test area via `WorldEdit::set_block(BoxelPos, &str)`.
+- Player parameters (added 2026-10-25, before implementation): `api` defines `PlayerDef { size, eye_height, walk_speed, jump_height, gravity, fly_speed }` in real units (meters, seconds), and `base` registers it through `Registrar`. The movement code stays in `sim`, but every number comes from the mod. `sim` refuses to start a player if no `PlayerDef` is registered. Swappable movement behavior is deferred to the WebAssembly seam.
+- Test area: about 128×128 floor across several chunks (including vertical chunk boundaries), with steps, walls and a pit. A second copy at about (3,000,000, −2,000,000, 1,000) is the teleport target.
+
+*Simulation:* `Simulation::step(&PlayerInput)` at a fixed 60 Hz, driven from Bevy's `FixedUpdate`. The player uses axis-separated swept collision, gravity, jumping and a fly toggle (collision stays on). `base`'s `PlayerDef` starts at a 0.6×0.6×1.8 box, eyes at 1.62 and a jump of about 1.25 boxels, placeholders for the movement toy to tune.
+
+*Client*
+- `client::coords` is the only place Z-up converts to Y-up: `(x, y, z) → (x, z, −y)`.
+- `RenderOrigin { cell }` per world view recenters when the camera is more than about 256 boxels away. Meshes are chunk-local, so recentering only updates transforms.
+- Culled meshing is a pure function of a chunk plus its 6 neighbors, producing plain vertex arrays (with per-face shading) that then become a Bevy mesh.
+- Interpolation renders `prev + (curr − prev) · overstep_fraction`, computed as a small delta. Mouse look is applied per frame.
+- Debug keys: fly toggle, teleport between the test areas, and a frame-cap cycle (30/60/144/uncapped).
+
+*Tests:* unit tests for coordinates (negatives, boundaries, carry, millions), layer promotion, the registry, the mesher (6 and 10 faces, cross-chunk culling, empty chunk), physics (landing, walls, jump height, pit) and Y-up conversion. A precision test checks that the same inputs at the origin and at the far copy give bit-identical relative positions. Integration tests check that `base` in a headless `Simulation` makes the player settle on the floor, and that `Simulation` has zero block definitions and no `PlayerDef` with no mod loaded.
+
+*Implementation notes* (small additions within the plan, no change of course)
+- `Mod` also has `name()`. `WorldEdit` also has `clear_block`, `fill`/`clear` helpers, `set_spawn` and `add_waypoint`; the spawn point and teleport targets are content, so `base` supplies them. The debug teleport (T) cycles through the waypoints.
+- `base` registers a fifth block, `base:brick`, for the steps and walls. Chunk borders show as stone stripes in the floor.
+- Jumps integrate gravity with the average of the old and new vertical speed, so the peak matches `jump_height` exactly.
+- Chunk material is unlit, with per-face shading baked into the vertex colors until lighting exists.
+- Debug keys: F fly, T teleport, F3 frame cap (vsync/30/60/144/none), Esc releases the mouse, click grabs it.
+- Added during Verify, outside the plan (small dev convenience): key bindings can be overridden per player in `~/.config/boxel/controls.txt` (or `$BOXEL_CONTROLS`), outside the repo. Defaults stay WASD. See `crates/client/src/controls.rs`.
+
+*Verification* (2026-10-25)
+- Walk and fly across several chunks: met (played).
+- Tests for chunk storage, coordinates and meshing: met (49 tests across the workspace).
+- Y-up conversion only at the render boundary: met. The axis swap is only in `client::coords`; `api` and `sim` don't depend on Bevy.
+- Same feel in the millions: met. A bit-identical scripted walk test, and the in-game teleport played fine.
+- No block definitions in engine crates: met. A test checks the engine alone has no blocks or `PlayerDef`; `base` depends only on `api`.
+- No jitter above or below 60: met. Note: 30 fps felt worse than usual to the player. A code review found no interpolation or pacing bug (the camera blends the last two ticks by overstep fraction, and `prev_pos` updates every tick even with two ticks per frame), so it's most likely just the lower frame rate plus the one tick of display delay interpolation always adds. Revisit if it still feels off during the movement toy.
+
+*Deferred:* step-up, noclip, remeshing after block edits (blocks don't change yet), streaming and unloading chunks (everything is meshed at startup), a lighting system (shading is baked into vertex colors).
+
+*API debt:* none. Spawn point, waypoints and player parameters all go through `api`.
 
 ---
 

@@ -1,0 +1,13 @@
+[package]
+name = "sim"
+description = "Engine simulation: world storage, registries, fixed tick and player physics. Never depends on rendering."
+edition.workspace = true
+version.workspace = true
+publish.workspace = true
+
+[dependencies]
+api.workspace = true
+glam.workspace = true
+
+[dev-dependencies]
+base.workspace = true

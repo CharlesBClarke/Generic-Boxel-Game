@@ -1,0 +1,9 @@
+[package]
+name = "api"
+description = "The public mod API: plain types and traits every mod, including the base game, builds on."
+edition.workspace = true
+version.workspace = true
+publish.workspace = true
+
+[dependencies]
+glam.workspace = true
