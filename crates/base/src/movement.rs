@@ -52,6 +52,9 @@ pub struct QuakeController {
     pub charge_sink: f32,
     /// Seconds after letting go of crouch that a jump still gets the charge.
     pub charge_grace: f32,
+    /// While crouched on the ground, the biggest drop the body may walk off, meters. Below 1
+    /// stops at every boxel edge.
+    pub edge_guard_drop: f32,
 
     since_ground: f32,
     since_jump_press: f32,
@@ -88,6 +91,8 @@ impl Default for QuakeController {
             charge_sink: 0.15,
             // Covers a thumb sliding from crouch to jump.
             charge_grace: 0.2,
+            // Minecraft's value: stops at every boxel edge.
+            edge_guard_drop: 0.6,
             since_ground: f32::INFINITY,
             since_jump_press: f32::INFINITY,
             charge: 0.0,
@@ -205,7 +210,9 @@ impl MovementController for QuakeController {
         }
         // Springing up on the jump tick, then tucking again next tick if crouch is still held.
         let height = (input.crouch && !jumping).then_some(self.crouch_height - self.charge * self.charge_sink);
-        MoveOutput { velocity, impulse, height }
+        // Like Minecraft's sneaking: crouched on the ground, the body won't walk off edges.
+        let guarded = input.crouch && ctx.ground.is_some() && !jumping;
+        MoveOutput { velocity, impulse, height, edge_guard: guarded.then_some(self.edge_guard_drop) }
     }
 }
 
@@ -232,6 +239,7 @@ impl Tunables for QuakeController {
             Tunable::new("charged_jump_height", self.charged_jump_height, 0.1, 8.0),
             Tunable::new("charge_sink", self.charge_sink, 0.0, 0.5),
             Tunable::new("charge_grace", self.charge_grace, 0.0, 1.0),
+            Tunable::new("edge_guard_drop", self.edge_guard_drop, 0.0, 5.0),
         ]
     }
 
@@ -257,6 +265,7 @@ impl Tunables for QuakeController {
             "charged_jump_height" => &mut self.charged_jump_height,
             "charge_sink" => &mut self.charge_sink,
             "charge_grace" => &mut self.charge_grace,
+            "edge_guard_drop" => &mut self.edge_guard_drop,
             _ => return false,
         };
         *field = value;
@@ -465,6 +474,17 @@ mod tests {
         }
         let expected = c.walk_speed * c.crouch_speed;
         assert!((v.x - expected).abs() < 0.2, "settled at {}, expected {expected}", v.x);
+    }
+
+    #[test]
+    fn guards_edges_only_while_crouched_on_the_ground() {
+        let mut c = QuakeController::default();
+        let crouch = MoveInput { crouch: true, ..Default::default() };
+        assert_eq!(c.step(&crouched_ctx(Vec3::ZERO, crouch.clone(), Some(1.0))).edge_guard, Some(0.6));
+        assert_eq!(c.step(&ctx(Vec3::ZERO, MoveInput::default(), Some(1.0))).edge_guard, None);
+        assert_eq!(c.step(&crouched_ctx(Vec3::ZERO, crouch.clone(), None)).edge_guard, None, "not in the air");
+        let jump = MoveInput { jump_pressed: true, jump_held: true, ..crouch };
+        assert_eq!(c.step(&crouched_ctx(Vec3::ZERO, jump, Some(1.0))).edge_guard, None, "not when jumping");
     }
 
     #[test]
