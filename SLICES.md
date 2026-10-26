@@ -145,7 +145,7 @@ Shortcuts taken around the API, each with the toy that needed it. Paid down in s
 
 #### Edge guard (branch `toy-edge-guard`)
 
-**Stage:** Verify (built and tested; waiting for the user to try it before merging)
+**Stage:** Done (2026-10-25). Verified: the user played it ("it works").
 
 **Goal:** Crouching keeps you from walking off edges, like Minecraft's sneaking. Picked up from Advanced movement's deferred list at the user's request (2026-10-25), while the WebAssembly seam was at the Plan stage on its own branch. The user approved the detour.
 
