@@ -10,7 +10,8 @@
 //! ```
 //!
 //! Keys use Bevy's physical key names, which are QWERTY positions: `KeyW` is whichever key
-//! sends the W scancode.
+//! sends the W scancode. Break and place also take mouse buttons: `MouseLeft`, `MouseRight`,
+//! `MouseMiddle`, `MouseBack`, `MouseForward`.
 
 use std::path::PathBuf;
 
@@ -31,6 +32,44 @@ pub struct Controls {
     pub frame_cap: KeyCode,
     /// Opens the live tuning panel.
     pub tuning: KeyCode,
+    pub break_block: Binding,
+    pub place_block: Binding,
+    /// Picks a block from the palette, first to ninth. The scroll wheel also cycles it.
+    pub slots: [KeyCode; 9],
+}
+
+/// A key or a mouse button.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Binding {
+    Key(KeyCode),
+    Mouse(MouseButton),
+}
+
+impl Binding {
+    pub fn pressed(self, keys: &ButtonInput<KeyCode>, mouse: &ButtonInput<MouseButton>) -> bool {
+        match self {
+            Binding::Key(key) => keys.pressed(key),
+            Binding::Mouse(button) => mouse.pressed(button),
+        }
+    }
+
+    pub fn just_pressed(self, keys: &ButtonInput<KeyCode>, mouse: &ButtonInput<MouseButton>) -> bool {
+        match self {
+            Binding::Key(key) => keys.just_pressed(key),
+            Binding::Mouse(button) => mouse.just_pressed(button),
+        }
+    }
+
+    /// A short label for the HUD.
+    pub fn label(self) -> String {
+        match self {
+            Binding::Key(key) => label(key),
+            Binding::Mouse(MouseButton::Left) => "left click".into(),
+            Binding::Mouse(MouseButton::Right) => "right click".into(),
+            Binding::Mouse(MouseButton::Middle) => "middle click".into(),
+            Binding::Mouse(button) => format!("mouse {button:?}").to_lowercase(),
+        }
+    }
 }
 
 impl Default for Controls {
@@ -47,6 +86,19 @@ impl Default for Controls {
             teleport: KeyCode::KeyT,
             frame_cap: KeyCode::F3,
             tuning: KeyCode::Tab,
+            break_block: Binding::Mouse(MouseButton::Left),
+            place_block: Binding::Mouse(MouseButton::Right),
+            slots: [
+                KeyCode::Digit1,
+                KeyCode::Digit2,
+                KeyCode::Digit3,
+                KeyCode::Digit4,
+                KeyCode::Digit5,
+                KeyCode::Digit6,
+                KeyCode::Digit7,
+                KeyCode::Digit8,
+                KeyCode::Digit9,
+            ],
         }
     }
 }
@@ -82,10 +134,30 @@ impl Controls {
                 continue;
             };
             let (action, key) = (action.trim(), key.trim());
-            let Some(code) = parse_key(key) else {
+            let Some(binding) = parse_binding(key) else {
                 problems.push(format!("line {}: unknown key {key:?}", number + 1));
                 continue;
             };
+            match action {
+                "break" => {
+                    self.break_block = binding;
+                    continue;
+                }
+                "place" => {
+                    self.place_block = binding;
+                    continue;
+                }
+                _ => {}
+            }
+            let Binding::Key(code) = binding else {
+                problems.push(format!("line {}: {action} needs a key, not a mouse button", number + 1));
+                continue;
+            };
+            let slot_index = action.strip_prefix("slot_").and_then(|n| n.parse::<usize>().ok());
+            if let Some(n) = slot_index.filter(|n| (1..=9).contains(n)) {
+                self.slots[n - 1] = code;
+                continue;
+            }
             let slot = match action {
                 "forward" => &mut self.forward,
                 "back" => &mut self.back,
@@ -123,6 +195,21 @@ fn config_path() -> Option<PathBuf> {
 pub fn label(key: KeyCode) -> String {
     let name = format!("{key:?}");
     name.strip_prefix("Key").or_else(|| name.strip_prefix("Digit")).unwrap_or(&name).to_string()
+}
+
+/// Parses a key name or one of the mouse button names. Case doesn't matter.
+pub fn parse_binding(name: &str) -> Option<Binding> {
+    let mouse = [
+        ("MouseLeft", MouseButton::Left),
+        ("MouseRight", MouseButton::Right),
+        ("MouseMiddle", MouseButton::Middle),
+        ("MouseBack", MouseButton::Back),
+        ("MouseForward", MouseButton::Forward),
+    ];
+    match mouse.iter().find(|(n, _)| n.eq_ignore_ascii_case(name)) {
+        Some((_, button)) => Some(Binding::Mouse(*button)),
+        None => parse_key(name).map(Binding::Key),
+    }
 }
 
 /// Parses a Bevy physical key name, such as `KeyW`, `Digit1`, `F3` or `ShiftLeft`.
@@ -182,6 +269,18 @@ mod tests {
         assert_eq!(problems.len(), 3);
         assert_eq!(controls.forward, KeyCode::KeyW);
         assert_eq!(controls.back, KeyCode::KeyR);
+    }
+
+    #[test]
+    fn break_and_place_take_keys_or_mouse_buttons() {
+        let mut controls = Controls::default();
+        let problems = controls.apply("break = KeyQ\nplace = mousemiddle\nslot_3 = KeyZ\njump = MouseLeft\nslot_10 = KeyX\n");
+        assert_eq!(problems.len(), 2, "{problems:?}");
+        assert_eq!(controls.break_block, Binding::Key(KeyCode::KeyQ));
+        assert_eq!(controls.place_block, Binding::Mouse(MouseButton::Middle));
+        assert_eq!(controls.slots[2], KeyCode::KeyZ);
+        assert_eq!(controls.slots[0], KeyCode::Digit1);
+        assert_eq!(controls.jump, Controls::default().jump);
     }
 
     #[test]

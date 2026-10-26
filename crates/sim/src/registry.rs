@@ -50,6 +50,11 @@ impl BlockRegistry {
         (id.0 as usize).checked_sub(1).and_then(|i| self.defs.get(i))
     }
 
+    /// Every definition with its ID, in registration order.
+    pub fn iter(&self) -> impl Iterator<Item = (BlockId, &BlockDef)> {
+        self.defs.iter().enumerate().map(|(i, def)| (BlockId(i as u16 + 1), def))
+    }
+
     pub fn is_solid(&self, id: BlockId) -> bool {
         self.get(id).is_some_and(|def| def.solid)
     }
@@ -83,6 +88,8 @@ mod tests {
         assert!(reg.is_solid(stone_id));
         assert!(!reg.is_solid(glass_id));
         assert_eq!(reg.id("test:missing"), None);
+        let listed: Vec<_> = reg.iter().map(|(id, def)| (id, def.name.as_str())).collect();
+        assert_eq!(listed, [(stone_id, "test:stone"), (glass_id, "test:glass")]);
     }
 
     #[test]

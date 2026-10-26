@@ -104,7 +104,7 @@ A run of small toy slices. Each one takes a single game-feel feature that doesn'
 
 ### Current toy
 
-None. Pick the next one from the backlog.
+None. Pick the next toy from the backlog.
 
 ### Toy backlog
 
@@ -112,8 +112,8 @@ None. Pick the next one from the backlog.
   - *Half-Life tuck:* crouching in the air lifts the feet, so jump-then-crouch clears a higher ledge.
   - *Charged jump:* holding crouch on the ground builds a spring charge, so jumping from a crouch goes higher. Fits the robot feel.
   - Sketch: `MoveInput` gains `crouch`; the controller returns the body height it wants. Engine rule: shrinking is always allowed, growing needs headroom; on the ground the feet stay put, in the air the head stays put (that's what makes the tuck work). Crouch-walk speed, charge time and charged height are tunables in `base`.
-- **World interaction controls.** Breaking and placing with clear, predictable inputs that show what will happen before you press, fixing the "ambiguous interactions" gripe.
-  - *Idea: block-jumping.* Placing a block into your own feet launches you. Build it as a general engine rule, not a special case: a solid appearing inside a body pushes it out with an impulse along block center → body, with tunable strength and upward bias. Standing on the far edge of the cell tilts the push forward, so looking down and timing placements becomes fast-movement tech. The same rule later lets pistons shove players.
+  - *Block-jumping* (moved here from World interaction controls, 2026-10-25; needs block placing, which the Block editing toy adds). Placing a block into your own feet launches you. Build it as a general engine rule, not a special case: a solid appearing inside a body pushes it out with an impulse along block center → body, with tunable strength and upward bias. Standing on the far edge of the cell tilts the push forward, so looking down and timing placements becomes fast-movement tech. The same rule later lets pistons shove players.
+- **Interaction controls.** Split out of Block editing (2026-10-25). Fix Minecraft's ambiguous right click once there are things to use, like crystals or devices. Principles: one input, one action (no catch-all "use" button that changes meaning with what you hold or look at), and what you see is what you get (a ghost of the result, red when not allowed).
 - **Block interactions.** Unstable crystals: two block types, a touch trigger, a directional blast, and a way to push blocks so devices are possible.
 - **Generative crafting.** A few materials, a few property ingredients and a capacity limit.
 - **Combat feel.** Weighty hits and aggressive, Doom-style combat.
@@ -137,7 +137,7 @@ Ideas that come up while playing get added here.
 
 Shortcuts taken around the API, each with the toy that needed it. Paid down in seam slices.
 
-- **Fixed input actions** (movement toy). Move, jump, sprint and the debug keys are a fixed engine set in `sim::PlayerInput` and `client::controls`. Mods can't define their own actions. API version: mods register named actions with default bindings, and controllers read actions by name.
+- **Fixed input actions** (movement toy; break, place and palette slots added by the block editing toy). Move, jump, sprint, break, place, the palette slots and the debug keys are a fixed engine set in `sim::PlayerInput` and `client::controls`. Mods can't define their own actions. API version: mods register named actions with default bindings, and controllers read actions by name.
 - **Camera feel in the client** (movement toy). FOV widening, head bob, landing dip and step smoothing live in `client::feel`, so mods can't change them. API version: a client-side mod API for camera effects, presumably driven by the same tunables.
 
 ### Phase 2 decisions
@@ -146,6 +146,72 @@ Shortcuts taken around the API, each with the toy that needed it. Paid down in s
 - **Signature feature:** not decided yet. Choose it once the block interaction and crafting toys have been played, and record the choice and why in the design doc.
 
 ### Done toys
+
+#### Block editing (branch `toy-block-editing`)
+
+**Stage:** Done (2026-10-25)
+
+**Goal:** Place and break blocks, Minecraft-style.
+
+*Rescoped 2026-10-25:* this toy started as "World interaction controls", aimed at Minecraft's ambiguous right click. There's nothing to use or open yet, so there's nothing ambiguous to fix. It's now just placing and breaking, copying Minecraft's controls. The ambiguity goal moved to the backlog as "Interaction controls".
+
+**Approved plan** (2026-10-25)
+
+*Controls:* left click breaks, right click places, number keys or the scroll wheel pick the block. All rebindable, and added to the user's controls file (see `CLAUDE.local.md`). Holding a button repeats at about 4 per second. Breaking is instant.
+
+*Feedback:* a Minecraft-style outline on the targeted block. No ghost preview.
+
+*Engine (`sim`)*
+- Boxel raycast (DDA) returning the hit cell and face. Gameplay, so it lives in the simulation.
+- Edits are intents checked at the tick: in reach, not into a filled cell, not overlapping the player's body. Applied at the tick boundary, the shape a server needs later.
+- Changed chunks are tracked for remeshing. `PlayerInput` gains pitch for the raycast.
+
+*API and base*
+- `base` registers reach and hold-to-repeat rate, exposed through `Tunables`.
+- `BlockDef` gains `placeable`, so the palette knows what to offer.
+
+*Client*
+- Block outline from the raycast, and a simple HUD showing the selected block.
+- Remesh only changed chunks, plus neighbors for edits on a chunk border.
+
+*Tests:* raycast (hits, faces, reach, negative and far coordinates), edit validation (not inside the player, not into a filled cell, not out of reach), chunk change tracking including border neighbors, remeshing after an edit, and a break-then-place integration test.
+
+*Out of scope:* ghost preview, timed breaking, inventory or items, tools, drops, particles, sound, block-jumping (Advanced movement).
+
+*API debt:* none new expected; break, place and block selection join the fixed input actions entry.
+
+*Done when*
+- You can break and place blocks with the mouse, and pick which block to place.
+- The outline always marks the block that will break, and placing lands on the face you're looking at.
+- Placing into your own body, into a filled cell or out of reach does nothing.
+- Edits on chunk borders remesh correctly with no holes or stale faces.
+- Raycast, edit validation and change tracking have tests.
+
+*Implementation notes*
+- `api` gains `InteractionDef { reach, repeat_rate }`, registered through `Registrar::register_interaction` like `PlayerDef`, and it implements `Tunables` itself, so the panel shows an Interaction section. Without one, the engine does no editing. `base` uses reach 4.5 and 4 per second.
+- `look_direction` moved from `client::coords` to `api`, so the simulation and the camera share one definition.
+- The simulation raycasts at the start of each tick, from where the player stood at the end of the last tick, using the tick's yaw and pitch. That's the same spot and look the client drew the outline from, so the outline matches what breaks. Edits are applied before movement.
+- Hold-to-repeat only continues a press the game saw. The click that captures the mouse doesn't break anything, even if you keep holding it. If both buttons act on the same tick, breaking wins.
+- Break and place accept mouse buttons or keys (`MouseLeft`, `MouseRight`, `MouseMiddle`, `MouseBack`, `MouseForward`). The palette slots are actions `slot_1` to `slot_9`. The scroll wheel isn't rebindable.
+- Small additions within the plan: a crosshair, and the palette along the bottom of the screen with the selected block in brackets.
+- 99 tests pass across the workspace; clippy is clean.
+
+*Verification* (2026-10-25)
+- Break, place and pick a block: met (played; "works as expected").
+- The outline marks the block that will break, and placing lands on the face you look at: met (played).
+- Placing into your own body, a filled cell or out of reach does nothing: met (played the body check; tests cover all three).
+- Chunk borders remesh with no holes or stale faces: met (played on the borders; tested).
+- Tests for raycast, edit validation and change tracking: met (99 tests pass across the workspace; clippy is clean).
+
+*Decisions*
+- Copy Minecraft's controls for now. Fixing ambiguous interactions waits until there are things to use; that's the Interaction controls backlog toy.
+- Interaction numbers are content: `base` registers an `InteractionDef`. The engine owns targeting and the rules that keep edits valid.
+
+*Deferred*
+- Tuning reach and repeat rate, until later toys give more context. The user found the toy thin on its own but working.
+- Ghost preview, timed breaking, inventory, drops, particles and sound.
+
+*API debt added:* break, place and the palette slots join the fixed input actions entry.
 
 #### Movement mechanics (branch `toy-movement`)
 

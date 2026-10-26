@@ -8,6 +8,8 @@ use api::{
     BoxelPos, Ground, I64Vec3, MoveContext, MoveInput, MovementController, PlayerDef, Vec2, Vec3, WorldPos,
 };
 
+use crate::BlockId;
+
 /// Slack for touching faces, so standing on a floor doesn't count as being inside it.
 const EPS: f32 = 1e-4;
 /// How far below the feet still counts as standing on something.
@@ -32,12 +34,22 @@ pub struct PlayerInput {
     pub vertical: f32,
     /// Facing, radians counterclockwise from +X (east) around +Z.
     pub yaw: f32,
+    /// Look angle, radians up from level. Aims breaking and placing.
+    pub pitch: f32,
     /// The jump key went down since the last tick.
     pub jump_pressed: bool,
     pub jump_held: bool,
     pub sprint: bool,
     /// Switches fly mode on or off this tick.
     pub toggle_fly: bool,
+    /// The break button went down since the last tick.
+    pub break_pressed: bool,
+    pub break_held: bool,
+    /// The place button went down since the last tick.
+    pub place_pressed: bool,
+    pub place_held: bool,
+    /// The block to place. Empty places nothing.
+    pub place_block: BlockId,
 }
 
 /// The body's collision shape.
@@ -140,6 +152,19 @@ impl Player {
     /// tick of.
     pub fn stepped_total(&self) -> f64 {
         self.stepped_total
+    }
+
+    /// Where the eyes are, without any camera effects.
+    pub fn eye(&self) -> WorldPos {
+        self.pos.translate(Vec3::new(0.0, 0.0, self.shape.eye_height))
+    }
+
+    /// Whether the collision box overlaps the boxel at `pos`. Touching faces don't count.
+    pub fn overlaps(&self, pos: BoxelPos) -> bool {
+        let (min, max) = self.bounds();
+        let cell_min = (pos.0 - self.pos.cell()).as_vec3();
+        let cell_max = cell_min + Vec3::ONE;
+        (min.cmplt(cell_max - EPS) & max.cmpgt(cell_min + EPS)).all()
     }
 
     /// Queues an instant velocity change for the next tick. Impulses from every source add up.

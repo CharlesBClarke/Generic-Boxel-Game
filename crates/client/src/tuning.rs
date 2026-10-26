@@ -1,5 +1,5 @@
-//! The live tuning panel: sliders for every value the player's movement controller and the
-//! camera feel expose, whichever mod they come from.
+//! The live tuning panel: sliders for every value the player's movement controller, the
+//! interaction definition and the camera feel expose, whichever mod they come from.
 
 use api::{Tunable, Tunables};
 use bevy::prelude::*;
@@ -13,6 +13,8 @@ pub struct TuningPanel {
     pub open: bool,
     /// The controller's values when the game started, for reset.
     movement_defaults: Option<Vec<Tunable>>,
+    /// The interaction definition when the game started, for reset.
+    interaction_defaults: Option<Vec<Tunable>>,
     /// The last printout, shown in the panel so it can be copied.
     printout: String,
 }
@@ -23,6 +25,11 @@ pub fn tuning_panel(
     mut sim: ResMut<Sim>,
     mut feel: ResMut<CameraFeel>,
 ) -> Result {
+    // A copy, since the controller below borrows the simulation; written back at the end.
+    let mut interaction = sim.0.interaction_def().cloned();
+    if panel.interaction_defaults.is_none() {
+        panel.interaction_defaults = interaction.as_ref().map(|i| i.tunables());
+    }
     let Some(player) = sim.0.player_mut() else {
         return Ok(());
     };
@@ -40,6 +47,11 @@ pub fn tuning_panel(
         egui::ScrollArea::vertical().max_height(600.0).show(ui, |ui| {
             ui.heading("Movement");
             sliders(ui, "movement", controller);
+            if let Some(interaction) = &mut interaction {
+                ui.separator();
+                ui.heading("Interaction");
+                sliders(ui, "interaction", interaction);
+            }
             ui.separator();
             ui.heading("Camera");
             // Read through a copy so the resource is only marked changed when a value moves.
@@ -55,6 +67,11 @@ pub fn tuning_panel(
                 for t in panel.movement_defaults.iter().flatten() {
                     controller.set_tunable(&t.name, t.value);
                 }
+                if let Some(interaction) = &mut interaction {
+                    for t in panel.interaction_defaults.iter().flatten() {
+                        interaction.set_tunable(&t.name, t.value);
+                    }
+                }
                 *feel = CameraFeel::default();
             }
             print = ui.button("Print values").clicked();
@@ -69,10 +86,19 @@ pub fn tuning_panel(
     if print {
         let mut out = String::from("// movement\n");
         out += &printout(&controller.tunables());
+        if let Some(interaction) = &interaction {
+            out += "// interaction\n";
+            out += &printout(&interaction.tunables());
+        }
         out += "// camera\n";
         out += &printout(&feel.tunables());
         info!("tuned values:\n{out}");
         panel.printout = out;
+    }
+    if let (Some(edited), Some(def)) = (interaction, sim.0.interaction_def_mut())
+        && edited != *def
+    {
+        *def = edited;
     }
     Ok(())
 }

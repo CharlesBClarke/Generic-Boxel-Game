@@ -7,14 +7,16 @@
 pub mod block;
 pub mod coords;
 pub mod error;
+pub mod interaction;
 pub mod modding;
 pub mod movement;
 pub mod player;
 pub mod tuning;
 
 pub use block::BlockDef;
-pub use coords::{BoxelPos, CHUNK_SIZE, CHUNK_VOLUME, ChunkPos, LocalPos, WorldPos};
+pub use coords::{BoxelPos, CHUNK_SIZE, CHUNK_VOLUME, ChunkPos, LocalPos, WorldPos, look_direction};
 pub use error::ApiError;
+pub use interaction::InteractionDef;
 pub use glam::{I64Vec3, Vec2, Vec3};
 pub use modding::{Mod, Registrar, WorldEdit};
 pub use movement::{Ground, MoveContext, MoveInput, MoveOutput, MovementController};

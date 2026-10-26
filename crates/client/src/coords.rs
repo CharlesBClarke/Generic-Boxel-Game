@@ -1,7 +1,7 @@
 //! The render boundary. Engine and mod code are Z-up; Bevy is Y-up. This module is the
 //! only place the two meet, and the only place world positions become render floats.
 
-use api::{I64Vec3, WorldPos};
+use api::{I64Vec3, WorldPos, look_direction};
 use bevy::math::{Quat, Vec3};
 
 /// Converts a Z-up vector (+X east, +Y north, +Z up) to Bevy's Y-up (+X east, +Y up,
@@ -19,13 +19,6 @@ pub fn from_render(v: Vec3) -> Vec3 {
 /// numbers reach the GPU as long as the origin is kept near the camera.
 pub fn render_translation(pos: WorldPos, origin: I64Vec3) -> Vec3 {
     to_render((pos.cell() - origin).as_vec3() + pos.offset())
-}
-
-/// A Z-up look direction: `yaw` counterclockwise from east around +Z, `pitch` up from level.
-pub fn look_direction(yaw: f32, pitch: f32) -> Vec3 {
-    let (sy, cy) = yaw.sin_cos();
-    let (sp, cp) = pitch.sin_cos();
-    Vec3::new(cp * cy, cp * sy, sp)
 }
 
 /// The Bevy camera rotation for a Z-up yaw and pitch.

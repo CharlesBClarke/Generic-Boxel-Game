@@ -2,10 +2,14 @@
 
 use std::fmt;
 
-use api::{ApiError, BlockDef, BoxelPos, Mod, PlayerDef, Registrar, Vec3, WorldEdit, WorldPos};
+use api::{
+    ApiError, BlockDef, BoxelPos, ChunkPos, InteractionDef, Mod, PlayerDef, Registrar, Vec3, WorldEdit, WorldPos,
+    look_direction,
+};
 
+use crate::edit::{ChangedChunks, Repeater};
 use crate::player::Terrain;
-use crate::{BlockRegistry, Grid, Player, PlayerInput, Universe};
+use crate::{BlockId, BlockRegistry, Grid, Hit, Player, PlayerInput, Universe, raycast};
 
 #[derive(Debug, PartialEq)]
 pub enum SimError {
@@ -35,10 +39,14 @@ impl From<ApiError> for SimError {
 pub struct Simulation {
     blocks: BlockRegistry,
     player_def: Option<PlayerDef>,
+    interaction_def: Option<InteractionDef>,
     universe: Universe,
     spawn: WorldPos,
     waypoints: Vec<(String, WorldPos)>,
     player: Option<Player>,
+    breaking: Repeater,
+    placing: Repeater,
+    changed: ChangedChunks,
     tick: u64,
 }
 
@@ -57,7 +65,11 @@ impl Simulation {
     pub fn with_mods(mods: &[&dyn Mod]) -> Result<Self, SimError> {
         let mut sim = Self::new();
         for m in mods {
-            m.register(&mut ContentRegistrar { blocks: &mut sim.blocks, player: &mut sim.player_def })?;
+            m.register(&mut ContentRegistrar {
+                blocks: &mut sim.blocks,
+                player: &mut sim.player_def,
+                interaction: &mut sim.interaction_def,
+            })?;
         }
         for m in mods {
             m.build_world(&mut WorldEditor {
@@ -77,14 +89,70 @@ impl Simulation {
         Ok(())
     }
 
-    /// Advances one fixed tick.
+    /// Advances one fixed tick. Block edits happen first, from where the player stood at the
+    /// end of the last tick, which is what the client aimed from.
     pub fn step(&mut self, input: &PlayerInput) {
+        self.edit_blocks(input);
         let Self { blocks, universe, player, .. } = self;
         if let Some(player) = player {
             let terrain = GridTerrain { grid: universe.main(), blocks };
             player.step(input, Self::TICK_SECONDS, &terrain);
         }
         self.tick += 1;
+    }
+
+    /// The block the player would break looking along `yaw` and `pitch`, and the face a
+    /// placed block would go on. `None` with nothing in reach, no player, or no mod defining
+    /// interaction.
+    pub fn target(&self, yaw: f32, pitch: f32) -> Option<Hit> {
+        let player = self.player.as_ref()?;
+        let reach = self.interaction_def.as_ref()?.reach;
+        let grid = self.universe.main();
+        raycast(player.eye(), look_direction(yaw, pitch), reach, |p| !grid.block(p).is_empty())
+    }
+
+    /// Where `block` would go if placed on `hit`'s face, or `None` if that isn't allowed: the
+    /// block isn't placeable, the hit has no face, the cell is filled or the player is in it.
+    pub fn placement(&self, hit: &Hit, block: BlockId) -> Option<BoxelPos> {
+        let placeable = self.blocks.get(block).is_some_and(|def| def.placeable);
+        let pos = hit.adjacent();
+        let free = hit.normal != api::I64Vec3::ZERO && self.universe.main().block(pos).is_empty();
+        let clear_of_player = self.player.as_ref().is_none_or(|p| !p.overlaps(pos));
+        (placeable && free && clear_of_player).then_some(pos)
+    }
+
+    /// Chunks whose blocks changed since the last call, including neighbors whose border faces
+    /// changed. World building at load time isn't included.
+    pub fn take_changed_chunks(&mut self) -> Vec<ChunkPos> {
+        self.changed.take()
+    }
+
+    /// Breaks or places a block if the input asks for it this tick. Breaking wins when both
+    /// buttons act on the same tick.
+    fn edit_blocks(&mut self, input: &PlayerInput) {
+        let Some(def) = &self.interaction_def else {
+            return;
+        };
+        let interval = 1.0 / def.repeat_rate;
+        let dt = Self::TICK_SECONDS;
+        let breaking = self.breaking.update(input.break_pressed, input.break_held, interval, dt);
+        let placing = self.placing.update(input.place_pressed, input.place_held, interval, dt);
+        if !breaking && !placing {
+            return;
+        }
+        let Some(hit) = self.target(input.yaw, input.pitch) else {
+            return;
+        };
+        if breaking {
+            self.set_block(hit.pos, BlockId::EMPTY);
+        } else if let Some(pos) = self.placement(&hit, input.place_block) {
+            self.set_block(pos, input.place_block);
+        }
+    }
+
+    fn set_block(&mut self, pos: BoxelPos, id: BlockId) {
+        self.universe.main_mut().set_block(pos, id);
+        self.changed.mark(pos);
     }
 
     pub fn teleport_player(&mut self, pos: WorldPos) {
@@ -106,6 +174,15 @@ impl Simulation {
 
     pub fn player_def(&self) -> Option<&PlayerDef> {
         self.player_def.as_ref()
+    }
+
+    pub fn interaction_def(&self) -> Option<&InteractionDef> {
+        self.interaction_def.as_ref()
+    }
+
+    /// For engine tools such as the tuning panel.
+    pub fn interaction_def_mut(&mut self) -> Option<&mut InteractionDef> {
+        self.interaction_def.as_mut()
     }
 
     pub fn universe(&self) -> &Universe {
@@ -153,6 +230,7 @@ impl Terrain for GridTerrain<'_> {
 struct ContentRegistrar<'a> {
     blocks: &'a mut BlockRegistry,
     player: &'a mut Option<PlayerDef>,
+    interaction: &'a mut Option<InteractionDef>,
 }
 
 impl Registrar for ContentRegistrar<'_> {
@@ -166,6 +244,15 @@ impl Registrar for ContentRegistrar<'_> {
         }
         def.validate().map_err(ApiError::InvalidDef)?;
         *self.player = Some(def);
+        Ok(())
+    }
+
+    fn register_interaction(&mut self, def: InteractionDef) -> Result<(), ApiError> {
+        if self.interaction.is_some() {
+            return Err(ApiError::DuplicateInteractionDef);
+        }
+        def.validate().map_err(ApiError::InvalidDef)?;
+        *self.interaction = Some(def);
         Ok(())
     }
 }

@@ -17,6 +17,7 @@ fn engine_alone_has_no_content() {
     let mut sim = Simulation::new();
     assert!(sim.blocks().is_empty());
     assert!(sim.player_def().is_none());
+    assert!(sim.interaction_def().is_none());
     assert_eq!(sim.universe().main().chunks().count(), 0);
     assert_eq!(sim.spawn_player(), Err(SimError::NoPlayerDef));
 }

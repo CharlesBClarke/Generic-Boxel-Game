@@ -13,16 +13,24 @@ pub struct BlockDef {
     /// How much grip the surface gives a body standing on it. 1 is normal, near 0 is ice.
     /// Movement controllers decide what it means exactly.
     pub friction: f32,
+    /// Whether players can place it. Blocks that only appear through world building or game
+    /// rules set this to false.
+    pub placeable: bool,
 }
 
 impl BlockDef {
-    /// A block with normal friction.
+    /// A placeable block with normal friction.
     pub fn new(name: impl Into<String>, solid: bool, color: [u8; 3]) -> Self {
-        Self { name: name.into(), solid, color, friction: 1.0 }
+        Self { name: name.into(), solid, color, friction: 1.0, placeable: true }
     }
 
     pub fn with_friction(mut self, friction: f32) -> Self {
         self.friction = friction;
+        self
+    }
+
+    pub fn with_placeable(mut self, placeable: bool) -> Self {
+        self.placeable = placeable;
         self
     }
 }
