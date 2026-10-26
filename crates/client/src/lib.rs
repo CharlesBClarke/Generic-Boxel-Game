@@ -3,7 +3,9 @@
 
 pub mod controls;
 pub mod coords;
+pub mod feel;
 pub mod mesher;
+pub mod tuning;
 
 use std::time::{Duration, Instant};
 
@@ -13,10 +15,13 @@ use bevy::input::mouse::AccumulatedMouseMotion;
 use bevy::mesh::{Indices, PrimitiveTopology};
 use bevy::prelude::*;
 use bevy::window::{CursorGrabMode, CursorOptions, PresentMode, PrimaryWindow};
+use bevy_egui::{EguiPlugin, EguiPrimaryContextPass};
 use sim::{PlayerInput, Simulation};
 
 use crate::controls::{Controls, label};
+use crate::feel::{CameraFeel, FeelState, Motion};
 use crate::mesher::MeshData;
+use crate::tuning::TuningPanel;
 
 /// How far, in boxels along any axis, the camera may get from the render origin before
 /// the origin recenters on it.
@@ -31,6 +36,7 @@ pub fn run(sim: Simulation) {
             primary_window: Some(Window { title: "Boxel".into(), ..default() }),
             ..default()
         }))
+        .add_plugins(EguiPlugin::default())
         .insert_resource(ClearColor(Color::srgb(0.55, 0.75, 0.95)))
         .insert_resource(Time::<Fixed>::from_hz(Simulation::TICK_RATE))
         .insert_resource(Sim(sim))
@@ -40,6 +46,9 @@ pub fn run(sim: Simulation) {
         .init_resource::<RenderOrigin>()
         .init_resource::<FrameCap>()
         .init_resource::<WaypointCursor>()
+        .init_resource::<CameraFeel>()
+        .init_resource::<FeelState>()
+        .init_resource::<TuningPanel>()
         .add_systems(Startup, (setup_scene, spawn_chunk_meshes))
         .add_systems(FixedUpdate, tick_simulation)
         .add_systems(
@@ -53,6 +62,7 @@ pub fn run(sim: Simulation) {
             )
                 .chain(),
         )
+        .add_systems(EguiPrimaryContextPass, tuning::tuning_panel)
         .add_systems(Last, limit_frame_rate)
         .run();
 }
@@ -72,6 +82,7 @@ struct Look {
 #[derive(Resource, Default)]
 struct PendingToggles {
     toggle_fly: bool,
+    jump_pressed: bool,
 }
 
 /// The world view's origin. Everything is drawn relative to this cell, so the GPU only
@@ -154,7 +165,9 @@ fn tick_simulation(
         movement: Vec2::new(axis(controls.right, controls.left), axis(controls.forward, controls.back)),
         vertical: axis(controls.jump, controls.down),
         yaw: look.yaw,
-        jump: keys.pressed(controls.jump),
+        jump_pressed: std::mem::take(&mut toggles.jump_pressed),
+        jump_held: keys.pressed(controls.jump),
+        sprint: keys.pressed(controls.sprint),
         toggle_fly: std::mem::take(&mut toggles.toggle_fly),
     };
     sim.0.step(&input);
@@ -164,11 +177,19 @@ fn grab_cursor(
     mut cursor: Single<&mut CursorOptions, With<PrimaryWindow>>,
     mouse: Res<ButtonInput<MouseButton>>,
     keys: Res<ButtonInput<KeyCode>>,
+    controls: Res<Controls>,
+    mut panel: ResMut<TuningPanel>,
 ) {
-    if mouse.just_pressed(MouseButton::Left) {
+    if keys.just_pressed(controls.tuning) {
+        panel.open = !panel.open;
+        set_grab(&mut cursor, !panel.open);
+    }
+    // While the panel is open, clicks belong to it.
+    if mouse.just_pressed(MouseButton::Left) && !panel.open {
         set_grab(&mut cursor, true);
     }
     if keys.just_pressed(KeyCode::Escape) {
+        panel.open = false;
         set_grab(&mut cursor, false);
     }
 }
@@ -203,6 +224,9 @@ fn debug_keys(
     if keys.just_pressed(controls.fly) {
         toggles.toggle_fly = !toggles.toggle_fly;
     }
+    if keys.just_pressed(controls.jump) {
+        toggles.jump_pressed = true;
+    }
     if keys.just_pressed(controls.teleport) && !sim.0.waypoints().is_empty() {
         waypoint.0 = (waypoint.0 + 1) % sim.0.waypoints().len();
         let target = sim.0.waypoints()[waypoint.0].1;
@@ -217,29 +241,52 @@ fn debug_keys(
     }
 }
 
-/// Places the camera at the player's eyes, blended between the last two ticks, and
-/// recenters the render origin if the camera has strayed too far from it.
+/// Places the camera at the player's eyes, blended between the last two ticks, adds the
+/// camera feel effects, and recenters the render origin if the camera has strayed too far.
+#[allow(clippy::too_many_arguments)]
 fn update_camera(
     sim: Res<Sim>,
     look: Res<Look>,
     fixed: Res<Time<Fixed>>,
+    time: Res<Time>,
+    feel: Res<CameraFeel>,
+    mut feel_state: ResMut<FeelState>,
     mut origin: ResMut<RenderOrigin>,
-    mut camera: Single<&mut Transform, With<PlayerCamera>>,
+    mut camera: Single<(&mut Transform, &mut Projection), With<PlayerCamera>>,
 ) {
     let Some(player) = sim.0.player() else {
         return;
     };
     let alpha = fixed.overstep_fraction();
     let prev = player.prev_pos();
-    let feet = prev.translate(prev.delta_to(player.pos()) * alpha);
-    let eye = feet.translate(ZVec3::new(0.0, 0.0, player.def().eye_height));
+    let step = prev.delta_to(player.pos());
+    let feet = prev.translate(step * alpha);
+
+    feel_state.update(
+        &feel,
+        &Motion {
+            horizontal_speed: player.velocity().truncate().length(),
+            grounded: player.on_ground() && !player.flying(),
+            landings: player.landings(),
+            last_landing_speed: player.last_landing_speed(),
+            stepped_total: player.stepped_total(),
+        },
+        time.delta_secs(),
+    );
+    let eye_height = player.shape().eye_height + feel_state.vertical_offset(&feel);
+    let eye = feet.translate(ZVec3::new(0.0, 0.0, eye_height));
 
     let from_origin = (eye.cell() - origin.cell).abs().max_element();
     if from_origin > RECENTER_DISTANCE {
         origin.cell = eye.cell();
     }
-    camera.translation = coords::render_translation(eye, origin.cell);
-    camera.rotation = coords::look_rotation(look.yaw, look.pitch);
+    let (transform, projection) = &mut *camera;
+    transform.translation = coords::render_translation(eye, origin.cell);
+    let limit = 89f32.to_radians();
+    transform.rotation = coords::look_rotation(look.yaw, (look.pitch - feel_state.nod()).clamp(-limit, limit));
+    if let Projection::Perspective(perspective) = &mut **projection {
+        perspective.fov = feel_state.fov.to_radians();
+    }
 }
 
 fn sync_chunk_transforms(origin: Res<RenderOrigin>, mut chunks: Query<(&ChunkMesh, &mut Transform)>) {
@@ -256,6 +303,7 @@ fn update_hud(
     origin: Res<RenderOrigin>,
     cap: Res<FrameCap>,
     controls: Res<Controls>,
+    feel: Res<CameraFeel>,
     time: Res<Time>,
     mut text: Single<&mut Text, With<Hud>>,
 ) {
@@ -266,10 +314,13 @@ fn update_hud(
     let precise = pos.cell().as_dvec3() + pos.offset().as_dvec3();
     let fps = 1.0 / time.delta_secs().max(1e-6);
     text.0 = format!(
-        "pos {:.2}, {:.2}, {:.2}\norigin {}, {}, {}\n{} | {:.0} fps | cap {} ({})\n{}{}{}{} move, {} jump, {} down, {} fly, {} teleport, Esc release mouse",
+        "pos {:.2}, {:.2}, {:.2}  speed {:.1} m/s  last landing {:.1} m/s ({})\norigin {}, {}, {}\n{} | {:.0} fps | cap {} ({})\n{}{}{}{} move, {} jump, {} sprint, {} down, {} fly, {} teleport, {} tuning, Esc release mouse",
         precise.x,
         precise.y,
         precise.z,
+        player.velocity().truncate().length(),
+        player.last_landing_speed(),
+        if player.last_landing_speed() >= feel.hard_landing_speed { "hard" } else { "soft" },
         origin.cell.x,
         origin.cell.y,
         origin.cell.z,
@@ -282,9 +333,11 @@ fn update_hud(
         label(controls.back),
         label(controls.right),
         label(controls.jump),
+        label(controls.sprint),
         label(controls.down),
         label(controls.fly),
         label(controls.teleport),
+        label(controls.tuning),
     );
 }
 

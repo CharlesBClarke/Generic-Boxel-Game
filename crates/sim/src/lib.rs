@@ -8,7 +8,7 @@ pub mod simulation;
 pub mod world;
 
 pub use layer::Layer;
-pub use player::{Player, PlayerInput};
+pub use player::{Player, PlayerInput, Shape, Terrain};
 pub use registry::{BlockId, BlockRegistry};
 pub use simulation::{SimError, Simulation};
 pub use world::{Chunk, Grid, GridId, Universe};

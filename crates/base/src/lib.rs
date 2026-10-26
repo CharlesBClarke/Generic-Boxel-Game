@@ -1,12 +1,17 @@
 //! The base game, written as a mod on the public API only.
 
+pub mod movement;
+
 use api::{ApiError, BlockDef, BoxelPos, I64Vec3, Mod, PlayerDef, Registrar, Vec3, WorldEdit, WorldPos};
+
+use crate::movement::QuakeController;
 
 pub const STONE: &str = "base:stone";
 pub const DIRT: &str = "base:dirt";
 pub const GRASS: &str = "base:grass";
 pub const BRICK: &str = "base:brick";
 pub const MARKER: &str = "base:marker";
+pub const ICE: &str = "base:ice";
 
 /// Where the far copy of the test area sits, for checking that play is the same in the millions.
 pub const FAR_ORIGIN: BoxelPos = BoxelPos::new(3_000_000, -2_000_000, 1_000);
@@ -27,15 +32,13 @@ impl Mod for BaseMod {
         r.register_block(BlockDef::new(GRASS, true, [96, 160, 64]))?;
         r.register_block(BlockDef::new(BRICK, true, [160, 82, 64]))?;
         r.register_block(BlockDef::new(MARKER, true, [240, 180, 40]))?;
-        // Starting values, to be tuned in the movement toy.
+        r.register_block(BlockDef::new(ICE, true, [170, 210, 240]).with_friction(0.1))?;
         r.register_player(PlayerDef {
             width: 0.6,
             height: 1.8,
             eye_height: 1.62,
-            walk_speed: 4.3,
-            jump_height: 1.25,
-            gravity: 25.0,
-            fly_speed: 12.0,
+            step_height: 0.0,
+            controller: Box::new(QuakeController::default()),
         })
     }
 
@@ -95,5 +98,41 @@ pub fn build_test_area(w: &mut dyn WorldEdit, o: BoxelPos) -> Result<(), ApiErro
 
     // A marker post next to spawn so the starting direction is obvious: it sits east.
     w.fill(at(3, 0, 0), at(3, 0, 1), MARKER)?;
+
+    build_movement_course(w, o)
+}
+
+/// Things to move around on: jump gaps, a pillar line, a sprint straight and an ice patch.
+/// The tower in the test area doubles as a drop tower: fly up, turn fly off, fall.
+fn build_movement_course(w: &mut dyn WorldEdit, o: BoxelPos) -> Result<(), ApiError> {
+    let at = |x: i64, y: i64, z: i64| o.offset(I64Vec3::new(x, y, z));
+
+    // Jump gaps of 2, 3, 4 and 5 between platforms 3 high, reached by three steps.
+    let (y0, y1) = (14, 17);
+    for step in 0..3 {
+        w.fill(at(22 + step, y0, 0), at(22 + step, y1, step), BRICK)?;
+    }
+    let mut x = 25;
+    for gap in [2, 3, 4, 5, 0] {
+        w.fill(at(x, y0, 0), at(x + 3, y1, 2), BRICK)?;
+        w.fill(at(x, y0, 2), at(x + 3, y1, 2), MARKER)?;
+        x += 4 + gap;
+    }
+
+    // A pillar line: single pillars 2 high, 3 apart, zigzagging.
+    for i in 0..10 {
+        let px = 24 + i * 3;
+        let py = if i % 2 == 0 { 25 } else { 27 };
+        w.fill(at(px, py, 0), at(px, py, 1), STONE)?;
+    }
+
+    // A sprint straight: a stone lane with a marker post every 10 boxels.
+    w.fill(at(-60, 40, -1), at(60, 42, -1), STONE)?;
+    for x in (-60..=60).step_by(10) {
+        w.fill(at(x, 43, 0), at(x, 43, 1), MARKER)?;
+    }
+
+    // An ice patch set into the floor.
+    w.fill(at(-60, 46, -1), at(-30, 60, -1), ICE)?;
     Ok(())
 }

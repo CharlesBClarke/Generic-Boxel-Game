@@ -1,15 +1,22 @@
 //! The public mod API. The base game uses only this crate, so anything a mod can't
 //! express here is a gap to fill, not something to reach around.
+//!
+//! The API is plain Rust for now but will become a WebAssembly boundary, so calls exchange
+//! plain data: no references into engine or mod memory, no closures, no generic traits.
 
 pub mod block;
 pub mod coords;
 pub mod error;
 pub mod modding;
+pub mod movement;
 pub mod player;
+pub mod tuning;
 
 pub use block::BlockDef;
 pub use coords::{BoxelPos, CHUNK_SIZE, CHUNK_VOLUME, ChunkPos, LocalPos, WorldPos};
 pub use error::ApiError;
-pub use glam::{I64Vec3, Vec3};
+pub use glam::{I64Vec3, Vec2, Vec3};
 pub use modding::{Mod, Registrar, WorldEdit};
+pub use movement::{Ground, MoveContext, MoveInput, MoveOutput, MovementController};
 pub use player::PlayerDef;
+pub use tuning::{Tunable, Tunables};

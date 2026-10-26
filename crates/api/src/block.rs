@@ -10,11 +10,20 @@ pub struct BlockDef {
     pub solid: bool,
     /// Flat color, sRGB.
     pub color: [u8; 3],
+    /// How much grip the surface gives a body standing on it. 1 is normal, near 0 is ice.
+    /// Movement controllers decide what it means exactly.
+    pub friction: f32,
 }
 
 impl BlockDef {
+    /// A block with normal friction.
     pub fn new(name: impl Into<String>, solid: bool, color: [u8; 3]) -> Self {
-        Self { name: name.into(), solid, color }
+        Self { name: name.into(), solid, color, friction: 1.0 }
+    }
+
+    pub fn with_friction(mut self, friction: f32) -> Self {
+        self.friction = friction;
+        self
     }
 }
 

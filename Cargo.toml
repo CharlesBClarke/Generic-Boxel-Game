@@ -15,6 +15,7 @@ base = { path = "crates/base" }
 # Pinned to the glam version Bevy 0.18 uses, so math types cross the render boundary without conversion.
 glam = "0.30.7"
 bevy = "0.18.1"
+bevy_egui = "0.39.1"
 
 # Bevy is slow unoptimized; optimize dependencies even in dev builds.
 [profile.dev]
