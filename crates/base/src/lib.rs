@@ -3,7 +3,8 @@
 pub mod movement;
 
 use api::{
-    ApiError, BlockDef, BoxelPos, I64Vec3, InteractionDef, Mod, PlayerDef, Registrar, Vec3, WorldEdit, WorldPos,
+    ApiError, BlockDef, BoxelPos, I64Vec3, InteractionDef, Mod, PlayerDef, PushOutDef, Registrar, Vec3, WorldEdit,
+    WorldPos,
 };
 
 use crate::movement::QuakeController;
@@ -20,6 +21,22 @@ pub const FAR_ORIGIN: BoxelPos = BoxelPos::new(3_000_000, -2_000_000, 1_000);
 
 /// Half the width of the square test area floor.
 pub const AREA_HALF: i64 = 64;
+
+/// Notable spots in the test area, relative to its origin: where the feet stand. Used as
+/// waypoints named `landmark:<name>`, which the chase drill picks objectives from.
+pub const LANDMARKS: &[(&str, i64, i64, i64)] = &[
+    ("marker post top", 3, 0, 2),
+    ("top of the steps", 15, 5, 10),
+    ("inside the pen", -14, 14, 0),
+    ("tunnel", 0, -14, 0),
+    ("bottom of the pit", 17, -12, -10),
+    ("end of the jump course", 56, 15, 3),
+    ("end of the pillar line", 51, 27, 2),
+    ("end of the sprint straight", 60, 41, 0),
+    ("ice patch", -45, 53, 0),
+    ("2-high ledge", 27, -28, 2),
+    ("3-high ledge", 27, -34, 3),
+];
 
 pub struct BaseMod;
 
@@ -43,7 +60,9 @@ impl Mod for BaseMod {
             controller: Box::new(QuakeController::default()),
         })?;
         // Minecraft-like for now: about Minecraft's survival reach, 4 edits a second held.
-        r.register_interaction(InteractionDef { reach: 4.5, repeat_rate: 4.0 })
+        r.register_interaction(InteractionDef { reach: 4.5, repeat_rate: 4.0 })?;
+        // Block-jumping: placing a block at your feet lifts you onto it and launches you.
+        r.register_push_out(PushOutDef { strength: 6.0, upward_bias: 1.0 })
     }
 
     fn build_world(&self, w: &mut dyn WorldEdit) -> Result<(), ApiError> {
@@ -55,6 +74,11 @@ impl Mod for BaseMod {
         w.set_spawn(spawn(origin));
         w.add_waypoint("origin", spawn(origin));
         w.add_waypoint("far", spawn(FAR_ORIGIN));
+        for o in [origin, FAR_ORIGIN] {
+            for (name, x, y, z) in LANDMARKS {
+                w.add_waypoint(&format!("landmark:{name}"), WorldPos::new(o.0 + I64Vec3::new(*x, *y, *z), Vec3::new(0.5, 0.5, 0.0)));
+            }
+        }
         Ok(())
     }
 }
@@ -106,7 +130,8 @@ pub fn build_test_area(w: &mut dyn WorldEdit, o: BoxelPos) -> Result<(), ApiErro
     build_movement_course(w, o)
 }
 
-/// Things to move around on: jump gaps, a pillar line, a sprint straight and an ice patch.
+/// Things to move around on: jump gaps, a pillar line, a sprint straight, an ice patch and
+/// crouch-jump ledges.
 /// The tower in the test area doubles as a drop tower: fly up, turn fly off, fall.
 fn build_movement_course(w: &mut dyn WorldEdit, o: BoxelPos) -> Result<(), ApiError> {
     let at = |x: i64, y: i64, z: i64| o.offset(I64Vec3::new(x, y, z));
@@ -138,5 +163,12 @@ fn build_movement_course(w: &mut dyn WorldEdit, o: BoxelPos) -> Result<(), ApiEr
 
     // An ice patch set into the floor.
     w.fill(at(-60, 46, -1), at(-30, 60, -1), ICE)?;
+
+    // Crouch-jump ledges facing west: 2 high clears with a tuck, 3 high with a charged jump
+    // and a tuck. Neither clears with a plain jump.
+    w.fill(at(26, -30, 0), at(29, -27, 1), BRICK)?;
+    w.fill(at(26, -30, 1), at(29, -27, 1), MARKER)?;
+    w.fill(at(26, -36, 0), at(29, -33, 2), BRICK)?;
+    w.fill(at(26, -36, 2), at(29, -33, 2), MARKER)?;
     Ok(())
 }

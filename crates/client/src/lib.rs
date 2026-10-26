@@ -3,6 +3,7 @@
 
 pub mod controls;
 pub mod coords;
+pub mod drill;
 pub mod editing;
 pub mod feel;
 pub mod mesher;
@@ -19,7 +20,7 @@ use bevy::window::{CursorGrabMode, CursorOptions, PresentMode, PrimaryWindow};
 use bevy_egui::{EguiPlugin, EguiPrimaryContextPass};
 use sim::{PlayerInput, Simulation};
 
-use crate::controls::{Controls, label};
+use crate::controls::{Controls, DoubleTapSprint, label};
 use crate::editing::{ChunkMeshes, Palette, PaletteHud};
 use crate::feel::{CameraFeel, FeelState, Motion};
 use crate::mesher::MeshData;
@@ -52,8 +53,10 @@ pub fn run(sim: Simulation) {
         .init_resource::<FeelState>()
         .init_resource::<TuningPanel>()
         .init_resource::<Palette>()
-        .add_systems(Startup, (setup_scene, spawn_chunk_meshes))
-        .add_systems(FixedUpdate, tick_simulation)
+        .init_resource::<DoubleTapSprint>()
+        .init_resource::<drill::Drill>()
+        .add_systems(Startup, (setup_scene, spawn_chunk_meshes, drill::setup_drill))
+        .add_systems(FixedUpdate, (tick_simulation, drill::drill_tick).chain())
         .add_systems(
             Update,
             (
@@ -62,9 +65,12 @@ pub fn run(sim: Simulation) {
                 grab_cursor,
                 mouse_look,
                 debug_keys,
+                double_tap_sprint,
+                drill::drill_keys,
                 editing::remesh_changed_chunks,
                 (update_camera, sync_chunk_transforms).chain(),
                 editing::draw_outline,
+                drill::draw_drill,
                 update_hud,
                 editing::update_palette_hud,
             )
@@ -201,6 +207,7 @@ fn tick_simulation(
     controls: Res<Controls>,
     look: Res<Look>,
     palette: Res<Palette>,
+    double_tap: Res<DoubleTapSprint>,
     cursor: Single<&CursorOptions, With<PrimaryWindow>>,
     mut toggles: ResMut<PendingToggles>,
 ) {
@@ -213,7 +220,8 @@ fn tick_simulation(
         pitch: look.pitch,
         jump_pressed: std::mem::take(&mut toggles.jump_pressed),
         jump_held: keys.pressed(controls.jump),
-        sprint: keys.pressed(controls.sprint),
+        sprint: keys.pressed(controls.sprint) || double_tap.active,
+        crouch: keys.pressed(controls.crouch),
         toggle_fly: std::mem::take(&mut toggles.toggle_fly),
         break_pressed: std::mem::take(&mut toggles.break_pressed),
         break_held: playing && controls.break_block.pressed(&keys, &mouse),
@@ -263,6 +271,20 @@ fn mouse_look(
     look.pitch = (look.pitch - motion.delta.y * MOUSE_SENSITIVITY).clamp(-limit, limit);
 }
 
+fn double_tap_sprint(
+    keys: Res<ButtonInput<KeyCode>>,
+    controls: Res<Controls>,
+    time: Res<Time>,
+    mut double_tap: ResMut<DoubleTapSprint>,
+) {
+    double_tap.update(
+        keys.just_pressed(controls.forward),
+        keys.pressed(controls.forward),
+        time.elapsed_secs_f64(),
+        controls.double_tap_window,
+    );
+}
+
 fn debug_keys(
     keys: Res<ButtonInput<KeyCode>>,
     controls: Res<Controls>,
@@ -278,6 +300,7 @@ fn debug_keys(
     if keys.just_pressed(controls.jump) {
         toggles.jump_pressed = true;
     }
+
     if keys.just_pressed(controls.teleport) && !sim.0.waypoints().is_empty() {
         waypoint.0 = (waypoint.0 + 1) % sim.0.waypoints().len();
         let target = sim.0.waypoints()[waypoint.0].1;
@@ -321,10 +344,11 @@ fn update_camera(
             landings: player.landings(),
             last_landing_speed: player.last_landing_speed(),
             stepped_total: player.stepped_total(),
+            crouch_shift_total: player.crouch_shift_total(),
         },
         time.delta_secs(),
     );
-    let eye_height = player.shape().eye_height + feel_state.vertical_offset(&feel);
+    let eye_height = player.eye_height() + feel_state.vertical_offset(&feel);
     let eye = feet.translate(ZVec3::new(0.0, 0.0, eye_height));
 
     let from_origin = (eye.cell() - origin.cell).abs().max_element();
@@ -365,7 +389,7 @@ fn update_hud(
     let precise = pos.cell().as_dvec3() + pos.offset().as_dvec3();
     let fps = 1.0 / time.delta_secs().max(1e-6);
     text.0 = format!(
-        "pos {:.2}, {:.2}, {:.2}  speed {:.1} m/s  last landing {:.1} m/s ({})\norigin {}, {}, {}\n{} | {:.0} fps | cap {} ({})\n{}{}{}{} move, {} jump, {} sprint, {} down, {} fly, {} teleport, {} tuning, Esc release mouse\n{} break, {} place, 1-9 or scroll pick block",
+        "pos {:.2}, {:.2}, {:.2}  speed {:.1} m/s  last landing {:.1} m/s ({})\norigin {}, {}, {}\n{} | {:.0} fps | cap {} ({})\n{}{}{}{} move, {} jump, {} sprint (or double-tap forward), {} crouch, {} down, {} fly, {} teleport, {} tuning, Esc release mouse\n{} break, {} place, 1-9 or scroll pick block",
         precise.x,
         precise.y,
         precise.z,
@@ -385,6 +409,7 @@ fn update_hud(
         label(controls.right),
         label(controls.jump),
         label(controls.sprint),
+        label(controls.crouch),
         label(controls.down),
         label(controls.fly),
         label(controls.teleport),

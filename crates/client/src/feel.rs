@@ -1,5 +1,5 @@
-//! Camera feel: FOV that widens with speed, head bob, a robotic shock-absorber on landing
-//! and smoothing over step-ups. Render-only, so it never affects the simulation.
+//! Camera feel: FOV that widens with speed, head bob, a robotic shock-absorber on landing,
+//! and smoothing over step-ups and crouching, so the eyes move like a hydraulic. Render-only, so it never affects the simulation.
 //!
 //! Landings are a damped suspension. A soft landing compresses it smoothly in proportion to
 //! the impact. A landing at or above `hard_landing_speed` bottoms it out instantly with a
@@ -43,6 +43,8 @@ pub struct CameraFeel {
     pub nod_recover: f32,
     /// How quickly the camera catches up after a step-up, per second.
     pub step_recover: f32,
+    /// How quickly the camera follows crouching and standing, per second.
+    pub crouch_recover: f32,
 }
 
 impl Default for CameraFeel {
@@ -66,6 +68,7 @@ impl Default for CameraFeel {
             hard_nod: 5.0,
             nod_recover: 6.0,
             step_recover: 10.0,
+            crouch_recover: 12.0,
         }
     }
 }
@@ -106,6 +109,7 @@ tunable_fields! {
     hard_nod: 0.0, 20.0;
     nod_recover: 0.5, 30.0;
     step_recover: 1.0, 40.0;
+    crouch_recover: 1.0, 40.0;
 }
 
 /// The camera effects' running state.
@@ -123,8 +127,11 @@ pub struct FeelState {
     nod: f32,
     /// Leftover height from step-ups, meters, easing to 0.
     step: f32,
+    /// Leftover eye movement from crouching or standing, meters, easing to 0.
+    crouch: f32,
     seen_landings: u32,
     seen_stepped: f64,
+    seen_crouch_shift: f64,
 }
 
 impl Default for FeelState {
@@ -138,8 +145,10 @@ impl Default for FeelState {
             hard: false,
             nod: 0.0,
             step: 0.0,
+            crouch: 0.0,
             seen_landings: 0,
             seen_stepped: 0.0,
+            seen_crouch_shift: 0.0,
         }
     }
 }
@@ -151,6 +160,7 @@ pub struct Motion {
     pub landings: u32,
     pub last_landing_speed: f32,
     pub stepped_total: f64,
+    pub crouch_shift_total: f64,
 }
 
 /// Spring steps are capped at this length so the suspension stays stable at low frame rates.
@@ -179,6 +189,11 @@ impl FeelState {
         let stepped = (motion.stepped_total - self.seen_stepped) as f32;
         self.seen_stepped = motion.stepped_total;
         self.step = (self.step - stepped) * (-feel.step_recover * dt).exp();
+
+        // Crouching moves the eyes instantly too; ease them the same way.
+        let shifted = (motion.crouch_shift_total - self.seen_crouch_shift) as f32;
+        self.seen_crouch_shift = motion.crouch_shift_total;
+        self.crouch = (self.crouch - shifted) * (-feel.crouch_recover * dt).exp();
     }
 
     fn land(&mut self, feel: &CameraFeel, speed: f32) {
@@ -219,7 +234,7 @@ impl FeelState {
 
     /// Vertical camera offset this frame, meters.
     pub fn vertical_offset(&self, feel: &CameraFeel) -> f32 {
-        self.dip + self.step - self.bob_phase.sin().abs() * feel.bob_amount * self.bob_weight
+        self.dip + self.step + self.crouch - self.bob_phase.sin().abs() * feel.bob_amount * self.bob_weight
     }
 
     /// Downward pitch offset this frame, radians.
@@ -235,7 +250,14 @@ mod tests {
     const DT: f32 = 1.0 / 60.0;
 
     fn motion(speed: f32, grounded: bool) -> Motion {
-        Motion { horizontal_speed: speed, grounded, landings: 0, last_landing_speed: 0.0, stepped_total: 0.0 }
+        Motion {
+            horizontal_speed: speed,
+            grounded,
+            landings: 0,
+            last_landing_speed: 0.0,
+            stepped_total: 0.0,
+            crouch_shift_total: 0.0,
+        }
     }
 
     fn landed(speed: f32) -> Motion {
@@ -324,6 +346,20 @@ mod tests {
         let stepped = Motion { stepped_total: 1.0, ..motion(0.0, true) };
         state.update(&feel, &stepped, DT);
         assert!(state.vertical_offset(&feel) < -0.8, "the camera should start near where it was");
+    }
+
+    #[test]
+    fn crouching_eases_the_eyes_down() {
+        let feel = CameraFeel::default();
+        let mut state = FeelState::default();
+        let crouched = Motion { crouch_shift_total: -0.8, ..motion(0.0, true) };
+        state.update(&feel, &crouched, DT);
+        let first = state.vertical_offset(&feel);
+        assert!(first > 0.6, "the camera should start near standing height: {first}");
+        for _ in 0..60 {
+            state.update(&feel, &crouched, DT);
+        }
+        assert!(state.vertical_offset(&feel).abs() < 0.01, "and settle at the crouched eyes");
     }
 
     #[test]

@@ -64,15 +64,31 @@ fn break_then_place_puts_the_block_back() {
 }
 
 #[test]
-fn placing_into_the_player_is_refused() {
+fn placing_at_the_feet_launches_the_player() {
     let mut sim = base_sim();
     settle(&mut sim);
     let hit = sim.target(0.0, DOWN).unwrap();
     assert_eq!((hit.pos, hit.normal), (BoxelPos::new(0, 0, -1), I64Vec3::Z));
     let stone = id(&sim, base::STONE);
-    assert_eq!(sim.placement(&hit, stone), None);
+    assert_eq!(sim.placement(&hit, stone), Some(BoxelPos::new(0, 0, 0)));
     sim.step(&place_at(0.0, DOWN, stone));
-    assert!(block(&sim, 0, 0, 0).is_empty());
+    assert_eq!(block(&sim, 0, 0, 0), stone);
+    let player = sim.player().unwrap();
+    assert_eq!(player.pos().cell().z, 1, "lifted onto the block");
+    assert!(player.velocity().z > 3.0, "and launched, at {}", player.velocity().z);
+    assert!(player.velocity().truncate().length() < 1e-3, "straight up from the middle of the cell");
+}
+
+#[test]
+fn placing_at_the_far_edge_launches_forward() {
+    let mut sim = base_sim();
+    sim.teleport_player(WorldPos::new(I64Vec3::new(10, -3, 0), Vec3::new(0.8, 0.5, 0.0)));
+    settle(&mut sim);
+    let stone = id(&sim, base::STONE);
+    sim.step(&place_at(0.0, DOWN, stone));
+    assert_eq!(block(&sim, 10, -3, 0), stone);
+    let v = sim.player().unwrap().velocity();
+    assert!(v.x > 1.0 && v.z > 3.0, "launched {v}");
 }
 
 #[test]
@@ -130,7 +146,8 @@ fn edits_report_changed_chunks() {
     assert!(sim.take_changed_chunks().is_empty());
 }
 
-/// A mod with one block players may place and one they may not.
+/// A mod with one block players may place and one they may not, a floor and a one-boxel shaft
+/// two high at (10, 10). Registers no push-out rule.
 struct Bedrock;
 
 impl Mod for Bedrock {
@@ -152,7 +169,47 @@ impl Mod for Bedrock {
     }
 
     fn build_world(&self, w: &mut dyn WorldEdit) -> Result<(), ApiError> {
-        w.fill(BoxelPos::new(-5, -5, -1), BoxelPos::new(5, 5, -1), "test:stone")
+        w.fill(BoxelPos::new(-5, -5, -1), BoxelPos::new(15, 15, -1), "test:stone")?;
+        w.fill(BoxelPos::new(9, 9, 0), BoxelPos::new(11, 11, 2), "test:stone")?;
+        w.clear_block(BoxelPos::new(10, 10, 0));
+        w.clear_block(BoxelPos::new(10, 10, 1));
+        Ok(())
+    }
+}
+
+/// `Bedrock` plus a push-out rule.
+struct BedrockPush;
+
+impl Mod for BedrockPush {
+    fn name(&self) -> &str {
+        "test"
+    }
+
+    fn register(&self, r: &mut dyn Registrar) -> Result<(), ApiError> {
+        Bedrock.register(r)?;
+        r.register_push_out(api::PushOutDef { strength: 6.0, upward_bias: 1.0 })
+    }
+
+    fn build_world(&self, w: &mut dyn WorldEdit) -> Result<(), ApiError> {
+        Bedrock.build_world(w)
+    }
+}
+
+#[test]
+fn placing_into_the_player_needs_a_push_out_rule_and_room() {
+    let feet = Hit { pos: BoxelPos::new(0, 0, -1), normal: I64Vec3::Z, distance: 1.6 };
+    let shaft = Hit { pos: BoxelPos::new(10, 10, -1), normal: I64Vec3::Z, distance: 1.6 };
+    let open_spot = WorldPos::new(I64Vec3::ZERO, Vec3::new(0.5, 0.5, 0.0));
+    let shaft_spot = WorldPos::new(I64Vec3::new(10, 10, 0), Vec3::new(0.5, 0.5, 0.0));
+
+    for (m, rule) in [(&Bedrock as &dyn Mod, false), (&BedrockPush, true)] {
+        let mut sim = Simulation::with_mods(&[m]).unwrap();
+        sim.spawn_player().unwrap();
+        let stone = sim.blocks().id("test:stone").unwrap();
+        sim.teleport_player(open_spot);
+        assert_eq!(sim.placement(&feet, stone).is_some(), rule, "open ground, rule {rule}");
+        sim.teleport_player(shaft_spot);
+        assert_eq!(sim.placement(&shaft, stone), None, "no room in the shaft, rule {rule}");
     }
 }
 

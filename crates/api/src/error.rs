@@ -14,6 +14,8 @@ pub enum ApiError {
     DuplicatePlayerDef,
     /// An interaction definition is already registered.
     DuplicateInteractionDef,
+    /// A push-out definition is already registered.
+    DuplicatePushOutDef,
     /// A definition has values that make no sense.
     InvalidDef(String),
 }
@@ -26,6 +28,7 @@ impl fmt::Display for ApiError {
             ApiError::UnknownBlock(name) => write!(f, "no block named {name:?}"),
             ApiError::DuplicatePlayerDef => write!(f, "a player definition is already registered"),
             ApiError::DuplicateInteractionDef => write!(f, "an interaction definition is already registered"),
+            ApiError::DuplicatePushOutDef => write!(f, "a push-out definition is already registered"),
             ApiError::InvalidDef(why) => write!(f, "invalid definition: {why}"),
         }
     }

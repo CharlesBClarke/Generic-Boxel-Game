@@ -18,6 +18,8 @@ pub struct MoveInput {
     /// The jump key is down.
     pub jump_held: bool,
     pub sprint: bool,
+    /// The crouch key is down.
+    pub crouch: bool,
 }
 
 impl MoveInput {
@@ -44,6 +46,11 @@ pub struct MoveContext {
     /// Seconds this tick covers.
     pub dt: f32,
     pub velocity: Vec3,
+    /// The body's current height, meters. Below `standing_height` while crouched, or while
+    /// something overhead keeps it from standing up.
+    pub height: f32,
+    /// The body's full height, from its definition.
+    pub standing_height: f32,
     pub input: MoveInput,
     /// `Some` while the body is standing on something solid.
     pub ground: Option<Ground>,
@@ -57,6 +64,10 @@ pub struct MoveOutput {
     /// An instant velocity change, added together with impulses from anywhere else.
     /// Jumps go here, so every source of sudden motion takes the same path.
     pub impulse: Vec3,
+    /// The body height the controller wants, meters; `None` is standing height. The engine
+    /// always allows shrinking but only grows the body as far as there is room. On the ground
+    /// the feet stay put; in the air the head does, so crouching mid-air lifts the feet.
+    pub height: Option<f32>,
 }
 
 /// Decides how one kind of body moves. One instance per body, so it can keep its own
