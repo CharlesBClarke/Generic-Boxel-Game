@@ -1,13 +1,13 @@
 //! The traits a mod implements and the engine services it is handed.
 
-use crate::{ApiError, BlockDef, BoxelPos, PlayerDef, WorldPos};
+use crate::{ApiError, BlockDef, BoxelPos, InteractionDef, PlayerDef, WorldPos};
 
 /// A mod. The engine calls `register` on every mod first, then `build_world` on every mod.
 pub trait Mod {
     /// The mod's namespace, such as `"base"`.
     fn name(&self) -> &str;
 
-    /// Registers content: blocks, the player definition.
+    /// Registers content: blocks, the player and interaction definitions.
     fn register(&self, registrar: &mut dyn Registrar) -> Result<(), ApiError>;
 
     /// Places blocks in the world once all content is registered.
@@ -20,6 +20,7 @@ pub trait Mod {
 pub trait Registrar {
     fn register_block(&mut self, def: BlockDef) -> Result<(), ApiError>;
     fn register_player(&mut self, def: PlayerDef) -> Result<(), ApiError>;
+    fn register_interaction(&mut self, def: InteractionDef) -> Result<(), ApiError>;
 }
 
 /// Edits the world by block name.

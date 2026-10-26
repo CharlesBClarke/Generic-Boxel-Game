@@ -2,7 +2,9 @@
 
 pub mod movement;
 
-use api::{ApiError, BlockDef, BoxelPos, I64Vec3, Mod, PlayerDef, Registrar, Vec3, WorldEdit, WorldPos};
+use api::{
+    ApiError, BlockDef, BoxelPos, I64Vec3, InteractionDef, Mod, PlayerDef, Registrar, Vec3, WorldEdit, WorldPos,
+};
 
 use crate::movement::QuakeController;
 
@@ -39,7 +41,9 @@ impl Mod for BaseMod {
             eye_height: 1.62,
             step_height: 0.0,
             controller: Box::new(QuakeController::default()),
-        })
+        })?;
+        // Minecraft-like for now: about Minecraft's survival reach, 4 edits a second held.
+        r.register_interaction(InteractionDef { reach: 4.5, repeat_rate: 4.0 })
     }
 
     fn build_world(&self, w: &mut dyn WorldEdit) -> Result<(), ApiError> {
