@@ -68,6 +68,10 @@ pub struct MoveOutput {
     /// always allows shrinking but only grows the body as far as there is room. On the ground
     /// the feet stay put; in the air the head does, so crouching mid-air lifts the feet.
     pub height: Option<f32>,
+    /// Keeps a body on the ground from walking off edges: the engine cuts horizontal movement
+    /// that would leave nothing solid under the feet within this many meters. `None` lets it
+    /// walk off anything. Jumps aren't affected.
+    pub edge_guard: Option<f32>,
 }
 
 /// Decides how one kind of body moves. One instance per body, so it can keep its own

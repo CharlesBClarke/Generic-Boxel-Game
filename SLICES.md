@@ -143,6 +143,20 @@ Shortcuts taken around the API, each with the toy that needed it. Paid down in s
 
 ### Done toys
 
+#### Edge guard (branch `toy-edge-guard`)
+
+**Stage:** Verify (built and tested; waiting for the user to try it before merging)
+
+**Goal:** Crouching keeps you from walking off edges, like Minecraft's sneaking. Picked up from Advanced movement's deferred list at the user's request (2026-10-25), while the WebAssembly seam was at the Plan stage on its own branch. The user approved the detour.
+
+*What was built*
+- `api`: `MoveOutput` gains `edge_guard: Option<f32>`, the biggest drop a body on the ground may walk off. `None` means no guard, so other controllers don't change.
+- `sim`: while it's set, the body is on the ground and it isn't jumping, horizontal movement is cut, one axis at a time, if it would leave nothing solid under the footprint within that drop. The body slides along edges instead of stopping dead. It may hang over the edge as long as part of the footprint is supported.
+- `base`: the Quake controller turns it on while crouched on the ground and not jumping. `edge_guard_drop` is tunable and defaults to 0.6 (Minecraft's value), which stops you at every boxel edge, steps included. Set it above 1 to crouch-walk down single steps.
+- Tests: stops at a cliff, slides along an edge, the drop limit, walking off without crouch, jumping off while crouched, and the controller only guarding while crouched on the ground. 131 tests pass; clippy is clean.
+
+*API debt:* none new. The WebAssembly seam has to carry `edge_guard` across the boundary along with the rest of `MoveOutput`.
+
 #### Advanced movement (branch `toy-advanced-movement`)
 
 **Stage:** Done (2026-10-25)

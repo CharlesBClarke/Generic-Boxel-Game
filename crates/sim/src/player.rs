@@ -233,6 +233,7 @@ impl Player {
             crouch: input.crouch && !self.flying,
         };
         let impulse = std::mem::take(&mut self.pending_impulse);
+        let mut edge_guard = None;
 
         if self.flying {
             let speed = if input.sprint { FLY_SPEED * FLY_SPRINT } else { FLY_SPEED };
@@ -251,10 +252,16 @@ impl Player {
             });
             self.velocity = out.velocity + out.impulse + impulse;
             self.resize(out.height.unwrap_or(self.shape.height), terrain);
+            edge_guard = out.edge_guard.filter(|_| self.on_ground && self.velocity.z <= 0.0);
         }
 
         let delta = self.velocity * dt;
-        let (moved, stepped) = self.sweep(delta, terrain);
+        let (mut moved, stepped) = self.sweep(delta, terrain);
+        if let Some(drop) = edge_guard
+            && stepped == 0.0
+        {
+            moved = self.guard_edges(moved, drop, terrain);
+        }
         let falling_speed = -self.velocity.z;
         for axis in 0..3 {
             if moved[axis] != delta[axis] {
@@ -311,6 +318,24 @@ impl Player {
     pub fn apply_push_out(&mut self, push: PushOut, strength: f32) {
         self.pos = self.pos.translate(push.shift);
         self.apply_impulse(push.direction * strength);
+    }
+
+    /// Cuts the horizontal parts of `moved` that would leave the body with nothing solid
+    /// under it within `drop`, keeping whichever axis still has support, so it slides along
+    /// edges instead of stopping dead.
+    fn guard_edges(&self, moved: Vec3, drop: f32, terrain: &impl Terrain) -> Vec3 {
+        let (min, max) = self.bounds();
+        let cell = self.pos.cell();
+        let reach = drop.max(0.0) + GROUND_PROBE;
+        let supported = |m: Vec3| clamp_axis(2, -reach, min + m, max + m, cell, terrain) > -reach;
+        if supported(moved) {
+            return moved;
+        }
+        let x_only = Vec3::new(moved.x, 0.0, moved.z);
+        let y_only = Vec3::new(0.0, moved.y, moved.z);
+        let mut options = [x_only, y_only];
+        options.sort_by(|a, b| b.truncate().length().total_cmp(&a.truncate().length()));
+        options.into_iter().find(|&m| supported(m)).unwrap_or(Vec3::new(0.0, 0.0, moved.z))
     }
 
     /// Changes height toward `want`. Shrinking always works. Growing goes only as far as there
@@ -466,7 +491,7 @@ mod tests {
     const DT: f32 = 1.0 / 60.0;
 
     /// A plain test controller: instant walking speed, constant gravity, jump while held,
-    /// crouch to 1 meter while held.
+    /// crouch to 1 meter while held, with an edge guard while crouched on the ground.
     #[derive(Clone)]
     struct Walker;
 
@@ -474,6 +499,7 @@ mod tests {
     const GRAVITY: f32 = 25.0;
     const JUMP: f32 = 7.9;
     const CROUCH: f32 = 1.0;
+    const GUARD_DROP: f32 = 0.6;
 
     impl Tunables for Walker {
         fn tunables(&self) -> Vec<Tunable> {
@@ -496,7 +522,13 @@ mod tests {
                 velocity.z = 0.0;
                 impulse.z = JUMP;
             }
-            MoveOutput { velocity, impulse, height: ctx.input.crouch.then_some(CROUCH) }
+            let crouched_on_ground = ctx.input.crouch && ctx.ground.is_some();
+            MoveOutput {
+                velocity,
+                impulse,
+                height: ctx.input.crouch.then_some(CROUCH),
+                edge_guard: crouched_on_ground.then_some(GUARD_DROP),
+            }
         }
     }
 
@@ -518,7 +550,7 @@ mod tests {
         }
         fn step(&mut self, ctx: &MoveContext) -> MoveOutput {
             *self.0.lock().unwrap() = ctx.ground.as_ref().map(|g| g.friction);
-            MoveOutput { velocity: ctx.velocity - Vec3::Z * GRAVITY * ctx.dt, impulse: Vec3::ZERO, height: None }
+            MoveOutput { velocity: ctx.velocity - Vec3::Z * GRAVITY * ctx.dt, ..Default::default() }
         }
     }
 
@@ -843,6 +875,80 @@ mod tests {
         let p = player(0.5, 0.5, 0.0);
         assert_eq!(p.push_out(block, 1.0, &shaft), None);
         assert_eq!(player(5.5, 5.5, 0.0).push_out(block, 1.0, &world(floor)), None, "not inside it");
+    }
+
+    /// A floor that ends at x = 3, dropping 5 boxels, with a one-boxel step down at y < 0.
+    fn cliff(p: BoxelPos) -> bool {
+        (p.0.x < 3 && (if p.0.y < 0 { p.0.z < -1 } else { p.0.z < 0 })) || p.0.z < -5
+    }
+
+    fn crouch_walk(yaw: f32) -> PlayerInput {
+        PlayerInput { movement: Vec2::Y, yaw, crouch: true, ..Default::default() }
+    }
+
+    fn right_edge(p: &Player) -> f32 {
+        p.pos().cell().x as f32 + p.pos().offset().x + 0.3
+    }
+
+    #[test]
+    fn crouching_stops_at_a_cliff_edge() {
+        let w = world(cliff);
+        let mut p = player(0.5, 0.5, 0.0);
+        run(&mut p, &PlayerInput::default(), 5, &w);
+        run(&mut p, &crouch_walk(0.0), 120, &w);
+        assert!(p.on_ground(), "still on the ledge");
+        assert_eq!(p.pos().cell().z, 0);
+        // The body may hang over the edge, but never past it with nothing underfoot.
+        let edge = right_edge(&p);
+        assert!(edge > 3.0 && edge < 3.6 + 1e-3, "right side at {edge}");
+        assert_eq!(p.velocity().x, 0.0, "stopped, not pushing");
+    }
+
+    #[test]
+    fn crouching_slides_along_an_edge() {
+        let w = world(cliff);
+        let mut p = player(2.5, 0.5, 0.0);
+        run(&mut p, &PlayerInput::default(), 5, &w);
+        // Walk diagonally into the edge: the x part is cut, the y part keeps going.
+        let start_y = p.pos().offset().y + p.pos().cell().y as f32;
+        run(&mut p, &crouch_walk(std::f32::consts::FRAC_PI_4), 60, &w);
+        let y = p.pos().offset().y + p.pos().cell().y as f32;
+        assert!(y - start_y > 1.5, "slid only {}", y - start_y);
+        assert_eq!(p.pos().cell().z, 0);
+    }
+
+    #[test]
+    fn the_guard_allows_drops_up_to_its_limit() {
+        // South of y = 0 the floor is one boxel lower. Standing at the step's edge, moving
+        // south: a 0.6 guard stops at the one-boxel drop, a 1.2 guard lets the body go.
+        let w = world(cliff);
+        let mut p = player(0.5, 0.31, 0.0);
+        p.on_ground = true;
+        let south = Vec3::new(0.0, -0.7, 0.0);
+        assert_eq!(p.guard_edges(south, 0.6, &w), Vec3::ZERO);
+        assert_eq!(p.guard_edges(south, 1.2, &w), south);
+        // Moving along the step is never cut.
+        assert_eq!(p.guard_edges(Vec3::new(0.3, 0.0, 0.0), 0.6, &w), Vec3::new(0.3, 0.0, 0.0));
+    }
+
+    #[test]
+    fn walking_without_crouch_goes_over_the_edge() {
+        let w = world(cliff);
+        let mut p = player(0.5, 0.5, 0.0);
+        run(&mut p, &PlayerInput::default(), 5, &w);
+        run(&mut p, &walk_east(), 120, &w);
+        assert!(p.pos().cell().z < 0, "should have fallen");
+    }
+
+    #[test]
+    fn jumping_off_while_crouched_still_works() {
+        let w = world(cliff);
+        let mut p = player(2.5, 0.5, 0.0);
+        run(&mut p, &PlayerInput::default(), 5, &w);
+        let jump = PlayerInput { jump_held: true, ..crouch_walk(0.0) };
+        run(&mut p, &jump, 1, &w);
+        run(&mut p, &crouch_walk(0.0), 120, &w);
+        assert!(p.pos().cell().x >= 3 && p.pos().cell().z < 0, "jumped off the cliff");
     }
 
     #[test]
