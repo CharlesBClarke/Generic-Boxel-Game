@@ -104,7 +104,17 @@ A run of small toy slices. Each one takes a single game-feel feature that doesn'
 
 ### Current toy
 
-None. Pick the next toy from the backlog, or a seam slice.
+**WebAssembly movement seam** (branch `seam-wasm-movement`)
+
+**Stage:** Plan (not started; agreed as the next step on 2026-10-25)
+
+**Goal:** Run `base`'s movement controller as WebAssembly, loaded by the engine, to prove the plain-Rust API really crosses the boundary. The rest of `base` stays native.
+
+*Why now:* the API debt list has three entries, and the movement controller is the richest mod behavior: it runs every tick and keeps state (timers, the charge).
+
+*To settle in the plan:* the runtime (wasmtime or wasmi); the interface (the component model with WIT, or a minimal hand-rolled one); how `Box<dyn MovementController>` and `spawn()` become instance handles; `Tunables` across the boundary so the panel still works; whether float results match inside and outside. Read the design doc's modding sections first.
+
+*Out of scope:* loading player-chosen mods from files, data mods, sandbox permissions, API versioning.
 
 ### Toy backlog
 
