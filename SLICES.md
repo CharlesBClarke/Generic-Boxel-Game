@@ -104,7 +104,42 @@ A run of small toy slices. Each one takes a single game-feel feature that doesn'
 
 ### Current toy
 
-None. Pick the next one from the backlog.
+**World interaction controls** (branch `toy-world-interaction`)
+
+**Stage:** Plan (proposal written, awaiting the user's approval and answers to the open questions)
+
+**Goal:** Breaking and placing with clear, predictable inputs that show what will happen before you press, fixing the "ambiguous interactions" gripe.
+
+**Proposed plan** (2026-10-25, not yet approved)
+
+*Principles*
+- One input, one action: break and place are separate inputs that never change meaning based on what you hold or look at. No catch-all "use" button.
+- What you see is what you get: an outline on the block that will break and a ghost block where the new one will go. If the action isn't allowed (out of reach, or overlapping your body), the ghost turns red and pressing does nothing.
+
+*Engine (`sim`)*
+- Boxel raycast (DDA) returning the hit cell and face. Gameplay, so it lives in the simulation.
+- Edits are intents validated at the tick: the client sends the cell it previewed; the simulation re-checks reach, emptiness and body overlap, then applies the edit at the tick boundary. Keeps the preview honest, and it's the shape a server needs later.
+- Changed chunks are tracked for remeshing. `PlayerInput` gains pitch.
+
+*API and base*
+- `InteractionDef` registered by `base` like `PlayerDef`: reach, hold-to-repeat rate, break time. Exposed through `Tunables`.
+- `BlockDef` gains `placeable`.
+
+*Client*
+- Block outline and ghost preview from the same raycast.
+- Remesh only changed chunks, plus neighbors for border edits.
+- Creative-style block palette (number keys or scroll wheel) shown in the HUD, since there's no inventory yet.
+- Break on left click, place on right click; rebindable. Add the new actions to the user's controls file (see `CLAUDE.local.md`).
+
+*Tests:* raycast (hits, faces, reach, negative and far coordinates), edit validation (not inside the player, not into a filled cell, not out of reach), chunk change tracking including border neighbors, remesh after an edit, and a break-then-place integration test.
+
+*API debt:* none new expected; break and place join the fixed input actions entry.
+
+*Open questions for the user*
+1. Breaking instant or hold to mine? Proposal: instant, with a tunable break time defaulting to 0 so timed breaking (a drill fits the robot theme) can be tried without a rebuild.
+2. Hold-to-repeat breaking and placing (Minecraft is about 4 per second), tunable?
+3. Placing into your own body is refused for now, since block-jumping is deferred to Advanced movement. Agree?
+4. Out of scope: inventory or items, tools, drops, particles, sound. Feedback is the preview plus maybe a quick flash on the changed block.
 
 ### Toy backlog
 
@@ -112,8 +147,7 @@ None. Pick the next one from the backlog.
   - *Half-Life tuck:* crouching in the air lifts the feet, so jump-then-crouch clears a higher ledge.
   - *Charged jump:* holding crouch on the ground builds a spring charge, so jumping from a crouch goes higher. Fits the robot feel.
   - Sketch: `MoveInput` gains `crouch`; the controller returns the body height it wants. Engine rule: shrinking is always allowed, growing needs headroom; on the ground the feet stay put, in the air the head stays put (that's what makes the tuck work). Crouch-walk speed, charge time and charged height are tunables in `base`.
-- **World interaction controls.** Breaking and placing with clear, predictable inputs that show what will happen before you press, fixing the "ambiguous interactions" gripe.
-  - *Idea: block-jumping.* Placing a block into your own feet launches you. Build it as a general engine rule, not a special case: a solid appearing inside a body pushes it out with an impulse along block center → body, with tunable strength and upward bias. Standing on the far edge of the cell tilts the push forward, so looking down and timing placements becomes fast-movement tech. The same rule later lets pistons shove players.
+  - *Block-jumping* (moved here from World interaction controls, 2026-10-25; needs block placing, which that toy adds). Placing a block into your own feet launches you. Build it as a general engine rule, not a special case: a solid appearing inside a body pushes it out with an impulse along block center → body, with tunable strength and upward bias. Standing on the far edge of the cell tilts the push forward, so looking down and timing placements becomes fast-movement tech. The same rule later lets pistons shove players.
 - **Block interactions.** Unstable crystals: two block types, a touch trigger, a directional blast, and a way to push blocks so devices are possible.
 - **Generative crafting.** A few materials, a few property ingredients and a capacity limit.
 - **Combat feel.** Weighty hits and aggressive, Doom-style combat.
