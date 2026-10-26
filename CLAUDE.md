@@ -15,13 +15,13 @@ We work one vertical slice at a time. Each slice goes through these stages in or
 4. **Verify.** Check the slice's "Done when" criteria one by one. Run the game when the slice is visual or interactive, and have the user try it. Report each criterion as met or not met.
 5. **Close.** Update `SLICES.md` (mark the slice done, record decisions, anything deferred and any new API debt), update the design doc if a decision changed, and offer to commit.
 
-### The go word
+### The go word: "engage"
 
-Don't start writing code or changing project files until the user says **"go"**. Approving a plan, answering a question or agreeing with an idea is not a go. After proposing something, stop and wait.
+Don't start writing code or changing project files until the user says **"engage"**. Only that word counts; a casual "go ahead" in conversation does not. Approving a plan, answering a question or agreeing with an idea is not an engage. After proposing something, stop and wait.
 
-- A go covers the work that was just agreed, such as implementing an approved plan or making a requested change. Once going, keep going without checking in, unless something is needed from the user or the plan turns out wrong.
+- "Engage" covers the work that was just agreed, such as implementing an approved plan or making a requested change. Once going, keep going without checking in, unless something is needed from the user or the plan turns out wrong.
 - Discussion and questions never start work. Answer them and stop.
-- Without a go, the only file changes allowed are keeping the stage marker in `SLICES.md` current and writing down something the user explicitly asked to have recorded.
+- Without an engage, the only file changes allowed are keeping the stage marker in `SLICES.md` current and writing down something the user explicitly asked to have recorded.
 
 ### Git
 
