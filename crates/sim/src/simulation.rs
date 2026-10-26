@@ -3,12 +3,12 @@
 use std::fmt;
 
 use api::{
-    ApiError, BlockDef, BoxelPos, ChunkPos, InteractionDef, Mod, PlayerDef, Registrar, Vec3, WorldEdit, WorldPos,
-    look_direction,
+    ApiError, BlockDef, BoxelPos, ChunkPos, InteractionDef, Mod, PlayerDef, PushOutDef, Registrar, Vec3, WorldEdit,
+    WorldPos, look_direction,
 };
 
 use crate::edit::{ChangedChunks, Repeater};
-use crate::player::Terrain;
+use crate::player::{PushOut, Terrain};
 use crate::{BlockId, BlockRegistry, Grid, Hit, Player, PlayerInput, Universe, raycast};
 
 #[derive(Debug, PartialEq)]
@@ -40,6 +40,7 @@ pub struct Simulation {
     blocks: BlockRegistry,
     player_def: Option<PlayerDef>,
     interaction_def: Option<InteractionDef>,
+    push_out_def: Option<PushOutDef>,
     universe: Universe,
     spawn: WorldPos,
     waypoints: Vec<(String, WorldPos)>,
@@ -69,6 +70,7 @@ impl Simulation {
                 blocks: &mut sim.blocks,
                 player: &mut sim.player_def,
                 interaction: &mut sim.interaction_def,
+                push_out: &mut sim.push_out_def,
             })?;
         }
         for m in mods {
@@ -112,13 +114,29 @@ impl Simulation {
     }
 
     /// Where `block` would go if placed on `hit`'s face, or `None` if that isn't allowed: the
-    /// block isn't placeable, the hit has no face, the cell is filled or the player is in it.
+    /// block isn't placeable, the hit has no face, or the cell is filled. A solid block inside
+    /// the player is only allowed if a push-out rule is registered and there's room to push
+    /// the player out.
     pub fn placement(&self, hit: &Hit, block: BlockId) -> Option<BoxelPos> {
         let placeable = self.blocks.get(block).is_some_and(|def| def.placeable);
         let pos = hit.adjacent();
         let free = hit.normal != api::I64Vec3::ZERO && self.universe.main().block(pos).is_empty();
-        let clear_of_player = self.player.as_ref().is_none_or(|p| !p.overlaps(pos));
-        (placeable && free && clear_of_player).then_some(pos)
+        if !(placeable && free) {
+            return None;
+        }
+        match &self.player {
+            Some(player) if self.blocks.is_solid(block) && player.overlaps(pos) => {
+                self.push_out(player, pos).map(|_| pos)
+            }
+            _ => Some(pos),
+        }
+    }
+
+    /// How the player would get out of a solid block at `pos`, if there's a rule and room.
+    fn push_out(&self, player: &Player, pos: BoxelPos) -> Option<PushOut> {
+        let def = self.push_out_def.as_ref()?;
+        let terrain = WithSolid { inner: GridTerrain { grid: self.universe.main(), blocks: &self.blocks }, pos };
+        player.push_out(pos, def.upward_bias, &terrain)
     }
 
     /// Chunks whose blocks changed since the last call, including neighbors whose border faces
@@ -150,9 +168,20 @@ impl Simulation {
         }
     }
 
+    /// Sets a block. A solid block appearing inside the player pushes it out, if there's a
+    /// rule and room.
     fn set_block(&mut self, pos: BoxelPos, id: BlockId) {
+        let push = match (&self.player, &self.push_out_def) {
+            (Some(player), Some(def)) if self.blocks.is_solid(id) => {
+                self.push_out(player, pos).map(|push| (push, def.strength))
+            }
+            _ => None,
+        };
         self.universe.main_mut().set_block(pos, id);
         self.changed.mark(pos);
+        if let (Some((push, strength)), Some(player)) = (push, &mut self.player) {
+            player.apply_push_out(push, strength);
+        }
     }
 
     pub fn teleport_player(&mut self, pos: WorldPos) {
@@ -183,6 +212,15 @@ impl Simulation {
     /// For engine tools such as the tuning panel.
     pub fn interaction_def_mut(&mut self) -> Option<&mut InteractionDef> {
         self.interaction_def.as_mut()
+    }
+
+    pub fn push_out_def(&self) -> Option<&PushOutDef> {
+        self.push_out_def.as_ref()
+    }
+
+    /// For engine tools such as the tuning panel.
+    pub fn push_out_def_mut(&mut self) -> Option<&mut PushOutDef> {
+        self.push_out_def.as_mut()
     }
 
     pub fn universe(&self) -> &Universe {
@@ -227,10 +265,27 @@ impl Terrain for GridTerrain<'_> {
     }
 }
 
+/// Terrain with one extra solid boxel, for checking a block that hasn't been placed yet.
+struct WithSolid<T> {
+    inner: T,
+    pos: BoxelPos,
+}
+
+impl<T: Terrain> Terrain for WithSolid<T> {
+    fn solid(&self, pos: BoxelPos) -> bool {
+        pos == self.pos || self.inner.solid(pos)
+    }
+
+    fn friction(&self, pos: BoxelPos) -> f32 {
+        self.inner.friction(pos)
+    }
+}
+
 struct ContentRegistrar<'a> {
     blocks: &'a mut BlockRegistry,
     player: &'a mut Option<PlayerDef>,
     interaction: &'a mut Option<InteractionDef>,
+    push_out: &'a mut Option<PushOutDef>,
 }
 
 impl Registrar for ContentRegistrar<'_> {
@@ -253,6 +308,15 @@ impl Registrar for ContentRegistrar<'_> {
         }
         def.validate().map_err(ApiError::InvalidDef)?;
         *self.interaction = Some(def);
+        Ok(())
+    }
+
+    fn register_push_out(&mut self, def: PushOutDef) -> Result<(), ApiError> {
+        if self.push_out.is_some() {
+            return Err(ApiError::DuplicatePushOutDef);
+        }
+        def.validate().map_err(ApiError::InvalidDef)?;
+        *self.push_out = Some(def);
         Ok(())
     }
 }

@@ -17,6 +17,8 @@ const GROUND_PROBE: f32 = 0.01;
 /// Debug fly speed, meters per second, and the multiplier while sprinting.
 const FLY_SPEED: f32 = 12.0;
 const FLY_SPRINT: f32 = 3.0;
+/// The shortest a body can get, whatever its controller asks for.
+const MIN_HEIGHT: f32 = 0.2;
 
 /// What the body collides with and stands on.
 pub trait Terrain {
@@ -40,6 +42,8 @@ pub struct PlayerInput {
     pub jump_pressed: bool,
     pub jump_held: bool,
     pub sprint: bool,
+    /// The crouch key is down. Ignored while flying.
+    pub crouch: bool,
     /// Switches fly mode on or off this tick.
     pub toggle_fly: bool,
     /// The break button went down since the last tick.
@@ -52,7 +56,16 @@ pub struct PlayerInput {
     pub place_block: BlockId,
 }
 
-/// The body's collision shape.
+/// How a body gets out of a block that appeared inside it.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct PushOut {
+    /// The move that clears the block.
+    pub shift: Vec3,
+    /// Unit direction of the launch.
+    pub direction: Vec3,
+}
+
+/// The body's collision shape, standing.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Shape {
     pub width: f32,
@@ -66,6 +79,8 @@ pub struct Player {
     controller: Box<dyn MovementController>,
     pos: WorldPos,
     prev_pos: WorldPos,
+    /// Current height; below the shape's while crouched.
+    height: f32,
     velocity: Vec3,
     pending_impulse: Vec3,
     on_ground: bool,
@@ -73,6 +88,7 @@ pub struct Player {
     landings: u32,
     last_landing_speed: f32,
     stepped_total: f64,
+    crouch_shift_total: f64,
 }
 
 impl Player {
@@ -93,6 +109,7 @@ impl Player {
             controller,
             pos,
             prev_pos: pos,
+            height: shape.height,
             velocity: Vec3::ZERO,
             pending_impulse: Vec3::ZERO,
             on_ground: false,
@@ -100,6 +117,7 @@ impl Player {
             landings: 0,
             last_landing_speed: 0.0,
             stepped_total: 0.0,
+            crouch_shift_total: 0.0,
         }
     }
 
@@ -123,6 +141,17 @@ impl Player {
     /// Feet position before the latest tick, for interpolating between ticks.
     pub fn prev_pos(&self) -> WorldPos {
         self.prev_pos
+    }
+
+    /// Current height of the collision box.
+    pub fn height(&self) -> f32 {
+        self.height
+    }
+
+    /// Current camera height above the feet. The eyes stay the same distance below the top of
+    /// the head at any height.
+    pub fn eye_height(&self) -> f32 {
+        (self.height - (self.shape.height - self.shape.eye_height)).max(MIN_HEIGHT * 0.5)
     }
 
     pub fn velocity(&self) -> Vec3 {
@@ -154,9 +183,16 @@ impl Player {
         self.stepped_total
     }
 
+    /// Total distance the eyes have jumped from height changes: down when crouching on the
+    /// ground, nothing for a mid-air tuck, where the head stays put. Lets a renderer ease
+    /// changes it didn't see the tick of.
+    pub fn crouch_shift_total(&self) -> f64 {
+        self.crouch_shift_total
+    }
+
     /// Where the eyes are, without any camera effects.
     pub fn eye(&self) -> WorldPos {
-        self.pos.translate(Vec3::new(0.0, 0.0, self.shape.eye_height))
+        self.pos.translate(Vec3::new(0.0, 0.0, self.eye_height()))
     }
 
     /// Whether the collision box overlaps the boxel at `pos`. Touching faces don't count.
@@ -194,6 +230,7 @@ impl Player {
             jump_pressed: input.jump_pressed,
             jump_held: input.jump_held,
             sprint: input.sprint,
+            crouch: input.crouch && !self.flying,
         };
         let impulse = std::mem::take(&mut self.pending_impulse);
 
@@ -201,15 +238,19 @@ impl Player {
             let speed = if input.sprint { FLY_SPEED * FLY_SPRINT } else { FLY_SPEED };
             let vertical = Vec3::Z * input.vertical.clamp(-1.0, 1.0);
             self.velocity = (move_input.wish_direction() + vertical) * speed;
+            self.resize(self.shape.height, terrain);
         } else {
             let ground = self.on_ground.then(|| Ground { friction: self.ground_friction(terrain) });
             let out = self.controller.step(&MoveContext {
                 dt,
                 velocity: self.velocity,
+                height: self.height,
+                standing_height: self.shape.height,
                 input: move_input,
                 ground,
             });
             self.velocity = out.velocity + out.impulse + impulse;
+            self.resize(out.height.unwrap_or(self.shape.height), terrain);
         }
 
         let delta = self.velocity * dt;
@@ -231,11 +272,86 @@ impl Player {
         }
     }
 
+    /// How to get out of the boxel at `block`, which `terrain` already counts as solid, or
+    /// `None` if there's no room. The launch points from the block's center to the body's,
+    /// leaned upward by `upward_bias`. The body moves out along the launch's strongest axis if
+    /// there's room that way, otherwise whichever way is shortest.
+    pub fn push_out(&self, block: BoxelPos, upward_bias: f32, terrain: &impl Terrain) -> Option<PushOut> {
+        if !self.overlaps(block) {
+            return None;
+        }
+        let (min, max) = self.bounds();
+        let cell = self.pos.cell();
+        let block_min = (block.0 - cell).as_vec3();
+        let block_max = block_min + Vec3::ONE;
+        let away = ((min + max) * 0.5 - (block_min + Vec3::splat(0.5))).normalize_or_zero();
+        let direction = (away + Vec3::Z * upward_bias).normalize_or(Vec3::Z);
+
+        let mut moves: Vec<Vec3> = (0..3)
+            .flat_map(|axis| {
+                let mut up = Vec3::ZERO;
+                let mut down = Vec3::ZERO;
+                up[axis] = block_max[axis] - min[axis];
+                down[axis] = block_min[axis] - max[axis];
+                [up, down]
+            })
+            .collect();
+        let strongest = direction.abs().max_position();
+        moves.sort_by(|a, b| {
+            let along = |m: &Vec3| m[strongest] != 0.0 && m[strongest].signum() == direction[strongest].signum();
+            along(b).cmp(&along(a)).then(a.length().total_cmp(&b.length()))
+        });
+        moves
+            .into_iter()
+            .find(|&shift| box_clear(min + shift, max + shift, cell, terrain))
+            .map(|shift| PushOut { shift, direction })
+    }
+
+    /// Moves the body out of a block and launches it at `strength` meters per second.
+    pub fn apply_push_out(&mut self, push: PushOut, strength: f32) {
+        self.pos = self.pos.translate(push.shift);
+        self.apply_impulse(push.direction * strength);
+    }
+
+    /// Changes height toward `want`. Shrinking always works. Growing goes only as far as there
+    /// is room: on the ground upward, keeping the feet put; in the air downward first, keeping
+    /// the head put, then upward if the feet hit something. Height changes are instant, so they
+    /// move the previous position too and aren't interpolated as motion.
+    fn resize(&mut self, want: f32, terrain: &impl Terrain) {
+        let want = want.clamp(MIN_HEIGHT, self.shape.height);
+        let eye_before = self.eye_height();
+        let mut feet = 0.0;
+        if want < self.height {
+            if !self.on_ground {
+                feet = self.height - want;
+            }
+            self.height = want;
+        } else if want > self.height {
+            let mut grow = want - self.height;
+            if !self.on_ground {
+                let (min, max) = self.bounds();
+                feet = clamp_axis(2, -grow, min, max, self.pos.cell(), terrain);
+                self.height -= feet;
+                grow += feet;
+            }
+            if grow > 0.0 {
+                let (min, max) = self.bounds();
+                let (min, max) = (min + Vec3::Z * feet, max + Vec3::Z * feet);
+                self.height += clamp_axis(2, grow, min, max, self.pos.cell(), terrain).max(0.0);
+            }
+        }
+        if feet != 0.0 {
+            self.pos = self.pos.translate(Vec3::Z * feet);
+            self.prev_pos = self.prev_pos.translate(Vec3::Z * feet);
+        }
+        self.crouch_shift_total += (feet + self.eye_height() - eye_before) as f64;
+    }
+
     /// The collision box relative to the player's cell.
     fn bounds(&self) -> (Vec3, Vec3) {
         let half = self.shape.width * 0.5;
         let offset = self.pos.offset();
-        (offset - Vec3::new(half, half, 0.0), offset + Vec3::new(half, half, self.shape.height))
+        (offset - Vec3::new(half, half, 0.0), offset + Vec3::new(half, half, self.height))
     }
 
     fn touching_ground(&self, terrain: &impl Terrain) -> bool {
@@ -303,10 +419,21 @@ fn sweep_box(mut min: Vec3, mut max: Vec3, delta: Vec3, cell: I64Vec3, terrain: 
     moved
 }
 
+/// The boxels a span from `lo` to `hi` touches, ignoring faces it only touches.
+fn span(lo: f32, hi: f32) -> std::ops::RangeInclusive<i64> {
+    (lo + EPS).floor() as i64..=(hi - EPS).floor() as i64
+}
+
+/// Whether a box from `min` to `max` (relative to `cell`) is free of solid boxels.
+fn box_clear(min: Vec3, max: Vec3, cell: I64Vec3, terrain: &impl Terrain) -> bool {
+    span(min.z, max.z).all(|z| {
+        span(min.y, max.y).all(|y| span(min.x, max.x).all(|x| !terrain.solid(BoxelPos(cell + I64Vec3::new(x, y, z)))))
+    })
+}
+
 /// How far a box from `min` to `max` (relative to `cell`) can move by `d` along `axis`.
 fn clamp_axis(axis: usize, d: f32, min: Vec3, max: Vec3, cell: I64Vec3, terrain: &impl Terrain) -> f32 {
     let (a, b) = ((axis + 1) % 3, (axis + 2) % 3);
-    let span = |lo: f32, hi: f32| (lo + EPS).floor() as i64..=(hi - EPS).floor() as i64;
     let blocked = |i: i64| {
         span(min[a], max[a]).any(|j| {
             span(min[b], max[b]).any(|k| {
@@ -338,13 +465,15 @@ mod tests {
 
     const DT: f32 = 1.0 / 60.0;
 
-    /// A plain test controller: instant walking speed, constant gravity, jump while held.
+    /// A plain test controller: instant walking speed, constant gravity, jump while held,
+    /// crouch to 1 meter while held.
     #[derive(Clone)]
     struct Walker;
 
     const WALK: f32 = 4.0;
     const GRAVITY: f32 = 25.0;
     const JUMP: f32 = 7.9;
+    const CROUCH: f32 = 1.0;
 
     impl Tunables for Walker {
         fn tunables(&self) -> Vec<Tunable> {
@@ -367,7 +496,7 @@ mod tests {
                 velocity.z = 0.0;
                 impulse.z = JUMP;
             }
-            MoveOutput { velocity, impulse }
+            MoveOutput { velocity, impulse, height: ctx.input.crouch.then_some(CROUCH) }
         }
     }
 
@@ -389,7 +518,7 @@ mod tests {
         }
         fn step(&mut self, ctx: &MoveContext) -> MoveOutput {
             *self.0.lock().unwrap() = ctx.ground.as_ref().map(|g| g.friction);
-            MoveOutput { velocity: ctx.velocity - Vec3::Z * GRAVITY * ctx.dt, impulse: Vec3::ZERO }
+            MoveOutput { velocity: ctx.velocity - Vec3::Z * GRAVITY * ctx.dt, impulse: Vec3::ZERO, height: None }
         }
     }
 
@@ -596,6 +725,124 @@ mod tests {
         run(&mut p, &PlayerInput { vertical: -1.0, ..Default::default() }, 60, &w);
         assert_eq!(p.pos().cell().z, 0);
         assert!(p.pos().offset().z.abs() < 1e-3);
+    }
+
+    fn crouch() -> PlayerInput {
+        PlayerInput { crouch: true, ..Default::default() }
+    }
+
+    fn head(p: &Player) -> f32 {
+        height(p) + p.height()
+    }
+
+    #[test]
+    fn crouching_on_the_ground_lowers_the_head_and_keeps_the_feet() {
+        let w = world(floor);
+        let mut p = player(0.5, 0.5, 0.0);
+        run(&mut p, &PlayerInput::default(), 5, &w);
+        run(&mut p, &crouch(), 1, &w);
+        assert_eq!(p.height(), CROUCH);
+        assert!(height(&p).abs() < 1e-4, "feet moved to {}", height(&p));
+        assert!((p.eye_height() - 0.82).abs() < 1e-5, "eyes keep their distance below the head");
+        assert!((p.crouch_shift_total() + 0.8).abs() < 1e-5, "the eyes dropped 0.8");
+        assert_eq!(p.prev_pos(), p.pos(), "height changes aren't interpolated as motion");
+
+        run(&mut p, &PlayerInput::default(), 1, &w);
+        assert_eq!(p.height(), 1.8, "stands back up with room");
+        assert!(p.crouch_shift_total().abs() < 1e-5);
+    }
+
+    #[test]
+    fn cannot_stand_up_under_a_low_ceiling() {
+        let open = world(floor);
+        let low = world(|p| floor(p) || p.0.z == 1);
+        let mut p = player(0.5, 0.5, 0.0);
+        run(&mut p, &PlayerInput::default(), 5, &open);
+        run(&mut p, &crouch(), 1, &open);
+        // A ceiling exactly one boxel up: the crouched body just fits.
+        run(&mut p, &PlayerInput::default(), 10, &low);
+        assert!((p.height() - CROUCH).abs() < 1e-3, "stood up to {} through the ceiling", p.height());
+        assert!(height(&p).abs() < 1e-4, "feet stay on the floor");
+
+        // A ceiling 1.5 up lets it stand partway.
+        let mid = world(|p| floor(p) || p.0.z >= 2);
+        run(&mut p, &PlayerInput::default(), 1, &mid);
+        assert!((p.height() - 1.8).abs() < 1e-3);
+    }
+
+    #[test]
+    fn tucking_in_the_air_lifts_the_feet_and_keeps_the_head() {
+        let w = world(floor);
+        let mut p = player(0.5, 0.5, 0.0);
+        run(&mut p, &PlayerInput::default(), 5, &w);
+        run(&mut p, &PlayerInput { jump_held: true, ..Default::default() }, 1, &w);
+        run(&mut p, &PlayerInput::default(), 3, &w);
+        assert!(!p.on_ground());
+        let (feet, top) = (height(&p), head(&p));
+        let shift = p.crouch_shift_total();
+        // The tuck happens before this tick's motion, so compare against the motion alone.
+        let velocity = p.velocity().z - GRAVITY * DT;
+        p.step(&crouch(), DT, &w);
+        let moved = velocity * DT;
+        assert!((height(&p) - (feet + 0.8 + moved)).abs() < 1e-4, "feet should rise 0.8");
+        assert!((head(&p) - (top + moved)).abs() < 1e-4, "head should stay put");
+        assert!((p.crouch_shift_total() - shift).abs() < 1e-5, "the eyes don't jump");
+    }
+
+    #[test]
+    fn standing_up_in_the_air_reaches_down_then_up() {
+        // Tucked just above the floor: standing extends the feet to the floor, then the head up.
+        let w = world(floor);
+        let mut p = player(0.5, 0.5, 0.3);
+        p.height = CROUCH;
+        p.resize(1.8, &w);
+        assert!(height(&p).abs() < 1e-4, "feet reach the floor, at {}", height(&p));
+        assert!((p.height() - 1.8).abs() < 1e-4);
+        assert!((head(&p) - 1.8).abs() < 1e-4, "the rest of the growth went up");
+    }
+
+    #[test]
+    fn a_block_at_the_feet_lifts_the_body_onto_it() {
+        let block = BoxelPos::new(0, 0, 0);
+        let w = world(move |p| floor(p) || p == block);
+        let mut p = player(0.5, 0.5, 0.0);
+        p.on_ground = true;
+        let push = p.push_out(block, 1.0, &w).expect("room above");
+        assert!((push.shift - Vec3::Z).length() < 1e-5, "shift {}", push.shift);
+        assert!((push.direction - Vec3::Z).length() < 1e-5, "straight up from the middle");
+        p.apply_push_out(push, 6.0);
+        p.step(&PlayerInput::default(), DT, &w);
+        assert_eq!(p.pos().cell().z, 1);
+        assert!(p.velocity().z > 5.0, "launched at {}", p.velocity().z);
+    }
+
+    #[test]
+    fn the_far_edge_of_the_cell_tilts_the_launch() {
+        let block = BoxelPos::new(0, 0, 0);
+        let w = world(move |p| floor(p) || p == block);
+        let p = player(0.85, 0.5, 0.0);
+        let push = p.push_out(block, 1.0, &w).unwrap();
+        assert!((push.shift - Vec3::Z).length() < 1e-5, "still lifted onto the block");
+        assert!(push.direction.x > 0.3, "tilted toward the far edge: {}", push.direction);
+        assert_eq!(push.direction.y, 0.0);
+        let centered = player(0.5, 0.5, 0.0).push_out(block, 1.0, &w).unwrap();
+        assert!(push.direction.z < centered.direction.z);
+    }
+
+    #[test]
+    fn push_out_goes_sideways_without_headroom_and_fails_without_room() {
+        let block = BoxelPos::new(0, 0, 0);
+        // Room for only 2 boxels of height: lifting onto the block would hit the ceiling.
+        let low = world(move |p| floor(p) || p == block || p.0.z >= 2);
+        let p = player(0.85, 0.5, 0.0);
+        let push = p.push_out(block, 1.0, &low).expect("room to the side");
+        assert!((push.shift - Vec3::new(0.45, 0.0, 0.0)).length() < 1e-4, "shift {}", push.shift);
+
+        // A one-boxel shaft two high: nowhere to go.
+        let shaft = world(move |p| floor(p) || p == block || p.0.z >= 2 || (p.0.z >= 0 && p.0 != I64Vec3::new(0, 0, p.0.z)));
+        let p = player(0.5, 0.5, 0.0);
+        assert_eq!(p.push_out(block, 1.0, &shaft), None);
+        assert_eq!(player(5.5, 5.5, 0.0).push_out(block, 1.0, &world(floor)), None, "not inside it");
     }
 
     #[test]

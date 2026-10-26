@@ -1,11 +1,12 @@
 //! The live tuning panel: sliders for every value the player's movement controller, the
-//! interaction definition and the camera feel expose, whichever mod they come from.
+//! interaction and push-out definitions and the camera feel expose, whichever mod they come from.
 
 use api::{Tunable, Tunables};
 use bevy::prelude::*;
 use bevy_egui::{EguiContexts, egui};
 
 use crate::Sim;
+use crate::drill::{Drill, DrillTuning};
 use crate::feel::CameraFeel;
 
 #[derive(Resource, Default)]
@@ -15,6 +16,8 @@ pub struct TuningPanel {
     movement_defaults: Option<Vec<Tunable>>,
     /// The interaction definition when the game started, for reset.
     interaction_defaults: Option<Vec<Tunable>>,
+    /// The push-out definition when the game started, for reset.
+    push_out_defaults: Option<Vec<Tunable>>,
     /// The last printout, shown in the panel so it can be copied.
     printout: String,
 }
@@ -24,11 +27,16 @@ pub fn tuning_panel(
     mut panel: ResMut<TuningPanel>,
     mut sim: ResMut<Sim>,
     mut feel: ResMut<CameraFeel>,
+    mut drill: ResMut<Drill>,
 ) -> Result {
     // A copy, since the controller below borrows the simulation; written back at the end.
     let mut interaction = sim.0.interaction_def().cloned();
     if panel.interaction_defaults.is_none() {
         panel.interaction_defaults = interaction.as_ref().map(|i| i.tunables());
+    }
+    let mut push_out = sim.0.push_out_def().cloned();
+    if panel.push_out_defaults.is_none() {
+        panel.push_out_defaults = push_out.as_ref().map(|p| p.tunables());
     }
     let Some(player) = sim.0.player_mut() else {
         return Ok(());
@@ -52,6 +60,11 @@ pub fn tuning_panel(
                 ui.heading("Interaction");
                 sliders(ui, "interaction", interaction);
             }
+            if let Some(push_out) = &mut push_out {
+                ui.separator();
+                ui.heading("Push-out");
+                sliders(ui, "push_out", push_out);
+            }
             ui.separator();
             ui.heading("Camera");
             // Read through a copy so the resource is only marked changed when a value moves.
@@ -60,6 +73,9 @@ pub fn tuning_panel(
             if camera != *feel {
                 *feel = camera;
             }
+            ui.separator();
+            ui.heading("Chase drill");
+            sliders(ui, "drill", &mut drill.tuning);
         });
         ui.separator();
         ui.horizontal(|ui| {
@@ -72,7 +88,13 @@ pub fn tuning_panel(
                         interaction.set_tunable(&t.name, t.value);
                     }
                 }
+                if let Some(push_out) = &mut push_out {
+                    for t in panel.push_out_defaults.iter().flatten() {
+                        push_out.set_tunable(&t.name, t.value);
+                    }
+                }
                 *feel = CameraFeel::default();
+                drill.tuning = DrillTuning::default();
             }
             print = ui.button("Print values").clicked();
         });
@@ -90,12 +112,23 @@ pub fn tuning_panel(
             out += "// interaction\n";
             out += &printout(&interaction.tunables());
         }
+        if let Some(push_out) = &push_out {
+            out += "// push-out\n";
+            out += &printout(&push_out.tunables());
+        }
         out += "// camera\n";
         out += &printout(&feel.tunables());
+        out += "// chase drill\n";
+        out += &printout(&drill.tuning.tunables());
         info!("tuned values:\n{out}");
         panel.printout = out;
     }
     if let (Some(edited), Some(def)) = (interaction, sim.0.interaction_def_mut())
+        && edited != *def
+    {
+        *def = edited;
+    }
+    if let (Some(edited), Some(def)) = (push_out, sim.0.push_out_def_mut())
         && edited != *def
     {
         *def = edited;

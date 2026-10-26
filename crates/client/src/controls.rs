@@ -7,7 +7,11 @@
 //! ```text
 //! forward = KeyW
 //! fly = KeyQ
+//! double_tap_window = 0.3
 //! ```
+//!
+//! `double_tap_window` is the one setting that takes a number: seconds between two taps of
+//! forward that start sprinting, or 0 to turn double-tap sprint off.
 //!
 //! Keys use Bevy's physical key names, which are QWERTY positions: `KeyW` is whichever key
 //! sends the W scancode. Break and place also take mouse buttons: `MouseLeft`, `MouseRight`,
@@ -25,6 +29,8 @@ pub struct Controls {
     pub right: KeyCode,
     pub jump: KeyCode,
     pub sprint: KeyCode,
+    /// Crouch. Shares left Shift with fly-down by default; flying ignores crouch.
+    pub crouch: KeyCode,
     /// Fly mode: down. Fly up shares the jump key.
     pub down: KeyCode,
     pub fly: KeyCode,
@@ -32,6 +38,11 @@ pub struct Controls {
     pub frame_cap: KeyCode,
     /// Opens the live tuning panel.
     pub tuning: KeyCode,
+    /// Starts and stops the chase drill.
+    pub drill: KeyCode,
+    /// Tapping forward twice within this many seconds sprints until forward is released.
+    /// 0 turns it off. The sprint key works either way.
+    pub double_tap_window: f32,
     pub break_block: Binding,
     pub place_block: Binding,
     /// Picks a block from the palette, first to ninth. The scroll wheel also cycles it.
@@ -81,11 +92,14 @@ impl Default for Controls {
             right: KeyCode::KeyD,
             jump: KeyCode::Space,
             sprint: KeyCode::ControlLeft,
+            crouch: KeyCode::ShiftLeft,
             down: KeyCode::ShiftLeft,
             fly: KeyCode::KeyF,
             teleport: KeyCode::KeyT,
             frame_cap: KeyCode::F3,
             tuning: KeyCode::Tab,
+            drill: KeyCode::F4,
+            double_tap_window: 0.3,
             break_block: Binding::Mouse(MouseButton::Left),
             place_block: Binding::Mouse(MouseButton::Right),
             slots: [
@@ -134,6 +148,13 @@ impl Controls {
                 continue;
             };
             let (action, key) = (action.trim(), key.trim());
+            if action == "double_tap_window" {
+                match key.parse::<f32>() {
+                    Ok(seconds) if seconds.is_finite() && seconds >= 0.0 => self.double_tap_window = seconds,
+                    _ => problems.push(format!("line {}: expected seconds, at least 0, got {key:?}", number + 1)),
+                }
+                continue;
+            }
             let Some(binding) = parse_binding(key) else {
                 problems.push(format!("line {}: unknown key {key:?}", number + 1));
                 continue;
@@ -165,11 +186,13 @@ impl Controls {
                 "right" => &mut self.right,
                 "jump" => &mut self.jump,
                 "sprint" => &mut self.sprint,
+                "crouch" => &mut self.crouch,
                 "down" => &mut self.down,
                 "fly" => &mut self.fly,
                 "teleport" => &mut self.teleport,
                 "frame_cap" => &mut self.frame_cap,
                 "tuning" => &mut self.tuning,
+                "drill" => &mut self.drill,
                 _ => {
                     problems.push(format!("line {}: unknown action {action:?}", number + 1));
                     continue;
@@ -248,9 +271,71 @@ const KEYS: &[(&str, KeyCode)] = &[
     ("Backquote", KeyCode::Backquote), ("Minus", KeyCode::Minus), ("Equal", KeyCode::Equal),
 ];
 
+/// Double-tap forward to sprint: a second tap soon after the first sprints until forward is
+/// released.
+#[derive(Resource, Debug, Default)]
+pub struct DoubleTapSprint {
+    last_tap: Option<f64>,
+    pub active: bool,
+}
+
+impl DoubleTapSprint {
+    /// Call every frame with whether forward was just pressed, whether it's held, the time in
+    /// seconds, and the window from the controls.
+    pub fn update(&mut self, tapped: bool, held: bool, now: f64, window: f32) {
+        if !held {
+            self.active = false;
+        }
+        if tapped {
+            if window > 0.0 && self.last_tap.is_some_and(|t| now - t <= window as f64) {
+                self.active = true;
+            }
+            self.last_tap = Some(now);
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn double_tapping_forward_sprints_until_released() {
+        let mut d = DoubleTapSprint::default();
+        d.update(true, true, 0.0, 0.3);
+        assert!(!d.active, "one tap is a walk");
+        d.update(false, false, 0.1, 0.3);
+        d.update(true, true, 0.2, 0.3);
+        assert!(d.active);
+        d.update(false, true, 5.0, 0.3);
+        assert!(d.active, "holding keeps sprinting");
+        d.update(false, false, 5.1, 0.3);
+        assert!(!d.active, "letting go stops");
+    }
+
+    #[test]
+    fn slow_taps_and_a_zero_window_do_not_sprint() {
+        let mut d = DoubleTapSprint::default();
+        d.update(true, true, 0.0, 0.3);
+        d.update(false, false, 0.2, 0.3);
+        d.update(true, true, 0.5, 0.3);
+        assert!(!d.active, "too slow");
+
+        let mut d = DoubleTapSprint::default();
+        d.update(true, true, 0.0, 0.0);
+        d.update(false, false, 0.05, 0.0);
+        d.update(true, true, 0.1, 0.0);
+        assert!(!d.active, "turned off");
+    }
+
+    #[test]
+    fn reads_the_double_tap_window() {
+        let mut controls = Controls::default();
+        assert!(controls.apply("double_tap_window = 0.25\n").is_empty());
+        assert_eq!(controls.double_tap_window, 0.25);
+        assert_eq!(controls.apply("double_tap_window = soon\ndouble_tap_window = -1\n").len(), 2);
+        assert_eq!(controls.double_tap_window, 0.25);
+    }
 
     #[test]
     fn overrides_only_what_the_file_names() {

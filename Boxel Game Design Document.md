@@ -238,7 +238,7 @@ These are working ideas, not commitments. They should be tested in the play phas
 
 **Abstract systems over realistic simulation (base game).** The base game prefers simple, learnable rules players can understand and exploit over complicated physics simulations. Abstract rules are cheaper to build and run, easier to sync in multiplayer, and predictable enough to support the composition principle. Minecraft's best systems already work this way: redstone and infinite water sources are abstractions players learned to exploit. This is a taste for the base game's content, not a limit on the engine: mods must be able to add advanced simulations, including full physics and realistic fluids.
 
-**A robotic player (tentative).** Movement and camera feel should read as a robot. Landings work like a shock absorber: a safe fall compresses smoothly, while a damaging fall bottoms out hard, so the camera itself tells players when a fall hurt. Later feel work, such as combat, damage and a charged crouch jump, should keep to this.
+**A robotic player (tentative).** Movement and camera feel should read as a robot. Landings work like a shock absorber: a safe fall compresses smoothly, while a damaging fall bottoms out hard, so the camera itself tells players when a fall hurt. Crouching is the robot's spring: crouching on the ground charges it and sinks the body, a jump releases it for extra height, and crouching mid-air tucks the feet up to clear higher ledges. Later feel work, such as combat and damage, should keep to this.
 
 ## Features to play with
 

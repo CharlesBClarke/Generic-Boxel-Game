@@ -104,15 +104,10 @@ A run of small toy slices. Each one takes a single game-feel feature that doesn'
 
 ### Current toy
 
-None. Pick the next toy from the backlog.
+None. Pick the next toy from the backlog, or a seam slice.
 
 ### Toy backlog
 
-- **Advanced movement.** Split out of the movement toy at the user's request (2026-10-25). Crouching and crouch jumping, both kinds:
-  - *Half-Life tuck:* crouching in the air lifts the feet, so jump-then-crouch clears a higher ledge.
-  - *Charged jump:* holding crouch on the ground builds a spring charge, so jumping from a crouch goes higher. Fits the robot feel.
-  - Sketch: `MoveInput` gains `crouch`; the controller returns the body height it wants. Engine rule: shrinking is always allowed, growing needs headroom; on the ground the feet stay put, in the air the head stays put (that's what makes the tuck work). Crouch-walk speed, charge time and charged height are tunables in `base`.
-  - *Block-jumping* (moved here from World interaction controls, 2026-10-25; needs block placing, which the Block editing toy adds). Placing a block into your own feet launches you. Build it as a general engine rule, not a special case: a solid appearing inside a body pushes it out with an impulse along block center → body, with tunable strength and upward bias. Standing on the far edge of the cell tilts the push forward, so looking down and timing placements becomes fast-movement tech. The same rule later lets pistons shove players.
 - **Interaction controls.** Split out of Block editing (2026-10-25). Fix Minecraft's ambiguous right click once there are things to use, like crystals or devices. Principles: one input, one action (no catch-all "use" button that changes meaning with what you hold or look at), and what you see is what you get (a ghost of the result, red when not allowed).
 - **Block interactions.** Unstable crystals: two block types, a touch trigger, a directional blast, and a way to push blocks so devices are possible.
 - **Generative crafting.** A few materials, a few property ingredients and a capacity limit.
@@ -137,7 +132,8 @@ Ideas that come up while playing get added here.
 
 Shortcuts taken around the API, each with the toy that needed it. Paid down in seam slices.
 
-- **Fixed input actions** (movement toy; break, place and palette slots added by the block editing toy). Move, jump, sprint, break, place, the palette slots and the debug keys are a fixed engine set in `sim::PlayerInput` and `client::controls`. Mods can't define their own actions. API version: mods register named actions with default bindings, and controllers read actions by name.
+- **Fixed input actions** (movement toy; break, place and palette slots added by the block editing toy, crouch by the advanced movement toy). Move, jump, sprint, crouch, break, place, the palette slots and the debug keys are a fixed engine set in `sim::PlayerInput` and `client::controls`. Mods can't define their own actions. API version: mods register named actions with default bindings, and controllers read actions by name.
+- **Chase drill in the client** (advanced movement toy, temporary). The ghost and objectives in `client::drill` are game logic living in the client, and it finds landmarks by the `landmark:` prefix on waypoint names. Remove the drill rather than moving it into the API, unless a later toy wants real enemies, which would need entities and a game-rules hook in the API.
 - **Camera feel in the client** (movement toy). FOV widening, head bob, landing dip and step smoothing live in `client::feel`, so mods can't change them. API version: a client-side mod API for camera effects, presumably driven by the same tunables.
 
 ### Phase 2 decisions
@@ -146,6 +142,84 @@ Shortcuts taken around the API, each with the toy that needed it. Paid down in s
 - **Signature feature:** not decided yet. Choose it once the block interaction and crafting toys have been played, and record the choice and why in the design doc.
 
 ### Done toys
+
+#### Advanced movement (branch `toy-advanced-movement`)
+
+**Stage:** Done (2026-10-25)
+
+**Goal:** Crouching, the Half-Life tuck, a charged crouch jump and block-jumping, all feeling robotic.
+
+*Backlog entry:* Split out of the movement toy at the user's request (2026-10-25). Crouching and crouch jumping, both kinds:
+- *Half-Life tuck:* crouching in the air lifts the feet, so jump-then-crouch clears a higher ledge.
+- *Charged jump:* holding crouch on the ground builds a spring charge, so jumping from a crouch goes higher. Fits the robot feel.
+- Sketch: `MoveInput` gains `crouch`; the controller returns the body height it wants. Engine rule: shrinking is always allowed, growing needs headroom; on the ground the feet stay put, in the air the head stays put (that's what makes the tuck work). Crouch-walk speed, charge time and charged height are tunables in `base`.
+- *Block-jumping* (moved here from World interaction controls, 2026-10-25; needs block placing, which the Block editing toy adds). Placing a block into your own feet launches you. Build it as a general engine rule, not a special case: a solid appearing inside a body pushes it out with an impulse along block center → body, with tunable strength and upward bias. Standing on the far edge of the cell tilts the push forward, so looking down and timing placements becomes fast-movement tech. The same rule later lets pistons shove players.
+
+**Approved plan** (2026-10-25)
+
+*API (`api`)*
+- `MoveInput` gains `crouch` (held). `MoveContext` gains the body's current `height`. `MoveOutput` gains `height: Option<f32>`, the height the controller wants; `None` means standing height, so other controllers don't change.
+- `PushOutDef { strength, upward_bias }`, registered by `base` like `InteractionDef` and tunable live.
+
+*Engine (`sim`)*
+- Height changes: shrinking is always allowed, growing is clamped to the headroom. On the ground the feet stay put; in the air the head stays put. The eye stays the same distance below the top of the head.
+- Push-out rule: a solid appearing inside a body moves the body out the shortest way that has room, then gives it an impulse along block center → body center plus the upward bias, so the far edge of the cell tilts the launch forward.
+- Placing into your own body is allowed when there's room to push you out, refused otherwise.
+
+*Base (`base`)*
+- Quake controller: crouch height (1.0), crouch-walk speed (40% of walking), charge time (0.6 s) and charged jump height (2.5), all tunable.
+- Charge builds while crouched on the ground and is lost on standing up without jumping. Holding crouch through the jump keeps you tucked, so the two stack.
+
+*Client*
+- Crouch key, default left Shift (shared with fly-down; flying ignores crouch), rebindable and added to the user's controls file.
+- Camera feel: eye height eases between standing and crouching like a hydraulic, and sinks a little further as the charge builds.
+
+*Tests:* crouch shrinks from the top on the ground; can't stand under a low ceiling; the tuck lifts the feet, keeps the head, and clears a ledge a plain jump can't; the charge raises the jump up to the charged height and resets on standing; push-out clears the body with the right impulse direction, including the edge tilt; placing is refused with no room to push out; the "millions" test still matches.
+
+*Out of scope:* edge guard (crouching doesn't stop you walking off edges), slide, wall-jump.
+
+*API debt:* crouch joins the fixed input actions entry.
+
+*Done when*
+- Crouching, the tuck and the charged jump work and feel robotic to the user.
+- A crouch-jump clears a ledge a plain jump can't.
+- Placing a block under your feet launches you, and the far edge of the cell tilts the launch.
+- Tests cover height changes, the tuck, the charge and push-out.
+
+*Plan change* (2026-10-25, the user's request during Verify): a **chase drill** added as a temporary tool to feel the movement, not a feature. A ghost floats straight at you through walls (5.5 m/s, +0.25 per point) and resets your score when it touches you; objectives appear at random landmarks (one is the bottom of the pit). `base` supplies the landmarks as waypoints through the existing API; the drill is one client module, `client::drill`, toggled with F4, meant to be deleted when later toys no longer need it. Logged as API debt so it doesn't become permanent.
+
+*Implementation notes*
+- `MoveContext` also gains `standing_height`, so a controller can tell it's crouched (or stuck low under a ceiling) without knowing the body's definition.
+- The charge sinks the camera through the body itself: the controller asks for `crouch_height − charge × charge_sink` (0.15 m at full charge). The client needed no charge data. Side effect: a charged body is 0.15 m shorter.
+- Charged jump and tuck stack: on the jump tick the controller asks for standing height (the spring extends); with crouch still held it tucks on the next tick, mid-air, so the feet lift.
+- Height changes move the previous position too, so they aren't interpolated as motion. `Player::crouch_shift_total` counts how far the eyes jumped (down for a ground crouch, zero for a mid-air tuck), and `client::feel` eases it with a new `crouch_recover` tunable, like step-up smoothing.
+- Push-out moves the body along the launch's strongest axis if there's room, otherwise the shortest way that has room. Without a `PushOutDef`, or with no room, placing into the body is refused as before. Push-out isn't eased on the camera.
+- `base` defaults: push-out strength 6 m/s, upward bias 1.
+- Two ledges added to the movement course, west-facing at x 26 to 29: 2 high (y −30 to −27) for a tuck, 3 high (y −36 to −33) for a charged tuck. Neither clears with a plain jump.
+- The tuck's margin on the 2-high ledge is thin. The feet peak at 2.12, so you have to reach the edge near the top of the jump. Worth tuning (`crouch_height`) while playing.
+- Chase drill: `base` adds 11 landmarks (`base::LANDMARKS`) to both copies of the test area, so the teleport key now cycles through them too. The tower top was left out, since it's 41 high. A beam marks the objective so it can be found from anywhere. Drill values are in the tuning panel. Within the plan change: the ghost follows you if you teleport, and new objectives prefer spots at least 15 m away.
+- Added during Verify, outside the plan (comfort, at the user's request): double-tap forward to sprint, Minecraft-style. Sprints until forward is released; the sprint key still works. Client input only (`controls::DoubleTapSprint`), with the window set by `double_tap_window` in the controls file (default 0.3 s, 0 turns it off).
+- 125 tests pass across the workspace; clippy is clean.
+
+*Verification* (2026-10-25)
+- Crouching and the tuck work and feel robotic: met (played with the chase drill; the user confirmed they feel right).
+- The charged jump: not met. In play it gave no extra height. A headless check showed it works only if crouch is still held when jump is pressed (2.59 vs 1.32); releasing crouch to jump, even on the same tick, threw the charge away. Fixed with a `charge_grace` tunable (0.2 s, to cover a thumb sliding from crouch to jump): the charge survives letting go of crouch for that long, including on the jump tick itself. After the fix: met (played; "feels good, it works now").
+- A crouch-jump clears a ledge a plain jump can't: met (tests on the 2-high and 3-high ledges; confirmed in play).
+- Placing a block under your feet launches you, and the far edge tilts the launch: met (tests; confirmed in play).
+- Tests cover height changes, the tuck, the charge and push-out: met.
+
+*Decisions*
+- Crouching is the robot's spring: a ground crouch charges it, a jump releases it, and a mid-air crouch tucks the feet. Recorded in the design doc under the robotic player.
+- Body height is the controller's call, and the engine enforces the room: shrinking is free, growing needs headroom, feet stay put on the ground and the head stays put in the air.
+- A block appearing inside a body pushes it out and launches it, as an engine rule with mod-supplied numbers (`PushOutDef`). Block-jumping is the first use; pistons can use it later.
+- The chase drill is a temporary tool for feeling movement, not a feature. Delete it once later toys don't need it.
+
+*Deferred*
+- The tuck's margin on the 2-high ledge is thin (feet peak at 2.12). Revisit `crouch_height` during detailed tuning.
+- Edge guard, slide, wall-jump.
+- Push-out isn't eased on the camera.
+
+*API debt added:* crouch joins the fixed input actions entry; the chase drill in the client (temporary).
 
 #### Block editing (branch `toy-block-editing`)
 

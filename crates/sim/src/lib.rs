@@ -10,7 +10,7 @@ pub mod simulation;
 pub mod world;
 
 pub use layer::Layer;
-pub use player::{Player, PlayerInput, Shape, Terrain};
+pub use player::{Player, PlayerInput, PushOut, Shape, Terrain};
 pub use raycast::{Hit, raycast};
 pub use registry::{BlockId, BlockRegistry};
 pub use simulation::{SimError, Simulation};
