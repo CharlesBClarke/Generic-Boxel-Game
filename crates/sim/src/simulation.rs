@@ -2,8 +2,9 @@
 
 use std::fmt;
 
-use api::{ApiError, BlockDef, BoxelPos, Mod, PlayerDef, Registrar, WorldEdit, WorldPos};
+use api::{ApiError, BlockDef, BoxelPos, Mod, PlayerDef, Registrar, Vec3, WorldEdit, WorldPos};
 
+use crate::player::Terrain;
 use crate::{BlockRegistry, Grid, Player, PlayerInput, Universe};
 
 #[derive(Debug, PartialEq)]
@@ -71,7 +72,7 @@ impl Simulation {
 
     /// Puts the player at the spawn point. Needs a mod to have registered a player definition.
     pub fn spawn_player(&mut self) -> Result<(), SimError> {
-        let def = self.player_def.clone().ok_or(SimError::NoPlayerDef)?;
+        let def = self.player_def.as_ref().ok_or(SimError::NoPlayerDef)?;
         self.player = Some(Player::new(def, self.spawn));
         Ok(())
     }
@@ -80,8 +81,8 @@ impl Simulation {
     pub fn step(&mut self, input: &PlayerInput) {
         let Self { blocks, universe, player, .. } = self;
         if let Some(player) = player {
-            let grid = universe.main();
-            player.step(input, Self::TICK_SECONDS, |p| blocks.is_solid(grid.block(p)));
+            let terrain = GridTerrain { grid: universe.main(), blocks };
+            player.step(input, Self::TICK_SECONDS, &terrain);
         }
         self.tick += 1;
     }
@@ -89,6 +90,13 @@ impl Simulation {
     pub fn teleport_player(&mut self, pos: WorldPos) {
         if let Some(player) = &mut self.player {
             player.teleport(pos);
+        }
+    }
+
+    /// Queues an instant velocity change for the player's next tick.
+    pub fn apply_player_impulse(&mut self, impulse: Vec3) {
+        if let Some(player) = &mut self.player {
+            player.apply_impulse(impulse);
         }
     }
 
@@ -108,6 +116,11 @@ impl Simulation {
         self.player.as_ref()
     }
 
+    /// For engine tools such as the tuning panel.
+    pub fn player_mut(&mut self) -> Option<&mut Player> {
+        self.player.as_mut()
+    }
+
     pub fn spawn(&self) -> WorldPos {
         self.spawn
     }
@@ -119,6 +132,21 @@ impl Simulation {
     /// Ticks run so far.
     pub fn tick(&self) -> u64 {
         self.tick
+    }
+}
+
+struct GridTerrain<'a> {
+    grid: &'a Grid,
+    blocks: &'a BlockRegistry,
+}
+
+impl Terrain for GridTerrain<'_> {
+    fn solid(&self, pos: BoxelPos) -> bool {
+        self.blocks.is_solid(self.grid.block(pos))
+    }
+
+    fn friction(&self, pos: BoxelPos) -> f32 {
+        self.blocks.get(self.grid.block(pos)).map_or(1.0, |def| def.friction)
     }
 }
 

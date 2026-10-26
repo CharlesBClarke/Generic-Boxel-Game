@@ -73,6 +73,8 @@ Sandboxed mods are expected to be the most common kind: game logic in WebAssembl
 
 What's left for native mods is small: integrations with obscure hardware or software, and experiments that need raw speed or access before a host service exists. Engine interfaces should be designed so a native tier can be added later if needed. Requests for native access decide which host services to add next.
 
+**Movement is content.** How a body moves (acceleration, friction, gravity, jumping) is decided by a movement controller the mod supplies; the base game's is Quake-style. The engine owns what every controller needs and what must stay consistent: body state, collision, impulses from any source, and the surface properties of what the body stands on. A knockback from one mod therefore works with another mod's controller.
+
 ### Simulation timing
 
 - **Fixed base tick, likely 60 per second.** The simulation advances in fixed steps so results are deterministic, physics stays stable and multiplayer clients can stay in sync. 60 is a good base because it has many divisors.
@@ -235,6 +237,8 @@ These are working ideas, not commitments. They should be tested in the play phas
 **Challenges are forced, not optional.** At least in the base game, threats come to the player, who has to move fast and overcome them. This is the opposite of Minecraft's direction, where challenges tend to be either background annoyances you put up with or optional ones you can avoid entirely (Mojang has reportedly said a creeper-like threat today might live in one distant region). Pressure pushes players to conquer the world, and conquering it is how they earn the cozy life.
 
 **Abstract systems over realistic simulation (base game).** The base game prefers simple, learnable rules players can understand and exploit over complicated physics simulations. Abstract rules are cheaper to build and run, easier to sync in multiplayer, and predictable enough to support the composition principle. Minecraft's best systems already work this way: redstone and infinite water sources are abstractions players learned to exploit. This is a taste for the base game's content, not a limit on the engine: mods must be able to add advanced simulations, including full physics and realistic fluids.
+
+**A robotic player (tentative).** Movement and camera feel should read as a robot. Landings work like a shock absorber: a safe fall compresses smoothly, while a damaging fall bottoms out hard, so the camera itself tells players when a fall hurt. Later feel work, such as combat, damage and a charged crouch jump, should keep to this.
 
 ## Features to play with
 

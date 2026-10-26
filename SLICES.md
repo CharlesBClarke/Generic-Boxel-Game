@@ -97,18 +97,23 @@ A run of small toy slices. Each one takes a single game-feel feature that doesn'
 **Rules for this phase**
 - **Infrastructure arrives when a toy needs it.** World generation comes when a toy needs more space or variety than the test area. Once world generation exists, we start thinking about LOD. Saving comes when losing your work between sessions gets in the way. Each of these becomes its own slice at that point.
 - **Toys go through the API.** When a toy needs something the API can't express, extend the API. A shortcut around it is allowed to keep a toy moving, but it goes in the API debt list below.
+- **Keep the API WebAssembly-friendly.** The API is plain Rust for now, but it has to become a WebAssembly boundary. Calls exchange plain data: no references into engine or mod memory, no closures, no generics in the API's traits.
 - **Seam slices along the way.** Every few toys, or when the API debt list gets long, run a short slice that pays down debt or adds one real mod feature. The seam backlog below lists the candidates.
 - **Tuning beats polish.** Values should be adjustable while the game runs where that helps.
 - **Tests cover the logic, playing covers the feel.** Verification for a toy is mainly the user playing it and deciding whether it feels right.
 
 ### Current toy
 
-None yet. Picked after slice 1 is done.
+None. Pick the next one from the backlog.
 
 ### Toy backlog
 
-- **Movement mechanics.** Acceleration, friction, jump, step-up, and anything else that makes moving feel good.
+- **Advanced movement.** Split out of the movement toy at the user's request (2026-10-25). Crouching and crouch jumping, both kinds:
+  - *Half-Life tuck:* crouching in the air lifts the feet, so jump-then-crouch clears a higher ledge.
+  - *Charged jump:* holding crouch on the ground builds a spring charge, so jumping from a crouch goes higher. Fits the robot feel.
+  - Sketch: `MoveInput` gains `crouch`; the controller returns the body height it wants. Engine rule: shrinking is always allowed, growing needs headroom; on the ground the feet stay put, in the air the head stays put (that's what makes the tuck work). Crouch-walk speed, charge time and charged height are tunables in `base`.
 - **World interaction controls.** Breaking and placing with clear, predictable inputs that show what will happen before you press, fixing the "ambiguous interactions" gripe.
+  - *Idea: block-jumping.* Placing a block into your own feet launches you. Build it as a general engine rule, not a special case: a solid appearing inside a body pushes it out with an impulse along block center → body, with tunable strength and upward bias. Standing on the far edge of the cell tilts the push forward, so looking down and timing placements becomes fast-movement tech. The same rule later lets pistons shove players.
 - **Block interactions.** Unstable crystals: two block types, a touch trigger, a directional blast, and a way to push blocks so devices are possible.
 - **Generative crafting.** A few materials, a few property ingredients and a capacity limit.
 - **Combat feel.** Weighty hits and aggressive, Doom-style combat.
@@ -125,22 +130,96 @@ Ideas that come up while playing get added here.
 ### Seam backlog (added when the game is ready for them)
 
 - **Data mods.** Blocks and textures defined in mod files, loaded at startup. Likely after the first couple of toys. Textures from Minetest Game, with credits and license kept.
-- **WebAssembly behavior.** Sandboxed mod code for block behavior, once a toy has behavior worth sandboxing, such as crystals or liquids. Sleeping blocks and read-old, write-new automata.
+- **WebAssembly behavior.** Sandboxed mod code for block behavior, once a toy has behavior worth sandboxing, such as crystals or liquids. Sleeping blocks and read-old, write-new automata. The user wants a real WebAssembly test soon, to check the plain-Rust API really crosses the boundary: a candidate first step is running `base`'s movement controller as WebAssembly.
 - **Seed a modder.** Once a few seam slices are done, have an outside modder build a small toy on the API and fix what blocks them.
 
 ### API debt
 
 Shortcuts taken around the API, each with the toy that needed it. Paid down in seam slices.
 
-None yet.
+- **Fixed input actions** (movement toy). Move, jump, sprint and the debug keys are a fixed engine set in `sim::PlayerInput` and `client::controls`. Mods can't define their own actions. API version: mods register named actions with default bindings, and controllers read actions by name.
+- **Camera feel in the client** (movement toy). FOV widening, head bob, landing dip and step smoothing live in `client::feel`, so mods can't change them. API version: a client-side mod API for camera effects, presumably driven by the same tunables.
 
 ### Phase 2 decisions
 
+- **A robotic player** (tentative, 2026-10-25): the user wants movement and camera feel to read as a robot. Landings are a shock absorber: soft landings compress smoothly, damaging ones bottom out hard. Later feel work (combat, damage, crouch charging) should keep to it.
 - **Signature feature:** not decided yet. Choose it once the block interaction and crafting toys have been played, and record the choice and why in the design doc.
 
 ### Done toys
 
-None yet.
+#### Movement mechanics (branch `toy-movement`)
+
+**Stage:** Done (2026-10-25)
+
+**Goal:** Quake-style movement that feels good, with the base mod (not the engine) deciding how movement works.
+
+**Approved plan** (2026-10-25)
+
+*Split:* how movement feels is content, so `base` implements the controller. The engine owns what every controller needs and what must stay consistent: the tick, body state, collision, impulses and surface data.
+
+*API (`api`)*
+- `MovementController` trait: each tick it gets plain data (body state, input, ground contact and the surface underfoot, `dt`) and returns the new velocity. Gravity is its job.
+- `PlayerDef` shrinks to body shape (width, height, eye height), step-up height and the controller.
+- `Tunables` trait: `list() -> Vec<Tunable { name, value, min, max }>` plus `set(name, value)`, so the engine's panel can tune any mod's values.
+- `BlockDef` gains `friction`.
+
+*Engine (`sim`)*
+- Runs the controller, then applies impulses, then collides. Jump goes through the impulse path.
+- Optional step-up in collision (off by default).
+- Reports ground contact and the friction underfoot to the controller.
+- `PlayerInput` gains `sprint` and separate jump-pressed (latched) and jump-held.
+- Fly mode stays an engine debug tool that bypasses the controller.
+
+*Base (`base`)*
+- Quake controller: ground acceleration and friction (scaled by block friction), air acceleration with strafing, momentum kept, bunny hopping, sprint, jump buffering, coyote time, stronger fall gravity and terminal velocity. Every value exposed through `Tunables`.
+- An ice block, and a movement course: jump gaps of 2 to 5, a pillar line, a sprint straight, a drop tower and an ice patch.
+
+*Client (`client`)*
+- `bevy_egui` 0.39.1 tuning panel on a key: sliders for every tunable, reset, print values.
+- Camera feel (FOV widening with speed, head bob, landing dip), also tunable.
+- New rebindable keys for sprint and the panel.
+
+*Tests:* the controller (acceleration time, friction stop, air strafing gains speed, bunny hops keep speed), the coyote and buffer windows at their edges, ice slides farther, step-up limits and headroom, impulses work with any controller, and the bit-identical "millions" test still passes.
+
+*API debt to log:* fixed engine input actions; camera feel in `client`.
+
+*Implementation notes*
+- The Quake controller's jump tick skips friction but still applies ground acceleration. Pure Quake (air acceleration only on the jump tick) left you crawling at the air speed cap when holding jump from a standstill. Bunny hop speed is unaffected, since acceleration never removes speed above the wish speed.
+- `Player` exposes cumulative landing and step-up counters, so the renderer can react to events on ticks it didn't draw.
+- New default keys: sprint is left Ctrl, the tuning panel is Tab.
+- After the first play session (2026-10-25): the user is happy with the movement. Detailed tuning is deferred until later toys give more context, so the "tuned values saved back into `base`" criterion is deferred rather than met. The current defaults stay.
+- Tuned by playing: `ground_accel` and `air_accel` 10 → 15, because held-jump stair climbs stalled against risers at 10 (a regression test now checks a held-jump climb reaches the top of the steps). `hard_landing_speed` 15 → 20 m/s, so jumping off a 3-boxel ledge stays a soft landing.
+- Landing reworked as a robotic shock absorber (camera feel, within the plan): a damped suspension that compresses smoothly on soft landings and bottoms out instantly, with a nod and a slow recovery, at or above `hard_landing_speed`. That speed is a placeholder for "this fall hurts" until fall damage exists, and should then come from the same source.
+
+*Out of scope:* crouch, slide, wall-jump. Push-out and block-jump go to the World interaction controls entry.
+
+*Done when*
+- Movement feels good to the user after a tuning session.
+- Bunny hopping and air strafing work.
+- Ice feels different.
+- The tuned values are saved back into `base`.
+
+*Verification* (2026-10-25)
+- Movement feels good to the user: met. The user played it and was happy with the movement, the stair climbing after the acceleration change, and the landing suspension.
+- Bunny hopping and air strafing work: met by tests (bunny hops keep speed through the landing tick, air strafing gains speed past walk speed). Not specifically checked in play.
+- Ice feels different: met by test (sliding on ice goes over 5× as far as on grass). Not specifically checked in play.
+- Tuned values saved back into `base`: partly met. The acceleration and hard-landing values found by playing are the new defaults; detailed tuning is deferred until later toys give more context.
+- 75 tests pass across the workspace; clippy is clean. The slice 1 note about 30 fps feeling worse didn't come up again.
+
+*Decisions*
+- Movement is content. `base` owns the controller; the engine owns the body, collision, impulses and surface data. Recorded in the design doc.
+- The API stays WebAssembly-friendly (plain data in and out), now a phase 2 rule.
+- Live tuning is generic: anything implementing `Tunables` gets sliders, whichever mod it comes from.
+- The player should feel robotic. Landings are a shock absorber whose hard bottom-out is meant to signal fall damage. Recorded in the design doc as a tentative direction.
+
+*Deferred*
+- Detailed tuning of the Quake values.
+- Crouch and crouch jumping, now the Advanced movement backlog toy. Block-jump and push-out are in the World interaction controls entry.
+- `hard_landing_speed` is a camera-only placeholder. When fall damage exists, it should come from the same source as the damage threshold, so the feel and the damage always agree.
+- Step-up exists in the engine but `base` has it off; it hasn't been played.
+
+*API debt added:* fixed input actions; camera feel in the client (see the API debt list).
+
 
 ---
 

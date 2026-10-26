@@ -24,7 +24,7 @@ fn engine_alone_has_no_content() {
 #[test]
 fn base_registers_blocks_by_name() {
     let sim = base_sim();
-    for name in [base::STONE, base::DIRT, base::GRASS, base::BRICK, base::MARKER] {
+    for name in [base::STONE, base::DIRT, base::GRASS, base::BRICK, base::MARKER, base::ICE] {
         assert!(sim.blocks().id(name).is_some(), "{name} missing");
     }
 }
@@ -57,13 +57,15 @@ fn player_spawns_and_settles_on_the_floor() {
     assert_eq!(sim.tick(), 60);
 }
 
-/// A scripted walk: across the floor, into the steps, jumping up some of them.
+/// A scripted walk: north to line up with the steps, stop, then hop east up them, then turn.
+/// Movement keeps momentum, so the walk has to stop before changing direction.
 fn script() -> Vec<PlayerInput> {
     let mut inputs = Vec::new();
-    let walk = |yaw: f32, jump: bool| PlayerInput { movement: Vec2::Y, yaw, jump, ..Default::default() };
+    let walk = |yaw: f32, jump: bool| PlayerInput { movement: Vec2::Y, yaw, jump_held: jump, ..Default::default() };
     inputs.extend(std::iter::repeat_n(PlayerInput::default(), 30));
-    inputs.extend(std::iter::repeat_n(walk(0.6, false), 90));
-    inputs.extend(std::iter::repeat_n(walk(0.0, true), 240));
+    inputs.extend(std::iter::repeat_n(walk(std::f32::consts::FRAC_PI_2, false), 55));
+    inputs.extend(std::iter::repeat_n(PlayerInput::default(), 30));
+    inputs.extend(std::iter::repeat_n(walk(0.0, true), 300));
     inputs.extend(std::iter::repeat_n(walk(2.5, false), 120));
     inputs
 }
@@ -91,4 +93,22 @@ fn walking_in_the_millions_matches_walking_near_zero() {
     // The walk has to actually climb, or it proves little.
     assert!(near.iter().any(|(cell, _)| cell.z >= 3), "the script never climbed the steps");
     assert_eq!(near, far);
+}
+
+#[test]
+fn holding_jump_climbs_the_steps() {
+    // Like Minecraft: hold forward and jump at the foot of the steps and keep climbing,
+    // without stalling against each riser.
+    let mut sim = base_sim();
+    sim.teleport_player(WorldPos::new(api::I64Vec3::new(4, 5, 0), Vec3::new(0.5, 0.5, 0.0)));
+    for _ in 0..30 {
+        sim.step(&PlayerInput::default());
+    }
+    let climb = PlayerInput { movement: Vec2::Y, yaw: 0.0, jump_held: true, ..Default::default() };
+    let mut highest = 0.0f32;
+    for _ in 0..300 {
+        sim.step(&climb);
+        highest = highest.max(sim.spawn().delta_to(sim.player().unwrap().pos()).z);
+    }
+    assert!(highest >= 9.9, "only climbed to {highest}");
 }

@@ -23,11 +23,14 @@ pub struct Controls {
     pub left: KeyCode,
     pub right: KeyCode,
     pub jump: KeyCode,
+    pub sprint: KeyCode,
     /// Fly mode: down. Fly up shares the jump key.
     pub down: KeyCode,
     pub fly: KeyCode,
     pub teleport: KeyCode,
     pub frame_cap: KeyCode,
+    /// Opens the live tuning panel.
+    pub tuning: KeyCode,
 }
 
 impl Default for Controls {
@@ -38,10 +41,12 @@ impl Default for Controls {
             left: KeyCode::KeyA,
             right: KeyCode::KeyD,
             jump: KeyCode::Space,
+            sprint: KeyCode::ControlLeft,
             down: KeyCode::ShiftLeft,
             fly: KeyCode::KeyF,
             teleport: KeyCode::KeyT,
             frame_cap: KeyCode::F3,
+            tuning: KeyCode::Tab,
         }
     }
 }
@@ -87,10 +92,12 @@ impl Controls {
                 "left" => &mut self.left,
                 "right" => &mut self.right,
                 "jump" => &mut self.jump,
+                "sprint" => &mut self.sprint,
                 "down" => &mut self.down,
                 "fly" => &mut self.fly,
                 "teleport" => &mut self.teleport,
                 "frame_cap" => &mut self.frame_cap,
+                "tuning" => &mut self.tuning,
                 _ => {
                     problems.push(format!("line {}: unknown action {action:?}", number + 1));
                     continue;
@@ -119,8 +126,9 @@ pub fn label(key: KeyCode) -> String {
 }
 
 /// Parses a Bevy physical key name, such as `KeyW`, `Digit1`, `F3` or `ShiftLeft`.
+/// Case doesn't matter.
 pub fn parse_key(name: &str) -> Option<KeyCode> {
-    KEYS.iter().find(|(n, _)| *n == name).map(|(_, code)| *code)
+    KEYS.iter().find(|(n, _)| n.eq_ignore_ascii_case(name)).map(|(_, code)| *code)
 }
 
 const KEYS: &[(&str, KeyCode)] = &[
@@ -170,7 +178,7 @@ mod tests {
     #[test]
     fn reports_bad_lines_and_keeps_going() {
         let mut controls = Controls::default();
-        let problems = controls.apply("forward = KeyQQ\nsprint = KeyQ\nnonsense\nback = KeyR\n");
+        let problems = controls.apply("forward = KeyQQ\ndash = KeyQ\nnonsense\nback = KeyR\n");
         assert_eq!(problems.len(), 3);
         assert_eq!(controls.forward, KeyCode::KeyW);
         assert_eq!(controls.back, KeyCode::KeyR);
@@ -181,6 +189,12 @@ mod tests {
         for (name, code) in KEYS {
             assert_eq!(format!("{code:?}"), *name);
         }
+    }
+
+    #[test]
+    fn key_names_ignore_case() {
+        assert_eq!(parse_key("keyA"), Some(KeyCode::KeyA));
+        assert_eq!(parse_key("SHIFTLEFT"), Some(KeyCode::ShiftLeft));
     }
 
     #[test]
