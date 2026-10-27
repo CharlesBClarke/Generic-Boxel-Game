@@ -104,9 +104,13 @@ A run of small toy slices. Each one takes a single game-feel feature that doesn'
 
 ### Current toy
 
+#### Data mods (seam, from the seam backlog)
+
+**Stage:** Plan. Proposed 2026-10-27; not yet approved.
+
 #### Sandbox limits (seam, from the seam backlog)
 
-**Stage:** Implement (branch `seam-sandbox-limits`).
+**Stage:** Verify, paused (branch `seam-sandbox-limits`, committed, not merged). Tests pass; the user's play check is still open. *Deviation (2026-10-27):* at the user's request, Data mods started at the Plan stage before this check, since the user couldn't play right then. Finish criterion 4 and close this before merging.
 
 **Goal:** a WebAssembly mod that loops forever, allocates without end or recurses too deep is stopped, and the game carries on, the same way it does when a mod panics. The point is to stop a broken or hostile mod from hanging the game or using up its memory, without changing how a working mod behaves.
 
