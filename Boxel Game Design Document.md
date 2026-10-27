@@ -56,6 +56,10 @@ The engine is written in Rust and ships with no content. The base game is a mod 
 
 Early on, the API is plain Rust and the base game is compiled in against it. Data files and WebAssembly arrive in stages, as the game needs them.
 
+**WebAssembly so far.** The first stage is in: the base game's movement controller runs as a WebAssembly component on wasmtime. Each kind of mod behavior gets a WIT interface in the API crate. Mods write the same plain Rust traits either way, and an export macro wraps them for the boundary. Components import nothing unless a host service grants it.
+
+**Determinism.** Mod code must give the same results bit for bit, natively and in WebAssembly, on every machine, so replays and multiplayer stay in sync. The API uses the `libm` crate for trig rather than the platform's math library, and wasmtime canonicalizes NaNs. Tests check native and WebAssembly results bit for bit.
+
 **Three kinds of mods.** One mod can combine several kinds.
 
 | Kind | What it contains | Trust |

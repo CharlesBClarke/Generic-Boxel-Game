@@ -23,6 +23,25 @@ Don't start writing code or changing project files until the user says **"engage
 - Discussion and questions never start work. Answer them and stop.
 - Without an engage, the only file changes allowed are keeping the stage marker in `SLICES.md` current and writing down something the user explicitly asked to have recorded.
 
+### Bugs found later
+
+When a problem turns up while working on something else, first decide which kind it is:
+
+1. **A bug in code the current slice wrote or changed:** fix it in the slice.
+2. **A bug in earlier, already-merged code:** fix it on its own branch (below), not inside the current slice.
+3. **Working as built, but the user doesn't like it:** a design change, not a bug. Add it to the backlog in `SLICES.md`.
+
+Fix branch steps:
+
+1. Commit or close the current work first, so nothing half-done comes along.
+2. Branch off `master` as `fix-<name>`.
+3. Write a failing test that shows the bug.
+4. Fix it, then run the tests and clippy. If the bug is visible in play, have the user check it.
+5. Merge into `master` with `--no-ff`, then merge `master` into the current slice branch.
+6. Add one line to the Fixes list in `SLICES.md`: date, branch, what was wrong.
+
+A fix skips the full plan stage: describe the bug and the fix in a sentence or two, then wait for "engage". If the fix would change how the game plays, it is a toy, not a fix.
+
 ### Git
 
 Each slice or toy gets its own feature branch off `master` (for example `slice-1-minimum-engine`, `toy-movement`). Commit there, and when the slice is closed, merge it into `master` with `--no-ff` so each slice stays visible in the history. Never commit directly to `master`.
