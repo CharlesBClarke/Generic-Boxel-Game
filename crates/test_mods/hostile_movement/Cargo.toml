@@ -1,0 +1,12 @@
+[package]
+name = "hostile_movement"
+description = "Test fixture: a movement controller that misbehaves on purpose (loops, allocates or recurses forever), to check the engine's sandbox limits stop it."
+edition.workspace = true
+version.workspace = true
+publish.workspace = true
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+api.workspace = true

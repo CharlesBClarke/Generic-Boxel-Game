@@ -9,6 +9,8 @@ members = [
     "crates/wasm_host",
     "crates/game",
     "crates/test_mods/panicky_movement",
+    "crates/test_mods/hostile_movement",
+    "crates/test_mods/stuck_movement",
 ]
 
 [workspace.package]
