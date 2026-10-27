@@ -8,8 +8,30 @@
 //! for `charge_grace`, so sliding a thumb from crouch to jump still gets it. The body springs
 //! to standing height as it jumps, so keeping crouch held tucks again in the air and the two
 //! stack.
+//!
+//! The game runs this crate compiled to WebAssembly, as a component exporting the controller.
+//! It also builds natively, for its tests and the `--native-movement` flag.
 
-use api::{MoveContext, MoveOutput, MovementController, Tunable, Tunables, Vec3};
+use api::{ApiError, Mod, MoveContext, MoveOutput, MovementController, Registrar, Tunable, Tunables, Vec3};
+
+/// The controller's registered name.
+pub const QUAKE: &str = "base:quake";
+
+#[cfg(target_arch = "wasm32")]
+api::export_movement_controller!(QUAKE, QuakeController);
+
+/// Registers the controller natively, for running without WebAssembly.
+pub struct BaseMovementMod;
+
+impl Mod for BaseMovementMod {
+    fn name(&self) -> &str {
+        "base"
+    }
+
+    fn register(&self, r: &mut dyn Registrar) -> Result<(), ApiError> {
+        r.register_movement_controller(QUAKE, Box::new(QuakeController::default()))
+    }
+}
 
 /// Every number here is live-tunable; the defaults are the values found by playing.
 #[derive(Clone, Debug, PartialEq)]

@@ -1,13 +1,9 @@
 //! The base game, written as a mod on the public API only.
 
-pub mod movement;
-
 use api::{
     ApiError, BlockDef, BoxelPos, I64Vec3, InteractionDef, Mod, PlayerDef, PushOutDef, Registrar, Vec3, WorldEdit,
     WorldPos,
 };
-
-use crate::movement::QuakeController;
 
 pub const STONE: &str = "base:stone";
 pub const DIRT: &str = "base:dirt";
@@ -57,7 +53,7 @@ impl Mod for BaseMod {
             height: 1.8,
             eye_height: 1.62,
             step_height: 0.0,
-            controller: Box::new(QuakeController::default()),
+            controller: "base:quake".into(),
         })?;
         // Minecraft-like for now: about Minecraft's survival reach, 4 edits a second held.
         r.register_interaction(InteractionDef { reach: 4.5, repeat_rate: 4.0 })?;

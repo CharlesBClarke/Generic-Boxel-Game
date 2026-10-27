@@ -172,7 +172,7 @@ mod tests {
 
     #[test]
     fn breaking_a_block_remeshes_its_chunk() {
-        let mut sim = Simulation::with_mods(&[&base::BaseMod]).unwrap();
+        let mut sim = Simulation::with_mods(&[&base::BaseMod, &base_movement::BaseMovementMod]).unwrap();
         sim.spawn_player().unwrap();
         sim.teleport_player(WorldPos::new(I64Vec3::new(10, 10, 0), ZVec3::new(0.5, 0.5, 0.0)));
         let below = ChunkPos::new(0, 0, -1);

@@ -1,8 +1,7 @@
 //! Player definitions. The engine owns the body and collisions; the mod supplies its shape
-//! and the controller that decides how it moves.
+//! and names the controller that decides how it moves.
 
-use crate::MovementController;
-
+#[derive(Clone, Debug, PartialEq)]
 pub struct PlayerDef {
     /// Width and depth of the collision box, in meters. One boxel is one meter.
     pub width: f32,
@@ -12,7 +11,8 @@ pub struct PlayerDef {
     pub eye_height: f32,
     /// Ledges up to this height are climbed automatically while walking. 0 turns it off.
     pub step_height: f32,
-    pub controller: Box<dyn MovementController>,
+    /// The registered movement controller's name, such as `"base:quake"`.
+    pub controller: String,
 }
 
 impl PlayerDef {

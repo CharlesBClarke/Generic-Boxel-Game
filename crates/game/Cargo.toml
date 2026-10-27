@@ -10,6 +10,15 @@ name = "boxel"
 path = "src/main.rs"
 
 [dependencies]
+api.workspace = true
 sim.workspace = true
 client.workspace = true
 base.workspace = true
+base_movement.workspace = true
+wasm_host.workspace = true
+
+[build-dependencies]
+wit-component.workspace = true
+
+[dev-dependencies]
+glam.workspace = true

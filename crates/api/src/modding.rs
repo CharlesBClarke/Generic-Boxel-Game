@@ -1,13 +1,14 @@
 //! The traits a mod implements and the engine services it is handed.
 
-use crate::{ApiError, BlockDef, BoxelPos, InteractionDef, PlayerDef, PushOutDef, WorldPos};
+use crate::{ApiError, BlockDef, BoxelPos, InteractionDef, MovementController, PlayerDef, PushOutDef, WorldPos};
 
 /// A mod. The engine calls `register` on every mod first, then `build_world` on every mod.
 pub trait Mod {
     /// The mod's namespace, such as `"base"`.
     fn name(&self) -> &str;
 
-    /// Registers content: blocks, the player, interaction and push-out definitions.
+    /// Registers content: blocks, movement controllers, the player, interaction and push-out
+    /// definitions.
     fn register(&self, registrar: &mut dyn Registrar) -> Result<(), ApiError>;
 
     /// Places blocks in the world once all content is registered.
@@ -19,6 +20,14 @@ pub trait Mod {
 /// Where mods register their content.
 pub trait Registrar {
     fn register_block(&mut self, def: BlockDef) -> Result<(), ApiError>;
+    /// Registers a movement controller under a namespaced name, for player definitions to
+    /// refer to. Native mods only: a WebAssembly mod exports its controller instead (see
+    /// `export_movement_controller!`).
+    fn register_movement_controller(
+        &mut self,
+        name: &str,
+        controller: Box<dyn MovementController>,
+    ) -> Result<(), ApiError>;
     fn register_player(&mut self, def: PlayerDef) -> Result<(), ApiError>;
     fn register_interaction(&mut self, def: InteractionDef) -> Result<(), ApiError>;
     fn register_push_out(&mut self, def: PushOutDef) -> Result<(), ApiError>;

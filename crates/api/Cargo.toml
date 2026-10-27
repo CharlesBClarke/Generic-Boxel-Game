@@ -7,3 +7,8 @@ publish.workspace = true
 
 [dependencies]
 glam.workspace = true
+libm.workspace = true
+
+# The guest side of the WebAssembly boundary, for mods compiled to WebAssembly.
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+wit-bindgen.workspace = true

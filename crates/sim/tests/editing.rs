@@ -6,7 +6,7 @@ use api::{
 use sim::{BlockId, Hit, PlayerInput, Simulation};
 
 fn base_sim() -> Simulation {
-    let mut sim = Simulation::with_mods(&[&base::BaseMod]).expect("base mod loads");
+    let mut sim = Simulation::with_mods(&[&base::BaseMod, &base_movement::BaseMovementMod]).expect("base mod loads");
     sim.spawn_player().expect("base registers a player");
     sim
 }
@@ -158,12 +158,13 @@ impl Mod for Bedrock {
     fn register(&self, r: &mut dyn Registrar) -> Result<(), ApiError> {
         r.register_block(BlockDef::new("test:stone", true, [0, 0, 0]))?;
         r.register_block(BlockDef::new("test:bedrock", true, [0, 0, 0]).with_placeable(false))?;
+        r.register_movement_controller(base_movement::QUAKE, Box::new(base_movement::QuakeController::default()))?;
         r.register_player(PlayerDef {
             width: 0.6,
             height: 1.8,
             eye_height: 1.62,
             step_height: 0.0,
-            controller: Box::new(base::movement::QuakeController::default()),
+            controller: base_movement::QUAKE.into(),
         })?;
         r.register_interaction(InteractionDef { reach: 5.0, repeat_rate: 4.0 })
     }

@@ -1,9 +1,14 @@
-//! Loads the base mod into the engine and opens the client.
+//! Loads the base mod into the engine and opens the client. `--native-movement` runs the
+//! movement controller natively instead of as WebAssembly, for comparing the two.
 
-use sim::Simulation;
+use game::Movement;
 
 fn main() {
-    let mut sim = Simulation::with_mods(&[&base::BaseMod]).unwrap_or_else(|e| panic!("loading mods failed: {e}"));
-    sim.spawn_player().unwrap_or_else(|e| panic!("spawning the player failed: {e}"));
+    let movement = match std::env::args().any(|a| a == "--native-movement") {
+        true => Movement::Native,
+        false => Movement::Wasm,
+    };
+    eprintln!("movement controller: {movement:?}");
+    let sim = game::load(movement).unwrap_or_else(|e| panic!("loading the game failed: {e}"));
     client::run(sim);
 }

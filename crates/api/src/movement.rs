@@ -25,7 +25,8 @@ pub struct MoveInput {
 impl MoveInput {
     /// The horizontal direction the input asks for, in world space (Z-up). Length at most 1.
     pub fn wish_direction(&self) -> Vec3 {
-        let (sin, cos) = self.yaw.sin_cos();
+        // libm rather than std, so the result is the same native and in WebAssembly.
+        let (sin, cos) = libm::sincosf(self.yaw);
         let forward = Vec3::new(cos, sin, 0.0);
         let right = Vec3::new(sin, -cos, 0.0);
         let movement = self.movement.clamp_length_max(1.0);

@@ -1,0 +1,10 @@
+[package]
+name = "wasm_host"
+description = "Engine side of the WebAssembly boundary: runs mod components with wasmtime. Never depends on rendering."
+edition.workspace = true
+version.workspace = true
+publish.workspace = true
+
+[dependencies]
+api.workspace = true
+wasmtime.workspace = true

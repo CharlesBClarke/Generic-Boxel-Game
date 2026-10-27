@@ -104,7 +104,7 @@ A run of small toy slices. Each one takes a single game-feel feature that doesn'
 
 ### Current toy
 
-None. Pick the next toy from the backlog, or a seam slice.
+None. Pick the next toy from the backlog.
 
 ### Toy backlog
 
@@ -113,6 +113,11 @@ None. Pick the next toy from the backlog, or a seam slice.
 - **Generative crafting.** A few materials, a few property ingredients and a capacity limit.
 - **Combat feel.** Weighty hits and aggressive, Doom-style combat.
 - **Liquid rule sets.** The rule sets from the design doc.
+- **Advanced movement revisited.** Added 2026-10-26 at the user's request. Comes after toys that add tools, items and enemies. Rework push-out (block-jumping, and later pistons). The user doesn't like that the body is moved out of the block instantly, like a teleport, or that the launch is mostly upward. Prompted by spam-placing blocks at the dead end of a 1-high tunnel while crouched: the body crawls backward through position shifts while the speed readout stays at 0. Things to settle:
+  - How the body gets out of the block with real motion instead of a shift, and how much of the launch should go up.
+  - What placing a block while crouched should do. The crouched body's center is at or below the block's center, so today it gives a sideways shove off the side of the block that was never designed.
+  - Whether a jump should keep wiping out the push-out kick. Today, placing a moment before jumping loses the kick, which makes block-jumping feel inconsistent.
+  - Why the readout shows 0 in the tunnel case. By the code, a ~4 m/s backward kick should flash briefly after each placement. Check it with a test first.
 
 Ideas that come up while playing get added here.
 
@@ -125,7 +130,8 @@ Ideas that come up while playing get added here.
 ### Seam backlog (added when the game is ready for them)
 
 - **Data mods.** Blocks and textures defined in mod files, loaded at startup. Likely after the first couple of toys. Textures from Minetest Game, with credits and license kept.
-- **WebAssembly behavior.** Sandboxed mod code for block behavior, once a toy has behavior worth sandboxing, such as crystals or liquids. Sleeping blocks and read-old, write-new automata. The user wants a real WebAssembly test soon, to check the plain-Rust API really crosses the boundary: a candidate first step is running `base`'s movement controller as WebAssembly.
+- **WebAssembly behavior.** Sandboxed mod code for block behavior, once a toy has behavior worth sandboxing, such as crystals or liquids. Sleeping blocks and read-old, write-new automata. The first step is done: the WebAssembly movement seam (2026-10-26) runs `base`'s movement controller as a component, so block behavior can follow the same pattern (WIT interface in `api`, guest export macro, `wasm_host` wrapper).
+- **Sandbox limits.** Fuel or epoch interruption, so a mod stuck in a loop can't hang the game. Deferred from the WebAssembly movement seam.
 - **Seed a modder.** Once a few seam slices are done, have an outside modder build a small toy on the API and fix what blocks them.
 
 ### API debt
@@ -141,7 +147,70 @@ Shortcuts taken around the API, each with the toy that needed it. Paid down in s
 - **A robotic player** (tentative, 2026-10-25): the user wants movement and camera feel to read as a robot. Landings are a shock absorber: soft landings compress smoothly, damaging ones bottom out hard. Later feel work (combat, damage, crouch charging) should keep to it.
 - **Signature feature:** not decided yet. Choose it once the block interaction and crafting toys have been played, and record the choice and why in the design doc.
 
+### Fixes
+
+Bugs found in already-merged code, each fixed on its own `fix-` branch (see the workflow in `CLAUDE.md`). One line each: date, branch, what was wrong.
+
+None yet.
+
 ### Done toys
+
+#### WebAssembly movement seam (branch `seam-wasm-movement`)
+
+**Stage:** Done (2026-10-26). Verified: the user played the wasm and native versions ("everything looks ok").
+
+**Goal:** Run `base`'s movement controller as WebAssembly, loaded by the engine, to prove the plain-Rust API really crosses the boundary. The rest of `base` stays native.
+
+*Why now:* the API debt list has three entries, and the movement controller is the richest mod behavior: it runs every tick and keeps state (timers, the charge).
+
+*To settle in the plan:* the runtime (wasmtime or wasmi); the interface (the component model with WIT, or a minimal hand-rolled one); how `Box<dyn MovementController>` and `spawn()` become instance handles; `Tunables` across the boundary so the panel still works; whether float results match inside and outside. Read the design doc's modding sections first.
+
+*Out of scope:* loading player-chosen mods from files, data mods, sandbox permissions, API versioning.
+
+**Approved plan** (2026-10-26)
+
+*Decisions*
+- **Runtime: wasmtime**, chosen for the speed later block behavior will need and for component model support. NaN canonicalization and deterministic relaxed SIMD are on.
+- **Interface: the component model with WIT**, in `crates/api/wit/movement.wit`. A `controller` resource has `spawn() -> controller`, `step(move-context) -> move-output`, `tunables() -> list<tunable>` and `set-tunable(name, value) -> bool`. `MoveContext`, `MoveOutput` (including `edge-guard`) and `Tunable` are WIT records.
+- **Instance handles:** a host-side `WasmController` implements `MovementController` by holding a resource handle. Its `spawn()` calls the guest's `spawn`. Controllers from one module share a `Store` behind `Arc<Mutex<…>>`. `sim` still sees `dyn MovementController`.
+- **Tunables** cross as a list plus `set-tunable`. `WasmController` implements `Tunables`, so the panel is unchanged.
+- **Floats:** glam's `libm` feature is on workspace-wide, so `sin_cos` and the like match inside and outside wasm. Tests check bit-for-bit equality.
+- **`PlayerDef` names its controller** (`controller: "base:quake"`) instead of holding a `Box<dyn MovementController>`, so it is plain data. The engine keeps a controller registry by name (`Registrar::register_movement_controller` for native ones, plus the wasm loader). `spawn_player` returns an error on an unknown name.
+- **Traps:** a guest panic is logged once, the controller is marked dead and velocity passes through unchanged. The game doesn't crash.
+
+*Crates*
+- `crates/base_movement` (new): `QuakeController` moves here from `base`, depending only on `api`. Builds natively, so its unit tests stay. On `wasm32` it is exported as a component.
+- `crates/api`: the WIT file, plus a wasm-only `export_movement_controller!` macro that wraps any `MovementController` impl with wit-bindgen exports. Modders write the plain trait.
+- `crates/wasm_host` (new, engine-side, no Bevy): wasmtime setup, component loading, `WasmController`. `sim` doesn't depend on it; `game` wires it in.
+- `crates/game`: a `build.rs` compiles `base_movement` for `wasm32-unknown-unknown` into a separate target directory, turns it into a component with the `wit-component` crate and embeds it with `include_bytes!`. `cargo run` needs no extra step. The component imports nothing, not even WASI. A `--native-movement` flag swaps the native controller in for comparison (a flag, not a control action).
+
+*Tests*
+- Equivalence: about 10,000 ticks of seeded scripted input (bunny hops, charging, crouching, ice, air strafing) through native and wasm controllers. Every `MoveOutput` field matches bit for bit.
+- Whole simulation: the same run as a full simulation, near zero and at `FAR_ORIGIN`, with native and wasm positions matching bit for bit.
+- `wasm_host`: spawned controllers keep separate state, tunables round-trip, a trap doesn't crash, an unknown controller name is an error.
+
+*Done when*
+1. The game runs `base`'s movement from a wasm component while the rest of `base` stays native.
+2. The user plays it and it feels the same as native (bunny hops, charged jumps, edge guard, ice).
+3. The equivalence tests pass bit for bit.
+4. The tuning panel adjusts and resets the wasm controller.
+5. `cargo test` and `cargo clippy` are clean, and `cargo run` needs no extra build step.
+
+*Deferred:* fuel or epoch limits (an infinite loop in a mod still hangs the game; part of sandbox permissions), loading mods from files, versioning.
+
+*Setup:* the user approved installing the `wasm32-unknown-unknown` target with rustup.
+
+*Implementation notes* (2026-10-26)
+- **Floats: the `libm` crate, not glam's `libm` feature.** The trig that mattered was std's `f32::sin_cos` in `MoveInput::wish_direction` (and `look_direction`), not glam's, so `api` calls `libm::sincosf` directly. Checked: with std's `sin_cos` the native and wasm results differ in the last bit within 300 ticks; with `libm` they match bit for bit over 10,000. Bevy's glam is untouched.
+- **Where the tests live.** The components are built by `game/build.rs`, so the boundary tests are in `crates/game/tests/wasm_movement.rs` rather than in `wasm_host`. A small fixture crate, `crates/test_mods/panicky_movement`, panics on its first step, for the trap test. It is built into `OUT_DIR` for tests only, not embedded in the game.
+- **Native registration.** `base_movement::BaseMovementMod` registers the native controller (`--native-movement` and tests). `Registrar::register_movement_controller` takes a `Box<dyn MovementController>`, so it is native-only; a WebAssembly mod exports its controller with `export_movement_controller!` instead.
+- **Trapped controllers** keep velocity unchanged and drop gravity too, so the player floats. That's fine for a broken mod, and the message is printed once.
+- **Build cost.** Adding wasmtime changed shared dependency features, so Bevy rebuilt once (about 10 minutes). Later builds are normal.
+
+*Result*
+- All five "Done when" criteria met. Six new boundary tests; 137 tests pass in the workspace. Clippy is clean natively and for `wasm32`.
+- *API changes:* `PlayerDef.controller` is now a name; there's a new `Registrar::register_movement_controller` and `ApiError::UnknownController`. `api` has the WIT file and the wasm-only `export_movement_controller!` macro.
+- *API debt:* none new, and none paid down. This seam proved the boundary works rather than clearing debt; the three entries remain.
 
 #### Edge guard (branch `toy-edge-guard`)
 

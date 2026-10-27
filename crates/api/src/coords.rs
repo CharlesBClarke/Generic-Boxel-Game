@@ -97,8 +97,8 @@ impl LocalPos {
 
 /// A Z-up look direction: `yaw` counterclockwise from east around +Z, `pitch` up from level.
 pub fn look_direction(yaw: f32, pitch: f32) -> Vec3 {
-    let (sy, cy) = yaw.sin_cos();
-    let (sp, cp) = pitch.sin_cos();
+    let (sy, cy) = libm::sincosf(yaw);
+    let (sp, cp) = libm::sincosf(pitch);
     Vec3::new(cp * cy, cp * sy, sp)
 }
 
