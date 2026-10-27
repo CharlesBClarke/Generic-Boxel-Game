@@ -70,6 +70,14 @@ Early on, the API is plain Rust and the base game is compiled in against it. Dat
 
 Sandboxed mods are expected to be the most common kind: game logic in WebAssembly, with compute shaders for heavy work like fluids or lighting.
 
+**Mod memory.** Each sandboxed mod has its own memory, so space one mod frees can't be used by another. WebAssembly memory also never shrinks, so without care a large mod pack would use the sum of every mod's peak memory. Three rules keep it close to what a single shared heap would use:
+
+- **State lives in the engine.** Entities and blocks a mod controls keep their state as plain data in the engine, passed in on each call and returned changed, like `MoveContext` and `MoveOutput`. A mod's own memory holds only working space and its fixed data, so it stays small no matter how many entities exist.
+- **Mods give pages back.** The allocator the API supplies to mods tells the engine when it frees large page-aligned regions, and the engine returns those pages to the OS. Modders get this without doing anything.
+- **Mods can be restarted.** A mod that holds no state of its own can be reloaded at any time: after a crash, to reclaim memory, or for hot reload.
+
+Large temporary buffers, such as pathfinding grids or worldgen scratch space, can be engine-owned data reached through a handle. Per-mod limits on memory and fuel only stop runaways; they are not a share of RAM, and their total can far exceed it.
+
 **The native tier is deferred.** Native mods can't truly be constrained, and most of what they would be used for is better covered in other ways:
 
 - **Host services.** The engine offers capability-gated features that sandboxed mods can call once the player approves them, such as audio and voice streams, a networking channel, VR, a filtered web connection and video export. Mods using them stay sandboxed and can still be pushed by servers.

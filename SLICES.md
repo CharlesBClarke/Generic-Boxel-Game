@@ -104,7 +104,48 @@ A run of small toy slices. Each one takes a single game-feel feature that doesn'
 
 ### Current toy
 
-None. Pick the next toy from the backlog.
+#### Sandbox limits (seam, from the seam backlog)
+
+**Stage:** Implement (branch `seam-sandbox-limits`).
+
+**Goal:** a WebAssembly mod that loops forever, allocates without end or recurses too deep is stopped, and the game carries on, the same way it does when a mod panics. The point is to stop a broken or hostile mod from hanging the game or using up its memory, without changing how a working mod behaves.
+
+**Approved plan** (2026-10-27)
+
+*Decisions*
+- **Fuel, not epoch interruption.** Fuel counts WebAssembly instructions, so a mod runs out at exactly the same point on every machine, which keeps replays and multiplayer deterministic. Epoch interruption uses the wall clock and could stop a mod on one machine but not another. Fuel's cost (roughly 10–30% in tight loops) is negligible for a movement controller.
+- **Limits are per loaded mod.** Controllers a mod spawns share its one instance, so they share one memory cap. Fuel is per call: the engine refuels to a fixed budget before every call (`step`, `spawn`, `tunables`, `set-tunable`) and before loading (`name`, `create`), so one call's cost never depends on earlier calls.
+- **Choosing the fuel budget.** A test measures the Quake controller's heaviest step over the 10,000-tick equivalence run, and the default is set to about 100 times that. A test checks Quake stays under a tenth of the budget.
+- **Memory cap:** wasmtime's `StoreLimits`, with a 256 MiB default linear memory per mod as a runaway guard, plus limits on tables and instances. Hitting it makes the guest's allocation fail, and the guest aborts with a trap.
+- **Stack depth:** set wasmtime's `max_wasm_stack` explicitly; overflow already traps.
+- **Any limit hit is handled like a panic.** The mod is marked dead, a message naming the limit is printed once, and velocity passes through unchanged. Running out of fuel mid-call can leave the instance half-updated, so it is never called again.
+- **No API change.** Everything lives in `wasm_host`: a `Limits` struct (fuel budget, memory cap, stack size). `load_movement(bytes)` keeps the defaults; `load_movement_with(bytes, limits)` lets tests use small budgets.
+
+*Crates*
+- `crates/wasm_host`: fuel and memory settings on the `Config` and `Store`, refuelling before each call, `Limits`, clearer stop messages.
+- `crates/test_mods/hostile_movement` (new): a fixture controller whose `behavior` tunable picks what goes wrong in `step`: loop, allocate or recurse forever. Built for tests only, like `panicky_movement`.
+- `crates/game/build.rs`: add the fixture to the crates compiled to WebAssembly.
+- `crates/game/tests/wasm_movement.rs`: the new tests.
+
+*Tests*
+- A looping `step` is stopped by fuel; the controller reports itself dead and velocity passes through.
+- Endless allocation hits the memory cap and stops the controller.
+- Endless recursion hits the stack limit and stops the controller.
+- A loop in `spawn` or `tunables` is stopped, and a component that loops while loading fails to load with an error instead of hanging.
+- Two controllers spawned from the same mod share one memory cap.
+- Fuel is deterministic: the same inputs use exactly the same fuel across two loads.
+- Quake's heaviest step stays under a tenth of the budget, and the bit-for-bit equivalence tests still pass.
+
+*Done when*
+1. Endless loops, endless allocation and endless recursion in a mod each stop that mod without hanging or crashing the game, with tests for all three.
+2. Loading a component that loops forever returns an error.
+3. Quake movement uses less than 10% of the fuel budget, and the equivalence tests still match bit for bit.
+4. The user runs the game and movement feels unchanged (a quick check; nothing visible changes).
+5. `cargo test` and `cargo clippy` are clean.
+
+*Deferred:* a wall-clock backstop (epoch interruption); one fuel budget per mod per tick, which matters once a mod runs many things per tick; a global memory total across all mods; restarting a dead mod from a fresh instance; player-approved permissions for host services.
+
+*Decided:* a stopped mod stays dead, since restarting needs a fresh instance and loses the controller's state.
 
 ### Toy backlog
 
@@ -130,7 +171,7 @@ Ideas that come up while playing get added here.
 ### Seam backlog (added when the game is ready for them)
 
 - **Data mods.** Blocks and textures defined in mod files, loaded at startup. Likely after the first couple of toys. Textures from Minetest Game, with credits and license kept.
-- **WebAssembly behavior.** Sandboxed mod code for block behavior, once a toy has behavior worth sandboxing, such as crystals or liquids. Sleeping blocks and read-old, write-new automata. The first step is done: the WebAssembly movement seam (2026-10-26) runs `base`'s movement controller as a component, so block behavior can follow the same pattern (WIT interface in `api`, guest export macro, `wasm_host` wrapper).
+- **WebAssembly behavior.** Sandboxed mod code for block behavior, once a toy has behavior worth sandboxing, such as crystals or liquids. Sleeping blocks and read-old, write-new automata. The first step is done: the WebAssembly movement seam (2026-10-26) runs `base`'s movement controller as a component, so block behavior can follow the same pattern (WIT interface in `api`, guest export macro, `wasm_host` wrapper). *To settle (2026-10-27):* keep entity and block state in the engine, not in the mod, before any behavior keeps state in a mod (see the design doc's "Mod memory"). The movement controller still keeps its timers and charge inside the mod and should move to that pattern. Test whether wasmtime lets the engine drop a mod's freed pages (`madvise` on Linux, `DiscardVirtualMemory` on Windows), driven by an allocator in `api`.
 - **Sandbox limits.** Fuel or epoch interruption, so a mod stuck in a loop can't hang the game. Deferred from the WebAssembly movement seam.
 - **Seed a modder.** Once a few seam slices are done, have an outside modder build a small toy on the API and fix what blocks them.
 
