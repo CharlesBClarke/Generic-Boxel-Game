@@ -1,10 +1,14 @@
-//! The base game, written as a mod on the public API only.
+//! The base game, written as a mod on the public API only. This is its code half; its blocks
+//! and textures are a data mod in `mods/base`, loaded by the engine alongside it.
 
 use api::{
-    ApiError, BlockDef, BoxelPos, I64Vec3, InteractionDef, Mod, PlayerDef, PushOutDef, Registrar, Vec3, WorldEdit,
-    WorldPos,
+    ApiError, BoxelPos, I64Vec3, InteractionDef, Mod, PlayerDef, PushOutDef, Registrar, Vec3, WorldEdit, WorldPos,
 };
 
+/// The base game's data half, in the source tree. Both halves share the `base` namespace.
+pub const DATA_DIR: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../../mods/base");
+
+// Block names, defined in `mods/base/blocks.toml`.
 pub const STONE: &str = "base:stone";
 pub const DIRT: &str = "base:dirt";
 pub const GRASS: &str = "base:grass";
@@ -42,12 +46,7 @@ impl Mod for BaseMod {
     }
 
     fn register(&self, r: &mut dyn Registrar) -> Result<(), ApiError> {
-        r.register_block(BlockDef::new(STONE, true, [125, 125, 125]))?;
-        r.register_block(BlockDef::new(DIRT, true, [134, 96, 67]))?;
-        r.register_block(BlockDef::new(GRASS, true, [96, 160, 64]))?;
-        r.register_block(BlockDef::new(BRICK, true, [160, 82, 64]))?;
-        r.register_block(BlockDef::new(MARKER, true, [240, 180, 40]))?;
-        r.register_block(BlockDef::new(ICE, true, [170, 210, 240]).with_friction(0.1))?;
+        // Blocks and textures are data, in `mods/base`; see `DATA_DIR`.
         r.register_player(PlayerDef {
             width: 0.6,
             height: 1.8,

@@ -8,8 +8,10 @@ pub struct BlockDef {
     pub name: String,
     /// Whether players and other bodies collide with it.
     pub solid: bool,
-    /// Flat color, sRGB.
+    /// Flat color, sRGB. Used where the block has no textures.
     pub color: [u8; 3],
+    /// Textures by face, if any. Each names a registered texture.
+    pub textures: Option<FaceTextures>,
     /// How much grip the surface gives a body standing on it. 1 is normal, near 0 is ice.
     /// Movement controllers decide what it means exactly.
     pub friction: f32,
@@ -21,7 +23,12 @@ pub struct BlockDef {
 impl BlockDef {
     /// A placeable block with normal friction.
     pub fn new(name: impl Into<String>, solid: bool, color: [u8; 3]) -> Self {
-        Self { name: name.into(), solid, color, friction: 1.0, placeable: true }
+        Self { name: name.into(), solid, color, textures: None, friction: 1.0, placeable: true }
+    }
+
+    pub fn with_textures(mut self, textures: FaceTextures) -> Self {
+        self.textures = Some(textures);
+        self
     }
 
     pub fn with_friction(mut self, friction: f32) -> Self {
@@ -33,6 +40,40 @@ impl BlockDef {
         self.placeable = placeable;
         self
     }
+}
+
+/// Which texture goes on which faces of a block, by texture name.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct FaceTextures {
+    pub top: String,
+    pub bottom: String,
+    /// The four sides, drawn upright.
+    pub side: String,
+}
+
+impl FaceTextures {
+    /// The same texture on every face.
+    pub fn all(name: impl Into<String>) -> Self {
+        let name = name.into();
+        Self { top: name.clone(), bottom: name.clone(), side: name }
+    }
+
+    /// Every texture named, top, bottom then side.
+    pub fn names(&self) -> [&str; 3] {
+        [&self.top, &self.bottom, &self.side]
+    }
+}
+
+/// An image blocks can name, registered by name like everything else. Plain pixels, so it
+/// crosses any boundary as data.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TextureDef {
+    /// Namespaced name, such as `"base:stone"`.
+    pub name: String,
+    pub width: u32,
+    pub height: u32,
+    /// Row by row from the top left, four bytes a pixel, sRGB with straight alpha.
+    pub rgba: Vec<u8>,
 }
 
 /// Whether `name` has the `namespace:path` form, each part non-empty and made of

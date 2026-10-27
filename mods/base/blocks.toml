@@ -1,0 +1,36 @@
+# The base game's blocks. Each block gets the `base:` namespace from mod.toml.
+#
+# Fields, with defaults:
+#   name       required: lowercase letters, digits and underscores
+#   solid      true: whether bodies collide with it
+#   friction   1.0: grip for a body standing on it; near 0 is ice
+#   placeable  true: whether players can place it
+#   textures   a name from textures/ for every face, or { top, bottom, side }
+#   color      [r, g, b] sRGB, for blocks without textures. Optional with textures:
+#              it defaults to the side texture's average color.
+
+[[block]]
+name = "stone"
+textures = "stone"
+
+[[block]]
+name = "dirt"
+textures = "dirt"
+
+[[block]]
+name = "grass"
+textures = { top = "grass", bottom = "dirt", side = "grass_side" }
+
+[[block]]
+name = "brick"
+textures = "brick"
+
+# A debug landmark, so it stays a flat, loud color.
+[[block]]
+name = "marker"
+color = [240, 180, 40]
+
+[[block]]
+name = "ice"
+textures = "ice"
+friction = 0.1

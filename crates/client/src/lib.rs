@@ -1,6 +1,7 @@
 //! The Bevy client: opens a window, feeds input to the simulation at a fixed 60 Hz, and
 //! draws the world relative to a floating render origin, interpolated between ticks.
 
+pub mod atlas;
 pub mod controls;
 pub mod coords;
 pub mod drill;
@@ -13,13 +14,16 @@ use std::time::{Duration, Instant};
 
 use api::{ChunkPos, I64Vec3, Vec3 as ZVec3, WorldPos};
 use bevy::asset::RenderAssetUsages;
+use bevy::image::ImageSampler;
 use bevy::input::mouse::AccumulatedMouseMotion;
 use bevy::mesh::{Indices, PrimitiveTopology};
+use bevy::render::render_resource::{Extent3d, TextureDimension, TextureFormat};
 use bevy::prelude::*;
 use bevy::window::{CursorGrabMode, CursorOptions, PresentMode, PrimaryWindow};
 use bevy_egui::{EguiPlugin, EguiPrimaryContextPass};
 use sim::{PlayerInput, Simulation};
 
+use crate::atlas::Atlas;
 use crate::controls::{Controls, DoubleTapSprint, label};
 use crate::editing::{ChunkMeshes, Palette, PaletteHud};
 use crate::feel::{CameraFeel, FeelState, Motion};
@@ -156,19 +160,34 @@ fn spawn_chunk_meshes(
     origin: Res<RenderOrigin>,
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
+    mut images: ResMut<Assets<Image>>,
 ) {
+    let atlas = Atlas::build(sim.0.textures(), sim.0.blocks());
+    let mut image = Image::new(
+        Extent3d { width: atlas.width, height: atlas.height, depth_or_array_layers: 1 },
+        TextureDimension::D2,
+        atlas.rgba.clone(),
+        TextureFormat::Rgba8UnormSrgb,
+        RenderAssetUsages::RENDER_WORLD,
+    );
+    // Crisp pixels, and no mipmaps to blur neighboring textures together.
+    image.sampler = ImageSampler::nearest();
     // Unlit: shading is baked into vertex colors until there is a lighting system.
-    let material = materials.add(StandardMaterial { unlit: true, ..default() });
+    let material = materials.add(StandardMaterial {
+        base_color_texture: Some(images.add(image)),
+        unlit: true,
+        ..default()
+    });
     let grid = sim.0.universe().main();
     let mut entities = std::collections::HashMap::new();
     for (pos, _) in grid.chunks() {
-        let data = mesher::mesh_chunk(grid, pos, sim.0.blocks());
+        let data = mesher::mesh_chunk(grid, pos, sim.0.blocks(), &atlas);
         if data.is_empty() {
             continue;
         }
         entities.insert(pos, spawn_chunk(&mut commands, &mut meshes, material.clone(), pos, data, origin.cell));
     }
-    commands.insert_resource(ChunkMeshes { material, entities });
+    commands.insert_resource(ChunkMeshes { material, atlas, entities });
 }
 
 pub(crate) fn spawn_chunk(
@@ -192,6 +211,7 @@ pub(crate) fn to_bevy_mesh(data: MeshData) -> Mesh {
         .with_inserted_attribute(Mesh::ATTRIBUTE_POSITION, convert(data.positions))
         .with_inserted_attribute(Mesh::ATTRIBUTE_NORMAL, convert(data.normals))
         .with_inserted_attribute(Mesh::ATTRIBUTE_COLOR, data.colors)
+        .with_inserted_attribute(Mesh::ATTRIBUTE_UV_0, data.uvs)
         .with_inserted_indices(Indices::U32(data.indices))
 }
 

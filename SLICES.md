@@ -106,7 +106,7 @@ A run of small toy slices. Each one takes a single game-feel feature that doesn'
 
 #### Data mods (seam, from the seam backlog)
 
-**Stage:** Implement (branch `seam-data-mods`).
+**Stage:** Verify (branch `seam-data-mods`). Tests pass; waiting on the user to play it (criterion 2, textures in game).
 
 **Goal:** the base game's blocks and textures come from files in a mod folder, loaded at startup. Editing a block's properties or swapping a texture needs a restart, not a rebuild. Flat colors give way to Minetest Game textures, with credits and license kept.
 
@@ -134,6 +134,15 @@ A run of small toy slices. Each one takes a single game-feel feature that doesn'
 6. `cargo test` and `cargo clippy` are clean.
 
 *Setup:* the user approved downloading the textures, license and credits from the Minetest Game repository.
+
+*Implementation notes* (2026-10-27)
+- **Short names in data files.** `blocks.toml` names blocks without a namespace; the loader adds the one from `mod.toml`, so a data mod can't define blocks in another mod's namespace. Texture names may be short (this mod's `textures/`, checked at load with file and line) or full (another mod's, checked by the engine once every mod has registered).
+- **Color is optional for textured blocks.** It defaults to the side texture's average color, kept for anywhere a block is drawn as one color (later LOD). Untextured blocks must give one.
+- **Grass side is composited ahead of time.** In Minetest Game, `default_grass_side.png` is a see-through overlay drawn over dirt. Instead of adding texture layering to the engine, `mods/base/textures/grass_side.png` is the two combined into one opaque image, and `CREDITS.md` says so, as CC BY-SA requires.
+- **Loading.** `game::load_from(dir, movement)` loads the data half from `dir`, then `BaseMod`; `game::load` uses `base::DATA_DIR` (the source tree's `mods/base`). A load error prints and exits instead of panicking. Tests outside `game` load the data half with `data_mods::load(base::DATA_DIR)`.
+- **Atlas.** Equal cells sized to the largest texture, each with a one-pixel border repeating the texture's edge, plus a white cell for flat-colored blocks, which tint it with vertex color. Built in `client::atlas`, kept in `ChunkMeshes`.
+- **Dependencies:** `serde`, `toml` 1.x, and `image` with only PNG (the version Bevy already uses).
+- *API changes:* `TextureDef`, `FaceTextures`, `BlockDef.textures` and `with_textures`, `Registrar::register_texture`, `ApiError::UnknownTexture`. In `sim`: `TextureRegistry`, `Simulation::textures`, `BlockId::index`.
 
 #### Sandbox limits (seam, from the seam backlog)
 

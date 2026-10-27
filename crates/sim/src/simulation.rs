@@ -6,12 +6,12 @@ use std::fmt;
 use api::block::is_valid_name;
 use api::{
     ApiError, BlockDef, BoxelPos, ChunkPos, InteractionDef, Mod, MovementController, PlayerDef, PushOutDef, Registrar,
-    Vec3, WorldEdit, WorldPos, look_direction,
+    TextureDef, Vec3, WorldEdit, WorldPos, look_direction,
 };
 
 use crate::edit::{ChangedChunks, Repeater};
 use crate::player::{PushOut, Terrain};
-use crate::{BlockId, BlockRegistry, Grid, Hit, Player, PlayerInput, Universe, raycast};
+use crate::{BlockId, BlockRegistry, Grid, Hit, Player, PlayerInput, TextureRegistry, Universe, raycast};
 
 #[derive(Debug, PartialEq)]
 pub enum SimError {
@@ -40,6 +40,7 @@ impl From<ApiError> for SimError {
 #[derive(Default)]
 pub struct Simulation {
     blocks: BlockRegistry,
+    textures: TextureRegistry,
     /// Movement controllers by name, as registered. Each body gets its own from `spawn`.
     controllers: HashMap<String, Box<dyn MovementController>>,
     player_def: Option<PlayerDef>,
@@ -71,6 +72,7 @@ impl Simulation {
         let mut sim = Self::new();
         for m in mods {
             m.register(&mut ContentRegistrar {
+                textures: &mut sim.textures,
                 blocks: &mut sim.blocks,
                 controllers: &mut sim.controllers,
                 player: &mut sim.player_def,
@@ -78,6 +80,7 @@ impl Simulation {
                 push_out: &mut sim.push_out_def,
             })?;
         }
+        sim.textures.check_blocks(&sim.blocks)?;
         for m in mods {
             m.build_world(&mut WorldEditor {
                 blocks: &sim.blocks,
@@ -221,6 +224,10 @@ impl Simulation {
         &self.blocks
     }
 
+    pub fn textures(&self) -> &TextureRegistry {
+        &self.textures
+    }
+
     pub fn player_def(&self) -> Option<&PlayerDef> {
         self.player_def.as_ref()
     }
@@ -317,6 +324,7 @@ fn add_controller(
 }
 
 struct ContentRegistrar<'a> {
+    textures: &'a mut TextureRegistry,
     blocks: &'a mut BlockRegistry,
     controllers: &'a mut HashMap<String, Box<dyn MovementController>>,
     player: &'a mut Option<PlayerDef>,
@@ -325,6 +333,10 @@ struct ContentRegistrar<'a> {
 }
 
 impl Registrar for ContentRegistrar<'_> {
+    fn register_texture(&mut self, def: TextureDef) -> Result<(), ApiError> {
+        self.textures.register(def)
+    }
+
     fn register_block(&mut self, def: BlockDef) -> Result<(), ApiError> {
         self.blocks.register(def).map(|_| ())
     }

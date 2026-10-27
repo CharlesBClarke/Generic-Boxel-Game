@@ -1,0 +1,12 @@
+[package]
+name = "data_mods"
+description = "Engine side of data mods: reads a mod folder of TOML definitions and PNG textures into content registered through the mod API. Never depends on rendering."
+edition.workspace = true
+version.workspace = true
+publish.workspace = true
+
+[dependencies]
+api.workspace = true
+serde.workspace = true
+toml.workspace = true
+image.workspace = true
