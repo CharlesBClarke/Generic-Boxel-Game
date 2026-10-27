@@ -106,7 +106,34 @@ A run of small toy slices. Each one takes a single game-feel feature that doesn'
 
 #### Data mods (seam, from the seam backlog)
 
-**Stage:** Plan. Proposed 2026-10-27; not yet approved.
+**Stage:** Implement (branch `seam-data-mods`).
+
+**Goal:** the base game's blocks and textures come from files in a mod folder, loaded at startup. Editing a block's properties or swapping a texture needs a restart, not a rebuild. Flat colors give way to Minetest Game textures, with credits and license kept.
+
+**Approved plan** (2026-10-27)
+
+*Decisions*
+- **TOML,** parsed with `serde` and `toml`. Unknown fields are errors, so typos aren't silently ignored. Errors name the file, line and field.
+- **Layout:** `mods/base/` holds `mod.toml` (name, version, description), `blocks.toml` (`[[block]]` entries: name, solid, friction, placeable, textures), `textures/*.png` (16×16), `LICENSE.txt` and `CREDITS.md`.
+- **A data mod is a normal `Mod`.** A new engine crate, `data_mods` (no Bevy), reads a folder into a `DataMod` that implements `api::Mod` and registers through the same `Registrar`. The base game is two parts sharing the `base` namespace: data (`mods/base`) and code (the `base` crate, which still builds the test area and registers the player and interaction rules).
+- **Textures are plain data in the API:** `TextureDef { name, width, height, rgba }`, `Registrar::register_texture`, and `BlockDef.textures: Option<FaceTextures>` (top, bottom, side). `color` stays for untextured blocks. The loader decodes PNGs (`png` crate), so `sim` only stores bytes.
+- **Rendering: one atlas,** nearest filtering, no mipmaps. The mesher adds UVs and picks top, bottom or side per face; vertex colors keep the face shading. Keeps `StandardMaterial`. An array texture (for tiling with greedy meshing) is deferred.
+- **Finding mods:** `game` loads `<workspace>/mods/base`, or the folder given with `--mods <dir>`. Loading every folder with dependency order is deferred until a second data mod exists.
+- **Textures** from Minetest Game's `default` mod: stone, dirt, grass top and side, brick, ice. The marker keeps its flat color. Credits per file, CC BY-SA 3.0.
+
+*Crates:* `api` (texture types, `register_texture`); `data_mods` (new: parsing, PNG decoding, errors, `DataMod`); `sim` (texture registry, checks that named textures exist); `base` (blocks move to `mods/base/blocks.toml`, name constants stay); `client` (atlas, UVs); `game` (loads `mods/base` before `BaseMod`, `--mods`).
+
+*Tests:* parsing a good file, an unknown field, a missing texture, a bad name and a malformed PNG; the base data mod registers the same six blocks with the same properties as before; atlas textures don't overlap and UVs stay inside their texture; grass gets top, side and bottom textures on the right faces and untextured blocks keep flat colors; existing tests, including wasm equivalence, still pass.
+
+*Done when*
+1. The base game's blocks are defined in `mods/base/blocks.toml`; the `base` crate registers no blocks in code.
+2. The game shows Minetest textures, with grass top and side distinct.
+3. Changing a value in `blocks.toml` (such as ice friction) and restarting changes the game with no rebuild.
+4. A broken data file gives a readable error naming the file and line, not a panic deep in the engine.
+5. `LICENSE.txt` and `CREDITS.md` credit every texture's authors.
+6. `cargo test` and `cargo clippy` are clean.
+
+*Setup:* the user approved downloading the textures, license and credits from the Minetest Game repository.
 
 #### Sandbox limits (seam, from the seam backlog)
 
