@@ -117,7 +117,7 @@ None. Pick the next toy from the backlog.
   - How the body gets out of the block with real motion instead of a shift, and how much of the launch should go up.
   - What placing a block while crouched should do. The crouched body's center is at or below the block's center, so today it gives a sideways shove off the side of the block that was never designed.
   - Whether a jump should keep wiping out the push-out kick. Today, placing a moment before jumping loses the kick, which makes block-jumping feel inconsistent.
-  - Why the readout shows 0 in the tunnel case. By the code, a ~4 m/s backward kick should flash briefly after each placement. Check it with a test first.
+  - **Known flaw, deferred to this toy (2026-10-26):** the kick can point opposite to the shift. The kick's direction comes from the body's position before the shift, so in the tunnel case the body is shifted backward but kicked forward, into the block it just left, and the collision zeroes it. That's why the speed readout stays at 0 (the readout itself is correct). Found by reading the code and confirmed by the user's play; not yet covered by a test. The redesign must make the launch go the way the body actually leaves the block.
 
 Ideas that come up while playing get added here.
 
