@@ -92,15 +92,15 @@ pub struct Player {
 }
 
 impl Player {
-    /// A player standing with its feet at `pos`, with its own controller spawned from `def`'s.
-    pub fn new(def: &PlayerDef, pos: WorldPos) -> Self {
+    /// A player shaped by `def`, standing with its feet at `pos`.
+    pub fn new(def: &PlayerDef, controller: Box<dyn MovementController>, pos: WorldPos) -> Self {
         let shape = Shape {
             width: def.width,
             height: def.height,
             eye_height: def.eye_height,
             step_height: def.step_height,
         };
-        Self::with_controller(shape, def.controller.spawn(), pos)
+        Self::with_controller(shape, controller, pos)
     }
 
     pub fn with_controller(shape: Shape, controller: Box<dyn MovementController>, pos: WorldPos) -> Self {

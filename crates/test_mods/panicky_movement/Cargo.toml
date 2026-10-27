@@ -1,0 +1,12 @@
+[package]
+name = "panicky_movement"
+description = "Test fixture: a movement controller that panics when stepped, to check the engine survives a trapping mod."
+edition.workspace = true
+version.workspace = true
+publish.workspace = true
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+api.workspace = true

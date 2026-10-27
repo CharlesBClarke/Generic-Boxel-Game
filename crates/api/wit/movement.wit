@@ -1,0 +1,55 @@
+// The movement controller boundary: the same types as `api::movement` and `api::tuning`,
+// as plain data. Z-up, meters and seconds, like the rest of the API.
+package boxel:api@0.1.0;
+
+interface movement {
+    record vec2 { x: f32, y: f32 }
+    record vec3 { x: f32, y: f32, z: f32 }
+
+    record move-input {
+        movement: vec2,
+        yaw: f32,
+        jump-pressed: bool,
+        jump-held: bool,
+        sprint: bool,
+        crouch: bool,
+    }
+
+    record ground { friction: f32 }
+
+    record move-context {
+        dt: f32,
+        velocity: vec3,
+        height: f32,
+        standing-height: f32,
+        input: move-input,
+        ground: option<ground>,
+    }
+
+    record move-output {
+        velocity: vec3,
+        impulse: vec3,
+        height: option<f32>,
+        edge-guard: option<f32>,
+    }
+
+    record tunable { name: string, value: f32, min: f32, max: f32 }
+
+    /// One body's controller, with its own state between ticks.
+    resource controller {
+        /// A fresh controller for a newly spawned body, with the same settings as this one.
+        spawn: func() -> controller;
+        step: func(ctx: move-context) -> move-output;
+        tunables: func() -> list<tunable>;
+        set-tunable: func(name: string, value: f32) -> bool;
+    }
+
+    /// The controller's registered name, such as `base:quake`.
+    name: func() -> string;
+    /// The controller with its default settings; bodies get theirs from its `spawn`.
+    create: func() -> controller;
+}
+
+world movement-controller {
+    export movement;
+}

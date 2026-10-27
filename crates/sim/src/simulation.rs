@@ -1,10 +1,12 @@
 //! The simulation: loads mods, owns the world and advances it at a fixed rate.
 
+use std::collections::HashMap;
 use std::fmt;
 
+use api::block::is_valid_name;
 use api::{
-    ApiError, BlockDef, BoxelPos, ChunkPos, InteractionDef, Mod, PlayerDef, PushOutDef, Registrar, Vec3, WorldEdit,
-    WorldPos, look_direction,
+    ApiError, BlockDef, BoxelPos, ChunkPos, InteractionDef, Mod, MovementController, PlayerDef, PushOutDef, Registrar,
+    Vec3, WorldEdit, WorldPos, look_direction,
 };
 
 use crate::edit::{ChangedChunks, Repeater};
@@ -38,6 +40,8 @@ impl From<ApiError> for SimError {
 #[derive(Default)]
 pub struct Simulation {
     blocks: BlockRegistry,
+    /// Movement controllers by name, as registered. Each body gets its own from `spawn`.
+    controllers: HashMap<String, Box<dyn MovementController>>,
     player_def: Option<PlayerDef>,
     interaction_def: Option<InteractionDef>,
     push_out_def: Option<PushOutDef>,
@@ -68,6 +72,7 @@ impl Simulation {
         for m in mods {
             m.register(&mut ContentRegistrar {
                 blocks: &mut sim.blocks,
+                controllers: &mut sim.controllers,
                 player: &mut sim.player_def,
                 interaction: &mut sim.interaction_def,
                 push_out: &mut sim.push_out_def,
@@ -84,10 +89,25 @@ impl Simulation {
         Ok(sim)
     }
 
-    /// Puts the player at the spawn point. Needs a mod to have registered a player definition.
+    /// Adds a movement controller the engine loaded itself, such as one from a WebAssembly
+    /// component, as if a mod had registered it.
+    pub fn add_movement_controller(
+        &mut self,
+        name: &str,
+        controller: Box<dyn MovementController>,
+    ) -> Result<(), ApiError> {
+        add_controller(&mut self.controllers, name, controller)
+    }
+
+    /// Puts the player at the spawn point. Needs a mod to have registered a player definition,
+    /// and the movement controller it names.
     pub fn spawn_player(&mut self) -> Result<(), SimError> {
         let def = self.player_def.as_ref().ok_or(SimError::NoPlayerDef)?;
-        self.player = Some(Player::new(def, self.spawn));
+        let controller = self
+            .controllers
+            .get(&def.controller)
+            .ok_or_else(|| ApiError::UnknownController(def.controller.clone()))?;
+        self.player = Some(Player::new(def, controller.spawn(), self.spawn));
         Ok(())
     }
 
@@ -281,8 +301,24 @@ impl<T: Terrain> Terrain for WithSolid<T> {
     }
 }
 
+fn add_controller(
+    controllers: &mut HashMap<String, Box<dyn MovementController>>,
+    name: &str,
+    controller: Box<dyn MovementController>,
+) -> Result<(), ApiError> {
+    if !is_valid_name(name) {
+        return Err(ApiError::InvalidName(name.into()));
+    }
+    if controllers.contains_key(name) {
+        return Err(ApiError::DuplicateName(name.into()));
+    }
+    controllers.insert(name.into(), controller);
+    Ok(())
+}
+
 struct ContentRegistrar<'a> {
     blocks: &'a mut BlockRegistry,
+    controllers: &'a mut HashMap<String, Box<dyn MovementController>>,
     player: &'a mut Option<PlayerDef>,
     interaction: &'a mut Option<InteractionDef>,
     push_out: &'a mut Option<PushOutDef>,
@@ -291,6 +327,14 @@ struct ContentRegistrar<'a> {
 impl Registrar for ContentRegistrar<'_> {
     fn register_block(&mut self, def: BlockDef) -> Result<(), ApiError> {
         self.blocks.register(def).map(|_| ())
+    }
+
+    fn register_movement_controller(
+        &mut self,
+        name: &str,
+        controller: Box<dyn MovementController>,
+    ) -> Result<(), ApiError> {
+        add_controller(self.controllers, name, controller)
     }
 
     fn register_player(&mut self, def: PlayerDef) -> Result<(), ApiError> {

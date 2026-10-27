@@ -13,3 +13,4 @@ bevy_egui.workspace = true
 
 [dev-dependencies]
 base.workspace = true
+base_movement.workspace = true

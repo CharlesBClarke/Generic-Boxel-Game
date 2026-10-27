@@ -1,6 +1,15 @@
 [workspace]
 resolver = "3"
-members = ["crates/api", "crates/sim", "crates/client", "crates/base", "crates/game"]
+members = [
+    "crates/api",
+    "crates/sim",
+    "crates/client",
+    "crates/base",
+    "crates/base_movement",
+    "crates/wasm_host",
+    "crates/game",
+    "crates/test_mods/panicky_movement",
+]
 
 [workspace.package]
 edition = "2024"
@@ -12,10 +21,17 @@ api = { path = "crates/api" }
 sim = { path = "crates/sim" }
 client = { path = "crates/client" }
 base = { path = "crates/base" }
+base_movement = { path = "crates/base_movement" }
+wasm_host = { path = "crates/wasm_host" }
 # Pinned to the glam version Bevy 0.18 uses, so math types cross the render boundary without conversion.
 glam = "0.30.7"
 bevy = "0.18.1"
 bevy_egui = "0.39.1"
+# Trig that gives the same bits natively and in WebAssembly.
+libm = "0.2.16"
+wit-bindgen = "0.63.0"
+wit-component = "0.262.0"
+wasmtime = { version = "50.0.0", default-features = false, features = ["runtime", "cranelift", "component-model", "std", "parallel-compilation"] }
 
 # Bevy is slow unoptimized; optimize dependencies even in dev builds.
 [profile.dev]

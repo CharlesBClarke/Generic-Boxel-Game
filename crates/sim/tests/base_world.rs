@@ -7,7 +7,7 @@ use glam::Vec2;
 use sim::{PlayerInput, SimError, Simulation};
 
 fn base_sim() -> Simulation {
-    let mut sim = Simulation::with_mods(&[&base::BaseMod]).expect("base mod loads");
+    let mut sim = Simulation::with_mods(&[&base::BaseMod, &base_movement::BaseMovementMod]).expect("base mod loads");
     sim.spawn_player().expect("base registers a player");
     sim
 }

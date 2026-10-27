@@ -7,6 +7,8 @@
 pub mod block;
 pub mod coords;
 pub mod error;
+#[cfg(target_arch = "wasm32")]
+pub mod guest;
 pub mod interaction;
 pub mod modding;
 pub mod movement;
