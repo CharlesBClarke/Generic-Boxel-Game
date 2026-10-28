@@ -6,7 +6,9 @@ use api::{
 use sim::{BlockId, Hit, PlayerInput, Simulation};
 
 fn base_sim() -> Simulation {
-    let mut sim = Simulation::with_mods(&[&base::BaseMod, &base_movement::BaseMovementMod]).expect("base mod loads");
+    let data = data_mods::load(std::path::Path::new(base::DATA_DIR)).unwrap();
+    let mods: [&dyn api::Mod; 3] = [&data, &base::BaseMod, &base_movement::BaseMovementMod];
+    let mut sim = Simulation::with_mods(&mods).expect("base mod loads");
     sim.spawn_player().expect("base registers a player");
     sim
 }

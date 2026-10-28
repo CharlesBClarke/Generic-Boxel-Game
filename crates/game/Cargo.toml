@@ -16,6 +16,7 @@ client.workspace = true
 base.workspace = true
 base_movement.workspace = true
 wasm_host.workspace = true
+data_mods.workspace = true
 
 [build-dependencies]
 wit-component.workspace = true

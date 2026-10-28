@@ -11,4 +11,5 @@ glam.workspace = true
 
 [dev-dependencies]
 base.workspace = true
+data_mods.workspace = true
 base_movement.workspace = true

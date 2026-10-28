@@ -7,7 +7,9 @@ use glam::Vec2;
 use sim::{PlayerInput, SimError, Simulation};
 
 fn base_sim() -> Simulation {
-    let mut sim = Simulation::with_mods(&[&base::BaseMod, &base_movement::BaseMovementMod]).expect("base mod loads");
+    let data = data_mods::load(std::path::Path::new(base::DATA_DIR)).unwrap();
+    let mods: [&dyn api::Mod; 3] = [&data, &base::BaseMod, &base_movement::BaseMovementMod];
+    let mut sim = Simulation::with_mods(&mods).expect("base mod loads");
     sim.spawn_player().expect("base registers a player");
     sim
 }
@@ -27,6 +29,30 @@ fn base_registers_blocks_by_name() {
     let sim = base_sim();
     for name in [base::STONE, base::DIRT, base::GRASS, base::BRICK, base::MARKER, base::ICE] {
         assert!(sim.blocks().id(name).is_some(), "{name} missing");
+    }
+}
+
+#[test]
+fn base_blocks_come_from_its_data_files() {
+    let sim = base_sim();
+    let def = |name| sim.blocks().get(sim.blocks().id(name).unwrap()).unwrap();
+    // The same blocks and properties the code half used to register, now with textures.
+    let names: Vec<_> = sim.blocks().iter().map(|(_, d)| d.name.as_str()).collect();
+    assert_eq!(names, [base::STONE, base::DIRT, base::GRASS, base::BRICK, base::MARKER, base::ICE]);
+    for (_, d) in sim.blocks().iter() {
+        assert!(d.solid && d.placeable, "{}", d.name);
+        let friction = if d.name == base::ICE { 0.1 } else { 1.0 };
+        assert_eq!(d.friction, friction, "{}", d.name);
+    }
+    let grass = def(base::GRASS).textures.as_ref().unwrap();
+    let faces = (grass.top.as_str(), grass.bottom.as_str(), grass.side.as_str());
+    assert_eq!(faces, ("base:grass", "base:dirt", "base:grass_side"));
+    assert_eq!(def(base::MARKER).textures, None, "the marker stays a flat color");
+    assert_eq!(def(base::MARKER).color, [240, 180, 40]);
+    for name in ["base:stone", "base:dirt", "base:grass", "base:grass_side", "base:brick", "base:ice"] {
+        let t = sim.textures().get(name).unwrap_or_else(|| panic!("{name} missing"));
+        assert_eq!((t.width, t.height), (16, 16), "{name}");
+        assert!(t.rgba.as_chunks::<4>().0.iter().all(|px| px[3] == 255), "{name} should be opaque");
     }
 }
 

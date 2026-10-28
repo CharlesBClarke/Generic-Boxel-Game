@@ -1,9 +1,9 @@
-//! The block registry: names to runtime IDs.
+//! The block and texture registries: names to runtime IDs and definitions.
 
 use std::collections::HashMap;
 
 use api::block::is_valid_name;
-use api::{ApiError, BlockDef};
+use api::{ApiError, BlockDef, TextureDef};
 
 /// A runtime block ID. Assigned at startup in registration order and never saved or
 /// sent anywhere; names are the identity.
@@ -16,6 +16,11 @@ impl BlockId {
 
     pub fn is_empty(self) -> bool {
         self == Self::EMPTY
+    }
+
+    /// A small dense index, for tables by block: 0 for empty, then 1, 2… in registration order.
+    pub fn index(self) -> usize {
+        self.0 as usize
     }
 }
 
@@ -68,9 +73,63 @@ impl BlockRegistry {
     }
 }
 
+/// Textures by name, in registration order. The simulation never draws them; it keeps them
+/// so clients, and later the network, can get every mod's textures from one place.
+#[derive(Default)]
+pub struct TextureRegistry {
+    defs: Vec<TextureDef>,
+    by_name: HashMap<String, usize>,
+}
+
+impl TextureRegistry {
+    pub fn register(&mut self, def: TextureDef) -> Result<(), ApiError> {
+        if !is_valid_name(&def.name) {
+            return Err(ApiError::InvalidName(def.name));
+        }
+        if self.by_name.contains_key(&def.name) {
+            return Err(ApiError::DuplicateName(def.name));
+        }
+        let expected = def.width as usize * def.height as usize * 4;
+        if def.width == 0 || def.height == 0 || def.rgba.len() != expected {
+            return Err(ApiError::InvalidDef(format!(
+                "texture {:?} is {}×{} but has {} bytes, expected {expected}",
+                def.name,
+                def.width,
+                def.height,
+                def.rgba.len()
+            )));
+        }
+        self.by_name.insert(def.name.clone(), self.defs.len());
+        self.defs.push(def);
+        Ok(())
+    }
+
+    pub fn get(&self, name: &str) -> Option<&TextureDef> {
+        self.by_name.get(name).map(|&i| &self.defs[i])
+    }
+
+    /// Every texture, in registration order.
+    pub fn iter(&self) -> impl Iterator<Item = &TextureDef> {
+        self.defs.iter()
+    }
+
+    /// Checks that every texture a block names is registered.
+    pub fn check_blocks(&self, blocks: &BlockRegistry) -> Result<(), ApiError> {
+        for (_, def) in blocks.iter() {
+            for name in def.textures.iter().flat_map(|t| t.names()) {
+                if self.get(name).is_none() {
+                    return Err(ApiError::UnknownTexture(name.to_owned()));
+                }
+            }
+        }
+        Ok(())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use api::FaceTextures;
 
     fn stone() -> BlockDef {
         BlockDef::new("test:stone", true, [128, 128, 128])
@@ -110,5 +169,37 @@ mod tests {
             Err(ApiError::InvalidName("stone".into()))
         );
         assert_eq!(reg.len(), 1);
+    }
+
+    fn texture(name: &str) -> TextureDef {
+        TextureDef { name: name.into(), width: 2, height: 1, rgba: vec![255; 8] }
+    }
+
+    #[test]
+    fn textures_look_up_by_name_and_check_their_size() {
+        let mut reg = TextureRegistry::default();
+        reg.register(texture("test:stone")).unwrap();
+        assert_eq!(reg.get("test:stone").unwrap().width, 2);
+        assert!(reg.get("test:dirt").is_none());
+        assert_eq!(reg.register(texture("test:stone")), Err(ApiError::DuplicateName("test:stone".into())));
+        assert_eq!(reg.register(texture("stone")), Err(ApiError::InvalidName("stone".into())));
+        let short = TextureDef { rgba: vec![0; 7], ..texture("test:short") };
+        assert!(matches!(reg.register(short), Err(ApiError::InvalidDef(_))));
+        let empty = TextureDef { width: 0, rgba: Vec::new(), ..texture("test:empty") };
+        assert!(matches!(reg.register(empty), Err(ApiError::InvalidDef(_))));
+    }
+
+    #[test]
+    fn blocks_must_name_registered_textures() {
+        let mut textures = TextureRegistry::default();
+        textures.register(texture("test:stone")).unwrap();
+        let mut blocks = BlockRegistry::default();
+        blocks.register(stone().with_textures(FaceTextures::all("test:stone"))).unwrap();
+        blocks.register(BlockDef::new("test:plain", true, [1, 2, 3])).unwrap();
+        assert_eq!(textures.check_blocks(&blocks), Ok(()));
+
+        let grass = FaceTextures { top: "test:grass".into(), ..FaceTextures::all("test:stone") };
+        blocks.register(BlockDef::new("test:grass", true, [0, 0, 0]).with_textures(grass)).unwrap();
+        assert_eq!(textures.check_blocks(&blocks), Err(ApiError::UnknownTexture("test:grass".into())));
     }
 }

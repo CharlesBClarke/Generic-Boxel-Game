@@ -159,7 +159,8 @@ fn play(movement: Movement, start: WorldPos) -> Vec<WorldPos> {
 
 #[test]
 fn the_whole_game_moves_the_same_near_and_far() {
-    let near = Simulation::with_mods(&[&base::BaseMod]).unwrap().spawn();
+    let data = data_mods::load(std::path::Path::new(base::DATA_DIR)).unwrap();
+    let near = Simulation::with_mods(&[&data, &base::BaseMod]).unwrap().spawn();
     let offset = base::FAR_ORIGIN.0;
     let far = WorldPos::new(near.cell() + offset, near.offset());
     for start in [near, far] {
@@ -242,7 +243,8 @@ fn a_trapping_controller_stops_without_crashing() {
 #[test]
 fn a_player_naming_an_unknown_controller_cannot_spawn() {
     // The base mod alone names `base:quake` but doesn't provide it.
-    let mut sim = Simulation::with_mods(&[&base::BaseMod]).unwrap();
+    let data = data_mods::load(std::path::Path::new(base::DATA_DIR)).unwrap();
+    let mut sim = Simulation::with_mods(&[&data, &base::BaseMod]).unwrap();
     let err = sim.spawn_player().unwrap_err();
     assert_eq!(err.to_string(), "no movement controller named \"base:quake\"");
 }

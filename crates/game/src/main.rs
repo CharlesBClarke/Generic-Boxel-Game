@@ -1,14 +1,28 @@
-//! Loads the base mod into the engine and opens the client. `--native-movement` runs the
-//! movement controller natively instead of as WebAssembly, for comparing the two.
+//! Loads the base mod into the engine and opens the client.
+//!
+//! - `--native-movement` runs the movement controller natively instead of as WebAssembly, for
+//!   comparing the two.
+//! - `--mods <dir>` reads the base mod's data half from `dir` instead of the source tree.
+
+use std::path::PathBuf;
 
 use game::Movement;
 
 fn main() {
-    let movement = match std::env::args().any(|a| a == "--native-movement") {
+    let args: Vec<String> = std::env::args().collect();
+    let movement = match args.iter().any(|a| a == "--native-movement") {
         true => Movement::Native,
         false => Movement::Wasm,
     };
+    let data = match args.iter().position(|a| a == "--mods") {
+        Some(i) => PathBuf::from(args.get(i + 1).unwrap_or_else(|| panic!("--mods needs a folder"))),
+        None => PathBuf::from(base::DATA_DIR),
+    };
     eprintln!("movement controller: {movement:?}");
-    let sim = game::load(movement).unwrap_or_else(|e| panic!("loading the game failed: {e}"));
+    eprintln!("base data: {}", data.display());
+    let sim = game::load_from(&data, movement).unwrap_or_else(|e| {
+        eprintln!("loading the game failed: {e}");
+        std::process::exit(1);
+    });
     client::run(sim);
 }
