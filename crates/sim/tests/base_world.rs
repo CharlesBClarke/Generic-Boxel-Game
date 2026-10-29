@@ -72,7 +72,7 @@ fn base_blocks_come_from_its_data_files() {
         (base::BRICK_SLAB, 1, Turning::Any, false),
         (base::STONE_STAIRS, 2, Turning::Any, false),
         (base::BRICK_STAIRS, 2, Turning::Any, false),
-        (base::WOOD_FENCE, 1, Turning::None, false),
+        (base::WOOD_FENCE, 1, Turning::Axis, true),
         (base::LOG, 1, Turning::Axis, true),
         (base::STONE, 1, Turning::None, false),
     ] {

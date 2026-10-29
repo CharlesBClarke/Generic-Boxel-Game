@@ -19,11 +19,14 @@ use crate::{ChunkMesh, Look, PendingToggles, RenderOrigin, Sim, coords, mesher};
 /// pixel-scrolling devices.
 const PIXELS_PER_SLOT: f32 = 40.0;
 
-/// Which block gets placed. There's no inventory yet, so every placeable block is on offer.
+/// Which block gets placed, and how. There's no inventory yet, so every placeable block is on
+/// offer.
 #[derive(Resource, Default)]
 pub struct Palette {
     pub slot: usize,
     scrolled: f32,
+    /// Blocks go against the aimed-at face with their back instead of their bottom.
+    pub flipped: bool,
 }
 
 impl Palette {
@@ -72,6 +75,9 @@ pub(crate) fn edit_input(
     }
     if controls.place_block.just_pressed(&keys, &mouse) {
         toggles.place_pressed = true;
+    }
+    if controls.flip.just_pressed(&keys, &mouse) {
+        palette.flipped = !palette.flipped;
     }
 
     let count = placeable_blocks(sim.0.blocks()).len();
@@ -143,7 +149,7 @@ pub(crate) fn update_ghost(
     let place = sim
         .0
         .target(look.yaw, look.pitch)
-        .and_then(|hit| sim.0.placement(&hit, palette.selected(blocks), look.yaw, look.pitch));
+        .and_then(|hit| sim.0.placement(&hit, palette.selected(blocks), look.yaw, look.pitch, palette.flipped));
     let Some(place) = place else {
         visibility.set_if_neq(Visibility::Hidden);
         return;
@@ -198,8 +204,14 @@ pub(crate) fn remesh_changed_chunks(
     }
 }
 
-/// The palette along the bottom of the screen, with the selected block in brackets.
-pub(crate) fn update_palette_hud(sim: Res<Sim>, palette: Res<Palette>, mut text: Single<&mut Text, With<PaletteHud>>) {
+/// The palette along the bottom of the screen, with the selected block in brackets, and which
+/// side of a block goes against the face.
+pub(crate) fn update_palette_hud(
+    sim: Res<Sim>,
+    palette: Res<Palette>,
+    controls: Res<Controls>,
+    mut text: Single<&mut Text, With<PaletteHud>>,
+) {
     let blocks = sim.0.blocks();
     let line = placeable_blocks(blocks)
         .iter()
@@ -210,6 +222,8 @@ pub(crate) fn update_palette_hud(sim: Res<Sim>, palette: Res<Palette>, mut text:
         })
         .collect::<Vec<_>>()
         .join("  ");
+    let side = if palette.flipped { "back" } else { "bottom" };
+    let line = format!("{line}\n{side} against the face ({} flips)", controls.flip.label());
     if text.0 != line {
         text.0 = line;
     }
@@ -231,8 +245,8 @@ mod tests {
         blocks.register(BlockDef::new("test:bedrock", true, [0, 0, 0]).with_placeable(false)).unwrap();
         let dirt = blocks.register(BlockDef::new("test:dirt", true, [0, 0, 0])).unwrap();
         assert_eq!(placeable_blocks(&blocks), [stone, dirt]);
-        assert_eq!(Palette { slot: 1, scrolled: 0.0 }.selected(&blocks), dirt);
-        assert_eq!(Palette { slot: 5, scrolled: 0.0 }.selected(&blocks), BlockId::EMPTY);
+        assert_eq!(Palette { slot: 1, ..Default::default() }.selected(&blocks), dirt);
+        assert_eq!(Palette { slot: 5, ..Default::default() }.selected(&blocks), BlockId::EMPTY);
     }
 
     #[test]

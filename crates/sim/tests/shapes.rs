@@ -98,14 +98,27 @@ fn space(sim: &Simulation, o: Occupant) -> Vec<BlockBox> {
 const LEVEL: f32 = 0.0;
 
 #[test]
-fn a_slab_aimed_at_the_top_of_a_slab_goes_above_it() {
+fn a_slab_aimed_at_the_top_of_a_slab_fills_the_top_half() {
     let sim = base_sim();
-    let slab = id(&sim, base::BRICK_SLAB);
     let cell = BoxelPos::new(-8, -4, 0);
-    let place = sim.placement(&hit(cell, I64Vec3::Z, Vec3::new(0.5, 0.5, 0.5)), slab, EAST, LEVEL).unwrap();
-    assert!(place.allowed);
-    assert_eq!(place.pos, BoxelPos::new(-8, -4, 1), "the same space is taken, so the next boxel up");
-    assert_eq!(space(&sim, place.occupant), [BlockBox::new([0, 0, 0], [16, 16, 8])]);
+    let top = hit(cell, I64Vec3::Z, Vec3::new(0.5, 0.5, 0.5));
+    // The same material or another one.
+    for name in [base::BRICK_SLAB, base::STONE_SLAB] {
+        let place = sim.placement(&top, id(&sim, name), EAST, -0.5, false).unwrap();
+        assert!(place.allowed, "{name}");
+        assert_eq!(place.pos, cell, "{name}");
+        assert_eq!(space(&sim, place.occupant), [BlockBox::new([0, 0, 8], [16, 16, 16])], "{name}");
+    }
+}
+
+#[test]
+fn two_blocks_never_fill_the_same_space() {
+    let sim = base_sim();
+    // A stone slab aimed at the floor under the brick slab path would fill the brick slab's
+    // space, so it goes to the boxel on the far side of the face, which is that same boxel.
+    let floor = face(BoxelPos::new(-10, -4, -1), I64Vec3::Z);
+    let place = sim.placement(&floor, id(&sim, base::STONE_SLAB), EAST, -0.5, false).unwrap();
+    assert!(!place.allowed);
 }
 
 #[test]
@@ -114,7 +127,7 @@ fn a_slab_against_a_ceiling_over_a_slab_makes_a_double_slab() {
     let slab = id(&sim, base::BRICK_SLAB);
     // Aimed up at the underside of the boxel above the slab at (-8, -4, 0).
     let ceiling = face(BoxelPos::new(-8, -4, 1), I64Vec3::NEG_Z);
-    let place = sim.placement(&ceiling, slab, EAST, 0.5).unwrap();
+    let place = sim.placement(&ceiling, slab, EAST, 0.5, false).unwrap();
     assert!(place.allowed);
     assert_eq!(place.pos, BoxelPos::new(-8, -4, 0));
     assert_eq!(space(&sim, place.occupant), [BlockBox::new([0, 0, 8], [16, 16, 16])]);
@@ -125,7 +138,7 @@ fn a_full_block_on_a_slab_goes_above_it() {
     let sim = base_sim();
     let stone = id(&sim, base::STONE);
     let cell = BoxelPos::new(-8, -4, 0);
-    let place = sim.placement(&hit(cell, I64Vec3::Z, Vec3::new(0.5, 0.5, 0.5)), stone, EAST, LEVEL).unwrap();
+    let place = sim.placement(&hit(cell, I64Vec3::Z, Vec3::new(0.5, 0.5, 0.5)), stone, EAST, LEVEL, false).unwrap();
     assert!(place.allowed);
     assert_eq!(place.pos, BoxelPos::new(-8, -4, 1));
 }
@@ -135,16 +148,16 @@ fn slabs_lie_against_the_face_aimed_at() {
     let sim = base_sim();
     let slab = id(&sim, base::STONE_SLAB);
     // On the floor: a bottom slab.
-    let place = sim.placement(&face(BoxelPos::new(-14, 0, -1), I64Vec3::Z), slab, EAST, -0.5).unwrap();
+    let place = sim.placement(&face(BoxelPos::new(-14, 0, -1), I64Vec3::Z), slab, EAST, -0.5, false).unwrap();
     assert_eq!(place.pos, BoxelPos::new(-14, 0, 0));
     assert_eq!(space(&sim, place.occupant), [BlockBox::new([0, 0, 0], [16, 16, 8])]);
     // On the north side of the platform: a slab standing against the south side of its boxel.
-    let place = sim.placement(&face(BoxelPos::new(-10, 1, 2), I64Vec3::Y), slab, -1.6, LEVEL).unwrap();
+    let place = sim.placement(&face(BoxelPos::new(-10, 1, 2), I64Vec3::Y), slab, -1.6, LEVEL, false).unwrap();
     assert_eq!(place.pos, BoxelPos::new(-10, 2, 2));
     assert_eq!(space(&sim, place.occupant), [BlockBox::new([0, 0, 0], [16, 8, 16])]);
     // The same aim gives the same slab whatever the look.
     for (yaw, pitch) in [(0.3, 0.4), (-2.0, -0.4), (-1.6, 1.2)] {
-        let o = sim.placement(&face(BoxelPos::new(-10, 1, 2), I64Vec3::Y), slab, yaw, pitch).unwrap().occupant;
+        let o = sim.placement(&face(BoxelPos::new(-10, 1, 2), I64Vec3::Y), slab, yaw, pitch, false).unwrap().occupant;
         assert_eq!(space(&sim, o), [BlockBox::new([0, 0, 0], [16, 8, 16])]);
     }
 }
@@ -156,7 +169,7 @@ fn a_slab_aimed_at_a_post_shares_the_post_boxel() {
     // A post on its own, then a slab aimed at the post's east side.
     let fence = id(&sim, base::WOOD_FENCE);
     let cell = BoxelPos::new(-14, 2, 0);
-    let place = sim.placement(&face(BoxelPos::new(-14, 2, -1), I64Vec3::Z), fence, EAST, LEVEL).unwrap();
+    let place = sim.placement(&face(BoxelPos::new(-14, 2, -1), I64Vec3::Z), fence, EAST, LEVEL, false).unwrap();
     assert_eq!(place.pos, cell);
     // Placing for real goes through the tick, so aim at the floor from above.
     feet_at(&mut sim, -14, 2, 2, Vec3::new(0.5, 0.5, 0.0));
@@ -172,10 +185,11 @@ fn a_slab_aimed_at_a_post_shares_the_post_boxel() {
     assert_eq!(sim.universe().main().cell(cell), [Occupant::new(fence)]);
 
     let side = hit(cell, I64Vec3::X, Vec3::new(10.0 / 16.0, 0.5, 0.25));
-    let place = sim.placement(&side, slab, WEST, LEVEL).unwrap();
+    let place = sim.placement(&side, slab, WEST, LEVEL, false).unwrap();
     assert!(place.allowed);
     assert_eq!(place.pos, cell);
-    assert_eq!(space(&sim, place.occupant), [BlockBox::new([0, 0, 0], [8, 16, 16])], "against the west side");
+    // Aimed from inside the post's boxel, so it goes against the boxel's far (east) side.
+    assert_eq!(space(&sim, place.occupant), [BlockBox::new([8, 0, 0], [16, 16, 16])], "against the east side");
 }
 
 #[test]
@@ -184,17 +198,17 @@ fn stairs_rise_the_way_the_player_looks() {
     let stairs = id(&sim, base::STONE_STAIRS);
     let on_floor = face(BoxelPos::new(-14, 0, -1), I64Vec3::Z);
     for (yaw, rises) in [(EAST, [1, 0, 0]), (WEST, [-1, 0, 0]), (1.5, [0, 1, 0]), (-1.6, [0, -1, 0])] {
-        let o = sim.placement(&on_floor, stairs, yaw, -0.5).unwrap().occupant.orientation;
+        let o = sim.placement(&on_floor, stairs, yaw, -0.5, false).unwrap().occupant.orientation;
         assert_eq!(o.apply([0, 1, 0]), rises, "looking along {yaw}");
         assert_eq!(o.apply([0, 0, 1]), [0, 0, 1], "right way up");
     }
     // Against a ceiling: upside down, still rising the way the player looks.
     let ceiling = face(BoxelPos::new(-14, 0, 3), I64Vec3::NEG_Z);
-    let o = sim.placement(&ceiling, stairs, 1.5, 0.5).unwrap().occupant.orientation;
+    let o = sim.placement(&ceiling, stairs, 1.5, 0.5, false).unwrap().occupant.orientation;
     assert_eq!((o.apply([0, 1, 0]), o.apply([0, 0, 1])), ([0, 1, 0], [0, 0, -1]));
     // Against a wall, looking up along it: the bottom against the wall, rising upward.
     let wall = face(BoxelPos::new(-10, 1, 2), I64Vec3::Y);
-    let o = sim.placement(&wall, stairs, -1.6, 0.8).unwrap().occupant.orientation;
+    let o = sim.placement(&wall, stairs, -1.6, 0.8, false).unwrap().occupant.orientation;
     assert_eq!((o.apply([0, 1, 0]), o.apply([0, 0, 1])), ([0, 0, 1], [0, 1, 0]));
 }
 
@@ -204,7 +218,7 @@ fn logs_line_up_with_the_face_aimed_at() {
     let log = id(&sim, base::LOG);
     let platform = BoxelPos::new(-10, 0, 1);
     for normal in [I64Vec3::X, I64Vec3::Y, I64Vec3::Z, I64Vec3::NEG_Y] {
-        let o = sim.placement(&face(platform, normal), log, 0.7, 0.3).unwrap().occupant.orientation;
+        let o = sim.placement(&face(platform, normal), log, 0.7, 0.3, false).unwrap().occupant.orientation;
         let along = o.apply([0, 0, 1]).map(|c| c.abs());
         let expected = normal.abs().to_array().map(|c| c as i32);
         assert_eq!(along, expected, "aimed at the face toward {normal}");
@@ -216,7 +230,7 @@ fn plain_blocks_never_turn() {
     let sim = base_sim();
     let stone = id(&sim, base::STONE);
     let wall = face(BoxelPos::new(-10, 1, 2), I64Vec3::Y);
-    let place = sim.placement(&wall, stone, -1.6, 0.8).unwrap();
+    let place = sim.placement(&wall, stone, -1.6, 0.8, false).unwrap();
     assert_eq!(place.occupant, Occupant::new(stone));
 }
 
@@ -226,7 +240,7 @@ fn a_refused_placement_still_says_where_it_would_go() {
     let slab = id(&sim, base::BRICK_SLAB);
     // A bottom slab aimed at the floor under the slab path has the same slab in the way, and
     // the boxel on the far side of the face is that same boxel.
-    let place = sim.placement(&face(BoxelPos::new(-11, -4, -1), I64Vec3::Z), slab, EAST, -0.5).unwrap();
+    let place = sim.placement(&face(BoxelPos::new(-11, -4, -1), I64Vec3::Z), slab, EAST, -0.5, false).unwrap();
     assert!(!place.allowed);
     assert_eq!(place.pos, BoxelPos::new(-11, -4, 0));
 }
@@ -270,4 +284,72 @@ fn world_building_refuses_blocks_that_cannot_share() {
         Simulation::with_mods(&mods),
         Err(sim::SimError::Api(ApiError::CannotShare(_)))
     ));
+}
+
+#[test]
+fn crouching_on_the_stairs_never_drops_more_than_the_guard_allows() {
+    // Wiggle about crouched on the staircase near its north side, which drops to the floor.
+    // Stepping down a stair is allowed (half a boxel); falling off the side is not.
+    let guard = 0.6;
+    for seed in 0..8u32 {
+        let mut sim = base_sim();
+        feet_at(&mut sim, -8, 1, 3, Vec3::new(0.3, 0.7, 0.0));
+        let crouch = PlayerInput { crouch: true, ..Default::default() };
+        run(&mut sim, &crouch, 60);
+        let mut rng = seed.wrapping_mul(2_654_435_761).wrapping_add(12_345);
+        let mut left_ground = None;
+        for tick in 0..900 {
+            if tick % 4 == 0 {
+                rng ^= rng << 13;
+                rng ^= rng >> 17;
+                rng ^= rng << 5;
+            }
+            let yaw = (rng % 8) as f32 * std::f32::consts::FRAC_PI_4;
+            sim.step(&PlayerInput { movement: Vec2::Y, yaw, crouch: true, ..Default::default() });
+            let (on_ground, z) = (sim.player().unwrap().on_ground(), feet_z(&sim));
+            match (on_ground, left_ground) {
+                (false, None) => left_ground = Some(z),
+                (true, Some(from)) => {
+                    let drop = from - z;
+                    assert!(drop <= guard + 1e-3, "seed {seed}, tick {tick}: fell {drop} while crouched");
+                    left_ground = None;
+                }
+                _ => {}
+            }
+        }
+    }
+}
+
+#[test]
+fn flipped_slabs_stick_out_level_from_a_wall() {
+    let sim = base_sim();
+    let slab = id(&sim, base::STONE_SLAB);
+    let wall = |z: f32| hit(BoxelPos::new(-10, 1, 2), I64Vec3::Y, Vec3::new(0.5, 1.0, z));
+    let low = sim.placement(&wall(0.25), slab, -1.6, LEVEL, true).unwrap();
+    assert_eq!(low.pos, BoxelPos::new(-10, 2, 2));
+    assert_eq!(space(&sim, low.occupant), [BlockBox::new([0, 0, 0], [16, 16, 8])], "a bottom slab");
+    let high = sim.placement(&wall(0.8), slab, -1.6, LEVEL, true).unwrap();
+    assert_eq!(space(&sim, high.occupant), [BlockBox::new([0, 0, 8], [16, 16, 16])], "a top slab");
+}
+
+#[test]
+fn flipped_stairs_stand_with_their_back_to_the_wall() {
+    let sim = base_sim();
+    let stairs = id(&sim, base::STONE_STAIRS);
+    let wall = face(BoxelPos::new(-10, 1, 2), I64Vec3::Y);
+    let o = sim.placement(&wall, stairs, -1.6, LEVEL, true).unwrap().occupant.orientation;
+    // Their tall back (+Y) toward the wall to the south, right way up.
+    assert_eq!((o.apply([0, 1, 0]), o.apply([0, 0, 1])), ([0, -1, 0], [0, 0, 1]));
+}
+
+#[test]
+fn flipped_on_the_floor_the_top_points_the_way_the_player_looks() {
+    let sim = base_sim();
+    let floor = face(BoxelPos::new(-14, 0, -1), I64Vec3::Z);
+    let o = sim.placement(&floor, id(&sim, base::STONE_STAIRS), EAST, -0.5, true).unwrap().occupant.orientation;
+    assert_eq!((o.apply([0, 1, 0]), o.apply([0, 0, 1])), ([0, 0, -1], [1, 0, 0]));
+    let log = sim.placement(&floor, id(&sim, base::LOG), EAST, -0.5, true).unwrap().occupant.orientation;
+    assert_eq!(log.apply([0, 0, 1]).map(|c| c.abs()), [1, 0, 0], "a log lies the way the player looks");
+    let stone = sim.placement(&floor, id(&sim, base::STONE), EAST, -0.5, true).unwrap().occupant;
+    assert_eq!(stone, Occupant::new(id(&sim, base::STONE)), "plain blocks still never turn");
 }

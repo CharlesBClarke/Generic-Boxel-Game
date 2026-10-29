@@ -119,7 +119,7 @@ pub enum ShareError {
     Crowded,
     /// A full block shares its boxel with nothing.
     Full,
-    /// The same block is already there, filling the same space.
+    /// Another block already fills exactly the same space.
     Duplicate,
     /// Not a registered block.
     Unknown,
@@ -130,16 +130,16 @@ impl std::fmt::Display for ShareError {
         f.write_str(match self {
             ShareError::Crowded => "the boxel is full of other blocks",
             ShareError::Full => "a full block shares its boxel with nothing",
-            ShareError::Duplicate => "the same block is already there, filling the same space",
+            ShareError::Duplicate => "another block already fills exactly the same space",
             ShareError::Unknown => "not a registered block",
         })
     }
 }
 
 /// Whether `new` may join a boxel that holds `existing`. Loose for now: up to
-/// [`MAX_OCCUPANTS`], no full block shares, and no block twice filling the same space (a slab
-/// turned about its own axis is still the same slab). Overlap is allowed, so a fence post can
-/// poke through a slab.
+/// [`MAX_OCCUPANTS`], no full block shares, and no two blocks fill exactly the same space,
+/// whatever they're made of (a slab turned about its own axis still fills the same space).
+/// Overlap is allowed, so a fence post can poke through a slab.
 pub fn can_share(existing: &[Occupant], new: Occupant, blocks: &BlockRegistry) -> Result<(), ShareError> {
     let def = blocks.get(new.block).ok_or(ShareError::Unknown)?;
     if existing.is_empty() {
@@ -152,12 +152,13 @@ pub fn can_share(existing: &[Occupant], new: Occupant, blocks: &BlockRegistry) -
         return Err(ShareError::Full);
     }
     let space = |o: Occupant| {
-        let mut boxes: Vec<_> = def.shape.iter().map(|&b| o.orientation.apply_box(b)).collect();
+        let shape = blocks.get(o.block).map_or(&[][..], |d| &d.shape[..]);
+        let mut boxes: Vec<_> = shape.iter().map(|&b| o.orientation.apply_box(b)).collect();
         boxes.sort_by_key(|b| (b.min, b.max));
         boxes
     };
     let filled = space(new);
-    if existing.iter().any(|&o| o.block == new.block && space(o) == filled) {
+    if existing.iter().any(|&o| space(o) == filled) {
         return Err(ShareError::Duplicate);
     }
     Ok(())
@@ -242,6 +243,11 @@ mod tests {
         assert_eq!(ok(&[Occupant::new(slab)], Occupant::new(slab)), Err(ShareError::Duplicate));
         let spun = Occupant::turned(slab, Orientation::quarter_turns(2, 1));
         assert_eq!(ok(&[Occupant::new(slab)], spun), Err(ShareError::Duplicate), "the same space, turned");
+        let mut blocks = blocks;
+        let other = blocks.register(BlockDef::new("test:other_slab", true, [0; 3]).with_shape(vec![SLAB])).unwrap();
+        let ok = |existing: &[Occupant], new| can_share(existing, new, &blocks);
+        assert_eq!(ok(&[Occupant::new(slab)], Occupant::new(other)), Err(ShareError::Duplicate), "another material");
+        assert_eq!(ok(&[Occupant::new(slab)], Occupant::turned(other, flipped())), Ok(()));
         assert_eq!(ok(&[Occupant::new(slab)], Occupant::new(stone)), Err(ShareError::Full));
         assert_eq!(ok(&[Occupant::new(stone)], Occupant::new(slab)), Err(ShareError::Full));
 

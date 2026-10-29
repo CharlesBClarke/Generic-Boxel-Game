@@ -76,11 +76,14 @@ textures = "brick"
 shape = "stairs"
 turning = "any"
 
-# A bare post for now; fences joining their neighbors come later.
+# A bare post for now; fences joining their neighbors come later. It can lie on its side as a
+# beam, with the grain along it.
 [[block]]
 name = "wood_fence"
 textures = "wood"
 shape = "post"
+turning = "axis"
+turn_textures = true
 
 [[block]]
 name = "log"

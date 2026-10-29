@@ -106,7 +106,7 @@ A run of small toy slices. Each one takes a single game-feel feature that doesn'
 
 #### Block shapes and shared cells (branch `toy-block-shapes`)
 
-**Stage:** Verify (2026-10-28). Implemented and tested; waiting for the user to play it again after the plan change below.
+**Stage:** Verify (2026-10-28). Implemented and tested; waiting for the user to play it again after the second plan change below.
 
 **Goal:** slabs, stairs, fences and logs placed in several ways depending on where you aim, and two things sharing one cell, like a fence and a slab. This is the engine's general form of Minecraft's waterlogging: the design doc's "multiple occupants per boxel".
 
@@ -149,7 +149,7 @@ A run of small toy slices. Each one takes a single game-feel feature that doesn'
 - **Content.** Stone and brick slabs and stairs, a wood fence post and a log, with Minetest Game's `default_wood` (BlockMen), `default_tree` and `default_tree_top` (Cisoun) credited in `mods/base/CREDITS.md`. The shapes corner west of spawn has a staircase up to a platform, a brick slab path with posts through two slabs, a lone post, a double slab, and logs lying and standing. The debug teleport has a new `shapes` waypoint at its foot.
 - **Client.** The mesher draws each occupant's turned boxes with textures cropped to each box, and hides a face only when it's on the boxel's side against a full block. The outline traces the aimed occupant's boxes. The ghost is a see-through mesh of the placed occupant, slightly shrunk so it doesn't flicker against neighbors, red when refused.
 - *API changes:* `Orientation` (with `from_axes`), `BlockBox`, `Turning`, `BlockDef.shape`, `turning`, `turn_textures`, `with_shape`, `with_turning`, `with_turn_textures`, `is_full`, `validate`, `WorldEdit::add_block`, `ApiError::CannotShare`.
-- 201 tests pass in the workspace after the plan change; clippy is clean.
+- 206 tests pass in the workspace after the second plan change; clippy is clean.
 
 *Changes from the plan, found while building* (each small; flagged for the user)
 - **Step height 0.6 in `base`.** The plan said stairs would use "the existing step height", but the base player's was 0, so stairs couldn't be walked up. 0.6 is Minecraft's: enough for slabs and stairs, not for full blocks.
@@ -164,12 +164,22 @@ A run of small toy slices. Each one takes a single game-feel feature that doesn'
 - The fall back to the boxel on the far side of the face stays.
 - *Fixed on its own branch first:* the camera dip and snap when stepping up stairs (`fix-step-smoothing`, see Fixes), merged into this branch.
 
+*Second plan change at the user's request* (2026-10-28, after a second play)
+- **A flip key** (`flip`, middle mouse by default, added to the user's controls file). It switches which side of a block goes against the aimed-at face: its bottom (the normal rule) or its back (+Y). Flipped on a wall, a block stands upright, or upside down when aimed at the upper half, so a slab sticks out level from the wall and stairs stand with their tall back to it; flipped on a floor or ceiling, its top points the way the player looks. The HUD shows which side is in use. Crouch was considered and rejected: it already sinks the robot and holds it at edges, and one input should do one thing.
+- **A slab aimed at the top of a slab fills the top half,** whatever the material. General form: a face inside a boxel is aimed at from that boxel, so a block placed into that boxel goes against its far side, facing back toward the face. A slab aimed at a fence post's side fills the far half of the post's boxel.
+- **No two blocks fill exactly the same space,** whatever they're made of (before, a brick slab could land in a stone slab's space).
+- **The fence post can lie on its side** as a beam (`turning = "axis"`, grain turning with it).
+- **Why double slabs are here:** mainly so the engine visibly supports several blocks per boxel from the start, which the user sees as a fundamental Minecraft limitation. How players reach the feature in the long run is deferred (see the Interaction controls backlog item).
+- **Fixed in this toy:** crouched on the stairs, wiggling could slide the body off the staircase's side. The edge guard allowed the half-boxel step down onto a sliver of support, then switched off during that short fall, so the body drifted off the sliver. A fall the guard allowed is now guarded until landing, with what's left of the allowed drop. Only partial blocks make such small drops, so it belongs to this toy. Test: wiggling crouched on the stairs with 8 random patterns never falls more than the guard allows.
+- *API debt:* `flip` joins the fixed input actions.
+
 *Noticed while testing:* standing on a slab, a fence post is only 0.5 above your feet, so the 0.6 step height walks you onto the post. Minecraft makes fence collision 1.5 high for this; worth deciding when fences join their neighbors.
 
 ### Toy backlog
 
 - ~~**Block shapes and placement.**~~ Now the current toy, as Block shapes and shared cells. Suggested order after it: inventory and items, then interaction controls and block interactions, then combat feel.
 - **Interaction controls.** Split out of Block editing (2026-10-25). Fix Minecraft's ambiguous right click once there are things to use, like crystals or devices. Principles: one input, one action (no catch-all "use" button that changes meaning with what you hold or look at), and what you see is what you get (a ghost of the result, red when not allowed).
+  - *Added 2026-10-28:* decide how players reach shared boxels. Placing into an occupied boxel makes placement harder to read (every click has two possible boxels), so it may become a deliberate trick (a key, a tool, or a property of blocks like water) instead of happening on any click. Decide once combat and usable items show how crowded the controls get; the engine keeps full support either way. Also from play: two slabs at right angles make a stair, so a separate stairs block may not be needed.
 - **Block interactions.** Unstable crystals: two block types, a touch trigger, a directional blast, and a way to push blocks so devices are possible.
 - **Generative crafting.** A few materials, a few property ingredients and a capacity limit.
 - **Combat feel.** Weighty hits and aggressive, Doom-style combat.
@@ -199,7 +209,7 @@ Ideas that come up while playing get added here.
 
 Shortcuts taken around the API, each with the toy that needed it. Paid down in seam slices.
 
-- **Fixed input actions** (movement toy; break, place and palette slots added by the block editing toy, crouch by the advanced movement toy). Move, jump, sprint, crouch, break, place, the palette slots and the debug keys are a fixed engine set in `sim::PlayerInput` and `client::controls`. Mods can't define their own actions. API version: mods register named actions with default bindings, and controllers read actions by name.
+- **Fixed input actions** (movement toy; break, place and palette slots added by the block editing toy, crouch by the advanced movement toy, flip by the block shapes toy). Move, jump, sprint, crouch, break, place, the palette slots and the debug keys are a fixed engine set in `sim::PlayerInput` and `client::controls`. Mods can't define their own actions. API version: mods register named actions with default bindings, and controllers read actions by name.
 - **Chase drill in the client** (advanced movement toy, temporary). The ghost and objectives in `client::drill` are game logic living in the client, and it finds landmarks by the `landmark:` prefix on waypoint names. Remove the drill rather than moving it into the API, unless a later toy wants real enemies, which would need entities and a game-rules hook in the API.
 - **Camera feel in the client** (movement toy). FOV widening, head bob, landing dip and step smoothing live in `client::feel`, so mods can't change them. API version: a client-side mod API for camera effects, presumably driven by the same tunables.
 

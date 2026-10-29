@@ -162,14 +162,18 @@ impl Simulation {
     /// What placing `block` aimed at `hit`, looking along `yaw` and `pitch`, would do, or `None`
     /// if there's nothing to place: the block isn't placeable or the hit has no face.
     ///
-    /// The block goes into the boxel holding the point just in front of the aimed-at face, so a
-    /// slab aimed at a fence post shares the post's boxel. If it can't share that boxel, it goes
-    /// into the boxel on the far side of the face instead, like a full block placed on a slab.
+    /// The block goes into the boxel holding the point just in front of the aimed-at face. If it
+    /// can't share that boxel, it goes into the boxel on the far side of the face instead, like
+    /// a full block placed on a slab. A solid block inside the player is only allowed if a
+    /// push-out rule is registered and there's room to push the player out.
+    ///
     /// Every block is turned by the same rule, kept as far as its [`Turning`] allows: its bottom
-    /// against the aimed-at face, its front (+Y) the way the player looks. A solid block inside
-    /// the player is only allowed if a push-out rule is registered and there's room to push the
-    /// player out.
-    pub fn placement(&self, hit: &Hit, block: BlockId, yaw: f32, pitch: f32) -> Option<PlaceTarget> {
+    /// against the aimed-at face and its front (+Y) the way the player looks, or with `flipped`,
+    /// its back against the face and upright (see [`orient`]). A face inside a boxel, like the
+    /// top of a bottom slab, is aimed at from that boxel, so a block placed into the boxel
+    /// itself goes against the boxel's far side, facing back toward the face: a slab on a slab
+    /// fills the top half.
+    pub fn placement(&self, hit: &Hit, block: BlockId, yaw: f32, pitch: f32, flipped: bool) -> Option<PlaceTarget> {
         let def = self.blocks.get(block).filter(|def| def.placeable)?;
         if hit.normal == I64Vec3::ZERO {
             return None;
@@ -177,9 +181,13 @@ impl Simulation {
         let front = hit.point + hit.normal.as_vec3() * IN_FRONT;
         let inside = hit.pos.offset(front.floor().as_i64vec3());
         let grid = self.universe.main();
-        let occupant = Occupant::turned(block, orient(def.turning, hit.normal, look_direction(yaw, pitch)));
+        let look = look_direction(yaw, pitch);
         let mut first = None;
         for pos in [inside, hit.adjacent()] {
+            let face = if pos == hit.pos { -hit.normal } else { hit.normal };
+            // The aimed-at point in this boxel's space.
+            let upper = (front - (pos.0 - hit.pos.0).as_vec3()).z > 0.5;
+            let occupant = Occupant::turned(block, orient(def.turning, face, look, flipped, upper));
             if can_share(grid.cell(pos), occupant, &self.blocks).is_ok() {
                 return Some(PlaceTarget { pos, occupant, allowed: self.body_allows(pos, occupant) });
             }
@@ -234,7 +242,8 @@ impl Simulation {
         };
         if breaking {
             self.remove_occupant(hit.pos, hit.occupant);
-        } else if let Some(place) = self.placement(&hit, input.place_block, input.yaw, input.pitch)
+        } else if let Some(place) =
+            self.placement(&hit, input.place_block, input.yaw, input.pitch, input.place_flipped)
             && place.allowed
         {
             self.add_occupant(place.pos, place.occupant);
@@ -384,29 +393,42 @@ impl<T: Terrain> Terrain for WithBoxes<'_, T> {
     }
 }
 
-/// How the placement rule turns a block aimed at a face with outward `normal` by a player
-/// looking along `look`: its bottom against the face and its front the way the player looks,
-/// rounded to the nearest axis along the face, kept as far as `turning` allows.
-fn orient(turning: Turning, normal: I64Vec3, look: Vec3) -> Orientation {
-    let up = normal.to_array().map(|c| c as i32);
-    let axis = normal.abs().max_position();
+/// How the placement rule turns a block placed against a face whose outward normal is `face`,
+/// by a player looking along `look`, kept as far as `turning` allows.
+///
+/// Normally its bottom goes against the face and its front (+Y) the way the player looks,
+/// rounded to the nearest axis along the face. `flipped` puts its back (+Y) against the face
+/// instead: on a wall it stands upright, or upside down when aimed at the upper half of the
+/// boxel (`upper`), so a slab sticks out level from the wall; on a floor or ceiling its top
+/// points the way the player looks.
+fn orient(turning: Turning, face: I64Vec3, look: Vec3, flipped: bool, upper: bool) -> Orientation {
+    let normal = face.to_array().map(|c| c as i32);
+    let axis = face.abs().max_position();
+    // The look along the face, rounded to the strongest of the face's two axes. Looking
+    // straight at the face leaves no direction, so any one will do.
+    let along_face = || {
+        let mut along = look;
+        along[axis] = 0.0;
+        let strongest = along.abs().max_position();
+        let mut dir = [0i32; 3];
+        if strongest == axis {
+            dir[(axis + 1) % 3] = 1;
+        } else {
+            dir[strongest] = if along[strongest] < 0.0 { -1 } else { 1 };
+        }
+        dir
+    };
+    let (up, forward) = if !flipped {
+        (normal, along_face())
+    } else if axis == 2 {
+        (along_face(), normal.map(|c| -c))
+    } else {
+        (if upper { [0, 0, -1] } else { [0, 0, 1] }, normal.map(|c| -c))
+    };
     match turning {
         Turning::None => Orientation::IDENTITY,
-        Turning::Axis => Orientation::z_along(axis),
-        Turning::Any => {
-            // The look along the face, rounded to the strongest of the face's two axes. Looking
-            // straight at the face leaves no direction, so any one will do.
-            let mut along = look;
-            along[axis] = 0.0;
-            let strongest = along.abs().max_position();
-            let mut forward = [0i32; 3];
-            forward[strongest] = if along[strongest] < 0.0 { -1 } else { 1 };
-            if strongest == axis {
-                forward = [0; 3];
-                forward[(axis + 1) % 3] = 1;
-            }
-            Orientation::from_axes(up, forward).expect("a face axis and an axis along it")
-        }
+        Turning::Axis => Orientation::z_along(up.iter().position(|&c| c != 0).expect("a unit axis")),
+        Turning::Any => Orientation::from_axes(up, forward).expect("two axes at right angles"),
     }
 }
 

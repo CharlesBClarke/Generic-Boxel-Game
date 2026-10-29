@@ -62,6 +62,8 @@ pub struct PlayerInput {
     pub place_held: bool,
     /// The block to place. Empty places nothing.
     pub place_block: BlockId,
+    /// Place blocks with their back, rather than their bottom, against the aimed-at face.
+    pub place_flipped: bool,
 }
 
 /// How a body gets out of a block that appeared inside it.
@@ -97,6 +99,10 @@ pub struct Player {
     last_landing_speed: f32,
     stepped_total: f64,
     crouch_shift_total: f64,
+    /// A drop the edge guard allowed, still being fallen: the guard's limit and the feet's height
+    /// where the fall began. The guard keeps working until it lands, so the body can't drift off
+    /// a narrow ledge on the way down.
+    guarded_fall: Option<(f32, f64)>,
 }
 
 impl Player {
@@ -126,6 +132,7 @@ impl Player {
             last_landing_speed: 0.0,
             stepped_total: 0.0,
             crouch_shift_total: 0.0,
+            guarded_fall: None,
         }
     }
 
@@ -267,6 +274,17 @@ impl Player {
             self.resize(out.height.unwrap_or(self.shape.height), terrain);
             edge_guard = out.edge_guard.filter(|_| self.on_ground && self.velocity.z <= 0.0);
         }
+        // Still falling a drop the guard allowed, crouched and not rising: guard what's left of it.
+        let falling = self.velocity.z <= 0.0 && input.crouch && !self.flying && !self.on_ground;
+        match self.guarded_fall {
+            Some((drop, from)) if falling && edge_guard.is_none() => {
+                edge_guard = Some((drop - (from - self.feet_z()) as f32).max(0.0));
+            }
+            Some(_) if !falling => self.guarded_fall = None,
+            _ => {}
+        }
+        let guard_before = edge_guard;
+        let feet_before = self.feet_z();
 
         let delta = self.velocity * dt;
         let (mut moved, stepped) = self.sweep(delta, terrain);
@@ -289,6 +307,11 @@ impl Player {
 
         let was_on_ground = self.on_ground;
         self.on_ground = self.velocity.z <= 0.0 && self.touching_ground(terrain);
+        if self.on_ground {
+            self.guarded_fall = None;
+        } else if was_on_ground && let Some(drop) = guard_before {
+            self.guarded_fall = Some((drop, feet_before));
+        }
         if self.on_ground && !was_on_ground && stepped == 0.0 {
             self.landings += 1;
             self.last_landing_speed = falling_speed.max(0.0);
@@ -393,6 +416,11 @@ impl Player {
             self.prev_pos = self.prev_pos.translate(Vec3::Z * feet);
         }
         self.crouch_shift_total += (feet + self.eye_height() - eye_before) as f64;
+    }
+
+    /// The feet's height above zero, for comparing heights across ticks.
+    fn feet_z(&self) -> f64 {
+        self.pos.cell().z as f64 + self.pos.offset().z as f64
     }
 
     /// The collision box relative to the player's cell.

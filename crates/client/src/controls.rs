@@ -45,6 +45,8 @@ pub struct Controls {
     pub double_tap_window: f32,
     pub break_block: Binding,
     pub place_block: Binding,
+    /// Switches whether placed blocks go against the aimed-at face with their bottom or their back.
+    pub flip: Binding,
     /// Picks a block from the palette, first to ninth. The scroll wheel also cycles it.
     pub slots: [KeyCode; 9],
 }
@@ -102,6 +104,7 @@ impl Default for Controls {
             double_tap_window: 0.3,
             break_block: Binding::Mouse(MouseButton::Left),
             place_block: Binding::Mouse(MouseButton::Right),
+            flip: Binding::Mouse(MouseButton::Middle),
             slots: [
                 KeyCode::Digit1,
                 KeyCode::Digit2,
@@ -166,6 +169,10 @@ impl Controls {
                 }
                 "place" => {
                     self.place_block = binding;
+                    continue;
+                }
+                "flip" => {
+                    self.flip = binding;
                     continue;
                 }
                 _ => {}
@@ -359,10 +366,14 @@ mod tests {
     #[test]
     fn break_and_place_take_keys_or_mouse_buttons() {
         let mut controls = Controls::default();
-        let problems = controls.apply("break = KeyQ\nplace = mousemiddle\nslot_3 = KeyZ\njump = MouseLeft\nslot_10 = KeyX\n");
+        let problems = controls.apply(
+            "break = KeyQ\nplace = mousemiddle\nflip = KeyG\nslot_3 = KeyZ\njump = MouseLeft\nslot_10 = KeyX\n",
+        );
         assert_eq!(problems.len(), 2, "{problems:?}");
         assert_eq!(controls.break_block, Binding::Key(KeyCode::KeyQ));
         assert_eq!(controls.place_block, Binding::Mouse(MouseButton::Middle));
+        assert_eq!(controls.flip, Binding::Key(KeyCode::KeyG));
+        assert_eq!(Controls::default().flip, Binding::Mouse(MouseButton::Middle));
         assert_eq!(controls.slots[2], KeyCode::KeyZ);
         assert_eq!(controls.slots[0], KeyCode::Digit1);
         assert_eq!(controls.jump, Controls::default().jump);
