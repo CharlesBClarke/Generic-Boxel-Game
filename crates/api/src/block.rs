@@ -21,8 +21,12 @@ pub struct BlockDef {
     /// The boxes it fills, unturned. Bodies collide with them if the block is solid, and aiming
     /// hits them. One full box for an ordinary block.
     pub shape: Vec<BlockBox>,
-    /// How a player's aim turns it when placed.
-    pub placement: Placement,
+    /// Which turns it takes when placed. Every block is placed by the same rule: its bottom
+    /// against the face aimed at, its front (+Y) the way the player looks.
+    pub turning: Turning,
+    /// Whether its textures turn with it, like a log's bark following its axis. Otherwise they
+    /// stay lined up with the world, so bricks run level however a slab or stair is turned.
+    pub turn_textures: bool,
 }
 
 impl BlockDef {
@@ -36,7 +40,8 @@ impl BlockDef {
             friction: 1.0,
             placeable: true,
             shape: vec![BlockBox::FULL],
-            placement: Placement::Fixed,
+            turning: Turning::None,
+            turn_textures: false,
         }
     }
 
@@ -60,8 +65,13 @@ impl BlockDef {
         self
     }
 
-    pub fn with_placement(mut self, placement: Placement) -> Self {
-        self.placement = placement;
+    pub fn with_turning(mut self, turning: Turning) -> Self {
+        self.turning = turning;
+        self
+    }
+
+    pub fn with_turn_textures(mut self, turn_textures: bool) -> Self {
+        self.turn_textures = turn_textures;
         self
     }
 
@@ -106,22 +116,18 @@ impl BlockBox {
     }
 }
 
-/// How a placed block is turned, from where the player aims. The engine owns the rules; a
-/// block picks one. Each rule only produces some orientations, which are the ones the block
-/// can have.
+/// Which turns a block takes when placed. The placement rule is the same for every block (its
+/// bottom against the face aimed at, its front the way the player looks); this only says how
+/// much of that turn the block keeps.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
-pub enum Placement {
+pub enum Turning {
     /// Never turned.
     #[default]
-    Fixed,
-    /// Its +Z axis lines up with the face aimed at, like a log.
-    AlongFace,
-    /// Its +Y side points the way the player looks, rounded to north, south, east or west, and
-    /// it's flipped upside down when aimed at the upper half of the boxel, like stairs.
-    FacingAway,
-    /// Its bottom goes down, or it's flipped to the top of the boxel when aimed at the upper
-    /// half, like a slab.
-    Half,
+    None,
+    /// Only which way its Z axis points, like a log.
+    Axis,
+    /// The whole turn, like stairs or a slab.
+    Any,
 }
 
 /// Which texture goes on which faces of a block, by texture name.

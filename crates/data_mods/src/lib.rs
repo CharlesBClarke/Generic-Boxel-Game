@@ -14,7 +14,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use api::block::is_valid_name;
-use api::{ApiError, BlockBox, BlockDef, FaceTextures, Mod, Placement, Registrar, TextureDef};
+use api::{ApiError, BlockBox, BlockDef, FaceTextures, Mod, Registrar, TextureDef, Turning};
 use serde::Deserialize;
 use toml::Spanned;
 
@@ -115,7 +115,9 @@ struct BlockEntry {
     textures: Option<Spanned<Textures>>,
     shape: Option<Spanned<Shape>>,
     #[serde(default)]
-    placement: PlacementName,
+    turning: TurningName,
+    #[serde(default)]
+    turn_textures: bool,
 }
 
 /// A shape: the name of one in `[shapes]`, or boxes given in place.
@@ -128,21 +130,19 @@ enum Shape {
 
 #[derive(Deserialize, Default)]
 #[serde(rename_all = "snake_case")]
-enum PlacementName {
+enum TurningName {
     #[default]
-    Fixed,
-    AlongFace,
-    FacingAway,
-    Half,
+    None,
+    Axis,
+    Any,
 }
 
-impl From<PlacementName> for Placement {
-    fn from(p: PlacementName) -> Self {
-        match p {
-            PlacementName::Fixed => Placement::Fixed,
-            PlacementName::AlongFace => Placement::AlongFace,
-            PlacementName::FacingAway => Placement::FacingAway,
-            PlacementName::Half => Placement::Half,
+impl From<TurningName> for Turning {
+    fn from(t: TurningName) -> Self {
+        match t {
+            TurningName::None => Turning::None,
+            TurningName::Axis => Turning::Axis,
+            TurningName::Any => Turning::Any,
         }
     }
 }
@@ -336,7 +336,8 @@ fn block_def(
         .with_friction(friction)
         .with_placeable(entry.placeable)
         .with_shape(shape)
-        .with_placement(entry.placement.into());
+        .with_turning(entry.turning.into())
+        .with_turn_textures(entry.turn_textures);
     def.textures = faces;
     Ok(def)
 }
@@ -461,7 +462,7 @@ mod tests {
     }
 
     #[test]
-    fn reads_shapes_and_placement() {
+    fn reads_shapes_and_turning() {
         let folder = Folder::new("shapes");
         folder.write("mod.toml", MANIFEST).write(
             "blocks.toml",
@@ -473,27 +474,29 @@ mod tests {
                 name = "slab"
                 color = [1, 2, 3]
                 shape = "slab"
-                placement = "half"
+                turning = "any"
 
                 [[block]]
                 name = "stairs"
                 color = [1, 2, 3]
                 shape = [[0, 0, 0, 16, 16, 8], [0, 8, 8, 16, 16, 16]]
-                placement = "facing_away"
+                turning = "any"
 
                 [[block]]
-                name = "cube"
+                name = "log"
                 color = [1, 2, 3]
+                turning = "axis"
+                turn_textures = true
             "#,
         );
         let m = folder.load().unwrap();
-        let [slab, stairs, cube] = m.blocks() else { panic!("three blocks") };
+        let [slab, stairs, log] = m.blocks() else { panic!("three blocks") };
         assert_eq!(slab.shape, [BlockBox::new([0, 0, 0], [16, 16, 8])]);
-        assert_eq!(slab.placement, Placement::Half);
+        assert_eq!((slab.turning, slab.turn_textures), (Turning::Any, false));
         assert_eq!(stairs.shape.len(), 2);
-        assert_eq!(stairs.placement, Placement::FacingAway);
-        assert!(cube.is_full());
-        assert_eq!(cube.placement, Placement::Fixed);
+        assert_eq!(stairs.turning, Turning::Any);
+        assert!(log.is_full());
+        assert_eq!((log.turning, log.turn_textures), (Turning::Axis, true));
     }
 
     #[test]
@@ -504,7 +507,7 @@ mod tests {
         assert!(err.contains("shape \"big\""), "{err}");
         blocks_error("flat_box", "[[block]]\nname = \"a\"\ncolor = [1, 2, 3]\nshape = [[0, 0, 4, 16, 16, 4]]\n", 4);
         blocks_error("no_boxes", "[[block]]\nname = \"a\"\ncolor = [1, 2, 3]\nshape = []\n", 4);
-        let err = blocks_error("bad_placement", "[[block]]\nname = \"a\"\ncolor = [1, 2, 3]\nplacement = \"sideways\"\n", 4);
+        let err = blocks_error("bad_turning", "[[block]]\nname = \"a\"\ncolor = [1, 2, 3]\nturning = \"sideways\"\n", 4);
         assert!(err.contains("sideways"), "{err}");
     }
 

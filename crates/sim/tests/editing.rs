@@ -46,7 +46,7 @@ fn face(pos: BoxelPos, normal: I64Vec3, distance: f32) -> Hit {
 
 /// Where placing `block` on `hit` would put it, if that's allowed.
 fn place_pos(sim: &Simulation, hit: &Hit, block: BlockId) -> Option<BoxelPos> {
-    sim.placement(hit, block, 0.0).filter(|t| t.allowed).map(|t| t.pos)
+    sim.placement(hit, block, 0.0, 0.0).filter(|t| t.allowed).map(|t| t.pos)
 }
 
 #[test]

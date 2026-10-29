@@ -44,6 +44,25 @@ impl Orientation {
         }
     }
 
+    /// The turn that points +Z along `up` and +Y along `forward`, two different axis directions
+    /// such as `[0, 0, -1]`. `None` if they aren't unit axes at right angles.
+    pub fn from_axes(up: [i32; 3], forward: [i32; 3]) -> Option<Orientation> {
+        let unit = |v: [i32; 3]| v.iter().map(|c| c.abs()).sum::<i32>() == 1 && v.iter().all(|c| c.abs() <= 1);
+        let dot: i32 = (0..3).map(|i| up[i] * forward[i]).sum();
+        if !unit(up) || !unit(forward) || dot != 0 {
+            return None;
+        }
+        // +X goes along forward × up, keeping it right-handed.
+        let x = [
+            forward[1] * up[2] - forward[2] * up[1],
+            forward[2] * up[0] - forward[0] * up[2],
+            forward[0] * up[1] - forward[1] * up[0],
+        ];
+        let columns = [x, forward, up];
+        let rows = [0, 1, 2].map(|i| [0, 1, 2].map(|j| columns[j][i] as i8));
+        Some(Orientation { rows })
+    }
+
     /// All 24, identity first, in a fixed order.
     pub fn all() -> Vec<Orientation> {
         const PERMUTATIONS: [[usize; 3]; 6] = [[0, 1, 2], [0, 2, 1], [1, 0, 2], [1, 2, 0], [2, 0, 1], [2, 1, 0]];
@@ -140,6 +159,17 @@ mod tests {
         assert_eq!(Orientation::z_along(0).apply([0, 0, 1]), [1, 0, 0]);
         assert_eq!(Orientation::z_along(1).apply([0, 0, 1]), [0, 1, 0]);
         assert_eq!(Orientation::z_along(2).apply([0, 0, 1]), [0, 0, 1]);
+    }
+
+    #[test]
+    fn from_axes_points_up_and_forward() {
+        assert_eq!(Orientation::from_axes([0, 0, 1], [0, 1, 0]), Some(Orientation::IDENTITY));
+        for o in Orientation::all() {
+            let (up, forward) = (o.apply([0, 0, 1]), o.apply([0, 1, 0]));
+            assert_eq!(Orientation::from_axes(up, forward), Some(o));
+        }
+        assert_eq!(Orientation::from_axes([0, 0, 1], [0, 0, -1]), None);
+        assert_eq!(Orientation::from_axes([0, 1, 1], [1, 0, 0]), None);
     }
 
     #[test]

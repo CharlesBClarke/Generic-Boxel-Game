@@ -143,7 +143,7 @@ pub(crate) fn update_ghost(
     let place = sim
         .0
         .target(look.yaw, look.pitch)
-        .and_then(|hit| sim.0.placement(&hit, palette.selected(blocks), look.yaw));
+        .and_then(|hit| sim.0.placement(&hit, palette.selected(blocks), look.yaw, look.pitch));
     let Some(place) = place else {
         visibility.set_if_neq(Visibility::Hidden);
         return;

@@ -5,8 +5,8 @@ use std::fmt;
 
 use api::block::is_valid_name;
 use api::{
-    ApiError, BlockDef, BoxelPos, ChunkPos, I64Vec3, InteractionDef, Mod, MovementController, Orientation, Placement,
-    PlayerDef, PushOutDef, Registrar, TextureDef, Vec3, WorldEdit, WorldPos, look_direction,
+    ApiError, BlockDef, BoxelPos, ChunkPos, I64Vec3, InteractionDef, Mod, MovementController, Orientation, PlayerDef,
+    PushOutDef, Registrar, TextureDef, Turning, Vec3, WorldEdit, WorldPos, look_direction,
 };
 
 use crate::edit::{ChangedChunks, Repeater};
@@ -48,7 +48,7 @@ impl From<ApiError> for SimError {
 pub struct PlaceTarget {
     /// The boxel it goes into.
     pub pos: BoxelPos,
-    /// The block, turned by its placement rule.
+    /// The block, turned by the placement rule.
     pub occupant: Occupant,
     /// Whether it may go there. A refused placement still says where it would have gone, so
     /// a preview can show it as not allowed.
@@ -159,15 +159,17 @@ impl Simulation {
         })
     }
 
-    /// What placing `block` aimed at `hit`, looking along `yaw`, would do, or `None` if there's
-    /// nothing to place: the block isn't placeable or the hit has no face.
+    /// What placing `block` aimed at `hit`, looking along `yaw` and `pitch`, would do, or `None`
+    /// if there's nothing to place: the block isn't placeable or the hit has no face.
     ///
-    /// The block goes into the boxel holding the point just in front of the aimed-at face, so
-    /// aiming at the top of a bottom slab puts a second slab in the same boxel. If it can't
-    /// share that boxel, it goes into the boxel on the far side of the face instead, like a full
-    /// block placed on a slab. Its placement rule turns it. A solid block inside the player is
-    /// only allowed if a push-out rule is registered and there's room to push the player out.
-    pub fn placement(&self, hit: &Hit, block: BlockId, yaw: f32) -> Option<PlaceTarget> {
+    /// The block goes into the boxel holding the point just in front of the aimed-at face, so a
+    /// slab aimed at a fence post shares the post's boxel. If it can't share that boxel, it goes
+    /// into the boxel on the far side of the face instead, like a full block placed on a slab.
+    /// Every block is turned by the same rule, kept as far as its [`Turning`] allows: its bottom
+    /// against the aimed-at face, its front (+Y) the way the player looks. A solid block inside
+    /// the player is only allowed if a push-out rule is registered and there's room to push the
+    /// player out.
+    pub fn placement(&self, hit: &Hit, block: BlockId, yaw: f32, pitch: f32) -> Option<PlaceTarget> {
         let def = self.blocks.get(block).filter(|def| def.placeable)?;
         if hit.normal == I64Vec3::ZERO {
             return None;
@@ -175,12 +177,9 @@ impl Simulation {
         let front = hit.point + hit.normal.as_vec3() * IN_FRONT;
         let inside = hit.pos.offset(front.floor().as_i64vec3());
         let grid = self.universe.main();
+        let occupant = Occupant::turned(block, orient(def.turning, hit.normal, look_direction(yaw, pitch)));
         let mut first = None;
         for pos in [inside, hit.adjacent()] {
-            // The aimed-at point in this boxel's space.
-            let point = front - (pos.0 - hit.pos.0).as_vec3();
-            let orientation = orient(def.placement, hit.normal, point.z > 0.5, yaw);
-            let occupant = Occupant::turned(block, orientation);
             if can_share(grid.cell(pos), occupant, &self.blocks).is_ok() {
                 return Some(PlaceTarget { pos, occupant, allowed: self.body_allows(pos, occupant) });
             }
@@ -235,7 +234,7 @@ impl Simulation {
         };
         if breaking {
             self.remove_occupant(hit.pos, hit.occupant);
-        } else if let Some(place) = self.placement(&hit, input.place_block, input.yaw)
+        } else if let Some(place) = self.placement(&hit, input.place_block, input.yaw, input.pitch)
             && place.allowed
         {
             self.add_occupant(place.pos, place.occupant);
@@ -385,19 +384,28 @@ impl<T: Terrain> Terrain for WithBoxes<'_, T> {
     }
 }
 
-/// How a placement rule turns a block aimed at a face with outward `normal`, at the upper half
-/// of its boxel or not, by a player looking along `yaw`.
-fn orient(rule: Placement, normal: I64Vec3, upper: bool, yaw: f32) -> Orientation {
-    let flip = |axis| if upper { Orientation::quarter_turns(axis, 2) } else { Orientation::IDENTITY };
-    match rule {
-        Placement::Fixed => Orientation::IDENTITY,
-        Placement::AlongFace => Orientation::z_along(normal.abs().max_position()),
-        Placement::Half => flip(0),
-        Placement::FacingAway => {
-            // The look rounded to a compass direction: 0 east, 1 north, 2 west, 3 south. Turning
-            // +Y (north) that way takes 3, 0, 1 or 2 quarter turns.
-            let compass = (yaw / std::f32::consts::FRAC_PI_2).round() as i32;
-            flip(1).then(Orientation::quarter_turns(2, compass + 3))
+/// How the placement rule turns a block aimed at a face with outward `normal` by a player
+/// looking along `look`: its bottom against the face and its front the way the player looks,
+/// rounded to the nearest axis along the face, kept as far as `turning` allows.
+fn orient(turning: Turning, normal: I64Vec3, look: Vec3) -> Orientation {
+    let up = normal.to_array().map(|c| c as i32);
+    let axis = normal.abs().max_position();
+    match turning {
+        Turning::None => Orientation::IDENTITY,
+        Turning::Axis => Orientation::z_along(axis),
+        Turning::Any => {
+            // The look along the face, rounded to the strongest of the face's two axes. Looking
+            // straight at the face leaves no direction, so any one will do.
+            let mut along = look;
+            along[axis] = 0.0;
+            let strongest = along.abs().max_position();
+            let mut forward = [0i32; 3];
+            forward[strongest] = if along[strongest] < 0.0 { -1 } else { 1 };
+            if strongest == axis {
+                forward = [0; 3];
+                forward[(axis + 1) % 3] = 1;
+            }
+            Orientation::from_axes(up, forward).expect("a face axis and an axis along it")
         }
     }
 }

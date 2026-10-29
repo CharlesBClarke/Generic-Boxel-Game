@@ -106,7 +106,7 @@ A run of small toy slices. Each one takes a single game-feel feature that doesn'
 
 #### Block shapes and shared cells (branch `toy-block-shapes`)
 
-**Stage:** Verify (2026-10-28). Implemented and tested; waiting for the user to play it.
+**Stage:** Verify (2026-10-28). Implemented and tested; waiting for the user to play it again after the plan change below.
 
 **Goal:** slabs, stairs, fences and logs placed in several ways depending on where you aim, and two things sharing one cell, like a fence and a slab. This is the engine's general form of Minecraft's waterlogging: the design doc's "multiple occupants per boxel".
 
@@ -145,17 +145,24 @@ A run of small toy slices. Each one takes a single game-feel feature that doesn'
 - **Shapes.** `api::BlockBox` (sixteenths) and `BlockDef.shape`, checked at registration. In `blocks.toml`: a `[shapes]` table of named shapes, `shape = "name"` or a list of `[x0, y0, z0, x1, y1, z1]` boxes, and `placement`.
 - **Collision** works on boxes: `Terrain::boxes` replaces `Terrain::solid` (still there as a helper), and `clamp_axis` and `box_clear` test boxes instead of whole boxels. For full blocks it gives the same numbers as before; all movement and wasm equivalence tests pass unchanged. Push-out uses the box around the placed block's boxes.
 - **Aiming.** The raycast tests each box in the boxels it walks and reports the occupant, the face normal and the exact point. Breaking removes only that occupant.
-- **Placement.** `Simulation::placement(hit, block, yaw)` returns a `PlaceTarget` (boxel, turned occupant, allowed), so a refused placement still says where it would go.
+- **Placement.** `Simulation::placement(hit, block, yaw, pitch)` returns a `PlaceTarget` (boxel, turned occupant, allowed), so a refused placement still says where it would go.
 - **Content.** Stone and brick slabs and stairs, a wood fence post and a log, with Minetest Game's `default_wood` (BlockMen), `default_tree` and `default_tree_top` (Cisoun) credited in `mods/base/CREDITS.md`. The shapes corner west of spawn has a staircase up to a platform, a brick slab path with posts through two slabs, a lone post, a double slab, and logs lying and standing. The debug teleport has a new `shapes` waypoint at its foot.
 - **Client.** The mesher draws each occupant's turned boxes with textures cropped to each box, and hides a face only when it's on the boxel's side against a full block. The outline traces the aimed occupant's boxes. The ghost is a see-through mesh of the placed occupant, slightly shrunk so it doesn't flicker against neighbors, red when refused.
-- *API changes:* `Orientation`, `BlockBox`, `Placement`, `BlockDef.shape`, `placement`, `with_shape`, `with_placement`, `is_full`, `validate`, `WorldEdit::add_block`, `ApiError::CannotShare`.
-- 196 tests pass in the workspace; clippy is clean.
+- *API changes:* `Orientation` (with `from_axes`), `BlockBox`, `Turning`, `BlockDef.shape`, `turning`, `turn_textures`, `with_shape`, `with_turning`, `with_turn_textures`, `is_full`, `validate`, `WorldEdit::add_block`, `ApiError::CannotShare`.
+- 201 tests pass in the workspace after the plan change; clippy is clean.
 
 *Changes from the plan, found while building* (each small; flagged for the user)
 - **Step height 0.6 in `base`.** The plan said stairs would use "the existing step height", but the base player's was 0, so stairs couldn't be walked up. 0.6 is Minecraft's: enough for slabs and stairs, not for full blocks.
 - **Fallback to the next boxel.** When the block can't share the boxel in front of the aimed point (a full block aimed at the top of a slab), it goes into the boxel on the far side of the face instead, as in Minecraft. Without this you couldn't build on a slab.
-- **No separate list of allowed orientations.** A block's placement rule decides which orientations it can have.
 - **No API type for reading a boxel's occupants.** Nothing in a mod needs to read the world yet; mods add turned blocks with `WorldEdit::add_block`.
+
+*Plan change at the user's request* (2026-10-28, after a first play)
+- **One placement rule for every block,** replacing the four per-block rules (fixed, along face, facing away, half). A block's bottom goes against the face aimed at and its front (+Y) turns the way the player looks, rounded to the nearest axis along that face. Each block says how much of that turn it keeps with `turning`: `none` (plain blocks), `axis` (logs) or `any` (slabs, stairs). On a floor a slab is a bottom slab, on a ceiling a top slab, on a wall a vertical slab; stairs rise away from you on a floor, hang upside down from a ceiling and turn sideways on a wall. Aiming at the upper half of a wall no longer makes a top slab, and a slab aimed at the top of a slab goes into the boxel above; a double slab comes from aiming at a ceiling over a slab.
+- **The planned API debt is gone:** there's no fixed set of engine placement rules any more, only the one rule and each block's `turning`.
+- **Textures stay lined up with the world by default,** so bricks run level on a vertical slab or upside-down stairs, and a slab's side shows the same strip as the full block beside it. `turn_textures = true` turns them with the block instead; only the log uses it. The user raised the worry that turned textures would look wrong.
+- **Duplicates compare the space filled,** not the orientation, so a slab turned about its own axis can't stack onto the same slab.
+- The fall back to the boxel on the far side of the face stays.
+- *Fixed on its own branch first:* the camera dip and snap when stepping up stairs (`fix-step-smoothing`, see Fixes), merged into this branch.
 
 *Noticed while testing:* standing on a slab, a fence post is only 0.5 above your feet, so the 0.6 step height walks you onto the post. Minecraft makes fence collision 1.5 high for this; worth deciding when fences join their neighbors.
 

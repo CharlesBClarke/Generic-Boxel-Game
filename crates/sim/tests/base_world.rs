@@ -65,18 +65,19 @@ fn base_blocks_come_from_its_data_files() {
     assert_eq!(faces, ("base:grass", "base:dirt", "base:grass_side"));
     assert_eq!(def(base::MARKER).textures, None, "the marker stays a flat color");
     assert_eq!(def(base::MARKER).color, [240, 180, 40]);
-    use api::{BlockBox, Placement};
+    use api::{BlockBox, Turning};
     let slab = [BlockBox::new([0, 0, 0], [16, 16, 8])];
-    for (name, boxes, placement) in [
-        (base::STONE_SLAB, 1, Placement::Half),
-        (base::BRICK_SLAB, 1, Placement::Half),
-        (base::STONE_STAIRS, 2, Placement::FacingAway),
-        (base::BRICK_STAIRS, 2, Placement::FacingAway),
-        (base::WOOD_FENCE, 1, Placement::Fixed),
-        (base::LOG, 1, Placement::AlongFace),
-        (base::STONE, 1, Placement::Fixed),
+    for (name, boxes, turning, turn_textures) in [
+        (base::STONE_SLAB, 1, Turning::Any, false),
+        (base::BRICK_SLAB, 1, Turning::Any, false),
+        (base::STONE_STAIRS, 2, Turning::Any, false),
+        (base::BRICK_STAIRS, 2, Turning::Any, false),
+        (base::WOOD_FENCE, 1, Turning::None, false),
+        (base::LOG, 1, Turning::Axis, true),
+        (base::STONE, 1, Turning::None, false),
     ] {
-        assert_eq!((def(name).shape.len(), def(name).placement), (boxes, placement), "{name}");
+        let d = def(name);
+        assert_eq!((d.shape.len(), d.turning, d.turn_textures), (boxes, turning, turn_textures), "{name}");
     }
     assert_eq!(def(base::STONE_SLAB).shape, slab);
     assert!(def(base::LOG).is_full() && !def(base::WOOD_FENCE).is_full());
