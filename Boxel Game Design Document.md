@@ -125,7 +125,7 @@ The engine's data model assumes these capabilities from day one, because retrofi
 
 **Sub-grids.** Any volume of boxels can have its own position and rotation. Ships, vehicles, elevators and moving contraptions are sub-grids, with collision, lighting, rendering and syncing handled by the engine rather than each mod. A sub-grid can be moved by simple rules or by a physics controller, so rigid-body physics stays possible.
 
-**Multiple occupants per boxel.** One boxel position can hold more than one thing, generalizing Minecraft's waterlogging beyond "a block plus water."
+**Multiple occupants per boxel.** One boxel position can hold more than one thing, generalizing Minecraft's waterlogging beyond "a block plus water." Built in the block shapes toy (2026-10-28): a boxel holds up to four occupants, each a block and its orientation, in the order they were placed, and storage, collision, aiming, breaking and meshing all handle them. Where two occupants' faces coincide, the oldest one's face shows. This is a fundamental engine capability, deliberately there from the start; how players get at it (on any click, or as a deliberate trick) is still open.
 
 **Multiple world views.** The client can load and draw any grid from any camera, not just the world the player stands in. Uses include portals, security cameras and screens, mirrors, blueprint previews, structures shown inside menus, minimaps, replays, split-screen and pocket dimensions.
 
@@ -211,7 +211,7 @@ These came up in discussion but are not confirmed. Tick the ones to keep.
 - [ ] Micro-blocks or variable-resolution blocks for detail smaller than one boxel
 - [ ] Cheap arbitrary data on any block, without a heavy block entity
 - [ ] Fluids with simple, learnable rules rather than realistic simulation
-- [ ] Arbitrary block orientations, slopes and rotated collision boxes
+- [ ] Arbitrary block orientations, slopes and rotated collision boxes. *Partly built (2026-10-28):* blocks can take any of the 24 grid-aligned orientations, with shapes made of boxes in sixteenths of a boxel and collision on those boxes. Slopes and free angles are still open.
 - [ ] Persistent block damage, and structural support as a simple rule rather than a physics simulation
 
 **Platform ideas from earlier research**
@@ -236,7 +236,7 @@ These came up in discussion but are not confirmed. Tick the ones to keep.
 | The cozy life is either instant or impossible | In Minecraft, a safe, comfortable life comes almost immediately, so there's little to earn. In games like RimWorld, difficulty grows forever, so it's never reached. A cozy life should be a real goal players can achieve and then enjoy. |
 | Bases can't be protected | Dozens of players can build a mega base together, and one griefer can destroy it while no one is online. Hiding a base is unrealistic, and once its location is known there is nothing in the game to slow an attacker down. |
 | Inventory discourages variety | Every kind of item costs a slot, so carrying many block types, shapes and colors is punished and players stick to a few materials. Each mod that adds blocks makes this worse. Possible directions: limit by weight or volume instead of slots; carry a material and choose its shape when placing; build directly from base storage within some range. |
-| Ambiguous interactions | One button does too many things depending on what you hold and what you look at. Eating with torches in the other hand places torches everywhere; aiming a bow and drifting over a door opens it and lets an enemy in. |
+| Ambiguous interactions | One button does too many things depending on what you hold and what you look at. Eating with torches in the other hand places torches everywhere; aiming a bow and drifting over a door opens it and lets an enemy in. Placement so far (2026-10-28): a ghost shows exactly what placing will do, red when refused, and one key switches between basic placement (Minecraft-like) and precise placement (the part of the face aimed at picks how the block sits, shown by a guide), rather than overloading crouch. |
 | No creativity in 2D crafting (tentative) | The crafting grid is fixed patterns to memorize or look up. Players have no room for choice or expression. |
 | No compositional complexity (tentative) | Things don't combine into new things with their own properties. An item is what it is, not a sum of its parts and materials. |
 

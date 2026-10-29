@@ -18,12 +18,31 @@ pub struct BlockDef {
     /// Whether players can place it. Blocks that only appear through world building or game
     /// rules set this to false.
     pub placeable: bool,
+    /// The boxes it fills, unturned. Bodies collide with them if the block is solid, and aiming
+    /// hits them. One full box for an ordinary block.
+    pub shape: Vec<BlockBox>,
+    /// Which turns it takes when placed. Every block is placed by the same rule: its bottom
+    /// against the face aimed at, its front (+Y) the way the player looks.
+    pub turning: Turning,
+    /// Whether its textures turn with it, like a log's bark following its axis. Otherwise they
+    /// stay lined up with the world, so bricks run level however a slab or stair is turned.
+    pub turn_textures: bool,
 }
 
 impl BlockDef {
     /// A placeable block with normal friction.
     pub fn new(name: impl Into<String>, solid: bool, color: [u8; 3]) -> Self {
-        Self { name: name.into(), solid, color, textures: None, friction: 1.0, placeable: true }
+        Self {
+            name: name.into(),
+            solid,
+            color,
+            textures: None,
+            friction: 1.0,
+            placeable: true,
+            shape: vec![BlockBox::FULL],
+            turning: Turning::None,
+            turn_textures: false,
+        }
     }
 
     pub fn with_textures(mut self, textures: FaceTextures) -> Self {
@@ -40,6 +59,75 @@ impl BlockDef {
         self.placeable = placeable;
         self
     }
+
+    pub fn with_shape(mut self, shape: Vec<BlockBox>) -> Self {
+        self.shape = shape;
+        self
+    }
+
+    pub fn with_turning(mut self, turning: Turning) -> Self {
+        self.turning = turning;
+        self
+    }
+
+    pub fn with_turn_textures(mut self, turn_textures: bool) -> Self {
+        self.turn_textures = turn_textures;
+        self
+    }
+
+    /// Whether it fills its whole boxel. A full block shares its boxel with nothing.
+    pub fn is_full(&self) -> bool {
+        self.shape == [BlockBox::FULL]
+    }
+
+    /// Checks the shape: at least one box, each inside the boxel and not flat.
+    pub fn validate(&self) -> Result<(), String> {
+        if self.shape.is_empty() {
+            return Err(format!("block {:?} has no shape boxes", self.name));
+        }
+        match self.shape.iter().find(|b| !b.is_valid()) {
+            Some(b) => Err(format!("block {:?} has a box outside its boxel or with no volume: {b:?}", self.name)),
+            None => Ok(()),
+        }
+    }
+}
+
+/// A box inside a boxel, in sixteenths of a boxel: from 0 to 16 on each axis, `min` below `max`.
+/// Faces of an unturned box: +Z is the top, -Z the bottom and the rest are sides.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct BlockBox {
+    pub min: [u8; 3],
+    pub max: [u8; 3],
+}
+
+impl BlockBox {
+    /// Sixteenths across a boxel.
+    pub const SIZE: u8 = 16;
+    /// The whole boxel.
+    pub const FULL: BlockBox = BlockBox { min: [0; 3], max: [16; 3] };
+
+    pub const fn new(min: [u8; 3], max: [u8; 3]) -> Self {
+        Self { min, max }
+    }
+
+    /// Inside the boxel, with some size on every axis.
+    pub fn is_valid(&self) -> bool {
+        (0..3).all(|i| self.min[i] < self.max[i] && self.max[i] <= Self::SIZE)
+    }
+}
+
+/// Which turns a block takes when placed. The placement rule is the same for every block (its
+/// bottom against the face aimed at, its front the way the player looks); this only says how
+/// much of that turn the block keeps.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub enum Turning {
+    /// Never turned.
+    #[default]
+    None,
+    /// Only which way its Z axis points, like a log.
+    Axis,
+    /// The whole turn, like stairs or a slab.
+    Any,
 }
 
 /// Which texture goes on which faces of a block, by texture name.

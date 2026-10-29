@@ -8,6 +8,23 @@
 #   textures   a name from textures/ for every face, or { top, bottom, side }
 #   color      [r, g, b] sRGB, for blocks without textures. Optional with textures:
 #              it defaults to the side texture's average color.
+#   shape      a name from [shapes], or a list of boxes; default a full block
+#   turning    which turns it takes when placed. Every block is placed the same way: its
+#              bottom against the face you aim at, its north side the way you look.
+#              "none": never turned (default)
+#              "axis": only which way its up axis points (logs)
+#              "any": the whole turn (slabs, stairs)
+#   turn_textures  false: textures stay lined up with the world, so bricks run level however
+#                  the block is turned (default). true: they turn with it, like bark.
+#
+# Shapes are boxes in sixteenths of a boxel: [x0, y0, z0, x1, y1, z1], each from 0 to 16,
+# as the block stands unturned (+Z up, +Y north). Textures crop to the part each box covers.
+
+[shapes]
+slab = [[0, 0, 0, 16, 16, 8]]
+# The high step is on the north side.
+stairs = [[0, 0, 0, 16, 16, 8], [0, 8, 8, 16, 16, 16]]
+post = [[6, 6, 0, 10, 10, 16]]
 
 [[block]]
 name = "stone"
@@ -34,3 +51,42 @@ color = [240, 180, 40]
 name = "ice"
 textures = "ice"
 friction = 0.1
+
+[[block]]
+name = "stone_slab"
+textures = "stone"
+shape = "slab"
+turning = "any"
+
+[[block]]
+name = "stone_stairs"
+textures = "stone"
+shape = "stairs"
+turning = "any"
+
+[[block]]
+name = "brick_slab"
+textures = "brick"
+shape = "slab"
+turning = "any"
+
+[[block]]
+name = "brick_stairs"
+textures = "brick"
+shape = "stairs"
+turning = "any"
+
+# A bare post for now; fences joining their neighbors come later. It can lie on its side as a
+# beam, with the grain along it.
+[[block]]
+name = "wood_fence"
+textures = "wood"
+shape = "post"
+turning = "axis"
+turn_textures = true
+
+[[block]]
+name = "log"
+textures = { top = "log_top", bottom = "log_top", side = "log" }
+turning = "axis"
+turn_textures = true

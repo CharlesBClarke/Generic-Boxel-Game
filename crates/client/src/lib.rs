@@ -25,7 +25,7 @@ use sim::{PlayerInput, Simulation};
 
 use crate::atlas::Atlas;
 use crate::controls::{Controls, DoubleTapSprint, label};
-use crate::editing::{ChunkMeshes, Palette, PaletteHud};
+use crate::editing::{ChunkMeshes, Ghost, Palette, PaletteHud};
 use crate::feel::{CameraFeel, FeelState, Motion};
 use crate::mesher::MeshData;
 use crate::tuning::TuningPanel;
@@ -74,6 +74,8 @@ pub fn run(sim: Simulation) {
                 editing::remesh_changed_chunks,
                 (update_camera, sync_chunk_transforms).chain(),
                 editing::draw_outline,
+                editing::update_ghost,
+                editing::draw_region_guide,
                 drill::draw_drill,
                 update_hud,
                 editing::update_palette_hud,
@@ -173,11 +175,33 @@ fn spawn_chunk_meshes(
     // Crisp pixels, and no mipmaps to blur neighboring textures together.
     image.sampler = ImageSampler::nearest();
     // Unlit: shading is baked into vertex colors until there is a lighting system.
+    let texture = images.add(image);
     let material = materials.add(StandardMaterial {
-        base_color_texture: Some(images.add(image)),
+        base_color_texture: Some(texture.clone()),
         unlit: true,
         ..default()
     });
+    let ghost_material = |color: Color| StandardMaterial {
+        base_color: color,
+        base_color_texture: Some(texture.clone()),
+        alpha_mode: AlphaMode::Blend,
+        unlit: true,
+        ..default()
+    };
+    let ghost = Ghost {
+        entity: commands
+            .spawn((
+                Mesh3d(meshes.add(to_bevy_mesh(MeshData::default()))),
+                MeshMaterial3d(material.clone()),
+                Transform::default(),
+                Visibility::Hidden,
+            ))
+            .id(),
+        allowed: materials.add(ghost_material(Color::srgba(1.0, 1.0, 1.0, 0.5))),
+        refused: materials.add(ghost_material(Color::srgba(1.0, 0.2, 0.2, 0.6))),
+        shown: None,
+    };
+    commands.insert_resource(ghost);
     let grid = sim.0.universe().main();
     let mut entities = std::collections::HashMap::new();
     for (pos, _) in grid.chunks() {
@@ -248,6 +272,7 @@ fn tick_simulation(
         place_pressed: std::mem::take(&mut toggles.place_pressed),
         place_held: playing && controls.place_block.pressed(&keys, &mouse),
         place_block: palette.selected(sim.0.blocks()),
+        place_precise: palette.precise,
     };
     sim.0.step(&input);
 }

@@ -2,7 +2,8 @@
 //! and textures are a data mod in `mods/base`, loaded by the engine alongside it.
 
 use api::{
-    ApiError, BoxelPos, I64Vec3, InteractionDef, Mod, PlayerDef, PushOutDef, Registrar, Vec3, WorldEdit, WorldPos,
+    ApiError, BoxelPos, I64Vec3, InteractionDef, Mod, Orientation, PlayerDef, PushOutDef, Registrar, Vec3, WorldEdit,
+    WorldPos,
 };
 
 /// The base game's data half, in the source tree. Both halves share the `base` namespace.
@@ -15,6 +16,16 @@ pub const GRASS: &str = "base:grass";
 pub const BRICK: &str = "base:brick";
 pub const MARKER: &str = "base:marker";
 pub const ICE: &str = "base:ice";
+pub const STONE_SLAB: &str = "base:stone_slab";
+pub const STONE_STAIRS: &str = "base:stone_stairs";
+pub const BRICK_SLAB: &str = "base:brick_slab";
+pub const BRICK_STAIRS: &str = "base:brick_stairs";
+pub const WOOD_FENCE: &str = "base:wood_fence";
+pub const LOG: &str = "base:log";
+
+/// Where the shapes corner of the test area starts, relative to its origin: where the feet stand
+/// at the foot of the staircase.
+pub const SHAPES_SPOT: (i64, i64, i64) = (-5, 0, 0);
 
 /// Where the far copy of the test area sits, for checking that play is the same in the millions.
 pub const FAR_ORIGIN: BoxelPos = BoxelPos::new(3_000_000, -2_000_000, 1_000);
@@ -51,7 +62,8 @@ impl Mod for BaseMod {
             width: 0.6,
             height: 1.8,
             eye_height: 1.62,
-            step_height: 0.0,
+            // Enough to walk up slabs and stairs, not full blocks.
+            step_height: 0.6,
             controller: "base:quake".into(),
         })?;
         // Minecraft-like for now: about Minecraft's survival reach, 4 edits a second held.
@@ -69,6 +81,8 @@ impl Mod for BaseMod {
         w.set_spawn(spawn(origin));
         w.add_waypoint("origin", spawn(origin));
         w.add_waypoint("far", spawn(FAR_ORIGIN));
+        let (x, y, z) = SHAPES_SPOT;
+        w.add_waypoint("shapes", WorldPos::new(origin.0 + I64Vec3::new(x, y, z), Vec3::new(0.5, 0.5, 0.0)));
         for o in [origin, FAR_ORIGIN] {
             for (name, x, y, z) in LANDMARKS {
                 w.add_waypoint(&format!("landmark:{name}"), WorldPos::new(o.0 + I64Vec3::new(*x, *y, *z), Vec3::new(0.5, 0.5, 0.0)));
@@ -122,7 +136,48 @@ pub fn build_test_area(w: &mut dyn WorldEdit, o: BoxelPos) -> Result<(), ApiErro
     // A marker post next to spawn so the starting direction is obvious: it sits east.
     w.fill(at(3, 0, 0), at(3, 0, 1), MARKER)?;
 
+    build_shapes_corner(w, o)?;
     build_movement_course(w, o)
+}
+
+/// Blocks that aren't full cubes, west of spawn: a staircase rising west, a slab path with
+/// fence posts sharing its boxels, a lone post, a double slab and logs.
+fn build_shapes_corner(w: &mut dyn WorldEdit, o: BoxelPos) -> Result<(), ApiError> {
+    let at = |x: i64, y: i64, z: i64| o.offset(I64Vec3::new(x, y, z));
+    let west = Orientation::quarter_turns(2, 1);
+    let top = Orientation::quarter_turns(0, 2);
+
+    // Stairs up to a platform 3 high, 3 wide. Unturned stairs rise to the north; a quarter
+    // turn makes them rise to the west.
+    for y in -1..=1 {
+        for step in 0..3 {
+            let x = -7 - step;
+            if step > 0 {
+                w.fill(at(x, y, 0), at(x, y, step - 1), STONE)?;
+            }
+            w.add_block(at(x, y, step), STONE_STAIRS, west)?;
+        }
+        w.fill(at(-12, y, 0), at(-10, y, 2), STONE)?;
+    }
+
+    // A path of bottom slabs, with fence posts poking through two of them.
+    for x in -12..=-7 {
+        w.add_block(at(x, -4, 0), BRICK_SLAB, Orientation::IDENTITY)?;
+    }
+    for x in [-12, -9] {
+        w.add_block(at(x, -4, 0), WOOD_FENCE, Orientation::IDENTITY)?;
+    }
+    // And a post standing on its own.
+    w.add_block(at(-9, -7, 0), WOOD_FENCE, Orientation::IDENTITY)?;
+    // A double slab: a bottom and a top slab in one boxel.
+    w.add_block(at(-6, -4, 0), STONE_SLAB, Orientation::IDENTITY)?;
+    w.add_block(at(-6, -4, 0), STONE_SLAB, top)?;
+
+    // A log lying east to west, and one standing.
+    for x in -12..=-10 {
+        w.add_block(at(x, 3, 0), LOG, Orientation::z_along(0))?;
+    }
+    w.fill(at(-7, 3, 0), at(-7, 3, 1), LOG)
 }
 
 /// Things to move around on: jump gaps, a pillar line, a sprint straight, an ice patch and

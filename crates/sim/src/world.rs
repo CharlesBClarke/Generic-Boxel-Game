@@ -5,6 +5,7 @@ use std::collections::HashMap;
 
 use api::{BoxelPos, ChunkPos};
 
+use crate::cell::{CellId, CellTable, Occupant};
 use crate::{BlockId, Layer};
 
 /// Identifies a grid. The main world is one grid among many; sub-grids and pocket
@@ -19,12 +20,13 @@ impl GridId {
 /// A 32×32×32 cube of boxels. Each kind of data is its own layer.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Chunk {
-    pub blocks: Layer<BlockId>,
+    /// What fills each boxel, as an ID into the grid's [`CellTable`].
+    pub cells: Layer<CellId>,
 }
 
 impl Chunk {
     pub fn empty() -> Self {
-        Self { blocks: Layer::Uniform(BlockId::EMPTY) }
+        Self { cells: Layer::Uniform(CellId::EMPTY) }
     }
 }
 
@@ -32,6 +34,7 @@ impl Chunk {
 #[derive(Default)]
 pub struct Grid {
     chunks: HashMap<ChunkPos, Chunk>,
+    cells: CellTable,
 }
 
 impl Grid {
@@ -43,18 +46,37 @@ impl Grid {
         self.chunks.iter().map(|(pos, chunk)| (*pos, chunk))
     }
 
-    pub fn block(&self, pos: BoxelPos) -> BlockId {
-        let (chunk, local) = pos.split();
-        self.chunks.get(&chunk).map_or(BlockId::EMPTY, |c| c.blocks.get(local))
+    /// The occupant list a chunk's cell ID points at.
+    pub fn occupants(&self, id: CellId) -> &[Occupant] {
+        self.cells.get(id)
     }
 
-    pub fn set_block(&mut self, pos: BoxelPos, id: BlockId) {
+    /// Everything in the boxel at `pos`, in the order it was placed, oldest first.
+    pub fn cell(&self, pos: BoxelPos) -> &[Occupant] {
+        let (chunk, local) = pos.split();
+        let id = self.chunks.get(&chunk).map_or(CellId::EMPTY, |c| c.cells.get(local));
+        self.cells.get(id)
+    }
+
+    /// Replaces everything in the boxel at `pos`. Doesn't check whether the occupants may share.
+    pub fn set_cell(&mut self, pos: BoxelPos, occupants: &[Occupant]) {
+        let id = self.cells.intern(occupants);
         let (chunk, local) = pos.split();
         match self.chunks.get_mut(&chunk) {
-            Some(c) => c.blocks.set(local, id),
+            Some(c) => c.cells.set(local, id),
             None if id.is_empty() => {}
-            None => self.chunks.entry(chunk).or_insert_with(Chunk::empty).blocks.set(local, id),
+            None => self.chunks.entry(chunk).or_insert_with(Chunk::empty).cells.set(local, id),
         }
+    }
+
+    /// The block in the boxel at `pos`: its first occupant's, or empty. Most boxels hold one.
+    pub fn block(&self, pos: BoxelPos) -> BlockId {
+        self.cell(pos).first().map_or(BlockId::EMPTY, |o| o.block)
+    }
+
+    /// Fills the boxel at `pos` with just `id`, unturned, or empties it.
+    pub fn set_block(&mut self, pos: BoxelPos, id: BlockId) {
+        self.set_cell(pos, &[Occupant::new(id)]);
     }
 }
 
@@ -128,6 +150,26 @@ mod tests {
         grid.set_block(BoxelPos::new(-5, 5, 5), stone);
         assert_eq!(grid.chunks().count(), 2);
         assert!(grid.chunk(ChunkPos::new(-1, 0, 0)).is_some());
+    }
+
+    #[test]
+    fn a_boxel_holds_several_occupants() {
+        let stone = some_block();
+        let mut grid = Grid::default();
+        let p = BoxelPos::new(40, -3, 7);
+        let turned = Occupant::turned(stone, api::Orientation::quarter_turns(2, 1));
+        grid.set_cell(p, &[turned, Occupant::new(stone)]);
+        assert_eq!(grid.cell(p).len(), 2);
+        assert!(grid.cell(p).contains(&turned));
+        assert!(grid.cell(BoxelPos::new(41, -3, 7)).is_empty());
+        // Neighbors with the same contents share one entry in the table.
+        grid.set_cell(BoxelPos::new(41, -3, 7), &[turned, Occupant::new(stone)]);
+        let (chunk, local) = p.split();
+        let (_, next) = BoxelPos::new(41, -3, 7).split();
+        let c = grid.chunk(chunk).unwrap();
+        assert_eq!(c.cells.get(local), c.cells.get(next));
+        grid.set_cell(p, &[]);
+        assert!(grid.cell(p).is_empty());
     }
 
     #[test]
