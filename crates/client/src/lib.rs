@@ -75,6 +75,7 @@ pub fn run(sim: Simulation) {
                 (update_camera, sync_chunk_transforms).chain(),
                 editing::draw_outline,
                 editing::update_ghost,
+                editing::draw_region_guide,
                 drill::draw_drill,
                 update_hud,
                 editing::update_palette_hud,

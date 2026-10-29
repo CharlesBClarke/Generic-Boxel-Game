@@ -399,12 +399,13 @@ impl<T: Terrain> Terrain for WithBoxes<'_, T> {
 }
 
 /// Half the width of the square in the middle of a face, for precise placement.
-const FACE_CENTER: f32 = 0.25;
+pub const FACE_CENTER: f32 = 0.25;
 
 /// Which part of the aimed-at face a hit is in, for precise placement: `None` for the square
 /// in the middle, or the outward direction of the nearest edge, for the four triangles around
-/// it (drawn corner to corner, so each edge gets an equal share).
-fn face_region(hit: &Hit) -> Option<[i32; 3]> {
+/// it (drawn corner to corner, so each edge gets an equal share). The parts span the whole
+/// boxel across the face, even on a partial block's face.
+pub fn face_region(hit: &Hit) -> Option<[i32; 3]> {
     let axis = hit.normal.abs().max_position();
     let offset = hit.point - Vec3::splat(0.5);
     let (a, b) = ((axis + 1) % 3, (axis + 2) % 3);

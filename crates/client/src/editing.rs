@@ -9,7 +9,7 @@ use api::{ChunkPos, Vec3 as ZVec3, WorldPos};
 use bevy::input::mouse::{AccumulatedMouseScroll, MouseScrollUnit};
 use bevy::prelude::*;
 use bevy::window::{CursorGrabMode, CursorOptions, PrimaryWindow};
-use sim::{BlockId, BlockRegistry, Occupant, occupant_boxes};
+use sim::{BlockId, BlockRegistry, FACE_CENTER, Occupant, face_region, occupant_boxes};
 
 use crate::atlas::Atlas;
 use crate::controls::Controls;
@@ -113,6 +113,67 @@ pub(crate) fn draw_outline(sim: Res<Sim>, look: Res<Look>, origin: Res<RenderOri
             .with_scale(size + Vec3::splat(0.005));
         gizmos.cube(transform, Color::srgb(0.05, 0.05, 0.05));
     }
+}
+
+/// How far off the face the precise placement guide floats, so it isn't hidden by the face.
+const GUIDE_LIFT: f32 = 0.003;
+
+/// In precise placement, draws the five parts of the aimed-at face (the middle square and the
+/// four triangles around it) and picks out the one the crosshair is in.
+pub(crate) fn draw_region_guide(
+    sim: Res<Sim>,
+    look: Res<Look>,
+    palette: Res<Palette>,
+    origin: Res<RenderOrigin>,
+    mut gizmos: Gizmos,
+) {
+    if !palette.precise {
+        return;
+    }
+    let Some(hit) = sim.0.target(look.yaw, look.pitch) else {
+        return;
+    };
+    if hit.normal == api::I64Vec3::ZERO {
+        return;
+    }
+    let axis = hit.normal.abs().max_position();
+    // A point on the face, from coordinates across it (0 to 1 along each of its two axes).
+    let lift = hit.point[axis] + hit.normal.as_vec3()[axis] * GUIDE_LIFT;
+    let at = |(u, v): (f32, f32)| {
+        let mut local = ZVec3::ZERO;
+        local[axis] = lift;
+        local[(axis + 1) % 3] = u;
+        local[(axis + 2) % 3] = v;
+        coords::render_translation(WorldPos::at_boxel(hit.pos).translate(local), origin.cell)
+    };
+    let dim = Color::srgba(0.05, 0.05, 0.05, 0.6);
+    let lo = 0.5 - FACE_CENTER;
+    let hi = 0.5 + FACE_CENTER;
+    let outer = [(0.0, 0.0), (1.0, 0.0), (1.0, 1.0), (0.0, 1.0)];
+    let inner = [(lo, lo), (hi, lo), (hi, hi), (lo, hi)];
+    gizmos.linestrip(outer.iter().chain(&outer[..1]).map(|&p| at(p)), dim);
+    gizmos.linestrip(inner.iter().chain(&inner[..1]).map(|&p| at(p)), dim);
+    for (o, i) in outer.iter().zip(&inner) {
+        gizmos.line(at(*o), at(*i), dim);
+    }
+    let part = region_corners(face_region(&hit), axis);
+    gizmos.linestrip(part.iter().chain(&part[..1]).map(|&p| at(p)), Color::srgb(1.0, 0.9, 0.2));
+}
+
+/// The corners of one part of a face, in coordinates across it (0 to 1 along the face's two
+/// axes, the ones after `axis`), going around: the middle square for `None`, or the triangle,
+/// cut off by the middle square, toward the edge in direction `edge`.
+pub(crate) fn region_corners(region: Option<[i32; 3]>, axis: usize) -> Vec<(f32, f32)> {
+    let (lo, hi) = (0.5 - FACE_CENTER, 0.5 + FACE_CENTER);
+    let Some(edge) = region else {
+        return vec![(lo, lo), (hi, lo), (hi, hi), (lo, hi)];
+    };
+    let (a, b) = ((axis + 1) % 3, (axis + 2) % 3);
+    // In (u, v) with u along `a`: which side, and whether the edge runs along u or v.
+    let (along_u, positive) = if edge[a] != 0 { (true, edge[a] > 0) } else { (false, edge[b] > 0) };
+    let (o, i) = if positive { (1.0, hi) } else { (0.0, lo) };
+    let corners = [(o, 0.0), (o, 1.0), (i, hi), (i, lo)];
+    corners.into_iter().map(|(x, y)| if along_u { (x, y) } else { (y, x) }).collect()
 }
 
 /// A see-through copy of what placing would put down, red when it isn't allowed.
@@ -251,6 +312,36 @@ mod tests {
         assert_eq!(placeable_blocks(&blocks), [stone, dirt]);
         assert_eq!(Palette { slot: 1, ..Default::default() }.selected(&blocks), dirt);
         assert_eq!(Palette { slot: 5, ..Default::default() }.selected(&blocks), BlockId::EMPTY);
+    }
+
+    #[test]
+    fn the_region_guide_marks_the_part_placement_uses() {
+        // For points all over each kind of face, the part drawn holds the point.
+        for normal in [I64Vec3::X, I64Vec3::NEG_Y, I64Vec3::Z, I64Vec3::NEG_Z] {
+            let axis = normal.abs().max_position();
+            for i in 0..20 {
+                for j in 0..20 {
+                    let (u, v) = ((i as f32 + 0.5) / 20.0, (j as f32 + 0.5) / 20.0);
+                    let mut point = ZVec3::splat(0.5) + normal.as_vec3() * 0.5;
+                    point[(axis + 1) % 3] = u;
+                    point[(axis + 2) % 3] = v;
+                    let hit = sim::Hit { pos: api::BoxelPos::new(0, 0, 0), occupant: 0, normal, distance: 1.0, point };
+                    let part = region_corners(face_region(&hit), axis);
+                    assert!(inside(&part, (u, v)), "{normal} at {u}, {v}: {part:?}");
+                }
+            }
+        }
+    }
+
+    /// Whether `p` is inside the convex polygon `corners`, going around either way.
+    fn inside(corners: &[(f32, f32)], p: (f32, f32)) -> bool {
+        let sides: Vec<f32> = (0..corners.len())
+            .map(|k| {
+                let (a, b) = (corners[k], corners[(k + 1) % corners.len()]);
+                (b.0 - a.0) * (p.1 - a.1) - (b.1 - a.1) * (p.0 - a.0)
+            })
+            .collect();
+        sides.iter().all(|&s| s >= -1e-6) || sides.iter().all(|&s| s <= 1e-6)
     }
 
     #[test]

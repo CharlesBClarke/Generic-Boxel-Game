@@ -15,5 +15,5 @@ pub use layer::Layer;
 pub use player::{Player, PlayerInput, PushOut, Shape, Terrain};
 pub use raycast::{Hit, raycast};
 pub use registry::{BlockId, BlockRegistry, TextureRegistry};
-pub use simulation::{PlaceTarget, SimError, Simulation};
+pub use simulation::{FACE_CENTER, PlaceTarget, SimError, Simulation, face_region};
 pub use world::{Chunk, Grid, GridId, Universe};
