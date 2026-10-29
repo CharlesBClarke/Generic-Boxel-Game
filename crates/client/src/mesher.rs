@@ -1,5 +1,7 @@
-//! Culled meshing: every face of every occupant's boxes becomes one quad, unless it lies on the
-//! boxel's side against a full block. Output is plain Z-up vertex data in chunk-local space;
+//! Culled meshing: every face of every occupant's boxes becomes a quad, unless it lies on the
+//! boxel's side against a full block. Where faces of two occupants of one boxel lie on the same
+//! plane facing the same way, the part they share is drawn only from the older occupant (the
+//! one placed first), so they never fight over which shows. Output is plain Z-up vertex data in chunk-local space;
 //! turning it into a Bevy mesh happens elsewhere. Textured faces take UVs from the atlas,
 //! cropped to the part of the boxel a box covers; flat-colored ones point at its white cell
 //! and carry their color in the vertices. Textures stay lined up with the world unless the
@@ -104,16 +106,52 @@ pub fn mesh_chunk(grid: &Grid, pos: ChunkPos, blocks: &BlockRegistry, atlas: &At
             continue;
         }
         let at = local.to_ivec();
+        let mut drawn = Vec::new();
         for &occupant in grid.occupants(id) {
             let hidden = |n: [i32; 3]| full(at + I64Vec3::new(n[0] as i64, n[1] as i64, n[2] as i64));
-            mesh_occupant(&mut mesh, occupant, at.as_vec3().to_array(), blocks, atlas, hidden);
+            mesh_occupant(&mut mesh, occupant, at.as_vec3().to_array(), blocks, atlas, hidden, &mut drawn);
         }
     }
     mesh
 }
 
+/// A face already drawn in a boxel, in sixteenths: which way it faces, where its plane is along
+/// that axis, and the rectangle it covers on the two axes after it.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct DrawnFace {
+    normal: [i32; 3],
+    plane: u8,
+    min: [u8; 2],
+    max: [u8; 2],
+}
+
+/// What's left of rectangle `r` after cutting out `cut`: up to four rectangles.
+fn subtract((min, max): ([u8; 2], [u8; 2]), cut: &DrawnFace) -> Vec<([u8; 2], [u8; 2])> {
+    let overlaps = (0..2).all(|i| min[i] < cut.max[i] && cut.min[i] < max[i]);
+    if !overlaps {
+        return vec![(min, max)];
+    }
+    let mut pieces = Vec::new();
+    if min[0] < cut.min[0] {
+        pieces.push((min, [cut.min[0], max[1]]));
+    }
+    if cut.max[0] < max[0] {
+        pieces.push(([cut.max[0], min[1]], max));
+    }
+    let (u0, u1) = (min[0].max(cut.min[0]), max[0].min(cut.max[0]));
+    if min[1] < cut.min[1] {
+        pieces.push(([u0, min[1]], [u1, cut.min[1]]));
+    }
+    if cut.max[1] < max[1] {
+        pieces.push(([u0, cut.max[1]], [u1, max[1]]));
+    }
+    pieces
+}
+
 /// Adds the faces of one occupant whose boxel's minimum corner is at `at`. A face on the
-/// boxel's side facing direction `n` is left out if `hidden(n)`.
+/// boxel's side facing direction `n` is left out if `hidden(n)`. Parts of faces that lie on
+/// faces in `drawn`, from older occupants of the same boxel, are left out too, and this
+/// occupant's faces are added to `drawn`.
 pub fn mesh_occupant(
     mesh: &mut MeshData,
     occupant: Occupant,
@@ -121,6 +159,7 @@ pub fn mesh_occupant(
     blocks: &BlockRegistry,
     atlas: &Atlas,
     hidden: impl Fn([i32; 3]) -> bool,
+    drawn: &mut Vec<DrawnFace>,
 ) {
     let Some(def) = blocks.get(occupant.block) else {
         return;
@@ -139,43 +178,69 @@ pub fn mesh_occupant(
     // A point in sixteenths, unturned, to boxel space turned about the center.
     let place = |p: [i32; 3]| turn.apply(p.map(|c| c - half)).map(|c| (c + half) as f32 / BlockBox::SIZE as f32);
 
+    let mine_from = drawn.len();
     for b in &shape {
         let turned = turn.apply_box(*b);
         for face in &FACES {
             let normal = turn.apply(face.normal);
             let axis = normal.iter().position(|&n| n != 0).expect("a unit normal");
-            let on_side = if normal[axis] > 0 {
-                turned.max[axis] == BlockBox::SIZE
-            } else {
-                turned.min[axis] == 0
-            };
+            let plane = if normal[axis] > 0 { turned.max[axis] } else { turned.min[axis] };
+            let on_side = plane == if normal[axis] > 0 { BlockBox::SIZE } else { 0 };
             if on_side && hidden(normal) {
                 continue;
             }
-            let first = mesh.positions.len() as u32;
-            let s = shade(normal);
-            let color = [base[0] * s, base[1] * s, base[2] * s, 1.0];
-            let rect = textures.map_or(atlas.white(), |t| t[texture_slot(face)]);
-            let [c0, c1, _, c3] = face.corners;
-            let (u_dir, up_dir) = ([0, 1, 2].map(|i| c1[i] - c0[i]), [0, 1, 2].map(|i| c3[i] - c0[i]));
-            for c in face.corners {
-                // The corner of this box, in sixteenths, before turning.
-                let p = [0, 1, 2].map(|i| if c[i] == 0 { b.min[i] as i32 } else { b.max[i] as i32 });
-                let along = |dir: [i32; 3]| -> f32 {
-                    let d: i32 = (0..3).map(|i| (p[i] - c0[i] * BlockBox::SIZE as i32) * dir[i]).sum();
-                    d as f32 / BlockBox::SIZE as f32
-                };
-                let (u, up) = (along(u_dir), along(up_dir));
-                let uv = [rect.min[0] + u * (rect.max[0] - rect.min[0]), rect.max[1] - up * (rect.max[1] - rect.min[1])];
-                let q = place(p);
-                mesh.positions.push([at[0] + q[0], at[1] + q[1], at[2] + q[2]]);
-                mesh.normals.push(normal.map(|n| n as f32));
-                mesh.colors.push(color);
-                mesh.uvs.push(uv);
+            let (a, c) = ((axis + 1) % 3, (axis + 2) % 3);
+            let whole = ([turned.min[a], turned.min[c]], [turned.max[a], turned.max[c]]);
+            let mut pieces = vec![whole];
+            for cut in drawn[..mine_from].iter().filter(|d| d.normal == normal && d.plane == plane) {
+                pieces = pieces.iter().flat_map(|&p| subtract(p, cut)).collect();
             }
-            mesh.indices.extend([first, first + 1, first + 2, first, first + 2, first + 3]);
+            drawn.push(DrawnFace { normal, plane, min: whole.0, max: whole.1 });
+            for (min, max) in pieces {
+                // The piece as a box, turned back to how the block stands unturned.
+                let mut piece = turned;
+                (piece.min[a], piece.min[c], piece.max[a], piece.max[c]) = (min[0], min[1], max[0], max[1]);
+                let rect = textures.map_or(atlas.white(), |t| t[texture_slot(face)]);
+                quad(mesh, face, &turn.inverse().apply_box(piece), normal, at, base, rect, &place);
+            }
         }
     }
+}
+
+/// Adds one face of box `b` (in sixteenths, before turning) as a quad facing `normal` once
+/// turned by `place`.
+#[allow(clippy::too_many_arguments)]
+fn quad(
+    mesh: &mut MeshData,
+    face: &Face,
+    b: &BlockBox,
+    normal: [i32; 3],
+    at: [f32; 3],
+    base: [f32; 3],
+    rect: crate::atlas::Rect,
+    place: &impl Fn([i32; 3]) -> [f32; 3],
+) {
+    let first = mesh.positions.len() as u32;
+    let s = shade(normal);
+    let color = [base[0] * s, base[1] * s, base[2] * s, 1.0];
+    let [c0, c1, _, c3] = face.corners;
+    let (u_dir, up_dir) = ([0, 1, 2].map(|i| c1[i] - c0[i]), [0, 1, 2].map(|i| c3[i] - c0[i]));
+    for c in face.corners {
+        // The corner of this box, in sixteenths, before turning.
+        let p = [0, 1, 2].map(|i| if c[i] == 0 { b.min[i] as i32 } else { b.max[i] as i32 });
+        let along = |dir: [i32; 3]| -> f32 {
+            let d: i32 = (0..3).map(|i| (p[i] - c0[i] * BlockBox::SIZE as i32) * dir[i]).sum();
+            d as f32 / BlockBox::SIZE as f32
+        };
+        let (u, up) = (along(u_dir), along(up_dir));
+        let uv = [rect.min[0] + u * (rect.max[0] - rect.min[0]), rect.max[1] - up * (rect.max[1] - rect.min[1])];
+        let q = place(p);
+        mesh.positions.push([at[0] + q[0], at[1] + q[1], at[2] + q[2]]);
+        mesh.normals.push(normal.map(|n| n as f32));
+        mesh.colors.push(color);
+        mesh.uvs.push(uv);
+    }
+    mesh.indices.extend([first, first + 1, first + 2, first, first + 2, first + 3]);
 }
 
 #[cfg(test)]
@@ -430,6 +495,87 @@ mod tests {
         }
     }
 
+    /// The corners of each quad: its normal, and its minimum and maximum corner.
+    fn quads(mesh: &MeshData) -> Vec<([f32; 3], [f32; 3], [f32; 3])> {
+        (0..mesh.quad_count())
+            .map(|q| {
+                let corners = &mesh.positions[q * 4..q * 4 + 4];
+                let min = [0, 1, 2].map(|i| corners.iter().map(|c| c[i]).fold(f32::MAX, f32::min));
+                let max = [0, 1, 2].map(|i| corners.iter().map(|c| c[i]).fold(f32::MIN, f32::max));
+                (mesh.normals[q * 4], min, max)
+            })
+            .collect()
+    }
+
+    /// Two different textured slabs, and a mesh of one boxel holding `cell`.
+    fn two_slabs() -> (BlockRegistry, Atlas, BlockId, BlockId) {
+        let mut textures = TextureRegistry::default();
+        for name in ["test:a", "test:b"] {
+            textures.register(TextureDef { name: name.into(), width: 1, height: 1, rgba: vec![200; 4] }).unwrap();
+        }
+        let mut blocks = BlockRegistry::default();
+        let slab = |name: &str, texture: &str| {
+            BlockDef::new(name, true, [0; 3]).with_textures(FaceTextures::all(texture)).with_shape(vec![SLAB])
+        };
+        let a = blocks.register(slab("test:slab_a", "test:a")).unwrap();
+        let b = blocks.register(slab("test:slab_b", "test:b")).unwrap();
+        let atlas = Atlas::build(&textures, &blocks);
+        (blocks, atlas, a, b)
+    }
+
+    /// A slab standing against the east side of its boxel.
+    fn east(block: BlockId) -> Occupant {
+        Occupant::turned(block, Orientation::from_axes([-1, 0, 0], [0, 1, 0]).unwrap())
+    }
+
+    #[test]
+    fn coinciding_faces_in_a_boxel_never_overlap() {
+        let (blocks, atlas, a, b) = two_slabs();
+        for cell in [[Occupant::new(b), east(a)], [east(a), Occupant::new(b)]] {
+            let mut grid = Grid::default();
+            grid.set_cell(BoxelPos::new(3, 3, 3), &cell);
+            let quads = quads(&super::mesh_chunk(&grid, ChunkPos::new(0, 0, 0), &blocks, &atlas));
+            for (i, (n1, min1, max1)) in quads.iter().enumerate() {
+                for (n2, min2, max2) in &quads[i + 1..] {
+                    let axis = n1.iter().position(|&c| c != 0.0).unwrap();
+                    let plane = |min: &[f32; 3], max: &[f32; 3]| if n1[axis] > 0.0 { max[axis] } else { min[axis] };
+                    if n1 != n2 || plane(min1, max1) != plane(min2, max2) {
+                        continue;
+                    }
+                    let overlap = (0..3).filter(|&k| k != axis).all(|k| min1[k] < max2[k] && min2[k] < max1[k]);
+                    assert!(!overlap, "quads overlap on one plane: {min1:?}-{max1:?} and {min2:?}-{max2:?}");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn the_oldest_occupant_shows_where_faces_coincide() {
+        let (blocks, atlas, a, b) = two_slabs();
+        let ta = atlas.faces(a).unwrap()[2];
+        // Which texture shows on the boxel's east side, by height: (z range, texture).
+        let east_side = |cell: &[Occupant]| {
+            let mut grid = Grid::default();
+            grid.set_cell(BoxelPos::new(3, 3, 3), cell);
+            let mesh = super::mesh_chunk(&grid, ChunkPos::new(0, 0, 0), &blocks, &atlas);
+            let mut sides: Vec<_> = quads(&mesh)
+                .into_iter()
+                .enumerate()
+                .filter(|(_, (n, min, _))| n[0] == 1.0 && min[0] == 4.0)
+                .map(|(q, (_, min, max))| ((min[2], max[2]), within(&mesh.uvs[q * 4], ta)))
+                .collect();
+            sides.sort_by(|x, y| x.0.0.total_cmp(&y.0.0));
+            sides
+        };
+        // The bottom slab first: its side shows below, the newer standing slab's above.
+        assert_eq!(east_side(&[Occupant::new(b), east(a)]), [((3.0, 3.5), false), ((3.5, 4.0), true)]);
+        // The standing slab first: it covers the whole side.
+        assert_eq!(east_side(&[east(a), Occupant::new(b)]), [((3.0, 4.0), true)]);
+        // Break the older one and the newer one's whole face comes back.
+        assert_eq!(east_side(&[east(a)]), [((3.0, 4.0), true)]);
+        assert_eq!(east_side(&[Occupant::new(b)]), [((3.0, 3.5), false)]);
+    }
+
     #[test]
     fn shared_boxels_mesh_every_occupant() {
         let (mut grid, mut blocks, _) = setup();
@@ -437,7 +583,8 @@ mod tests {
         let post = BlockBox::new([6, 6, 0], [10, 10, 16]);
         let fence = blocks.register(BlockDef::new("test:post", true, [9; 3]).with_shape(vec![post])).unwrap();
         grid.set_cell(BoxelPos::new(1, 1, 1), &[Occupant::new(slab), Occupant::new(fence)]);
-        assert_eq!(mesh_chunk(&grid, ChunkPos::new(0, 0, 0), &blocks).quad_count(), 12);
+        // The post's bottom lies on the older slab's bottom, so only the slab's is drawn.
+        assert_eq!(mesh_chunk(&grid, ChunkPos::new(0, 0, 0), &blocks).quad_count(), 6 + 5);
     }
 
     fn within(uv: &[f32; 2], r: Rect) -> bool {

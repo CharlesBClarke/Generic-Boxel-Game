@@ -219,7 +219,7 @@ pub(crate) fn update_ghost(
     if ghost.shown != Some(place.occupant) {
         let mut data = mesher::MeshData::default();
         // Built around the boxel's center, so scaling shrinks it in place.
-        mesher::mesh_occupant(&mut data, place.occupant, [-0.5; 3], blocks, &chunk_meshes.atlas, |_| false);
+        mesher::mesh_occupant(&mut data, place.occupant, [-0.5; 3], blocks, &chunk_meshes.atlas, |_| false, &mut Vec::new());
         mesh.0 = meshes.add(crate::to_bevy_mesh(data));
         ghost.shown = Some(place.occupant);
     }

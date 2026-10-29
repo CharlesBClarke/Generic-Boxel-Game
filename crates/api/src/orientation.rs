@@ -99,6 +99,12 @@ impl Orientation {
         Orientation { rows }
     }
 
+    /// The turn that undoes this one.
+    pub fn inverse(self) -> Orientation {
+        let r = self.rows;
+        Orientation { rows: [0, 1, 2].map(|i| [0, 1, 2].map(|j| r[j][i])) }
+    }
+
     /// Turns a direction or offset.
     pub fn apply(&self, v: [i32; 3]) -> [i32; 3] {
         self.rows.map(|r| r[0] as i32 * v[0] + r[1] as i32 * v[1] + r[2] as i32 * v[2])
@@ -134,6 +140,7 @@ mod tests {
                 assert!(all.contains(&a.then(b)));
             }
             assert_eq!(a.then(Orientation::IDENTITY), a);
+            assert_eq!(a.then(a.inverse()), Orientation::IDENTITY);
         }
         // Four quarter turns about any axis are no turn.
         for axis in 0..3 {

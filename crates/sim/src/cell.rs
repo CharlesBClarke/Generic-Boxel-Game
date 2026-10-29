@@ -1,6 +1,6 @@
-//! What fills a boxel: a short list of occupants, each a block and how it's turned. Chunks
-//! store a small ID per boxel; the grid keeps one shared table from IDs to occupant lists, so
-//! identical lists are stored once.
+//! What fills a boxel: a short list of occupants, each a block and how it's turned, in the
+//! order they were placed. Chunks store a small ID per boxel; the grid keeps one shared table
+//! from IDs to occupant lists, so identical lists are stored once.
 
 use std::collections::HashMap;
 
@@ -42,13 +42,14 @@ impl CellId {
     }
 }
 
-/// An occupant list stored in place: how many, then the occupants, sorted, padded with empties.
+/// An occupant list stored in place: how many, then the occupants in order, padded with empties.
 type List = (u8, [Occupant; MAX_OCCUPANTS]);
 
 const NO_OCCUPANT: Occupant = Occupant { block: BlockId::EMPTY, orientation: Orientation::IDENTITY };
 
-/// Every occupant list in use, each stored once. Lists are kept sorted, so the same
-/// occupants in any order get the same ID. Entries are never removed while the game runs.
+/// Every occupant list in use, each stored once. Order matters: it's the order the occupants
+/// were placed, oldest first, and where two faces coincide the oldest one shows, so the same
+/// occupants in another order are another list. Entries are never removed while the game runs.
 #[derive(Debug)]
 pub struct CellTable {
     lists: Vec<List>,
@@ -71,7 +72,8 @@ impl CellTable {
         &items[..*len as usize]
     }
 
-    /// The ID for these occupants, adding the list if it's new. Empty occupants are dropped.
+    /// The ID for these occupants, in this order, adding the list if it's new. Empty occupants
+    /// are dropped.
     /// Panics with more than [`MAX_OCCUPANTS`], which the sharing rule never allows.
     pub fn intern(&mut self, occupants: &[Occupant]) -> CellId {
         let mut list: List = (0, [NO_OCCUPANT; MAX_OCCUPANTS]);
@@ -80,7 +82,6 @@ impl CellTable {
             list.1[list.0 as usize] = o;
             list.0 += 1;
         }
-        list.1[..list.0 as usize].sort();
         if list.0 == 1
             && let Some((single, id)) = self.last_single
             && single == list.1[0]
@@ -217,18 +218,20 @@ mod tests {
     }
 
     #[test]
-    fn the_same_occupants_in_any_order_share_one_id() {
+    fn the_same_occupants_in_the_same_order_share_one_id() {
         let (_, stone, slab, post) = setup();
         let mut table = CellTable::default();
         assert_eq!(table.intern(&[]), CellId::EMPTY);
         let a = table.intern(&[Occupant::new(slab), Occupant::new(post)]);
+        assert_eq!(table.intern(&[Occupant::new(slab), Occupant::new(post)]), a);
         let b = table.intern(&[Occupant::new(post), Occupant::new(slab)]);
-        assert_eq!(a, b);
-        assert_eq!(table.get(a).len(), 2);
+        assert_ne!(a, b, "placement order is kept");
+        assert_eq!(table.get(a), [Occupant::new(slab), Occupant::new(post)]);
+        assert_eq!(table.get(b), [Occupant::new(post), Occupant::new(slab)]);
         let c = table.intern(&[Occupant::new(stone)]);
         assert_ne!(a, c);
         assert_eq!(table.intern(&[Occupant::new(stone)]), c);
-        assert_eq!(table.len(), 3);
+        assert_eq!(table.len(), 4);
         // Empty occupants are dropped, so an empty list is the empty cell.
         assert_eq!(table.intern(&[Occupant::new(BlockId::EMPTY)]), CellId::EMPTY);
     }

@@ -51,7 +51,7 @@ impl Grid {
         self.cells.get(id)
     }
 
-    /// Everything in the boxel at `pos`, in a fixed order.
+    /// Everything in the boxel at `pos`, in the order it was placed, oldest first.
     pub fn cell(&self, pos: BoxelPos) -> &[Occupant] {
         let (chunk, local) = pos.split();
         let id = self.chunks.get(&chunk).map_or(CellId::EMPTY, |c| c.cells.get(local));
@@ -163,7 +163,7 @@ mod tests {
         assert!(grid.cell(p).contains(&turned));
         assert!(grid.cell(BoxelPos::new(41, -3, 7)).is_empty());
         // Neighbors with the same contents share one entry in the table.
-        grid.set_cell(BoxelPos::new(41, -3, 7), &[Occupant::new(stone), turned]);
+        grid.set_cell(BoxelPos::new(41, -3, 7), &[turned, Occupant::new(stone)]);
         let (chunk, local) = p.split();
         let (_, next) = BoxelPos::new(41, -3, 7).split();
         let c = grid.chunk(chunk).unwrap();
