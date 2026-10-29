@@ -1,16 +1,22 @@
 //! Culled meshing: every block face next to an empty boxel becomes one quad. Output is plain
 //! Z-up vertex data in chunk-local space; turning it into a Bevy mesh happens elsewhere.
+//! Textured faces take UVs from the atlas; flat-colored ones point at its white cell and
+//! carry their color in the vertices.
 
 use api::{CHUNK_SIZE, CHUNK_VOLUME, ChunkPos, I64Vec3, LocalPos};
 use sim::{BlockId, BlockRegistry, Grid};
+
+use crate::atlas::{Atlas, Rect};
 
 /// Vertex data for one chunk, Z-up, relative to the chunk's minimum corner.
 #[derive(Default, Debug)]
 pub struct MeshData {
     pub positions: Vec<[f32; 3]>,
     pub normals: Vec<[f32; 3]>,
-    /// Linear RGBA.
+    /// Linear RGBA, multiplied with the texture.
     pub colors: Vec<[f32; 4]>,
+    /// Atlas coordinates, 0 to 1 from the top left.
+    pub uvs: Vec<[f32; 2]>,
     pub indices: Vec<u32>,
 }
 
@@ -26,7 +32,8 @@ impl MeshData {
 
 struct Face {
     normal: [i64; 3],
-    /// Corners of the unit cube, counterclockwise seen from outside.
+    /// Corners of the unit cube, counterclockwise seen from outside. On the sides they run
+    /// bottom left, bottom right, top right, top left, so textures stand upright.
     corners: [[f32; 3]; 4],
     /// Fake lighting so faces are told apart without a lighting system.
     shade: f32,
@@ -47,9 +54,23 @@ fn srgb_to_linear(c: u8) -> f32 {
     if c <= 0.04045 { c / 12.92 } else { ((c + 0.055) / 1.055).powf(2.4) }
 }
 
+/// Which of a block's textures a face uses: top, bottom or side.
+fn texture_slot(face: &Face) -> usize {
+    match face.normal[2] {
+        1 => 0,
+        -1 => 1,
+        _ => 2,
+    }
+}
+
+/// UVs for a quad's corners, in the order `Face::corners` lists them.
+fn corner_uvs(r: Rect) -> [[f32; 2]; 4] {
+    [[r.min[0], r.max[1]], [r.max[0], r.max[1]], [r.max[0], r.min[1]], [r.min[0], r.min[1]]]
+}
+
 /// Meshes the chunk at `pos`. Neighbors are read through `grid`, so faces on chunk borders
 /// are culled against the next chunk. Unloaded neighbors count as empty.
-pub fn mesh_chunk(grid: &Grid, pos: ChunkPos, blocks: &BlockRegistry) -> MeshData {
+pub fn mesh_chunk(grid: &Grid, pos: ChunkPos, blocks: &BlockRegistry, atlas: &Atlas) -> MeshData {
     let mut mesh = MeshData::default();
     let Some(chunk) = grid.chunk(pos) else {
         return mesh;
@@ -75,7 +96,9 @@ pub fn mesh_chunk(grid: &Grid, pos: ChunkPos, blocks: &BlockRegistry) -> MeshDat
         let Some(def) = blocks.get(id) else {
             continue;
         };
-        let base = def.color.map(srgb_to_linear);
+        let textures = atlas.faces(id);
+        // A textured block shows its texture's own colors; a flat one tints the white cell.
+        let base = if textures.is_some() { [1.0; 3] } else { def.color.map(srgb_to_linear) };
         let at = local.to_ivec();
         for face in &FACES {
             if occupied(at + I64Vec3::from_array(face.normal)) {
@@ -84,10 +107,12 @@ pub fn mesh_chunk(grid: &Grid, pos: ChunkPos, blocks: &BlockRegistry) -> MeshDat
             let first = mesh.positions.len() as u32;
             let color = [base[0] * face.shade, base[1] * face.shade, base[2] * face.shade, 1.0];
             let normal = face.normal.map(|n| n as f32);
-            for c in face.corners {
+            let rect = textures.map_or(atlas.white(), |t| t[texture_slot(face)]);
+            for (c, uv) in face.corners.into_iter().zip(corner_uvs(rect)) {
                 mesh.positions.push([at.x as f32 + c[0], at.y as f32 + c[1], at.z as f32 + c[2]]);
                 mesh.normals.push(normal);
                 mesh.colors.push(color);
+                mesh.uvs.push(uv);
             }
             mesh.indices.extend([first, first + 1, first + 2, first, first + 2, first + 3]);
         }
@@ -98,12 +123,22 @@ pub fn mesh_chunk(grid: &Grid, pos: ChunkPos, blocks: &BlockRegistry) -> MeshDat
 #[cfg(test)]
 mod tests {
     use super::*;
-    use api::{BlockDef, BoxelPos, Vec3};
+    use api::{BlockDef, BoxelPos, FaceTextures, TextureDef, Vec3};
+    use sim::TextureRegistry;
 
     fn setup() -> (Grid, BlockRegistry, BlockId) {
         let mut blocks = BlockRegistry::default();
         let stone = blocks.register(BlockDef::new("test:stone", true, [128, 128, 128])).unwrap();
         (Grid::default(), blocks, stone)
+    }
+
+    /// An atlas for blocks without textures.
+    fn flat(blocks: &BlockRegistry) -> Atlas {
+        Atlas::build(&TextureRegistry::default(), blocks)
+    }
+
+    fn mesh_chunk(grid: &Grid, pos: ChunkPos, blocks: &BlockRegistry) -> MeshData {
+        super::mesh_chunk(grid, pos, blocks, &flat(blocks))
     }
 
     #[test]
@@ -166,5 +201,55 @@ mod tests {
             let normal = Vec3::from_array(mesh.normals[tri[0] as usize]);
             assert!((b - a).cross(c - a).normalize().dot(normal) > 0.99);
         }
+    }
+
+    #[test]
+    fn faces_use_their_textures_upright() {
+        let mut textures = TextureRegistry::default();
+        for name in ["test:top", "test:bottom", "test:side"] {
+            textures.register(TextureDef { name: name.into(), width: 1, height: 1, rgba: vec![200; 4] }).unwrap();
+        }
+        let mut blocks = BlockRegistry::default();
+        let faces = FaceTextures { top: "test:top".into(), bottom: "test:bottom".into(), side: "test:side".into() };
+        let grass = blocks.register(BlockDef::new("test:grass", true, [0, 0, 0]).with_textures(faces)).unwrap();
+        let plain = blocks.register(BlockDef::new("test:plain", true, [255, 0, 0])).unwrap();
+        let atlas = Atlas::build(&textures, &blocks);
+        let mut grid = Grid::default();
+        grid.set_block(BoxelPos::new(0, 0, 0), grass);
+        grid.set_block(BoxelPos::new(5, 0, 0), plain);
+        let mesh = super::mesh_chunk(&grid, ChunkPos::new(0, 0, 0), &blocks, &atlas);
+        assert_eq!(mesh.uvs.len(), mesh.positions.len());
+
+        let [top, bottom, side] = *atlas.faces(grass).unwrap();
+        for quad in 0..mesh.quad_count() {
+            let corners = quad * 4..quad * 4 + 4;
+            let normal = mesh.normals[quad * 4];
+            let uvs = &mesh.uvs[corners.clone()];
+            if mesh.positions[quad * 4][0] >= 5.0 {
+                // The flat block: the white cell, tinted by its color.
+                assert!(uvs.iter().all(|uv| within(uv, atlas.white())));
+                assert!(mesh.colors[corners].iter().all(|c| c[0] > 0.0 && c[1] == 0.0));
+                continue;
+            }
+            let expected = match normal[2] {
+                1.0 => top,
+                -1.0 => bottom,
+                _ => side,
+            };
+            assert!(uvs.iter().all(|uv| within(uv, expected)), "normal {normal:?}");
+            assert!(mesh.colors[corners.clone()].iter().all(|c| c[0] == c[1] && c[1] == c[2]), "untinted");
+            if normal[2] == 0.0 {
+                // Upright: the corners higher up get the texture's top row (smaller v).
+                for (i, j) in [(0, 3), (1, 2)] {
+                    let (low, high) = (corners.start + i, corners.start + j);
+                    assert!(mesh.positions[high][2] > mesh.positions[low][2]);
+                    assert!(mesh.uvs[high][1] < mesh.uvs[low][1]);
+                }
+            }
+        }
+    }
+
+    fn within(uv: &[f32; 2], r: Rect) -> bool {
+        (r.min[0]..=r.max[0]).contains(&uv[0]) && (r.min[1]..=r.max[1]).contains(&uv[1])
     }
 }

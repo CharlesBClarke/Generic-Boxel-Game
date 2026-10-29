@@ -15,7 +15,7 @@ pub mod movement;
 pub mod player;
 pub mod tuning;
 
-pub use block::BlockDef;
+pub use block::{BlockDef, FaceTextures, TextureDef};
 pub use coords::{BoxelPos, CHUNK_SIZE, CHUNK_VOLUME, ChunkPos, LocalPos, WorldPos, look_direction};
 pub use error::ApiError;
 pub use interaction::{InteractionDef, PushOutDef};

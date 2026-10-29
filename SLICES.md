@@ -170,7 +170,7 @@ Ideas that come up while playing get added here.
 
 ### Seam backlog (added when the game is ready for them)
 
-- **Data mods.** Blocks and textures defined in mod files, loaded at startup. Likely after the first couple of toys. Textures from Minetest Game, with credits and license kept.
+- ~~**Data mods.**~~ Done (2026-10-27), see Done toys.
 - **WebAssembly behavior.** Sandboxed mod code for block behavior, once a toy has behavior worth sandboxing, such as crystals or liquids. Sleeping blocks and read-old, write-new automata. The first step is done: the WebAssembly movement seam (2026-10-26) runs `base`'s movement controller as a component, so block behavior can follow the same pattern (WIT interface in `api`, guest export macro, `wasm_host` wrapper). *To settle (2026-10-27):* keep entity and block state in the engine, not in the mod, before any behavior keeps state in a mod (see the design doc's "Mod memory"). The movement controller still keeps its timers and charge inside the mod and should move to that pattern. Test whether wasmtime lets the engine drop a mod's freed pages (`madvise` on Linux, `DiscardVirtualMemory` on Windows), driven by an allocator in `api`.
 - **Sandbox limits.** Fuel or epoch interruption, so a mod stuck in a loop can't hang the game. Deferred from the WebAssembly movement seam.
 - **Seed a modder.** Once a few seam slices are done, have an outside modder build a small toy on the API and fix what blocks them.
@@ -195,6 +195,51 @@ Bugs found in already-merged code, each fixed on its own `fix-` branch (see the 
 None yet.
 
 ### Done toys
+
+#### Data mods seam (branch `seam-data-mods`)
+
+**Stage:** Done (2026-10-27). Verified: the user played it, saw the textures, changed `blocks.toml` and restarted, and saw a broken file's error name the file and line.
+
+**Goal:** the base game's blocks and textures come from files in a mod folder, loaded at startup. Editing a block's properties or swapping a texture needs a restart, not a rebuild. Flat colors give way to Minetest Game textures, with credits and license kept.
+
+**Approved plan** (2026-10-27)
+
+*Decisions*
+- **TOML,** parsed with `serde` and `toml`. Unknown fields are errors, so typos aren't silently ignored. Errors name the file, line and field.
+- **Layout:** `mods/base/` holds `mod.toml` (name, version, description), `blocks.toml` (`[[block]]` entries: name, solid, friction, placeable, textures), `textures/*.png` (16×16), `LICENSE.txt` and `CREDITS.md`.
+- **A data mod is a normal `Mod`.** A new engine crate, `data_mods` (no Bevy), reads a folder into a `DataMod` that implements `api::Mod` and registers through the same `Registrar`. The base game is two parts sharing the `base` namespace: data (`mods/base`) and code (the `base` crate, which still builds the test area and registers the player and interaction rules).
+- **Textures are plain data in the API:** `TextureDef { name, width, height, rgba }`, `Registrar::register_texture`, and `BlockDef.textures: Option<FaceTextures>` (top, bottom, side). `color` stays for untextured blocks. The loader decodes PNGs (`png` crate), so `sim` only stores bytes.
+- **Rendering: one atlas,** nearest filtering, no mipmaps. The mesher adds UVs and picks top, bottom or side per face; vertex colors keep the face shading. Keeps `StandardMaterial`. An array texture (for tiling with greedy meshing) is deferred.
+- **Finding mods:** `game` loads `<workspace>/mods/base`, or the folder given with `--mods <dir>`. Loading every folder with dependency order is deferred until a second data mod exists.
+- **Textures** from Minetest Game's `default` mod: stone, dirt, grass top and side, brick, ice. The marker keeps its flat color. Credits per file, CC BY-SA 3.0.
+
+*Crates:* `api` (texture types, `register_texture`); `data_mods` (new: parsing, PNG decoding, errors, `DataMod`); `sim` (texture registry, checks that named textures exist); `base` (blocks move to `mods/base/blocks.toml`, name constants stay); `client` (atlas, UVs); `game` (loads `mods/base` before `BaseMod`, `--mods`).
+
+*Tests:* parsing a good file, an unknown field, a missing texture, a bad name and a malformed PNG; the base data mod registers the same six blocks with the same properties as before; atlas textures don't overlap and UVs stay inside their texture; grass gets top, side and bottom textures on the right faces and untextured blocks keep flat colors; existing tests, including wasm equivalence, still pass.
+
+*Done when*
+1. The base game's blocks are defined in `mods/base/blocks.toml`; the `base` crate registers no blocks in code.
+2. The game shows Minetest textures, with grass top and side distinct.
+3. Changing a value in `blocks.toml` (such as ice friction) and restarting changes the game with no rebuild.
+4. A broken data file gives a readable error naming the file and line, not a panic deep in the engine.
+5. `LICENSE.txt` and `CREDITS.md` credit every texture's authors.
+6. `cargo test` and `cargo clippy` are clean.
+
+*Setup:* the user approved downloading the textures, license and credits from the Minetest Game repository.
+
+*Implementation notes* (2026-10-27)
+- **Short names in data files.** `blocks.toml` names blocks without a namespace; the loader adds the one from `mod.toml`, so a data mod can't define blocks in another mod's namespace. Texture names may be short (this mod's `textures/`, checked at load with file and line) or full (another mod's, checked by the engine once every mod has registered).
+- **Color is optional for textured blocks.** It defaults to the side texture's average color, kept for anywhere a block is drawn as one color (later LOD). Untextured blocks must give one.
+- **Grass side is composited ahead of time.** In Minetest Game, `default_grass_side.png` is a see-through overlay drawn over dirt. Instead of adding texture layering to the engine, `mods/base/textures/grass_side.png` is the two combined into one opaque image, and `CREDITS.md` says so, as CC BY-SA requires.
+- **Loading.** `game::load_from(dir, movement)` loads the data half from `dir`, then `BaseMod`; `game::load` uses `base::DATA_DIR` (the source tree's `mods/base`). A load error prints and exits instead of panicking. Tests outside `game` load the data half with `data_mods::load(base::DATA_DIR)`.
+- **Atlas.** Equal cells sized to the largest texture, each with a one-pixel border repeating the texture's edge, plus a white cell for flat-colored blocks, which tint it with vertex color. Built in `client::atlas`, kept in `ChunkMeshes`.
+- **Dependencies:** `serde`, `toml` 1.x, and `image` with only PNG (the version Bevy already uses).
+- *API changes:* `TextureDef`, `FaceTextures`, `BlockDef.textures` and `with_textures`, `Registrar::register_texture`, `ApiError::UnknownTexture`. In `sim`: `TextureRegistry`, `Simulation::textures`, `BlockId::index`.
+
+*Result*
+- All six "Done when" criteria met. The user checked 2 to 4 in game (textures with grass top and side distinct; ice friction and a grass texture changed by editing `blocks.toml` and restarting; a misspelled field gave an error naming the file and line). 156 tests pass in the workspace, and clippy is clean.
+- *Deferred:* an array texture instead of the atlas (needed for tiling once greedy meshing exists); loading every folder in `mods/` with dependency order (once a second data mod exists); texture layering such as Minetest's grass side overlay (composited ahead of time for now); items, recipes and models in data files.
+- *API debt:* none new, and none paid down. The base game's blocks now go through the same `Registrar` as before, from data instead of code.
 
 #### WebAssembly movement seam (branch `seam-wasm-movement`)
 

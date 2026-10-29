@@ -10,6 +10,7 @@ use bevy::prelude::*;
 use bevy::window::{CursorGrabMode, CursorOptions, PrimaryWindow};
 use sim::{BlockId, BlockRegistry};
 
+use crate::atlas::Atlas;
 use crate::controls::Controls;
 use crate::{ChunkMesh, Look, PendingToggles, RenderOrigin, Sim, coords, mesher};
 
@@ -36,10 +37,11 @@ pub fn placeable_blocks(blocks: &BlockRegistry) -> Vec<BlockId> {
     blocks.iter().filter(|(_, def)| def.placeable).map(|(id, _)| id).collect()
 }
 
-/// The mesh entity for each chunk that has geometry, and the material they share.
+/// The mesh entity for each chunk that has geometry, and the material and atlas they share.
 #[derive(Resource)]
 pub(crate) struct ChunkMeshes {
     pub material: Handle<StandardMaterial>,
+    pub atlas: Atlas,
     pub entities: HashMap<ChunkPos, Entity>,
 }
 
@@ -112,7 +114,7 @@ pub(crate) fn remesh_changed_chunks(
     let changed = sim.0.take_changed_chunks();
     let grid = sim.0.universe().main();
     for pos in changed {
-        let data = mesher::mesh_chunk(grid, pos, sim.0.blocks());
+        let data = mesher::mesh_chunk(grid, pos, sim.0.blocks(), &chunk_meshes.atlas);
         match chunk_meshes.entities.get(&pos).copied() {
             Some(entity) if data.is_empty() => {
                 commands.entity(entity).despawn();
@@ -172,11 +174,13 @@ mod tests {
 
     #[test]
     fn breaking_a_block_remeshes_its_chunk() {
-        let mut sim = Simulation::with_mods(&[&base::BaseMod, &base_movement::BaseMovementMod]).unwrap();
+        let data = data_mods::load(std::path::Path::new(base::DATA_DIR)).unwrap();
+        let mut sim = Simulation::with_mods(&[&data, &base::BaseMod, &base_movement::BaseMovementMod]).unwrap();
         sim.spawn_player().unwrap();
         sim.teleport_player(WorldPos::new(I64Vec3::new(10, 10, 0), ZVec3::new(0.5, 0.5, 0.0)));
         let below = ChunkPos::new(0, 0, -1);
-        let before = mesher::mesh_chunk(sim.universe().main(), below, sim.blocks()).quad_count();
+        let atlas = Atlas::build(sim.textures(), sim.blocks());
+        let before = mesher::mesh_chunk(sim.universe().main(), below, sim.blocks(), &atlas).quad_count();
 
         let down = -89f32.to_radians();
         sim.step(&PlayerInput { pitch: down, break_pressed: true, break_held: true, ..Default::default() });
@@ -186,7 +190,7 @@ mod tests {
         assert!(changed.contains(&ChunkPos::new(0, 0, 0)));
 
         // One top face gone; four side faces and the floor of the hole appear.
-        let after = mesher::mesh_chunk(sim.universe().main(), below, sim.blocks()).quad_count();
+        let after = mesher::mesh_chunk(sim.universe().main(), below, sim.blocks(), &atlas).quad_count();
         assert_eq!(after, before + 4);
     }
 }
