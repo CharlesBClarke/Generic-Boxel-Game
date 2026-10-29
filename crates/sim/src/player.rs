@@ -269,6 +269,9 @@ impl Player {
             }
         }
         self.pos = self.pos.translate(moved);
+        // Step-ups are instant, like height changes: move the previous position too, so
+        // renderers don't blend the rise between ticks on top of easing it themselves.
+        self.prev_pos = self.prev_pos.translate(Vec3::Z * stepped);
         self.stepped_total += stepped as f64;
 
         let was_on_ground = self.on_ground;
@@ -732,6 +735,26 @@ mod tests {
         run(&mut p, &PlayerInput::default(), 5, &one_high);
         run(&mut p, &walk_east(), 60, &one_high);
         assert_eq!(p.pos().cell().z, 0, "step-up is off at height 0");
+    }
+
+    #[test]
+    fn a_step_up_moves_the_previous_position_too() {
+        // The rise is instant and the renderer eases it itself, so blending between ticks
+        // must not show it a second time.
+        let one_high = world(|p| floor(p) || (p.0.x >= 2 && p.0.z == 0));
+        let mut p = Player::with_controller(shape(1.0), Box::new(Walker), at(1.5, 0.5, 0.0));
+        run(&mut p, &PlayerInput::default(), 5, &one_high);
+        for _ in 0..60 {
+            let before = p.stepped_total();
+            p.step(&walk_east(), DT, &one_high);
+            if p.stepped_total() > before {
+                let rise = p.prev_pos().delta_to(p.pos()).z;
+                assert!(rise.abs() < 1e-4, "the tick blends a rise of {rise}");
+                assert!(p.prev_pos().delta_to(p.pos()).x > 0.0, "but still blends the walk");
+                return;
+            }
+        }
+        panic!("never stepped up");
     }
 
     #[test]
