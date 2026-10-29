@@ -1,5 +1,5 @@
 //! Compiles the WebAssembly mods to components in `OUT_DIR`: the base game's movement
-//! controller, embedded in the game, and a test fixture that panics, used only by tests.
+//! controller, embedded in the game, and test fixtures that misbehave, used only by tests.
 
 use std::env;
 use std::fs;
@@ -9,7 +9,7 @@ use std::process::Command;
 use wit_component::ComponentEncoder;
 
 /// Crates compiled to WebAssembly, by package name.
-const GUESTS: &[&str] = &["base_movement", "panicky_movement"];
+const GUESTS: &[&str] = &["base_movement", "panicky_movement", "hostile_movement", "stuck_movement"];
 
 fn main() {
     let manifest_dir = PathBuf::from(env::var("CARGO_MANIFEST_DIR").unwrap());

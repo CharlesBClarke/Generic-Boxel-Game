@@ -104,9 +104,61 @@ A run of small toy slices. Each one takes a single game-feel feature that doesn'
 
 ### Current toy
 
-#### Sandbox limits (seam, from the seam backlog)
+None. Next up: plan the block shapes and placement toy.
 
-**Stage:** Verify, paused (branch `seam-sandbox-limits`, committed, not merged). Tests pass; the user's play check is still open. *Deviation (2026-10-27):* at the user's request, Data mods started at the Plan stage before this check, since the user couldn't play right then. Finish criterion 4 and close this before merging.
+### Toy backlog
+
+- **Block shapes and placement.** Added 2026-10-28 at the user's request; next up. Slabs, stairs, logs and other blocks that can be placed in several ways, set by the face and point you aim at, with arbitrary orientations (to confirm with the user), shape-aware collision and meshing, and probably a ghost preview. Open question: include a material-plus-shape palette (the design doc's "carry a material, choose its shape") or leave all inventory work to a later toy. Suggested order after it: inventory and items, then interaction controls and block interactions, then combat feel.
+- **Interaction controls.** Split out of Block editing (2026-10-25). Fix Minecraft's ambiguous right click once there are things to use, like crystals or devices. Principles: one input, one action (no catch-all "use" button that changes meaning with what you hold or look at), and what you see is what you get (a ghost of the result, red when not allowed).
+- **Block interactions.** Unstable crystals: two block types, a touch trigger, a directional blast, and a way to push blocks so devices are possible.
+- **Generative crafting.** A few materials, a few property ingredients and a capacity limit.
+- **Combat feel.** Weighty hits and aggressive, Doom-style combat.
+- **Liquid rule sets.** The rule sets from the design doc.
+- **Advanced movement revisited.** Added 2026-10-26 at the user's request. Comes after toys that add tools, items and enemies. Rework push-out (block-jumping, and later pistons). The user doesn't like that the body is moved out of the block instantly, like a teleport, or that the launch is mostly upward. Prompted by spam-placing blocks at the dead end of a 1-high tunnel while crouched: the body crawls backward through position shifts while the speed readout stays at 0. Things to settle:
+  - How the body gets out of the block with real motion instead of a shift, and how much of the launch should go up.
+  - What placing a block while crouched should do. The crouched body's center is at or below the block's center, so today it gives a sideways shove off the side of the block that was never designed.
+  - Whether a jump should keep wiping out the push-out kick. Today, placing a moment before jumping loses the kick, which makes block-jumping feel inconsistent.
+  - **Known flaw, deferred to this toy (2026-10-26):** the kick can point opposite to the shift. The kick's direction comes from the body's position before the shift, so in the tunnel case the body is shifted backward but kicked forward, into the block it just left, and the collision zeroes it. That's why the speed readout stays at 0 (the readout itself is correct). Found by reading the code and confirmed by the user's play; not yet covered by a test. The redesign must make the launch go the way the body actually leaves the block.
+
+Ideas that come up while playing get added here.
+
+### Infrastructure (added when a toy needs it)
+
+- Saving and loading, with block names in the save
+- World generation
+- LOD, once world generation exists
+
+### Seam backlog (added when the game is ready for them)
+
+- ~~**Data mods.**~~ Done (2026-10-27), see Done toys.
+- **WebAssembly behavior.** Sandboxed mod code for block behavior, once a toy has behavior worth sandboxing, such as crystals or liquids. Sleeping blocks and read-old, write-new automata. The first step is done: the WebAssembly movement seam (2026-10-26) runs `base`'s movement controller as a component, so block behavior can follow the same pattern (WIT interface in `api`, guest export macro, `wasm_host` wrapper). *To settle (2026-10-27):* keep entity and block state in the engine, not in the mod, before any behavior keeps state in a mod (see the design doc's "Mod memory"). The movement controller still keeps its timers and charge inside the mod and should move to that pattern. Test whether wasmtime lets the engine drop a mod's freed pages (`madvise` on Linux, `DiscardVirtualMemory` on Windows), driven by an allocator in `api`.
+- ~~**Sandbox limits.**~~ Done (2026-10-28), see Done toys.
+- **Seed a modder.** Once a few seam slices are done, have an outside modder build a small toy on the API and fix what blocks them.
+
+### API debt
+
+Shortcuts taken around the API, each with the toy that needed it. Paid down in seam slices.
+
+- **Fixed input actions** (movement toy; break, place and palette slots added by the block editing toy, crouch by the advanced movement toy). Move, jump, sprint, crouch, break, place, the palette slots and the debug keys are a fixed engine set in `sim::PlayerInput` and `client::controls`. Mods can't define their own actions. API version: mods register named actions with default bindings, and controllers read actions by name.
+- **Chase drill in the client** (advanced movement toy, temporary). The ghost and objectives in `client::drill` are game logic living in the client, and it finds landmarks by the `landmark:` prefix on waypoint names. Remove the drill rather than moving it into the API, unless a later toy wants real enemies, which would need entities and a game-rules hook in the API.
+- **Camera feel in the client** (movement toy). FOV widening, head bob, landing dip and step smoothing live in `client::feel`, so mods can't change them. API version: a client-side mod API for camera effects, presumably driven by the same tunables.
+
+### Phase 2 decisions
+
+- **A robotic player** (tentative, 2026-10-25): the user wants movement and camera feel to read as a robot. Landings are a shock absorber: soft landings compress smoothly, damaging ones bottom out hard. Later feel work (combat, damage, crouch charging) should keep to it.
+- **Signature feature:** not decided yet. Choose it once the block interaction and crafting toys have been played, and record the choice and why in the design doc.
+
+### Fixes
+
+Bugs found in already-merged code, each fixed on its own `fix-` branch (see the workflow in `CLAUDE.md`). One line each: date, branch, what was wrong.
+
+None yet.
+
+### Done toys
+
+#### Sandbox limits seam (branch `seam-sandbox-limits`)
+
+**Stage:** Done (2026-10-28). Verified: the user played it and movement feels unchanged ("its good"). *Deviation (2026-10-27):* at the user's request, Data mods was planned and built while this waited at Verify, since the user couldn't play right then.
 
 **Goal:** a WebAssembly mod that loops forever, allocates without end or recurses too deep is stopped, and the game carries on, the same way it does when a mod panics. The point is to stop a broken or hostile mod from hanging the game or using up its memory, without changing how a working mod behaves.
 
@@ -147,54 +199,9 @@ A run of small toy slices. Each one takes a single game-feel feature that doesn'
 
 *Decided:* a stopped mod stays dead, since restarting needs a fresh instance and loses the controller's state.
 
-### Toy backlog
-
-- **Interaction controls.** Split out of Block editing (2026-10-25). Fix Minecraft's ambiguous right click once there are things to use, like crystals or devices. Principles: one input, one action (no catch-all "use" button that changes meaning with what you hold or look at), and what you see is what you get (a ghost of the result, red when not allowed).
-- **Block interactions.** Unstable crystals: two block types, a touch trigger, a directional blast, and a way to push blocks so devices are possible.
-- **Generative crafting.** A few materials, a few property ingredients and a capacity limit.
-- **Combat feel.** Weighty hits and aggressive, Doom-style combat.
-- **Liquid rule sets.** The rule sets from the design doc.
-- **Advanced movement revisited.** Added 2026-10-26 at the user's request. Comes after toys that add tools, items and enemies. Rework push-out (block-jumping, and later pistons). The user doesn't like that the body is moved out of the block instantly, like a teleport, or that the launch is mostly upward. Prompted by spam-placing blocks at the dead end of a 1-high tunnel while crouched: the body crawls backward through position shifts while the speed readout stays at 0. Things to settle:
-  - How the body gets out of the block with real motion instead of a shift, and how much of the launch should go up.
-  - What placing a block while crouched should do. The crouched body's center is at or below the block's center, so today it gives a sideways shove off the side of the block that was never designed.
-  - Whether a jump should keep wiping out the push-out kick. Today, placing a moment before jumping loses the kick, which makes block-jumping feel inconsistent.
-  - **Known flaw, deferred to this toy (2026-10-26):** the kick can point opposite to the shift. The kick's direction comes from the body's position before the shift, so in the tunnel case the body is shifted backward but kicked forward, into the block it just left, and the collision zeroes it. That's why the speed readout stays at 0 (the readout itself is correct). Found by reading the code and confirmed by the user's play; not yet covered by a test. The redesign must make the launch go the way the body actually leaves the block.
-
-Ideas that come up while playing get added here.
-
-### Infrastructure (added when a toy needs it)
-
-- Saving and loading, with block names in the save
-- World generation
-- LOD, once world generation exists
-
-### Seam backlog (added when the game is ready for them)
-
-- ~~**Data mods.**~~ Done (2026-10-27), see Done toys.
-- **WebAssembly behavior.** Sandboxed mod code for block behavior, once a toy has behavior worth sandboxing, such as crystals or liquids. Sleeping blocks and read-old, write-new automata. The first step is done: the WebAssembly movement seam (2026-10-26) runs `base`'s movement controller as a component, so block behavior can follow the same pattern (WIT interface in `api`, guest export macro, `wasm_host` wrapper). *To settle (2026-10-27):* keep entity and block state in the engine, not in the mod, before any behavior keeps state in a mod (see the design doc's "Mod memory"). The movement controller still keeps its timers and charge inside the mod and should move to that pattern. Test whether wasmtime lets the engine drop a mod's freed pages (`madvise` on Linux, `DiscardVirtualMemory` on Windows), driven by an allocator in `api`.
-- **Sandbox limits.** Fuel or epoch interruption, so a mod stuck in a loop can't hang the game. Deferred from the WebAssembly movement seam.
-- **Seed a modder.** Once a few seam slices are done, have an outside modder build a small toy on the API and fix what blocks them.
-
-### API debt
-
-Shortcuts taken around the API, each with the toy that needed it. Paid down in seam slices.
-
-- **Fixed input actions** (movement toy; break, place and palette slots added by the block editing toy, crouch by the advanced movement toy). Move, jump, sprint, crouch, break, place, the palette slots and the debug keys are a fixed engine set in `sim::PlayerInput` and `client::controls`. Mods can't define their own actions. API version: mods register named actions with default bindings, and controllers read actions by name.
-- **Chase drill in the client** (advanced movement toy, temporary). The ghost and objectives in `client::drill` are game logic living in the client, and it finds landmarks by the `landmark:` prefix on waypoint names. Remove the drill rather than moving it into the API, unless a later toy wants real enemies, which would need entities and a game-rules hook in the API.
-- **Camera feel in the client** (movement toy). FOV widening, head bob, landing dip and step smoothing live in `client::feel`, so mods can't change them. API version: a client-side mod API for camera effects, presumably driven by the same tunables.
-
-### Phase 2 decisions
-
-- **A robotic player** (tentative, 2026-10-25): the user wants movement and camera feel to read as a robot. Landings are a shock absorber: soft landings compress smoothly, damaging ones bottom out hard. Later feel work (combat, damage, crouch charging) should keep to it.
-- **Signature feature:** not decided yet. Choose it once the block interaction and crafting toys have been played, and record the choice and why in the design doc.
-
-### Fixes
-
-Bugs found in already-merged code, each fixed on its own `fix-` branch (see the workflow in `CLAUDE.md`). One line each: date, branch, what was wrong.
-
-None yet.
-
-### Done toys
+*Result*
+- All five "Done when" criteria met. The user checked 4 in game. After merging `master` (the data mods seam) into the branch, 164 tests pass in the workspace, and clippy is clean.
+- *API debt:* none new, and none paid down. The limits live entirely in `wasm_host`.
 
 #### Data mods seam (branch `seam-data-mods`)
 
