@@ -167,13 +167,12 @@ impl Simulation {
     /// a full block placed on a slab. A solid block inside the player is only allowed if a
     /// push-out rule is registered and there's room to push the player out.
     ///
-    /// Every block is turned by the same rule, kept as far as its [`Turning`] allows: its bottom
-    /// against the aimed-at face and its front (+Y) the way the player looks, or with `flipped`,
-    /// its back against the face and upright (see [`orient`]). A face inside a boxel, like the
-    /// top of a bottom slab, is aimed at from that boxel, so a block placed into the boxel
-    /// itself goes against the boxel's far side, facing back toward the face: a slab on a slab
-    /// fills the top half.
-    pub fn placement(&self, hit: &Hit, block: BlockId, yaw: f32, pitch: f32, flipped: bool) -> Option<PlaceTarget> {
+    /// Every block is turned by the same rules, kept as far as its [`Turning`] allows: basic
+    /// placement, or with `precise`, precise placement (see [`orient`]). A face inside a boxel,
+    /// like the top of a bottom slab, is aimed at from that boxel, so a block placed into the
+    /// boxel itself goes against the boxel's far side, facing back toward the face: a slab on a
+    /// slab fills the top half.
+    pub fn placement(&self, hit: &Hit, block: BlockId, yaw: f32, pitch: f32, precise: bool) -> Option<PlaceTarget> {
         let def = self.blocks.get(block).filter(|def| def.placeable)?;
         if hit.normal == I64Vec3::ZERO {
             return None;
@@ -182,12 +181,18 @@ impl Simulation {
         let inside = hit.pos.offset(front.floor().as_i64vec3());
         let grid = self.universe.main();
         let look = look_direction(yaw, pitch);
+        let region = face_region(hit);
         let mut first = None;
         for pos in [inside, hit.adjacent()] {
             let face = if pos == hit.pos { -hit.normal } else { hit.normal };
-            // The aimed-at point in this boxel's space.
-            let upper = (front - (pos.0 - hit.pos.0).as_vec3()).z > 0.5;
-            let occupant = Occupant::turned(block, orient(def.turning, face, look, flipped, upper));
+            let aim = Aim {
+                face,
+                look,
+                // The aimed-at point in this boxel's space.
+                upper: (front - (pos.0 - hit.pos.0).as_vec3()).z > 0.5,
+                region: precise.then_some(region),
+            };
+            let occupant = Occupant::turned(block, orient(def.turning, &aim));
             if can_share(grid.cell(pos), occupant, &self.blocks).is_ok() {
                 return Some(PlaceTarget { pos, occupant, allowed: self.body_allows(pos, occupant) });
             }
@@ -243,7 +248,7 @@ impl Simulation {
         if breaking {
             self.remove_occupant(hit.pos, hit.occupant);
         } else if let Some(place) =
-            self.placement(&hit, input.place_block, input.yaw, input.pitch, input.place_flipped)
+            self.placement(&hit, input.place_block, input.yaw, input.pitch, input.place_precise)
             && place.allowed
         {
             self.add_occupant(place.pos, place.occupant);
@@ -393,37 +398,77 @@ impl<T: Terrain> Terrain for WithBoxes<'_, T> {
     }
 }
 
-/// How the placement rule turns a block placed against a face whose outward normal is `face`,
-/// by a player looking along `look`, kept as far as `turning` allows.
+/// Half the width of the square in the middle of a face, for precise placement.
+const FACE_CENTER: f32 = 0.25;
+
+/// Which part of the aimed-at face a hit is in, for precise placement: `None` for the square
+/// in the middle, or the outward direction of the nearest edge, for the four triangles around
+/// it (drawn corner to corner, so each edge gets an equal share).
+fn face_region(hit: &Hit) -> Option<[i32; 3]> {
+    let axis = hit.normal.abs().max_position();
+    let offset = hit.point - Vec3::splat(0.5);
+    let (a, b) = ((axis + 1) % 3, (axis + 2) % 3);
+    if offset[a].abs() < FACE_CENTER && offset[b].abs() < FACE_CENTER {
+        return None;
+    }
+    let edge = if offset[a].abs() >= offset[b].abs() { a } else { b };
+    let mut dir = [0i32; 3];
+    dir[edge] = if offset[edge] < 0.0 { -1 } else { 1 };
+    Some(dir)
+}
+
+/// What the placement rules look at.
+struct Aim {
+    /// The outward normal of the face the block goes against.
+    face: I64Vec3,
+    look: Vec3,
+    /// Aimed at the upper half of the boxel the block goes into.
+    upper: bool,
+    /// For precise placement, the part of the face aimed at (see [`face_region`]); `None` for
+    /// basic placement.
+    region: Option<Option<[i32; 3]>>,
+}
+
+/// How a block placed with `aim` is turned, kept as far as `turning` allows.
 ///
-/// Normally its bottom goes against the face and its front (+Y) the way the player looks,
-/// rounded to the nearest axis along the face. `flipped` puts its back (+Y) against the face
-/// instead: on a wall it stands upright, or upside down when aimed at the upper half of the
-/// boxel (`upper`), so a slab sticks out level from the wall; on a floor or ceiling its top
-/// points the way the player looks.
-fn orient(turning: Turning, face: I64Vec3, look: Vec3, flipped: bool, upper: bool) -> Orientation {
-    let normal = face.to_array().map(|c| c as i32);
-    let axis = face.abs().max_position();
-    // The look along the face, rounded to the strongest of the face's two axes. Looking
-    // straight at the face leaves no direction, so any one will do.
-    let along_face = || {
-        let mut along = look;
-        along[axis] = 0.0;
+/// Basic placement is like Minecraft's: the block stands upright with its front (+Y) the way
+/// the player looks, and upside down against a ceiling or when aimed at the upper half of a
+/// wall; a block that only turns its axis lines up with the face.
+///
+/// Precise placement looks at the part of the face aimed at. In the middle square the block's
+/// bottom goes against the face, its front the way the player looks along the face. In one of
+/// the four triangles it stands in the half of the boxel toward that edge, with its back
+/// against the face: on a wall the top triangle makes a top slab, a side triangle a slab
+/// standing against that side.
+fn orient(turning: Turning, aim: &Aim) -> Orientation {
+    let normal = aim.face.to_array().map(|c| c as i32);
+    let axis = aim.face.abs().max_position();
+    // The look rounded to the strongest axis other than `skip`. Looking straight along `skip`
+    // leaves no direction, so any one will do.
+    let look_except = |skip: usize| {
+        let mut along = aim.look;
+        along[skip] = 0.0;
         let strongest = along.abs().max_position();
         let mut dir = [0i32; 3];
-        if strongest == axis {
-            dir[(axis + 1) % 3] = 1;
+        if strongest == skip {
+            dir[(skip + 1) % 3] = 1;
         } else {
             dir[strongest] = if along[strongest] < 0.0 { -1 } else { 1 };
         }
         dir
     };
-    let (up, forward) = if !flipped {
-        (normal, along_face())
-    } else if axis == 2 {
-        (along_face(), normal.map(|c| -c))
-    } else {
-        (if upper { [0, 0, -1] } else { [0, 0, 1] }, normal.map(|c| -c))
+    let (up, forward) = match aim.region {
+        None => {
+            let upside_down = normal[2] == -1 || (normal[2] == 0 && aim.upper);
+            let up = if upside_down { [0, 0, -1] } else { [0, 0, 1] };
+            if turning == Turning::Axis {
+                (normal, look_except(axis))
+            } else {
+                (up, look_except(2))
+            }
+        }
+        Some(None) => (normal, look_except(axis)),
+        Some(Some(edge)) => (edge.map(|c| -c), normal.map(|c| -c)),
     };
     match turning {
         Turning::None => Orientation::IDENTITY,

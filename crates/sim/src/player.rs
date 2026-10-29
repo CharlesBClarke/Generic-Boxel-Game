@@ -62,8 +62,9 @@ pub struct PlayerInput {
     pub place_held: bool,
     /// The block to place. Empty places nothing.
     pub place_block: BlockId,
-    /// Place blocks with their back, rather than their bottom, against the aimed-at face.
-    pub place_flipped: bool,
+    /// Precise placement, where the part of the face aimed at picks how a block sits, instead
+    /// of basic placement.
+    pub place_precise: bool,
 }
 
 /// How a body gets out of a block that appeared inside it.

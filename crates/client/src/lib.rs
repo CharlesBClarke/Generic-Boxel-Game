@@ -271,7 +271,7 @@ fn tick_simulation(
         place_pressed: std::mem::take(&mut toggles.place_pressed),
         place_held: playing && controls.place_block.pressed(&keys, &mouse),
         place_block: palette.selected(sim.0.blocks()),
-        place_flipped: palette.flipped,
+        place_precise: palette.precise,
     };
     sim.0.step(&input);
 }

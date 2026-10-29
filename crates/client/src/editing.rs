@@ -25,8 +25,8 @@ const PIXELS_PER_SLOT: f32 = 40.0;
 pub struct Palette {
     pub slot: usize,
     scrolled: f32,
-    /// Blocks go against the aimed-at face with their back instead of their bottom.
-    pub flipped: bool,
+    /// Precise placement instead of basic placement.
+    pub precise: bool,
 }
 
 impl Palette {
@@ -76,8 +76,8 @@ pub(crate) fn edit_input(
     if controls.place_block.just_pressed(&keys, &mouse) {
         toggles.place_pressed = true;
     }
-    if controls.flip.just_pressed(&keys, &mouse) {
-        palette.flipped = !palette.flipped;
+    if controls.placement_mode.just_pressed(&keys, &mouse) {
+        palette.precise = !palette.precise;
     }
 
     let count = placeable_blocks(sim.0.blocks()).len();
@@ -149,7 +149,7 @@ pub(crate) fn update_ghost(
     let place = sim
         .0
         .target(look.yaw, look.pitch)
-        .and_then(|hit| sim.0.placement(&hit, palette.selected(blocks), look.yaw, look.pitch, palette.flipped));
+        .and_then(|hit| sim.0.placement(&hit, palette.selected(blocks), look.yaw, look.pitch, palette.precise));
     let Some(place) = place else {
         visibility.set_if_neq(Visibility::Hidden);
         return;
@@ -204,8 +204,8 @@ pub(crate) fn remesh_changed_chunks(
     }
 }
 
-/// The palette along the bottom of the screen, with the selected block in brackets, and which
-/// side of a block goes against the face.
+/// The palette along the bottom of the screen, with the selected block in brackets, and the
+/// placement mode.
 pub(crate) fn update_palette_hud(
     sim: Res<Sim>,
     palette: Res<Palette>,
@@ -222,8 +222,12 @@ pub(crate) fn update_palette_hud(
         })
         .collect::<Vec<_>>()
         .join("  ");
-    let side = if palette.flipped { "back" } else { "bottom" };
-    let line = format!("{line}\n{side} against the face ({} flips)", controls.flip.label());
+    let mode = if palette.precise {
+        "precise placement: the middle of a face lays it flat, an edge stands it there"
+    } else {
+        "basic placement"
+    };
+    let line = format!("{line}\n{mode} ({} switches)", controls.placement_mode.label());
     if text.0 != line {
         text.0 = line;
     }
