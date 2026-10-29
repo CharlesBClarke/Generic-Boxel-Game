@@ -104,11 +104,44 @@ A run of small toy slices. Each one takes a single game-feel feature that doesn'
 
 ### Current toy
 
-None. Next up: plan the block shapes and placement toy.
+#### Block shapes and shared cells (branch `toy-block-shapes`)
+
+**Stage:** Implement (2026-10-28)
+
+**Goal:** slabs, stairs, fences and logs placed in several ways depending on where you aim, and two things sharing one cell, like a fence and a slab. This is the engine's general form of Minecraft's waterlogging: the design doc's "multiple occupants per boxel".
+
+**Approved plan** (2026-10-28)
+
+*Decisions*
+- **A cell holds a short list of occupants,** each a block plus an orientation. The blocks layer stores a small ID per cell that points into a shared table of occupant lists, and identical lists share one entry. Most cells still hold one occupant, so memory and the uniform-chunk shortcut stay about where they are. Water later becomes just another occupant.
+- **Orientation is one of the 24 grid-aligned rotations of a cube.** It covers top and bottom slabs (a flipped slab), vertical slabs, stairs facing any way or upside down, and logs along any axis. Slopes and free angles are deferred.
+- **Shapes are data.** A block lists boxes in 1/16-cell units; a full cube is the default. `blocks.toml` gets shared named shapes (`slab`, `stairs`, `post`) and which orientations each block allows.
+- **Where a placed block goes:** into the cell holding the point just in front of where you aim. Aiming at the top of a bottom slab puts a top slab in the same cell (a double slab); aiming at a fence post puts a slab in the fence's cell; aiming at a full block puts it in the next cell, as now.
+- **How it's turned:** each block names one of a few engine placement rules: fixed; axis from the clicked face (logs); facing away from you, upside down when aiming at the cell's upper half (stairs); top or bottom half from where you aim (slabs).
+- **Sharing rule** (the user agreed, 2026-10-28; loose for now, tightened after play): up to 4 occupants per cell, a full cube shares with nothing, and the same block can't be in a cell twice with the same orientation. Overlap is allowed, so a fence post pokes through a slab.
+- **Ghost preview:** a see-through copy of exactly what will be placed, red when it isn't allowed.
+- **Collision, aiming and breaking use the real shapes.** Bodies collide with each occupant's boxes (stand on a slab at half height, step up stairs with the existing step height). Aiming finds the occupant and box you look at, and breaking removes only that occupant. The placement check against the body uses the new block's boxes, not the whole cell.
+- **Meshing** draws each occupant's boxes, turned by its orientation. A face is hidden only when the neighboring cell holds a full cube.
+
+*Content (`mods/base`):* stone slab and stairs, brick slab and stairs, a wooden fence post and an oak log, with wood and log textures from Minetest Game (the user approved the download, 2026-10-28) and credits. The test area gets a fence sharing a cell with a slab, a staircase and a sideways log.
+
+*Tests:* occupant lists and the shared table; the 24 orientations (composition, turning boxes); the sharing rule; aiming at partial blocks and picking the right occupant; placement target and turning for each rule; standing on a slab and walking up stairs; breaking one occupant leaves the other; hidden faces next to partial blocks; parsing shapes from data files.
+
+*API:* `BlockDef` gains shape, allowed orientations and placement rule; `api` gains orientation and occupant types. **New API debt:** placement rules are a fixed engine set until mods can run code for block behavior.
+
+*Out of scope:* liquids, fences connecting to neighbors (the user agreed to leave it, 2026-10-28), slopes and free angles, smaller-than-boxel detail, the material-plus-shape palette, items and inventory. The current palette stays and gains the new blocks.
+
+*Done when*
+1. You can place and break slabs, stairs, a fence and a log, and each turns as expected from where you aim.
+2. A fence and a slab can share a cell, two slabs make a double slab, and breaking one occupant leaves the other.
+3. The ghost always matches what gets placed, and turns red when the block isn't allowed.
+4. You can stand on slabs and walk up stairs without jumping, and can't walk through partial blocks.
+5. No gaps or extra faces where partial blocks meet full ones, including across chunk borders.
+6. `cargo test` and `cargo clippy` are clean.
 
 ### Toy backlog
 
-- **Block shapes and placement.** Added 2026-10-28 at the user's request; next up. Slabs, stairs, logs and other blocks that can be placed in several ways, set by the face and point you aim at, with arbitrary orientations (to confirm with the user), shape-aware collision and meshing, and probably a ghost preview. Open question: include a material-plus-shape palette (the design doc's "carry a material, choose its shape") or leave all inventory work to a later toy. Suggested order after it: inventory and items, then interaction controls and block interactions, then combat feel.
+- ~~**Block shapes and placement.**~~ Now the current toy, as Block shapes and shared cells. Suggested order after it: inventory and items, then interaction controls and block interactions, then combat feel.
 - **Interaction controls.** Split out of Block editing (2026-10-25). Fix Minecraft's ambiguous right click once there are things to use, like crystals or devices. Principles: one input, one action (no catch-all "use" button that changes meaning with what you hold or look at), and what you see is what you get (a ghost of the result, red when not allowed).
 - **Block interactions.** Unstable crystals: two block types, a touch trigger, a directional blast, and a way to push blocks so devices are possible.
 - **Generative crafting.** A few materials, a few property ingredients and a capacity limit.
