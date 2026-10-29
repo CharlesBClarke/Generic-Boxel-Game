@@ -205,7 +205,7 @@ Shortcuts taken around the API, each with the toy that needed it. Paid down in s
 
 Bugs found in already-merged code, each fixed on its own `fix-` branch (see the workflow in `CLAUDE.md`). One line each: date, branch, what was wrong.
 
-None yet.
+- 2026-10-28, `fix-step-smoothing`: a step-up moved the body but not its previous position, so the renderer blended the rise between ticks while the camera feel also eased it, making the view dip and snap when climbing. Latent until the block shapes toy gave the player a step height.
 
 ### Done toys
 
