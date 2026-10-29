@@ -18,12 +18,26 @@ pub struct BlockDef {
     /// Whether players can place it. Blocks that only appear through world building or game
     /// rules set this to false.
     pub placeable: bool,
+    /// The boxes it fills, unturned. Bodies collide with them if the block is solid, and aiming
+    /// hits them. One full box for an ordinary block.
+    pub shape: Vec<BlockBox>,
+    /// How a player's aim turns it when placed.
+    pub placement: Placement,
 }
 
 impl BlockDef {
     /// A placeable block with normal friction.
     pub fn new(name: impl Into<String>, solid: bool, color: [u8; 3]) -> Self {
-        Self { name: name.into(), solid, color, textures: None, friction: 1.0, placeable: true }
+        Self {
+            name: name.into(),
+            solid,
+            color,
+            textures: None,
+            friction: 1.0,
+            placeable: true,
+            shape: vec![BlockBox::FULL],
+            placement: Placement::Fixed,
+        }
     }
 
     pub fn with_textures(mut self, textures: FaceTextures) -> Self {
@@ -40,6 +54,74 @@ impl BlockDef {
         self.placeable = placeable;
         self
     }
+
+    pub fn with_shape(mut self, shape: Vec<BlockBox>) -> Self {
+        self.shape = shape;
+        self
+    }
+
+    pub fn with_placement(mut self, placement: Placement) -> Self {
+        self.placement = placement;
+        self
+    }
+
+    /// Whether it fills its whole boxel. A full block shares its boxel with nothing.
+    pub fn is_full(&self) -> bool {
+        self.shape == [BlockBox::FULL]
+    }
+
+    /// Checks the shape: at least one box, each inside the boxel and not flat.
+    pub fn validate(&self) -> Result<(), String> {
+        if self.shape.is_empty() {
+            return Err(format!("block {:?} has no shape boxes", self.name));
+        }
+        match self.shape.iter().find(|b| !b.is_valid()) {
+            Some(b) => Err(format!("block {:?} has a box outside its boxel or with no volume: {b:?}", self.name)),
+            None => Ok(()),
+        }
+    }
+}
+
+/// A box inside a boxel, in sixteenths of a boxel: from 0 to 16 on each axis, `min` below `max`.
+/// Faces of an unturned box: +Z is the top, -Z the bottom and the rest are sides.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct BlockBox {
+    pub min: [u8; 3],
+    pub max: [u8; 3],
+}
+
+impl BlockBox {
+    /// Sixteenths across a boxel.
+    pub const SIZE: u8 = 16;
+    /// The whole boxel.
+    pub const FULL: BlockBox = BlockBox { min: [0; 3], max: [16; 3] };
+
+    pub const fn new(min: [u8; 3], max: [u8; 3]) -> Self {
+        Self { min, max }
+    }
+
+    /// Inside the boxel, with some size on every axis.
+    pub fn is_valid(&self) -> bool {
+        (0..3).all(|i| self.min[i] < self.max[i] && self.max[i] <= Self::SIZE)
+    }
+}
+
+/// How a placed block is turned, from where the player aims. The engine owns the rules; a
+/// block picks one. Each rule only produces some orientations, which are the ones the block
+/// can have.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub enum Placement {
+    /// Never turned.
+    #[default]
+    Fixed,
+    /// Its +Z axis lines up with the face aimed at, like a log.
+    AlongFace,
+    /// Its +Y side points the way the player looks, rounded to north, south, east or west, and
+    /// it's flipped upside down when aimed at the upper half of the boxel, like stairs.
+    FacingAway,
+    /// Its bottom goes down, or it's flipped to the top of the boxel when aimed at the upper
+    /// half, like a slab.
+    Half,
 }
 
 /// Which texture goes on which faces of a block, by texture name.

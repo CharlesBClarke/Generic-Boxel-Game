@@ -22,6 +22,8 @@ pub enum ApiError {
     DuplicatePushOutDef,
     /// A definition has values that make no sense.
     InvalidDef(String),
+    /// A block can't share the boxel with what's already there.
+    CannotShare(String),
 }
 
 impl fmt::Display for ApiError {
@@ -36,6 +38,7 @@ impl fmt::Display for ApiError {
             ApiError::DuplicateInteractionDef => write!(f, "an interaction definition is already registered"),
             ApiError::DuplicatePushOutDef => write!(f, "a push-out definition is already registered"),
             ApiError::InvalidDef(why) => write!(f, "invalid definition: {why}"),
+            ApiError::CannotShare(why) => write!(f, "can't add the block: {why}"),
         }
     }
 }

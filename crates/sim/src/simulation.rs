@@ -5,13 +5,19 @@ use std::fmt;
 
 use api::block::is_valid_name;
 use api::{
-    ApiError, BlockDef, BoxelPos, ChunkPos, InteractionDef, Mod, MovementController, PlayerDef, PushOutDef, Registrar,
-    TextureDef, Vec3, WorldEdit, WorldPos, look_direction,
+    ApiError, BlockDef, BoxelPos, ChunkPos, I64Vec3, InteractionDef, Mod, MovementController, Orientation, Placement,
+    PlayerDef, PushOutDef, Registrar, TextureDef, Vec3, WorldEdit, WorldPos, look_direction,
 };
 
 use crate::edit::{ChangedChunks, Repeater};
 use crate::player::{PushOut, Terrain};
-use crate::{BlockId, BlockRegistry, Grid, Hit, Player, PlayerInput, TextureRegistry, Universe, raycast};
+use crate::{
+    BlockId, BlockRegistry, CellBox, Grid, Hit, Occupant, Player, PlayerInput, TextureRegistry, Universe, can_share,
+    occupant_boxes, raycast,
+};
+
+/// How far in front of an aimed-at face the point that picks the boxel for a placed block is.
+const IN_FRONT: f32 = 1e-3;
 
 #[derive(Debug, PartialEq)]
 pub enum SimError {
@@ -35,6 +41,18 @@ impl From<ApiError> for SimError {
     fn from(e: ApiError) -> Self {
         SimError::Api(e)
     }
+}
+
+/// What placing a block would do.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct PlaceTarget {
+    /// The boxel it goes into.
+    pub pos: BoxelPos,
+    /// The block, turned by its placement rule.
+    pub occupant: Occupant,
+    /// Whether it may go there. A refused placement still says where it would have gone, so
+    /// a preview can show it as not allowed.
+    pub allowed: bool,
 }
 
 #[derive(Default)]
@@ -126,40 +144,71 @@ impl Simulation {
         self.tick += 1;
     }
 
-    /// The block the player would break looking along `yaw` and `pitch`, and the face a
+    /// The occupant the player would break looking along `yaw` and `pitch`, and the face a
     /// placed block would go on. `None` with nothing in reach, no player, or no mod defining
     /// interaction.
     pub fn target(&self, yaw: f32, pitch: f32) -> Option<Hit> {
         let player = self.player.as_ref()?;
         let reach = self.interaction_def.as_ref()?.reach;
         let grid = self.universe.main();
-        raycast(player.eye(), look_direction(yaw, pitch), reach, |p| !grid.block(p).is_empty())
+        let blocks = &self.blocks;
+        raycast(player.eye(), look_direction(yaw, pitch), reach, |p, out| {
+            for (i, &o) in grid.cell(p).iter().enumerate() {
+                out.extend(occupant_boxes(o, blocks).map(|b| (b, i)));
+            }
+        })
     }
 
-    /// Where `block` would go if placed on `hit`'s face, or `None` if that isn't allowed: the
-    /// block isn't placeable, the hit has no face, or the cell is filled. A solid block inside
-    /// the player is only allowed if a push-out rule is registered and there's room to push
-    /// the player out.
-    pub fn placement(&self, hit: &Hit, block: BlockId) -> Option<BoxelPos> {
-        let placeable = self.blocks.get(block).is_some_and(|def| def.placeable);
-        let pos = hit.adjacent();
-        let free = hit.normal != api::I64Vec3::ZERO && self.universe.main().block(pos).is_empty();
-        if !(placeable && free) {
+    /// What placing `block` aimed at `hit`, looking along `yaw`, would do, or `None` if there's
+    /// nothing to place: the block isn't placeable or the hit has no face.
+    ///
+    /// The block goes into the boxel holding the point just in front of the aimed-at face, so
+    /// aiming at the top of a bottom slab puts a second slab in the same boxel. If it can't
+    /// share that boxel, it goes into the boxel on the far side of the face instead, like a full
+    /// block placed on a slab. Its placement rule turns it. A solid block inside the player is
+    /// only allowed if a push-out rule is registered and there's room to push the player out.
+    pub fn placement(&self, hit: &Hit, block: BlockId, yaw: f32) -> Option<PlaceTarget> {
+        let def = self.blocks.get(block).filter(|def| def.placeable)?;
+        if hit.normal == I64Vec3::ZERO {
             return None;
         }
-        match &self.player {
-            Some(player) if self.blocks.is_solid(block) && player.overlaps(pos) => {
-                self.push_out(player, pos).map(|_| pos)
+        let front = hit.point + hit.normal.as_vec3() * IN_FRONT;
+        let inside = hit.pos.offset(front.floor().as_i64vec3());
+        let grid = self.universe.main();
+        let mut first = None;
+        for pos in [inside, hit.adjacent()] {
+            // The aimed-at point in this boxel's space.
+            let point = front - (pos.0 - hit.pos.0).as_vec3();
+            let orientation = orient(def.placement, hit.normal, point.z > 0.5, yaw);
+            let occupant = Occupant::turned(block, orientation);
+            if can_share(grid.cell(pos), occupant, &self.blocks).is_ok() {
+                return Some(PlaceTarget { pos, occupant, allowed: self.body_allows(pos, occupant) });
             }
-            _ => Some(pos),
+            first.get_or_insert(PlaceTarget { pos, occupant, allowed: false });
         }
+        first
     }
 
-    /// How the player would get out of a solid block at `pos`, if there's a rule and room.
-    fn push_out(&self, player: &Player, pos: BoxelPos) -> Option<PushOut> {
+    /// Whether the player's body leaves room for `occupant` at `pos`: it isn't solid, doesn't
+    /// overlap the body, or the body can be pushed out.
+    fn body_allows(&self, pos: BoxelPos, occupant: Occupant) -> bool {
+        let Some(player) = &self.player else {
+            return true;
+        };
+        if !self.blocks.is_solid(occupant.block) {
+            return true;
+        }
+        let boxes: Vec<_> = occupant_boxes(occupant, &self.blocks).collect();
+        !player.overlaps_boxes(pos, &boxes) || self.push_out(player, pos, &boxes).is_some()
+    }
+
+    /// How the player would get out of a solid block filling `boxes` at `pos`, if there's a
+    /// rule and room.
+    fn push_out(&self, player: &Player, pos: BoxelPos, boxes: &[CellBox]) -> Option<PushOut> {
         let def = self.push_out_def.as_ref()?;
-        let terrain = WithSolid { inner: GridTerrain { grid: self.universe.main(), blocks: &self.blocks }, pos };
-        player.push_out(pos, def.upward_bias, &terrain)
+        let inner = GridTerrain { grid: self.universe.main(), blocks: &self.blocks };
+        let terrain = WithBoxes { inner, pos, boxes };
+        player.push_out(pos, boxes, def.upward_bias, &terrain)
     }
 
     /// Chunks whose blocks changed since the last call, including neighbors whose border faces
@@ -185,22 +234,39 @@ impl Simulation {
             return;
         };
         if breaking {
-            self.set_block(hit.pos, BlockId::EMPTY);
-        } else if let Some(pos) = self.placement(&hit, input.place_block) {
-            self.set_block(pos, input.place_block);
+            self.remove_occupant(hit.pos, hit.occupant);
+        } else if let Some(place) = self.placement(&hit, input.place_block, input.yaw)
+            && place.allowed
+        {
+            self.add_occupant(place.pos, place.occupant);
         }
     }
 
-    /// Sets a block. A solid block appearing inside the player pushes it out, if there's a
-    /// rule and room.
-    fn set_block(&mut self, pos: BoxelPos, id: BlockId) {
+    /// Removes one occupant from a boxel, by its index in the boxel's list.
+    fn remove_occupant(&mut self, pos: BoxelPos, index: usize) {
+        let grid = self.universe.main_mut();
+        let mut cell = grid.cell(pos).to_vec();
+        if index < cell.len() {
+            cell.remove(index);
+            grid.set_cell(pos, &cell);
+            self.changed.mark(pos);
+        }
+    }
+
+    /// Adds an occupant to a boxel. A solid block appearing inside the player pushes it out, if
+    /// there's a rule and room.
+    fn add_occupant(&mut self, pos: BoxelPos, occupant: Occupant) {
         let push = match (&self.player, &self.push_out_def) {
-            (Some(player), Some(def)) if self.blocks.is_solid(id) => {
-                self.push_out(player, pos).map(|push| (push, def.strength))
+            (Some(player), Some(def)) if self.blocks.is_solid(occupant.block) => {
+                let boxes: Vec<_> = occupant_boxes(occupant, &self.blocks).collect();
+                self.push_out(player, pos, &boxes).map(|push| (push, def.strength))
             }
             _ => None,
         };
-        self.universe.main_mut().set_block(pos, id);
+        let grid = self.universe.main_mut();
+        let mut cell = grid.cell(pos).to_vec();
+        cell.push(occupant);
+        grid.set_cell(pos, &cell);
         self.changed.mark(pos);
         if let (Some((push, strength)), Some(player)) = (push, &mut self.player) {
             player.apply_push_out(push, strength);
@@ -283,28 +349,56 @@ struct GridTerrain<'a> {
 }
 
 impl Terrain for GridTerrain<'_> {
-    fn solid(&self, pos: BoxelPos) -> bool {
-        self.blocks.is_solid(self.grid.block(pos))
+    fn boxes(&self, pos: BoxelPos, out: &mut Vec<CellBox>) {
+        for &o in self.grid.cell(pos) {
+            if self.blocks.is_solid(o.block) {
+                out.extend(occupant_boxes(o, self.blocks));
+            }
+        }
     }
 
+    /// The first solid occupant's friction.
     fn friction(&self, pos: BoxelPos) -> f32 {
-        self.blocks.get(self.grid.block(pos)).map_or(1.0, |def| def.friction)
+        let cell = self.grid.cell(pos);
+        let def = cell.iter().filter_map(|o| self.blocks.get(o.block)).find(|def| def.solid);
+        def.map_or(1.0, |def| def.friction)
     }
 }
 
-/// Terrain with one extra solid boxel, for checking a block that hasn't been placed yet.
-struct WithSolid<T> {
+/// Terrain with extra solid boxes in one boxel, for checking a block that hasn't been placed yet.
+struct WithBoxes<'a, T> {
     inner: T,
     pos: BoxelPos,
+    boxes: &'a [CellBox],
 }
 
-impl<T: Terrain> Terrain for WithSolid<T> {
-    fn solid(&self, pos: BoxelPos) -> bool {
-        pos == self.pos || self.inner.solid(pos)
+impl<T: Terrain> Terrain for WithBoxes<'_, T> {
+    fn boxes(&self, pos: BoxelPos, out: &mut Vec<CellBox>) {
+        self.inner.boxes(pos, out);
+        if pos == self.pos {
+            out.extend_from_slice(self.boxes);
+        }
     }
 
     fn friction(&self, pos: BoxelPos) -> f32 {
         self.inner.friction(pos)
+    }
+}
+
+/// How a placement rule turns a block aimed at a face with outward `normal`, at the upper half
+/// of its boxel or not, by a player looking along `yaw`.
+fn orient(rule: Placement, normal: I64Vec3, upper: bool, yaw: f32) -> Orientation {
+    let flip = |axis| if upper { Orientation::quarter_turns(axis, 2) } else { Orientation::IDENTITY };
+    match rule {
+        Placement::Fixed => Orientation::IDENTITY,
+        Placement::AlongFace => Orientation::z_along(normal.abs().max_position()),
+        Placement::Half => flip(0),
+        Placement::FacingAway => {
+            // The look rounded to a compass direction: 0 east, 1 north, 2 west, 3 south. Turning
+            // +Y (north) that way takes 3, 0, 1 or 2 quarter turns.
+            let compass = (yaw / std::f32::consts::FRAC_PI_2).round() as i32;
+            flip(1).then(Orientation::quarter_turns(2, compass + 3))
+        }
     }
 }
 
@@ -388,6 +482,17 @@ impl WorldEdit for WorldEditor<'_> {
     fn set_block(&mut self, pos: BoxelPos, name: &str) -> Result<(), ApiError> {
         let id = self.blocks.id(name).ok_or_else(|| ApiError::UnknownBlock(name.into()))?;
         self.grid.set_block(pos, id);
+        Ok(())
+    }
+
+    fn add_block(&mut self, pos: BoxelPos, name: &str, orientation: Orientation) -> Result<(), ApiError> {
+        let id = self.blocks.id(name).ok_or_else(|| ApiError::UnknownBlock(name.into()))?;
+        let occupant = Occupant::turned(id, orientation);
+        let mut cell = self.grid.cell(pos).to_vec();
+        can_share(&cell, occupant, self.blocks)
+            .map_err(|e| ApiError::CannotShare(format!("{name} at {:?}: {e}", pos.0.to_array())))?;
+        cell.push(occupant);
+        self.grid.set_cell(pos, &cell);
         Ok(())
     }
 

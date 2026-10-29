@@ -1,6 +1,7 @@
 //! Breaking and placing blocks on the client side: picking from the palette, catching button
-//! presses between ticks, the outline on the targeted block and remeshing changed chunks.
-//! The simulation decides whether an edit happens; this only asks and shows.
+//! presses between ticks, the outline on the targeted block, the ghost of what placing would
+//! do, and remeshing changed chunks. The simulation decides whether an edit happens; this only
+//! asks and shows.
 
 use std::collections::HashMap;
 
@@ -8,7 +9,7 @@ use api::{ChunkPos, Vec3 as ZVec3, WorldPos};
 use bevy::input::mouse::{AccumulatedMouseScroll, MouseScrollUnit};
 use bevy::prelude::*;
 use bevy::window::{CursorGrabMode, CursorOptions, PrimaryWindow};
-use sim::{BlockId, BlockRegistry};
+use sim::{BlockId, BlockRegistry, Occupant, occupant_boxes};
 
 use crate::atlas::Atlas;
 use crate::controls::Controls;
@@ -90,16 +91,78 @@ pub(crate) fn edit_input(
     palette.slot = (palette.slot as i64 - steps as i64).rem_euclid(count as i64) as usize;
 }
 
-/// Outlines the block that breaking would remove.
+/// Outlines the boxes of the occupant that breaking would remove.
 pub(crate) fn draw_outline(sim: Res<Sim>, look: Res<Look>, origin: Res<RenderOrigin>, mut gizmos: Gizmos) {
     let Some(hit) = sim.0.target(look.yaw, look.pitch) else {
         return;
     };
-    let center = WorldPos::at_boxel(hit.pos).translate(ZVec3::splat(0.5));
-    // Slightly larger than the block, so the lines aren't hidden by its own faces.
-    let transform =
-        Transform::from_translation(coords::render_translation(center, origin.cell)).with_scale(Vec3::splat(1.005));
-    gizmos.cube(transform, Color::srgb(0.05, 0.05, 0.05));
+    let Some(&occupant) = sim.0.universe().main().cell(hit.pos).get(hit.occupant) else {
+        return;
+    };
+    for b in occupant_boxes(occupant, sim.0.blocks()) {
+        let center = WorldPos::at_boxel(hit.pos).translate((b.min + b.max) * 0.5);
+        let size = coords::to_render(Vec3::from_array((b.max - b.min).to_array())).abs();
+        // Slightly larger than the box, so the lines aren't hidden by its own faces.
+        let transform = Transform::from_translation(coords::render_translation(center, origin.cell))
+            .with_scale(size + Vec3::splat(0.005));
+        gizmos.cube(transform, Color::srgb(0.05, 0.05, 0.05));
+    }
+}
+
+/// A see-through copy of what placing would put down, red when it isn't allowed.
+#[derive(Resource)]
+pub(crate) struct Ghost {
+    pub entity: Entity,
+    pub allowed: Handle<StandardMaterial>,
+    pub refused: Handle<StandardMaterial>,
+    /// The occupant its mesh was built for.
+    pub shown: Option<Occupant>,
+}
+
+/// How much smaller than the real block the ghost is drawn, so its faces don't flicker against
+/// neighbors they touch.
+const GHOST_SCALE: f32 = 0.99;
+
+/// Moves the ghost to where placing would go, rebuilding its mesh when the block or its turn
+/// changes, or hides it when placing would do nothing.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn update_ghost(
+    sim: Res<Sim>,
+    look: Res<Look>,
+    palette: Res<Palette>,
+    origin: Res<RenderOrigin>,
+    chunk_meshes: Res<ChunkMeshes>,
+    mut ghost: ResMut<Ghost>,
+    mut meshes: ResMut<Assets<Mesh>>,
+    mut parts: Query<(&mut Mesh3d, &mut MeshMaterial3d<StandardMaterial>, &mut Transform, &mut Visibility)>,
+) {
+    let Ok((mut mesh, mut material, mut transform, mut visibility)) = parts.get_mut(ghost.entity) else {
+        return;
+    };
+    let blocks = sim.0.blocks();
+    let place = sim
+        .0
+        .target(look.yaw, look.pitch)
+        .and_then(|hit| sim.0.placement(&hit, palette.selected(blocks), look.yaw));
+    let Some(place) = place else {
+        visibility.set_if_neq(Visibility::Hidden);
+        return;
+    };
+    visibility.set_if_neq(Visibility::Visible);
+    if ghost.shown != Some(place.occupant) {
+        let mut data = mesher::MeshData::default();
+        // Built around the boxel's center, so scaling shrinks it in place.
+        mesher::mesh_occupant(&mut data, place.occupant, [-0.5; 3], blocks, &chunk_meshes.atlas, |_| false);
+        mesh.0 = meshes.add(crate::to_bevy_mesh(data));
+        ghost.shown = Some(place.occupant);
+    }
+    let wanted = if place.allowed { &ghost.allowed } else { &ghost.refused };
+    if material.0 != *wanted {
+        material.0 = wanted.clone();
+    }
+    let center = WorldPos::at_boxel(place.pos).translate(ZVec3::splat(0.5));
+    *transform = Transform::from_translation(coords::render_translation(center, origin.cell))
+        .with_scale(Vec3::splat(GHOST_SCALE));
 }
 
 /// Rebuilds the meshes of chunks the simulation changed.
@@ -170,6 +233,33 @@ mod tests {
         assert_eq!(placeable_blocks(&blocks), [stone, dirt]);
         assert_eq!(Palette { slot: 1, scrolled: 0.0 }.selected(&blocks), dirt);
         assert_eq!(Palette { slot: 5, scrolled: 0.0 }.selected(&blocks), BlockId::EMPTY);
+    }
+
+    #[test]
+    fn breaking_one_occupant_remeshes_and_leaves_the_other() {
+        let data = data_mods::load(std::path::Path::new(base::DATA_DIR)).unwrap();
+        let mut sim = Simulation::with_mods(&[&data, &base::BaseMod, &base_movement::BaseMovementMod]).unwrap();
+        sim.spawn_player().unwrap();
+        // Stand east of a slab with a fence post through it and aim down at the post's top.
+        let (fence, slab) = (sim.blocks().id(base::WOOD_FENCE).unwrap(), sim.blocks().id(base::BRICK_SLAB).unwrap());
+        let cell = api::BoxelPos::new(-9, -4, 0);
+        assert_eq!(sim.universe().main().cell(cell).len(), 2);
+        sim.teleport_player(WorldPos::new(I64Vec3::new(-8, -4, 0), ZVec3::new(0.5, 0.5, 0.0)));
+        let eye = sim.player().unwrap().eye();
+        let aim = eye.delta_to(WorldPos::new(cell.0, ZVec3::new(0.5, 0.5, 1.0)));
+        let (yaw, pitch) = (aim.y.atan2(aim.x), aim.z.atan2(aim.truncate().length()));
+        let hit = sim.target(yaw, pitch).unwrap();
+        assert_eq!(sim.universe().main().cell(hit.pos)[hit.occupant].block, fence);
+
+        let atlas = Atlas::build(sim.textures(), sim.blocks());
+        let chunk = ChunkPos::new(-1, -1, 0);
+        let before = mesher::mesh_chunk(sim.universe().main(), chunk, sim.blocks(), &atlas).quad_count();
+        sim.step(&PlayerInput { yaw, pitch, break_pressed: true, break_held: true, ..Default::default() });
+        let left: Vec<_> = sim.universe().main().cell(cell).iter().map(|o| o.block).collect();
+        assert_eq!(left, [slab]);
+        assert!(sim.take_changed_chunks().contains(&chunk));
+        let after = mesher::mesh_chunk(sim.universe().main(), chunk, sim.blocks(), &atlas).quad_count();
+        assert_eq!(after, before - 5, "the post's faces are gone; its bottom was already hidden by the floor");
     }
 
     #[test]

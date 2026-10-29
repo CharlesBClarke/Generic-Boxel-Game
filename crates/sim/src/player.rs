@@ -1,5 +1,5 @@
 //! The player body. The mod's movement controller decides the velocity; the engine then
-//! applies impulses and resolves collisions against solid boxels.
+//! applies impulses and resolves collisions against the boxes of solid blocks.
 //!
 //! All collision math happens relative to the player's own cell, so it is the same at any
 //! distance from zero.
@@ -8,7 +8,7 @@ use api::{
     BoxelPos, Ground, I64Vec3, MoveContext, MoveInput, MovementController, PlayerDef, Vec2, Vec3, WorldPos,
 };
 
-use crate::BlockId;
+use crate::{BlockId, CellBox};
 
 /// Slack for touching faces, so standing on a floor doesn't count as being inside it.
 const EPS: f32 = 1e-4;
@@ -22,9 +22,17 @@ const MIN_HEIGHT: f32 = 0.2;
 
 /// What the body collides with and stands on.
 pub trait Terrain {
-    fn solid(&self, pos: BoxelPos) -> bool;
+    /// Adds the solid boxes in the boxel at `pos`, in boxel space, to `out`.
+    fn boxes(&self, pos: BoxelPos, out: &mut Vec<CellBox>);
     /// Friction of the block at `pos`, from its definition.
     fn friction(&self, pos: BoxelPos) -> f32;
+
+    /// Whether anything solid is in the boxel at `pos`.
+    fn solid(&self, pos: BoxelPos) -> bool {
+        let mut boxes = Vec::new();
+        self.boxes(pos, &mut boxes);
+        !boxes.is_empty()
+    }
 }
 
 /// One tick's worth of player intent.
@@ -197,10 +205,15 @@ impl Player {
 
     /// Whether the collision box overlaps the boxel at `pos`. Touching faces don't count.
     pub fn overlaps(&self, pos: BoxelPos) -> bool {
+        self.overlaps_boxes(pos, &[CellBox::FULL])
+    }
+
+    /// Whether the collision box overlaps any of `boxes`, in the boxel at `pos`. Touching faces
+    /// don't count.
+    pub fn overlaps_boxes(&self, pos: BoxelPos, boxes: &[CellBox]) -> bool {
         let (min, max) = self.bounds();
-        let cell_min = (pos.0 - self.pos.cell()).as_vec3();
-        let cell_max = cell_min + Vec3::ONE;
-        (min.cmplt(cell_max - EPS) & max.cmpgt(cell_min + EPS)).all()
+        let at = (pos.0 - self.pos.cell()).as_vec3();
+        boxes.iter().any(|b| overlap(min, max, b.translate(at)))
     }
 
     /// Queues an instant velocity change for the next tick. Impulses from every source add up.
@@ -279,19 +292,26 @@ impl Player {
         }
     }
 
-    /// How to get out of the boxel at `block`, which `terrain` already counts as solid, or
-    /// `None` if there's no room. The launch points from the block's center to the body's,
-    /// leaned upward by `upward_bias`. The body moves out along the launch's strongest axis if
-    /// there's room that way, otherwise whichever way is shortest.
-    pub fn push_out(&self, block: BoxelPos, upward_bias: f32, terrain: &impl Terrain) -> Option<PushOut> {
-        if !self.overlaps(block) {
+    /// How to get out of a block filling `boxes` in the boxel at `block`, which `terrain`
+    /// already counts as solid, or `None` if there's no room. The block counts as the box
+    /// around all its boxes. The launch points from that box's center to the body's, leaned
+    /// upward by `upward_bias`. The body moves out along the launch's strongest axis if there's
+    /// room that way, otherwise whichever way is shortest.
+    pub fn push_out(
+        &self,
+        block: BoxelPos,
+        boxes: &[CellBox],
+        upward_bias: f32,
+        terrain: &impl Terrain,
+    ) -> Option<PushOut> {
+        if !self.overlaps_boxes(block, boxes) {
             return None;
         }
         let (min, max) = self.bounds();
         let cell = self.pos.cell();
-        let block_min = (block.0 - cell).as_vec3();
-        let block_max = block_min + Vec3::ONE;
-        let away = ((min + max) * 0.5 - (block_min + Vec3::splat(0.5))).normalize_or_zero();
+        let bounds = CellBox::bounds(boxes)?.translate((block.0 - cell).as_vec3());
+        let (block_min, block_max) = (bounds.min, bounds.max);
+        let away = ((min + max) * 0.5 - (block_min + block_max) * 0.5).normalize_or_zero();
         let direction = (away + Vec3::Z * upward_bias).normalize_or(Vec3::Z);
 
         let mut moves: Vec<Vec3> = (0..3)
@@ -444,43 +464,56 @@ fn sweep_box(mut min: Vec3, mut max: Vec3, delta: Vec3, cell: I64Vec3, terrain: 
     moved
 }
 
-/// The boxels a span from `lo` to `hi` touches, ignoring faces it only touches.
-fn span(lo: f32, hi: f32) -> std::ops::RangeInclusive<i64> {
-    (lo + EPS).floor() as i64..=(hi - EPS).floor() as i64
+/// Whether two boxes overlap. Touching faces don't count.
+fn overlap(min: Vec3, max: Vec3, b: CellBox) -> bool {
+    (min.cmplt(b.max - EPS) & max.cmpgt(b.min + EPS)).all()
 }
 
-/// Whether a box from `min` to `max` (relative to `cell`) is free of solid boxels.
+/// The solid boxes in every boxel the region from `min` to `max` (relative to `cell`) touches
+/// or borders, relative to `cell`.
+fn solid_boxes(min: Vec3, max: Vec3, cell: I64Vec3, terrain: &impl Terrain) -> Vec<CellBox> {
+    let range = |axis: usize| (min[axis] - EPS).floor() as i64..=(max[axis] + EPS).floor() as i64;
+    let mut out = Vec::new();
+    let mut found = Vec::new();
+    for z in range(2) {
+        for y in range(1) {
+            for x in range(0) {
+                let rel = I64Vec3::new(x, y, z);
+                terrain.boxes(BoxelPos(cell + rel), &mut found);
+                out.extend(found.drain(..).map(|b| b.translate(rel.as_vec3())));
+            }
+        }
+    }
+    out
+}
+
+/// Whether a box from `min` to `max` (relative to `cell`) is free of solid boxes.
 fn box_clear(min: Vec3, max: Vec3, cell: I64Vec3, terrain: &impl Terrain) -> bool {
-    span(min.z, max.z).all(|z| {
-        span(min.y, max.y).all(|y| span(min.x, max.x).all(|x| !terrain.solid(BoxelPos(cell + I64Vec3::new(x, y, z)))))
-    })
+    !solid_boxes(min, max, cell, terrain).into_iter().any(|b| overlap(min, max, b))
 }
 
-/// How far a box from `min` to `max` (relative to `cell`) can move by `d` along `axis`.
+/// How far a box from `min` to `max` (relative to `cell`) can move by `d` along `axis`. Boxes
+/// it already overlaps don't stop it.
 fn clamp_axis(axis: usize, d: f32, min: Vec3, max: Vec3, cell: I64Vec3, terrain: &impl Terrain) -> f32 {
     let (a, b) = ((axis + 1) % 3, (axis + 2) % 3);
-    let blocked = |i: i64| {
-        span(min[a], max[a]).any(|j| {
-            span(min[b], max[b]).any(|k| {
-                let mut rel = [0i64; 3];
-                rel[axis] = i;
-                rel[a] = j;
-                rel[b] = k;
-                terrain.solid(BoxelPos(cell + I64Vec3::from_array(rel)))
-            })
-        })
-    };
-
+    let (mut lo, mut hi) = (min, max);
     if d > 0.0 {
-        // Boxels whose near face is at or ahead of our leading face, nearest first.
-        let first = (max[axis] - EPS).ceil() as i64;
-        let last = (max[axis] + d).ceil() as i64 - 1;
-        (first..=last).find(|&i| blocked(i)).map_or(d, |i| i as f32 - max[axis])
+        hi[axis] += d;
     } else {
-        let first = (min[axis] + EPS).floor() as i64 - 1;
-        let last = (min[axis] + d).floor() as i64;
-        (last..=first).rev().find(|&i| blocked(i)).map_or(d, |i| (i + 1) as f32 - min[axis])
+        lo[axis] += d;
     }
+    let beside = |o: &CellBox| {
+        [a, b].into_iter().all(|i| o.min[i] < max[i] - EPS && o.max[i] > min[i] + EPS)
+    };
+    solid_boxes(lo, hi, cell, terrain).into_iter().filter(beside).fold(d, |d, o| {
+        if d > 0.0 && o.min[axis] >= max[axis] - EPS {
+            d.min(o.min[axis] - max[axis])
+        } else if d < 0.0 && o.max[axis] <= min[axis] + EPS {
+            d.max(o.max[axis] - min[axis])
+        } else {
+            d
+        }
+    })
 }
 
 #[cfg(test)]
@@ -561,8 +594,10 @@ mod tests {
     }
 
     impl<F: Fn(BoxelPos) -> bool, G: Fn(BoxelPos) -> bool> Terrain for World<F, G> {
-        fn solid(&self, pos: BoxelPos) -> bool {
-            (self.solid)(pos)
+        fn boxes(&self, pos: BoxelPos, out: &mut Vec<CellBox>) {
+            if (self.solid)(pos) {
+                out.push(CellBox::FULL);
+            }
         }
         fn friction(&self, pos: BoxelPos) -> f32 {
             if (self.icy)(pos) { 0.1 } else { 1.0 }
@@ -839,7 +874,7 @@ mod tests {
         let w = world(move |p| floor(p) || p == block);
         let mut p = player(0.5, 0.5, 0.0);
         p.on_ground = true;
-        let push = p.push_out(block, 1.0, &w).expect("room above");
+        let push = p.push_out(block, &[CellBox::FULL], 1.0, &w).expect("room above");
         assert!((push.shift - Vec3::Z).length() < 1e-5, "shift {}", push.shift);
         assert!((push.direction - Vec3::Z).length() < 1e-5, "straight up from the middle");
         p.apply_push_out(push, 6.0);
@@ -853,11 +888,11 @@ mod tests {
         let block = BoxelPos::new(0, 0, 0);
         let w = world(move |p| floor(p) || p == block);
         let p = player(0.85, 0.5, 0.0);
-        let push = p.push_out(block, 1.0, &w).unwrap();
+        let push = p.push_out(block, &[CellBox::FULL], 1.0, &w).unwrap();
         assert!((push.shift - Vec3::Z).length() < 1e-5, "still lifted onto the block");
         assert!(push.direction.x > 0.3, "tilted toward the far edge: {}", push.direction);
         assert_eq!(push.direction.y, 0.0);
-        let centered = player(0.5, 0.5, 0.0).push_out(block, 1.0, &w).unwrap();
+        let centered = player(0.5, 0.5, 0.0).push_out(block, &[CellBox::FULL], 1.0, &w).unwrap();
         assert!(push.direction.z < centered.direction.z);
     }
 
@@ -867,14 +902,14 @@ mod tests {
         // Room for only 2 boxels of height: lifting onto the block would hit the ceiling.
         let low = world(move |p| floor(p) || p == block || p.0.z >= 2);
         let p = player(0.85, 0.5, 0.0);
-        let push = p.push_out(block, 1.0, &low).expect("room to the side");
+        let push = p.push_out(block, &[CellBox::FULL], 1.0, &low).expect("room to the side");
         assert!((push.shift - Vec3::new(0.45, 0.0, 0.0)).length() < 1e-4, "shift {}", push.shift);
 
         // A one-boxel shaft two high: nowhere to go.
         let shaft = world(move |p| floor(p) || p == block || p.0.z >= 2 || (p.0.z >= 0 && p.0 != I64Vec3::new(0, 0, p.0.z)));
         let p = player(0.5, 0.5, 0.0);
-        assert_eq!(p.push_out(block, 1.0, &shaft), None);
-        assert_eq!(player(5.5, 5.5, 0.0).push_out(block, 1.0, &world(floor)), None, "not inside it");
+        assert_eq!(p.push_out(block, &[CellBox::FULL], 1.0, &shaft), None);
+        assert_eq!(player(5.5, 5.5, 0.0).push_out(block, &[CellBox::FULL], 1.0, &world(floor)), None, "not inside it");
     }
 
     /// A floor that ends at x = 3, dropping 5 boxels, with a one-boxel step down at y < 0.

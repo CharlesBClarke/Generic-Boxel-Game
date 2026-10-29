@@ -1,7 +1,8 @@
 //! The traits a mod implements and the engine services it is handed.
 
 use crate::{
-    ApiError, BlockDef, BoxelPos, InteractionDef, MovementController, PlayerDef, PushOutDef, TextureDef, WorldPos,
+    ApiError, BlockDef, BoxelPos, InteractionDef, MovementController, Orientation, PlayerDef, PushOutDef, TextureDef,
+    WorldPos,
 };
 
 /// A mod. The engine calls `register` on every mod first, then `build_world` on every mod.
@@ -40,7 +41,12 @@ pub trait Registrar {
 
 /// Edits the world by block name.
 pub trait WorldEdit {
+    /// Fills the boxel with just this block, unturned, replacing whatever was there.
     fn set_block(&mut self, pos: BoxelPos, name: &str) -> Result<(), ApiError>;
+    /// Adds a block to what's already in the boxel, turned by `orientation`. The same rules as
+    /// a player placing it decide whether it may share the boxel.
+    fn add_block(&mut self, pos: BoxelPos, name: &str, orientation: Orientation) -> Result<(), ApiError>;
+    /// Empties the boxel.
     fn clear_block(&mut self, pos: BoxelPos);
 
     /// Where the player's feet start.

@@ -106,7 +106,7 @@ A run of small toy slices. Each one takes a single game-feel feature that doesn'
 
 #### Block shapes and shared cells (branch `toy-block-shapes`)
 
-**Stage:** Implement (2026-10-28)
+**Stage:** Verify (2026-10-28). Implemented and tested; waiting for the user to play it.
 
 **Goal:** slabs, stairs, fences and logs placed in several ways depending on where you aim, and two things sharing one cell, like a fence and a slab. This is the engine's general form of Minecraft's waterlogging: the design doc's "multiple occupants per boxel".
 
@@ -138,6 +138,26 @@ A run of small toy slices. Each one takes a single game-feel feature that doesn'
 4. You can stand on slabs and walk up stairs without jumping, and can't walk through partial blocks.
 5. No gaps or extra faces where partial blocks meet full ones, including across chunk borders.
 6. `cargo test` and `cargo clippy` are clean.
+
+*Implementation notes* (2026-10-28)
+- **Storage.** `sim::cell`: `Occupant { block, orientation }`, `CellId`, and `CellTable`, one per grid, storing each sorted list of up to 4 occupants once, in place (no heap per list). `Chunk::cells` replaces `Chunk::blocks`. `Grid::cell`, `set_cell` and `occupants` read and write lists; `block` and `set_block` remain for single blocks. World building got about 10% slower than before (base world tests 3.5 s to 3.9 s) after a first version that allocated per boxel doubled it.
+- **Orientation** is `api::Orientation`, a 3×3 matrix of -1, 0 and 1, with `quarter_turns`, `z_along`, `then`, `apply`, `apply_box` and `all`.
+- **Shapes.** `api::BlockBox` (sixteenths) and `BlockDef.shape`, checked at registration. In `blocks.toml`: a `[shapes]` table of named shapes, `shape = "name"` or a list of `[x0, y0, z0, x1, y1, z1]` boxes, and `placement`.
+- **Collision** works on boxes: `Terrain::boxes` replaces `Terrain::solid` (still there as a helper), and `clamp_axis` and `box_clear` test boxes instead of whole boxels. For full blocks it gives the same numbers as before; all movement and wasm equivalence tests pass unchanged. Push-out uses the box around the placed block's boxes.
+- **Aiming.** The raycast tests each box in the boxels it walks and reports the occupant, the face normal and the exact point. Breaking removes only that occupant.
+- **Placement.** `Simulation::placement(hit, block, yaw)` returns a `PlaceTarget` (boxel, turned occupant, allowed), so a refused placement still says where it would go.
+- **Content.** Stone and brick slabs and stairs, a wood fence post and a log, with Minetest Game's `default_wood` (BlockMen), `default_tree` and `default_tree_top` (Cisoun) credited in `mods/base/CREDITS.md`. The shapes corner west of spawn has a staircase up to a platform, a brick slab path with posts through two slabs, a lone post, a double slab, and logs lying and standing. The debug teleport has a new `shapes` waypoint at its foot.
+- **Client.** The mesher draws each occupant's turned boxes with textures cropped to each box, and hides a face only when it's on the boxel's side against a full block. The outline traces the aimed occupant's boxes. The ghost is a see-through mesh of the placed occupant, slightly shrunk so it doesn't flicker against neighbors, red when refused.
+- *API changes:* `Orientation`, `BlockBox`, `Placement`, `BlockDef.shape`, `placement`, `with_shape`, `with_placement`, `is_full`, `validate`, `WorldEdit::add_block`, `ApiError::CannotShare`.
+- 196 tests pass in the workspace; clippy is clean.
+
+*Changes from the plan, found while building* (each small; flagged for the user)
+- **Step height 0.6 in `base`.** The plan said stairs would use "the existing step height", but the base player's was 0, so stairs couldn't be walked up. 0.6 is Minecraft's: enough for slabs and stairs, not for full blocks.
+- **Fallback to the next boxel.** When the block can't share the boxel in front of the aimed point (a full block aimed at the top of a slab), it goes into the boxel on the far side of the face instead, as in Minecraft. Without this you couldn't build on a slab.
+- **No separate list of allowed orientations.** A block's placement rule decides which orientations it can have.
+- **No API type for reading a boxel's occupants.** Nothing in a mod needs to read the world yet; mods add turned blocks with `WorldEdit::add_block`.
+
+*Noticed while testing:* standing on a slab, a fence post is only 0.5 above your feet, so the 0.6 step height walks you onto the post. Minecraft makes fence collision 1.5 high for this; worth deciding when fences join their neighbors.
 
 ### Toy backlog
 

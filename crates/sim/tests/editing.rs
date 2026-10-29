@@ -38,6 +38,17 @@ fn place_at(yaw: f32, pitch: f32, block: BlockId) -> PlayerInput {
 
 const DOWN: f32 = -89.0 * std::f32::consts::PI / 180.0;
 
+/// A hit on the middle of a full boxel's face.
+fn face(pos: BoxelPos, normal: I64Vec3, distance: f32) -> Hit {
+    let point = Vec3::splat(0.5) + normal.as_vec3() * 0.5;
+    Hit { pos, occupant: 0, normal, distance, point }
+}
+
+/// Where placing `block` on `hit` would put it, if that's allowed.
+fn place_pos(sim: &Simulation, hit: &Hit, block: BlockId) -> Option<BoxelPos> {
+    sim.placement(hit, block, 0.0).filter(|t| t.allowed).map(|t| t.pos)
+}
+
 #[test]
 fn break_then_place_puts_the_block_back() {
     // From spawn the marker post is 2.5 boxels east, 2 high.
@@ -72,7 +83,7 @@ fn placing_at_the_feet_launches_the_player() {
     let hit = sim.target(0.0, DOWN).unwrap();
     assert_eq!((hit.pos, hit.normal), (BoxelPos::new(0, 0, -1), I64Vec3::Z));
     let stone = id(&sim, base::STONE);
-    assert_eq!(sim.placement(&hit, stone), Some(BoxelPos::new(0, 0, 0)));
+    assert_eq!(place_pos(&sim, &hit, stone), Some(BoxelPos::new(0, 0, 0)));
     sim.step(&place_at(0.0, DOWN, stone));
     assert_eq!(block(&sim, 0, 0, 0), stone);
     let player = sim.player().unwrap();
@@ -98,14 +109,14 @@ fn placing_into_a_filled_cell_is_refused() {
     let sim = base_sim();
     let stone = id(&sim, base::STONE);
     // The floor block below another floor block: its top neighbor is filled.
-    let hit = Hit { pos: BoxelPos::new(10, -3, -2), normal: I64Vec3::Z, distance: 1.0 };
-    assert_eq!(sim.placement(&hit, stone), None);
+    let hit = face(BoxelPos::new(10, -3, -2), I64Vec3::Z, 1.0);
+    assert_eq!(place_pos(&sim, &hit, stone), None);
     // A hit from inside a block has no face to place on.
-    let inside = Hit { pos: BoxelPos::new(10, -3, -1), normal: I64Vec3::ZERO, distance: 0.0 };
-    assert_eq!(sim.placement(&inside, stone), None);
-    let open = Hit { pos: BoxelPos::new(10, -3, -1), normal: I64Vec3::Z, distance: 1.0 };
-    assert_eq!(sim.placement(&open, stone), Some(BoxelPos::new(10, -3, 0)));
-    assert_eq!(sim.placement(&open, BlockId::EMPTY), None, "placing nothing does nothing");
+    let inside = Hit { normal: I64Vec3::ZERO, distance: 0.0, ..face(BoxelPos::new(10, -3, -1), I64Vec3::Z, 0.0) };
+    assert_eq!(place_pos(&sim, &inside, stone), None);
+    let open = face(BoxelPos::new(10, -3, -1), I64Vec3::Z, 1.0);
+    assert_eq!(place_pos(&sim, &open, stone), Some(BoxelPos::new(10, -3, 0)));
+    assert_eq!(place_pos(&sim, &open, BlockId::EMPTY), None, "placing nothing does nothing");
 }
 
 #[test]
@@ -200,8 +211,8 @@ impl Mod for BedrockPush {
 
 #[test]
 fn placing_into_the_player_needs_a_push_out_rule_and_room() {
-    let feet = Hit { pos: BoxelPos::new(0, 0, -1), normal: I64Vec3::Z, distance: 1.6 };
-    let shaft = Hit { pos: BoxelPos::new(10, 10, -1), normal: I64Vec3::Z, distance: 1.6 };
+    let feet = face(BoxelPos::new(0, 0, -1), I64Vec3::Z, 1.6);
+    let shaft = face(BoxelPos::new(10, 10, -1), I64Vec3::Z, 1.6);
     let open_spot = WorldPos::new(I64Vec3::ZERO, Vec3::new(0.5, 0.5, 0.0));
     let shaft_spot = WorldPos::new(I64Vec3::new(10, 10, 0), Vec3::new(0.5, 0.5, 0.0));
 
@@ -210,18 +221,18 @@ fn placing_into_the_player_needs_a_push_out_rule_and_room() {
         sim.spawn_player().unwrap();
         let stone = sim.blocks().id("test:stone").unwrap();
         sim.teleport_player(open_spot);
-        assert_eq!(sim.placement(&feet, stone).is_some(), rule, "open ground, rule {rule}");
+        assert_eq!(place_pos(&sim, &feet, stone).is_some(), rule, "open ground, rule {rule}");
         sim.teleport_player(shaft_spot);
-        assert_eq!(sim.placement(&shaft, stone), None, "no room in the shaft, rule {rule}");
+        assert_eq!(place_pos(&sim, &shaft, stone), None, "no room in the shaft, rule {rule}");
     }
 }
 
 #[test]
 fn unplaceable_blocks_are_refused() {
     let sim = Simulation::with_mods(&[&Bedrock]).unwrap();
-    let open = Hit { pos: BoxelPos::new(3, 3, -1), normal: I64Vec3::Z, distance: 1.0 };
-    assert_eq!(sim.placement(&open, sim.blocks().id("test:bedrock").unwrap()), None);
-    assert!(sim.placement(&open, sim.blocks().id("test:stone").unwrap()).is_some());
+    let open = face(BoxelPos::new(3, 3, -1), I64Vec3::Z, 1.0);
+    assert_eq!(place_pos(&sim, &open, sim.blocks().id("test:bedrock").unwrap()), None);
+    assert!(place_pos(&sim, &open, sim.blocks().id("test:stone").unwrap()).is_some());
 }
 
 #[test]

@@ -1,7 +1,8 @@
 # Credits
 
 The textures in `textures/` come from the `default` mod of Minetest Game
-(<https://github.com/luanti-org/minetest_game>, commit `f6b2792`, fetched 2026-10-27).
+(<https://github.com/luanti-org/minetest_game>, commit `f6b2792`, fetched 2026-10-27; wood and
+log textures fetched 2026-10-28 from the same commit).
 They are licensed under CC BY-SA 3.0 (<https://creativecommons.org/licenses/by-sa/3.0/>);
 see `LICENSE.txt`, Minetest Game's license file for that mod, for the full list of authors.
 Edited versions must keep that license.
@@ -14,3 +15,6 @@ Edited versions must keep that license.
 | `grass_side.png` | `default_grass_side.png` drawn over `default_dirt.png` | paramat, derived from a texture by TumeniNodes; dirt as above | Combined into one opaque image, as Minetest Game draws it in game |
 | `brick.png` | `default_brick.png` | Calinou | Renamed |
 | `ice.png` | `default_ice.png` | asl97 | Renamed |
+| `wood.png` | `default_wood.png` | BlockMen | Renamed |
+| `log.png` | `default_tree.png` | Cisoun (Cisoun's texture pack) | Renamed |
+| `log_top.png` | `default_tree_top.png` | Cisoun (Cisoun's texture pack) | Renamed |

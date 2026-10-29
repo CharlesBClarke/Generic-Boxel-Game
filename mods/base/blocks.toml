@@ -8,6 +8,21 @@
 #   textures   a name from textures/ for every face, or { top, bottom, side }
 #   color      [r, g, b] sRGB, for blocks without textures. Optional with textures:
 #              it defaults to the side texture's average color.
+#   shape      a name from [shapes], or a list of boxes; default a full block
+#   placement  "fixed": never turned (default)
+#              "half": top or bottom of the boxel, from where you aim (slabs)
+#              "facing_away": its north side turns the way you look, upside down when
+#                             aimed at the upper half (stairs)
+#              "along_face": its top turns to the face you aim at (logs)
+#
+# Shapes are boxes in sixteenths of a boxel: [x0, y0, z0, x1, y1, z1], each from 0 to 16,
+# as the block stands unturned (+Z up, +Y north). Textures crop to the part each box covers.
+
+[shapes]
+slab = [[0, 0, 0, 16, 16, 8]]
+# The high step is on the north side.
+stairs = [[0, 0, 0, 16, 16, 8], [0, 8, 8, 16, 16, 16]]
+post = [[6, 6, 0, 10, 10, 16]]
 
 [[block]]
 name = "stone"
@@ -34,3 +49,38 @@ color = [240, 180, 40]
 name = "ice"
 textures = "ice"
 friction = 0.1
+
+[[block]]
+name = "stone_slab"
+textures = "stone"
+shape = "slab"
+placement = "half"
+
+[[block]]
+name = "stone_stairs"
+textures = "stone"
+shape = "stairs"
+placement = "facing_away"
+
+[[block]]
+name = "brick_slab"
+textures = "brick"
+shape = "slab"
+placement = "half"
+
+[[block]]
+name = "brick_stairs"
+textures = "brick"
+shape = "stairs"
+placement = "facing_away"
+
+# A bare post for now; fences joining their neighbors come later.
+[[block]]
+name = "wood_fence"
+textures = "wood"
+shape = "post"
+
+[[block]]
+name = "log"
+textures = { top = "log_top", bottom = "log_top", side = "log" }
+placement = "along_face"

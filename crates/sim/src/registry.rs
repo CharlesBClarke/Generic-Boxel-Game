@@ -7,7 +7,7 @@ use api::{ApiError, BlockDef, TextureDef};
 
 /// A runtime block ID. Assigned at startup in registration order and never saved or
 /// sent anywhere; names are the identity.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct BlockId(u16);
 
 impl BlockId {
@@ -38,6 +38,7 @@ impl BlockRegistry {
         if self.by_name.contains_key(&def.name) {
             return Err(ApiError::DuplicateName(def.name));
         }
+        def.validate().map_err(ApiError::InvalidDef)?;
         let index = u16::try_from(self.defs.len() + 1)
             .map_err(|_| ApiError::InvalidDef("too many block types".into()))?;
         let id = BlockId(index);
@@ -169,6 +170,18 @@ mod tests {
             Err(ApiError::InvalidName("stone".into()))
         );
         assert_eq!(reg.len(), 1);
+    }
+
+    #[test]
+    fn rejects_bad_shapes() {
+        let mut reg = BlockRegistry::default();
+        let none = BlockDef::new("test:none", true, [0; 3]).with_shape(Vec::new());
+        assert!(matches!(reg.register(none), Err(ApiError::InvalidDef(_))));
+        let flat = BlockDef::new("test:flat", true, [0; 3]).with_shape(vec![api::BlockBox::new([0, 0, 4], [16, 16, 4])]);
+        assert!(matches!(reg.register(flat), Err(ApiError::InvalidDef(_))));
+        let big = BlockDef::new("test:big", true, [0; 3]).with_shape(vec![api::BlockBox::new([0, 0, 0], [16, 16, 17])]);
+        assert!(matches!(reg.register(big), Err(ApiError::InvalidDef(_))));
+        assert!(reg.is_empty());
     }
 
     fn texture(name: &str) -> TextureDef {

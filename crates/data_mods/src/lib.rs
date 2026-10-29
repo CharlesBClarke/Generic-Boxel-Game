@@ -1,19 +1,20 @@
 //! Data mods: content defined in files rather than code. A mod folder holds
 //!
 //! - `mod.toml`: the mod's `name` (its namespace), `version` and an optional `description`.
-//! - `blocks.toml`: `[[block]]` entries.
+//! - `blocks.toml`: `[[block]]` entries, and a `[shapes]` table of named shapes they can share.
 //! - `textures/*.png`: each registered as `<namespace>:<file stem>`.
 //!
 //! [`load`] reads a folder into a [`DataMod`], an ordinary [`Mod`] that registers its content
 //! through the same API as code. Mistakes are reported with the file and line, and unknown
 //! fields are errors, so a typo is never silently ignored.
 
+use std::collections::HashMap;
 use std::fmt;
 use std::fs;
 use std::path::{Path, PathBuf};
 
 use api::block::is_valid_name;
-use api::{ApiError, BlockDef, FaceTextures, Mod, Registrar, TextureDef};
+use api::{ApiError, BlockBox, BlockDef, FaceTextures, Mod, Placement, Registrar, TextureDef};
 use serde::Deserialize;
 use toml::Spanned;
 
@@ -95,6 +96,8 @@ struct Manifest {
 #[serde(deny_unknown_fields)]
 struct BlocksFile {
     #[serde(default)]
+    shapes: HashMap<String, Spanned<Vec<[u8; 6]>>>,
+    #[serde(default)]
     block: Vec<BlockEntry>,
 }
 
@@ -110,6 +113,38 @@ struct BlockEntry {
     placeable: bool,
     color: Option<[u8; 3]>,
     textures: Option<Spanned<Textures>>,
+    shape: Option<Spanned<Shape>>,
+    #[serde(default)]
+    placement: PlacementName,
+}
+
+/// A shape: the name of one in `[shapes]`, or boxes given in place.
+#[derive(Deserialize)]
+#[serde(untagged, expecting = "a shape name, or a list of boxes like [x0, y0, z0, x1, y1, z1]")]
+enum Shape {
+    Named(String),
+    Boxes(Vec<[u8; 6]>),
+}
+
+#[derive(Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+enum PlacementName {
+    #[default]
+    Fixed,
+    AlongFace,
+    FacingAway,
+    Half,
+}
+
+impl From<PlacementName> for Placement {
+    fn from(p: PlacementName) -> Self {
+        match p {
+            PlacementName::Fixed => Placement::Fixed,
+            PlacementName::AlongFace => Placement::AlongFace,
+            PlacementName::FacingAway => Placement::FacingAway,
+            PlacementName::Half => Placement::Half,
+        }
+    }
 }
 
 fn yes() -> bool {
@@ -185,10 +220,14 @@ pub fn load(dir: &Path) -> Result<DataMod, LoadError> {
     let blocks = if blocks_path.exists() {
         let file = Source::read(blocks_path)?;
         let entries: BlocksFile = file.parse()?;
+        let mut shapes = HashMap::new();
+        for (name, boxes) in &entries.shapes {
+            shapes.insert(name.as_str(), to_boxes(&file, boxes, &format!("shape {name:?}"))?);
+        }
         entries
             .block
             .into_iter()
-            .map(|entry| block_def(&file, &namespace, &textures, entry))
+            .map(|entry| block_def(&file, &namespace, &textures, &shapes, entry))
             .collect::<Result<_, _>>()?
     } else {
         Vec::new()
@@ -235,6 +274,7 @@ fn block_def(
     file: &Source,
     namespace: &str,
     textures: &[TextureDef],
+    shapes: &HashMap<&str, Vec<BlockBox>>,
     entry: BlockEntry,
 ) -> Result<BlockDef, LoadError> {
     let short = entry.name.get_ref();
@@ -280,9 +320,49 @@ fn block_def(
         }
     };
 
-    let mut def = BlockDef::new(name, entry.solid, color).with_friction(friction).with_placeable(entry.placeable);
+    let shape = match &entry.shape {
+        None => vec![BlockBox::FULL],
+        Some(spanned) => match spanned.get_ref() {
+            Shape::Named(shape) => shapes.get(shape.as_str()).cloned().ok_or_else(|| {
+                file.error_at(spanned, format!("block {short:?} names shape {shape:?}, but [shapes] has no {shape:?}"))
+            })?,
+            Shape::Boxes(boxes) => {
+                to_boxes(file, &Spanned::new(spanned.span(), boxes.clone()), &format!("block {short:?}"))?
+            }
+        },
+    };
+
+    let mut def = BlockDef::new(name, entry.solid, color)
+        .with_friction(friction)
+        .with_placeable(entry.placeable)
+        .with_shape(shape)
+        .with_placement(entry.placement.into());
     def.textures = faces;
     Ok(def)
+}
+
+/// Turns `[x0, y0, z0, x1, y1, z1]` lists into boxes, checking each is inside the boxel (0 to
+/// 16) with some size. `what` names the shape or block, for errors.
+fn to_boxes(file: &Source, boxes: &Spanned<Vec<[u8; 6]>>, what: &str) -> Result<Vec<BlockBox>, LoadError> {
+    if boxes.get_ref().is_empty() {
+        return Err(file.error_at(boxes, format!("{what} has no boxes")));
+    }
+    boxes
+        .get_ref()
+        .iter()
+        .map(|&[x0, y0, z0, x1, y1, z1]| {
+            let b = BlockBox::new([x0, y0, z0], [x1, y1, z1]);
+            if b.is_valid() {
+                Ok(b)
+            } else {
+                let message = format!(
+                    "{what} has box {:?}: each box needs 0 <= start < end <= 16 on every axis",
+                    [x0, y0, z0, x1, y1, z1]
+                );
+                Err(file.error_at(boxes, message))
+            }
+        })
+        .collect()
 }
 
 /// The average color of a texture's visible pixels, for wherever a block is drawn as one color.
@@ -378,6 +458,54 @@ mod tests {
             Some(FaceTextures { top: "test:grass".into(), bottom: "test:stone".into(), side: "test:grass".into() })
         );
         assert_eq!(*ice, BlockDef::new("test:ice", false, [170, 210, 240]).with_friction(0.1).with_placeable(false));
+    }
+
+    #[test]
+    fn reads_shapes_and_placement() {
+        let folder = Folder::new("shapes");
+        folder.write("mod.toml", MANIFEST).write(
+            "blocks.toml",
+            r#"
+                [shapes]
+                slab = [[0, 0, 0, 16, 16, 8]]
+
+                [[block]]
+                name = "slab"
+                color = [1, 2, 3]
+                shape = "slab"
+                placement = "half"
+
+                [[block]]
+                name = "stairs"
+                color = [1, 2, 3]
+                shape = [[0, 0, 0, 16, 16, 8], [0, 8, 8, 16, 16, 16]]
+                placement = "facing_away"
+
+                [[block]]
+                name = "cube"
+                color = [1, 2, 3]
+            "#,
+        );
+        let m = folder.load().unwrap();
+        let [slab, stairs, cube] = m.blocks() else { panic!("three blocks") };
+        assert_eq!(slab.shape, [BlockBox::new([0, 0, 0], [16, 16, 8])]);
+        assert_eq!(slab.placement, Placement::Half);
+        assert_eq!(stairs.shape.len(), 2);
+        assert_eq!(stairs.placement, Placement::FacingAway);
+        assert!(cube.is_full());
+        assert_eq!(cube.placement, Placement::Fixed);
+    }
+
+    #[test]
+    fn bad_shapes_are_errors() {
+        let err = blocks_error("unknown_shape", "[[block]]\nname = \"a\"\ncolor = [1, 2, 3]\nshape = \"slab\"\n", 4);
+        assert!(err.contains("[shapes] has no \"slab\""), "{err}");
+        let err = blocks_error("big_box", "[shapes]\nbig = [[0, 0, 0, 16, 16, 17]]\n", 2);
+        assert!(err.contains("shape \"big\""), "{err}");
+        blocks_error("flat_box", "[[block]]\nname = \"a\"\ncolor = [1, 2, 3]\nshape = [[0, 0, 4, 16, 16, 4]]\n", 4);
+        blocks_error("no_boxes", "[[block]]\nname = \"a\"\ncolor = [1, 2, 3]\nshape = []\n", 4);
+        let err = blocks_error("bad_placement", "[[block]]\nname = \"a\"\ncolor = [1, 2, 3]\nplacement = \"sideways\"\n", 4);
+        assert!(err.contains("sideways"), "{err}");
     }
 
     #[test]
