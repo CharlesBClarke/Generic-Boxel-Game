@@ -104,7 +104,26 @@ A run of small toy slices. Each one takes a single game-feel feature that doesn'
 
 ### Current toy
 
-None. Suggested next: Inventory and items, which builds straight on the materials and the pickup counter from Loose items.
+#### Block-jump trainer (branch `toy-block-jump-trainer`)
+
+**Stage:** Verify (paused 2026-10-30: built and tested, not played yet. Next: the user plays it with F5 and says whether the verdicts match what they feel.)
+
+**Goal:** a trainer, toggled on with a key, that watches each block-jump attempt (placing a block overlapping your feet while jumping, so the push-out launches you) and tells you what went wrong. A detour at the user's request (2026-10-30): block-jumping feels inconsistent. A dev tool like the chase drill, not a feature; it doesn't change how block-jumping works.
+
+**Approved plan** (2026-10-30)
+
+*Why it's inconsistent (from reading the code):* placing and jumping on the same tick stacks the kick on the jump. Placing and then jumping within coyote time loses the kick, because the jump sets vertical speed to 0. With `hold_to_hop` on, holding jump after a kick from the ground does this by itself. Placing after the jump adds the kick to a jump that has already slowed. Placing once the feet are above the boxel gives no push-out. Standing off-center tilts the kick, and walls or ceilings cancel it.
+
+- `sim`: read-only diagnostics, no behavior change. `Player::last_step()` records the tick's velocity going in, the controller's velocity and impulse, and the external impulses. `Simulation::last_place()` records the last placement attempt (tick, boxel, allowed, the push-out it caused).
+- `client::trainer`: a plain `Trainer` fed one observation per tick. It groups ticks into attempts (start on a jump or a placement, end on landing) and gives each attempt one verdict with the timing in ticks and ms, the kick lost, tilt, wall or ceiling hits, and the height reached. The HUD shows recent verdicts, counts and the best height. Toggle key `trainer`, default F5.
+- Tests: scripted input on a headless `Simulation` with `base` for each case (same tick, kick lost, held hop, late, too late, refused, missed, kick only).
+- Out of scope: changing push-out or the jump. That stays in Advanced movement revisited.
+
+*Test* (2026-10-30): 9 trainer tests pass; the workspace passes and clippy is clean. Heights from the scripted runs, feet above the floor: same tick 3.75 m, placed 8 ticks after the jump 3.19 m, jump 3 ticks after placing (kick lost) 1.48 m, too late 1.18 m, kick only 0.54 m. Losing the kick costs over half the height, from a 50 ms timing slip.
+
+---
+
+Suggested next after the trainer: Inventory and items, which builds straight on the materials and the pickup counter from Loose items.
 
 ### Toy backlog
 
@@ -123,6 +142,12 @@ None. Suggested next: Inventory and items, which builds straight on the material
   - What placing a block while crouched should do. The crouched body's center is at or below the block's center, so today it gives a sideways shove off the side of the block that was never designed.
   - Whether a jump should keep wiping out the push-out kick. Today, placing a moment before jumping loses the kick, which makes block-jumping feel inconsistent.
   - **Known flaw, deferred to this toy (2026-10-26):** the kick can point opposite to the shift. The kick's direction comes from the body's position before the shift, so in the tunnel case the body is shifted backward but kicked forward, into the block it just left, and the collision zeroes it. That's why the speed readout stays at 0 (the readout itself is correct). Found by reading the code and confirmed by the user's play; not yet covered by a test. The redesign must make the launch go the way the body actually leaves the block.
+  - **Direction proposed by the user (2026-10-30, after the block-jump trainer),** recorded as candidates to try:
+    - *Kick straight up only,* keeping the body's own horizontal speed. Forward speed comes from running, which the player controls. The standing-position tilt is noise players can't learn, and dropping it also removes the opposite-direction flaw above. Pistons can bring their own direction later. Note: the 2026-10-26 entry says the user disliked the launch being *mostly* upward, so settle which one holds when playing it.
+    - *Analog kick, scaled by how far the block has to push the body:* full with the feet at the bottom of the boxel, fading to nothing as they near the top. That turns the cliff between "kick" and "too late" into a smooth slope ("sooner is stronger") and reads like a spring, which fits the robotic player.
+    - *Order-independent jumping:* a jump adds to rising speed instead of resetting it, so placing a tick before the jump no longer loses the kick. The controller's comment says the jump replaces *downward* speed, but the code zeroes upward speed too. Changing it affects all jumps, so it belongs in this toy, not in a fix.
+    - *Later:* push the body out over a few ticks like a spring instead of the instant shift. Collision has to ignore the block while the body is still inside it.
+    - The block-jump trainer is the measuring tool: once this toy is done, same-tick, early and late attempts should land close together.
 
 Ideas that come up while playing get added here.
 
@@ -145,6 +170,7 @@ Shortcuts taken around the API, each with the toy that needed it. Paid down in s
 
 - **Fixed input actions** (movement toy; break, place and palette slots added by the block editing toy, crouch by the advanced movement toy, placement mode by the block shapes toy). Move, jump, sprint, crouch, break, place, the palette slots and the debug keys are a fixed engine set in `sim::PlayerInput` and `client::controls`. Mods can't define their own actions. API version: mods register named actions with default bindings, and controllers read actions by name.
 - **Chase drill in the client** (advanced movement toy, temporary). The ghost and objectives in `client::drill` are game logic living in the client, and it finds landmarks by the `landmark:` prefix on waypoint names. Remove the drill rather than moving it into the API, unless a later toy wants real enemies, which would need entities and a game-rules hook in the API.
+- **Block-jump trainer in the client** (block-jump trainer toy, temporary). `client::trainer` judges attempts from read-only diagnostics, `Player::last_step` and `Simulation::last_place`. Remove it with the chase drill, or once Advanced movement revisited makes block-jumping consistent.
 - **Camera feel in the client** (movement toy). FOV widening, head bob, landing dip and step smoothing live in `client::feel`, so mods can't change them. API version: a client-side mod API for camera effects, presumably driven by the same tunables.
 
 ### Phase 2 decisions

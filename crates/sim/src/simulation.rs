@@ -56,6 +56,17 @@ pub struct PlaceTarget {
     pub allowed: bool,
 }
 
+/// The player's last placement attempt, for tools that explain it. Read only.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct PlaceReport {
+    /// The tick it happened on, as [`Simulation::tick`] read before that tick's step.
+    pub tick: u64,
+    /// Where the block went or would have gone; `None` with nothing in reach to place on.
+    pub target: Option<PlaceTarget>,
+    /// How the block pushed the player out, and at what speed, if it went inside the body.
+    pub push_out: Option<(PushOut, f32)>,
+}
+
 #[derive(Default)]
 pub struct Simulation {
     blocks: BlockRegistry,
@@ -77,6 +88,7 @@ pub struct Simulation {
     /// How much of each material the player has picked up, by material index.
     collected: Vec<u32>,
     tick: u64,
+    last_place: Option<PlaceReport>,
 }
 
 impl Simulation {
@@ -259,17 +271,19 @@ impl Simulation {
         if !breaking && !placing {
             return;
         }
-        let Some(hit) = self.target(input.yaw, input.pitch) else {
-            return;
-        };
+        let hit = self.target(input.yaw, input.pitch);
         if breaking {
-            self.remove_occupant(hit.pos, hit.occupant);
-        } else if let Some(place) =
-            self.placement(&hit, input.place_block, input.yaw, input.pitch, input.place_precise)
-            && place.allowed
-        {
-            self.add_occupant(place.pos, place.occupant);
+            if let Some(hit) = hit {
+                self.remove_occupant(hit.pos, hit.occupant);
+            }
+            return;
         }
+        let target = hit.and_then(|hit| self.placement(&hit, input.place_block, input.yaw, input.pitch, input.place_precise));
+        let push_out = match target {
+            Some(place) if place.allowed => self.add_occupant(place.pos, place.occupant),
+            _ => None,
+        };
+        self.last_place = Some(PlaceReport { tick: self.tick, target, push_out });
     }
 
     /// Removes one occupant from a boxel, by its index in the boxel's list. It drops its
@@ -294,7 +308,7 @@ impl Simulation {
 
     /// Adds an occupant to a boxel. A solid block appearing inside the player pushes it out, if
     /// there's a rule and room.
-    fn add_occupant(&mut self, pos: BoxelPos, occupant: Occupant) {
+    fn add_occupant(&mut self, pos: BoxelPos, occupant: Occupant) -> Option<(PushOut, f32)> {
         let push = match (&self.player, &self.push_out_def) {
             (Some(player), Some(def)) if self.blocks.is_solid(occupant.block) => {
                 let boxes: Vec<_> = occupant_boxes(occupant, &self.blocks).collect();
@@ -310,6 +324,7 @@ impl Simulation {
         if let (Some((push, strength)), Some(player)) = (push, &mut self.player) {
             player.apply_push_out(push, strength);
         }
+        push
     }
 
     pub fn teleport_player(&mut self, pos: WorldPos) {
@@ -404,6 +419,11 @@ impl Simulation {
 
     pub fn waypoints(&self) -> &[(String, WorldPos)] {
         &self.waypoints
+    }
+
+    /// The player's last placement attempt, refused ones included.
+    pub fn last_place(&self) -> Option<&PlaceReport> {
+        self.last_place.as_ref()
     }
 
     /// Ticks run so far.

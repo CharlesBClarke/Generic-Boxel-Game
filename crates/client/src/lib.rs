@@ -9,6 +9,7 @@ pub mod editing;
 pub mod feel;
 pub mod items;
 pub mod mesher;
+pub mod trainer;
 pub mod tuning;
 
 use std::time::{Duration, Instant};
@@ -61,7 +62,8 @@ pub fn run(sim: Simulation) {
         .init_resource::<items::ItemViews>()
         .init_resource::<DoubleTapSprint>()
         .init_resource::<drill::Drill>()
-        .add_systems(Startup, (setup_scene, spawn_chunk_meshes, drill::setup_drill))
+        .init_resource::<trainer::Trainer>()
+        .add_systems(Startup, (setup_scene, spawn_chunk_meshes, drill::setup_drill, trainer::setup_trainer))
         .add_systems(FixedUpdate, (tick_simulation, drill::drill_tick).chain())
         .add_systems(
             Update,
@@ -73,6 +75,7 @@ pub fn run(sim: Simulation) {
                 debug_keys,
                 double_tap_sprint,
                 drill::drill_keys,
+                trainer::trainer_keys,
                 editing::remesh_changed_chunks,
                 (update_camera, sync_chunk_transforms).chain(),
                 editing::draw_outline,
@@ -80,6 +83,7 @@ pub fn run(sim: Simulation) {
                 items::sync_items,
                 editing::draw_region_guide,
                 drill::draw_drill,
+                trainer::draw_trainer,
                 update_hud,
                 editing::update_palette_hud,
             )
@@ -257,6 +261,7 @@ fn tick_simulation(
     double_tap: Res<DoubleTapSprint>,
     cursor: Single<&CursorOptions, With<PrimaryWindow>>,
     mut toggles: ResMut<PendingToggles>,
+    mut trainer: ResMut<trainer::Trainer>,
 ) {
     let axis = |pos: KeyCode, neg: KeyCode| keys.pressed(pos) as i32 as f32 - keys.pressed(neg) as i32 as f32;
     let playing = editing::playing(&cursor);
@@ -278,6 +283,7 @@ fn tick_simulation(
         place_precise: palette.precise,
     };
     sim.0.step(&input);
+    trainer::observe_tick(&sim.0, &input, &mut trainer);
 }
 
 fn grab_cursor(

@@ -40,6 +40,8 @@ pub struct Controls {
     pub tuning: KeyCode,
     /// Starts and stops the chase drill.
     pub drill: KeyCode,
+    /// Starts and stops the block-jump trainer.
+    pub trainer: KeyCode,
     /// Tapping forward twice within this many seconds sprints until forward is released.
     /// 0 turns it off. The sprint key works either way.
     pub double_tap_window: f32,
@@ -101,6 +103,7 @@ impl Default for Controls {
             frame_cap: KeyCode::F3,
             tuning: KeyCode::Tab,
             drill: KeyCode::F4,
+            trainer: KeyCode::F5,
             double_tap_window: 0.3,
             break_block: Binding::Mouse(MouseButton::Left),
             place_block: Binding::Mouse(MouseButton::Right),
@@ -200,6 +203,7 @@ impl Controls {
                 "frame_cap" => &mut self.frame_cap,
                 "tuning" => &mut self.tuning,
                 "drill" => &mut self.drill,
+                "trainer" => &mut self.trainer,
                 _ => {
                     problems.push(format!("line {}: unknown action {action:?}", number + 1));
                     continue;

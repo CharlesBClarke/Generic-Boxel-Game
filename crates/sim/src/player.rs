@@ -76,6 +76,22 @@ pub struct PushOut {
     pub direction: Vec3,
 }
 
+/// How the last tick worked out the body's velocity, for tools that explain movement. Read
+/// only; nothing in the engine acts on it.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct StepReport {
+    /// The velocity going into the tick.
+    pub velocity_in: Vec3,
+    /// The velocity the controller gave back, before impulses.
+    pub controller_velocity: Vec3,
+    /// The controller's own impulse, such as a jump.
+    pub controller_impulse: Vec3,
+    /// Impulses from everything else, such as a push-out.
+    pub external_impulse: Vec3,
+    /// The velocity before collisions: the controller's plus all impulses.
+    pub velocity_wanted: Vec3,
+}
+
 /// The body's collision shape, standing.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Shape {
@@ -104,6 +120,7 @@ pub struct Player {
     /// where the fall began. The guard keeps working until it lands, so the body can't drift off
     /// a narrow ledge on the way down.
     guarded_fall: Option<(f32, f64)>,
+    last_step: StepReport,
 }
 
 impl Player {
@@ -134,6 +151,7 @@ impl Player {
             stepped_total: 0.0,
             crouch_shift_total: 0.0,
             guarded_fall: None,
+            last_step: StepReport::default(),
         }
     }
 
@@ -224,6 +242,11 @@ impl Player {
         boxes.iter().any(|b| overlap(min, max, b.translate(at)))
     }
 
+    /// How the last tick worked out the velocity.
+    pub fn last_step(&self) -> StepReport {
+        self.last_step
+    }
+
     /// Queues an instant velocity change for the next tick. Impulses from every source add up.
     pub fn apply_impulse(&mut self, impulse: Vec3) {
         self.pending_impulse += impulse;
@@ -260,6 +283,7 @@ impl Player {
             let speed = if input.sprint { FLY_SPEED * FLY_SPRINT } else { FLY_SPEED };
             let vertical = Vec3::Z * input.vertical.clamp(-1.0, 1.0);
             self.velocity = (move_input.wish_direction() + vertical) * speed;
+            self.last_step = StepReport { velocity_wanted: self.velocity, ..StepReport::default() };
             self.resize(self.shape.height, terrain);
         } else {
             let ground = self.on_ground.then(|| Ground { friction: self.ground_friction(terrain) });
@@ -271,6 +295,13 @@ impl Player {
                 input: move_input,
                 ground,
             });
+            self.last_step = StepReport {
+                velocity_in: self.velocity,
+                controller_velocity: out.velocity,
+                controller_impulse: out.impulse,
+                external_impulse: impulse,
+                velocity_wanted: out.velocity + out.impulse + impulse,
+            };
             self.velocity = out.velocity + out.impulse + impulse;
             self.resize(out.height.unwrap_or(self.shape.height), terrain);
             edge_guard = out.edge_guard.filter(|_| self.on_ground && self.velocity.z <= 0.0);
