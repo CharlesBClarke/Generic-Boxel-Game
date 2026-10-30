@@ -108,8 +108,9 @@ fn a_dropped_item_left_alone_settles_on_the_floor() {
     let item = sim.items().iter().next().expect("still there");
     assert!(item.on_ground);
     let floor = WorldPos::new(I64Vec3::ZERO, Vec3::ZERO);
-    let size = item.size(sim.item_drop_def().unwrap());
-    assert!((floor.delta_to(item.pos).z - size * 0.5).abs() < 1e-3, "resting on the floor");
+    let height = item.extent(sim.item_drop_def().unwrap()).z;
+    assert_eq!(item.block, sim.blocks().id("test:slab").unwrap(), "shaped like the slab it came from");
+    assert!((floor.delta_to(item.pos).z - height * 0.5).abs() < 1e-3, "resting on the floor");
 }
 
 #[test]

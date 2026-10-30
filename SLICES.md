@@ -108,7 +108,7 @@ Loose items, see below.
 
 #### Loose items (branch `toy-loose-items`)
 
-**Stage:** Verify (2026-10-29). Engaged 2026-10-29; built and tested (225 tests pass, clippy clean), waiting for the user to play it.
+**Stage:** Verify (2026-10-29). Engaged 2026-10-29; the debris plan change is built and tested (227 tests pass, clippy clean), waiting for the user to play it.
 
 **Goal:** breaking a block drops a loose item of what it's made of, which pops out, falls, bounces and settles, and is pulled in and picked up when you come close. Split out of Inventory and items at the user's request (2026-10-29), Minecraft-style: items fall on the ground rather than going straight into an inventory.
 
@@ -140,6 +140,13 @@ Loose items, see below.
 - **Simulation.** Breaking an occupant drops its material from the middle of its boxes, popped up with a sideways direction from a hash of tick and position, so it's the same on every machine. Items step after the player each tick; picked-up amounts go into a counter per material (`Simulation::collected`).
 - **Client.** `client::items` draws each item as its material's block, meshed around its center, blended between ticks, turning and bobbing upward while it rests. The HUD line above the palette lists what's been picked up. The tuning panel has an Item drops section.
 - **Not handled:** a block placed over a resting item leaves it inside the block, still collectable. No new controls, so the controls file is unchanged.
+
+*Plan change at the user's request* (2026-10-29, before playing): "lets not copy MC so much". The slow spin and soft bob were Minecraft's, so items become **debris** instead (option A of three offered; the others, a robot magnet pickup with a beam and crushed pellets, are not built):
+- No spin or bob; a resting item lies still.
+- In the air it tumbles about the axis it popped along, faster the harder it popped. On landing it turns the short way onto a face so it lies flat, with a quick squash, and bounces squash too.
+- It has the shape of what broke: a slab drops a small slab, stairs small stairs, all at one scale. The collision box is that shape's bounds, so a small slab lies low. Merged items become the material's own block.
+- The tumble and squash are client-only; the simulation keeps each item's shape and box.
+- *Built:* `Item` keeps the block it looks like, that shape's bounds and volume; `Item::scale` replaces `size` and `Item::extent` gives the box. Merging switches the kept item to its material's block. `client::items` gives each item an outer entity (position, and a squash along the world's up that keeps its bottom on the ground) and an inner one (tumble and scale). Landing turns it to the nearest turn that keeps the box's size on every axis, so a slab lands flat either way up and a cube on any face. Tests: a slab's item has a slab's box and rests a quarter of its size up; two slabs merge into a stone cube; grid turns match render rotations; a slab rests only flat.
 
 ### Toy backlog
 

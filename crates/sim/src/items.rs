@@ -1,6 +1,7 @@
 //! Loose items: an amount of a material lying in the world, dropped by a broken block. Each is
-//! a small box that falls, bounces and slides to a stop against the boxes of solid blocks, and
-//! drifts toward a body that comes close enough to pick it up.
+//! a small copy of the block it came from, colliding as the box around that shape: it falls,
+//! bounces and slides to a stop against the boxes of solid blocks, and drifts toward a body
+//! that comes close enough to pick it up.
 //!
 //! Like the player, each item does its collision math relative to its own cell, so it behaves
 //! the same at any distance from zero.
@@ -8,7 +9,7 @@
 use api::{ItemDropDef, Vec3, WorldPos};
 
 use crate::player::{Terrain, clamp_axis, sweep_box};
-use crate::{Drop, FULL_VOLUME};
+use crate::{BlockId, BlockRegistry, CellBox, Drop};
 
 /// How far below an item still counts as resting on something.
 const GROUND_PROBE: f32 = 0.01;
@@ -17,10 +18,10 @@ const GROUND_PROBE: f32 = 0.01;
 const MIN_BOUNCE_SPEED: f32 = 1.0;
 /// How quickly a pulled item's velocity turns toward the body, per second.
 const PULL_RESPONSE: f32 = 12.0;
-/// The smallest and largest an item gets, as a share of a full block's worth of size.
+/// The smallest and largest an item gets, as a share of its block's own size.
 const MIN_SCALE: f32 = 0.5;
 const MAX_SCALE: f32 = 2.0;
-/// The largest an item gets, in meters, so it always fits in a boxel.
+/// The longest an item's box gets, in meters, so it always fits in a boxel.
 const MAX_SIZE: f32 = 0.9;
 
 /// One loose item.
@@ -29,6 +30,12 @@ pub struct Item {
     /// Unique among the items of one simulation, and never reused, so a renderer can follow it.
     pub id: u64,
     pub drop: Drop,
+    /// The block it looks like: the one that broke, or once merged, its material's own block.
+    pub block: BlockId,
+    /// That block's shape bounds, unturned, in boxel units.
+    pub bounds: CellBox,
+    /// That block's volume, in [`crate::FULL_VOLUME`] units.
+    pub block_volume: u32,
     /// The center of its box.
     pub pos: WorldPos,
     pub prev_pos: WorldPos,
@@ -39,12 +46,26 @@ pub struct Item {
 }
 
 impl Item {
-    /// Its edge length: `def.size` for a full block's worth, scaled by the cube root of the
-    /// amount so the volume it shows follows the volume it holds, within limits.
-    pub fn size(&self, def: &ItemDropDef) -> f32 {
-        let scale = (self.drop.amount as f32 / FULL_VOLUME as f32).cbrt().clamp(MIN_SCALE, MAX_SCALE);
-        (def.size * scale).min(MAX_SIZE)
+    /// How much smaller than its block it's drawn and collides: `def.size` when it holds as
+    /// much as its block, scaled by the cube root of the amount beyond that, so the volume it
+    /// shows follows the volume it holds, within limits.
+    pub fn scale(&self, def: &ItemDropDef) -> f32 {
+        let more = (self.drop.amount as f32 / self.block_volume.max(1) as f32).cbrt().clamp(MIN_SCALE, MAX_SCALE);
+        let longest = (self.bounds.max - self.bounds.min).max_element();
+        (def.size * more).min(MAX_SIZE / longest)
     }
+
+    /// The size of its box, in meters.
+    pub fn extent(&self, def: &ItemDropDef) -> Vec3 {
+        (self.bounds.max - self.bounds.min) * self.scale(def)
+    }
+}
+
+/// What an item of `block`'s shape needs: its bounds and volume.
+fn shape_of(block: BlockId, blocks: &BlockRegistry) -> (CellBox, u32) {
+    let shape = blocks.get(block).map_or(&[][..], |def| &def.shape[..]);
+    let boxes: Vec<_> = shape.iter().map(|&b| CellBox::from_block_box(b)).collect();
+    (CellBox::bounds(&boxes).unwrap_or(CellBox::FULL), crate::volume(shape).max(1))
 }
 
 /// A body that picks up items: a box from its feet, `width` across and `height` tall.
@@ -73,11 +94,15 @@ pub struct Items {
 }
 
 impl Items {
-    /// Drops `drop` with its center at `pos`, moving at `velocity`.
-    pub fn spawn(&mut self, drop: Drop, pos: WorldPos, velocity: Vec3) {
+    /// Drops `drop`, looking like `block`, with its center at `pos`, moving at `velocity`.
+    pub fn spawn(&mut self, drop: Drop, block: BlockId, blocks: &BlockRegistry, pos: WorldPos, velocity: Vec3) {
+        let (bounds, block_volume) = shape_of(block, blocks);
         self.list.push(Item {
             id: self.next_id,
             drop,
+            block,
+            bounds,
+            block_volume,
             pos,
             prev_pos: pos,
             velocity,
@@ -105,6 +130,7 @@ impl Items {
     pub fn step(
         &mut self,
         def: &ItemDropDef,
+        blocks: &BlockRegistry,
         dt: f32,
         terrain: &impl Terrain,
         collector: Option<Collector>,
@@ -120,13 +146,14 @@ impl Items {
         for item in &mut self.list {
             step_item(item, def, dt, terrain, collector);
         }
-        self.merge(def.merge_radius);
+        self.merge(def.merge_radius, blocks);
         picked
     }
 
     /// Merges items of the same material closer than `radius`, each into the one holding more
-    /// (the older on a tie), which keeps its place and motion.
-    fn merge(&mut self, radius: f32) {
+    /// (the older on a tie), which keeps its place and motion and becomes the material's own
+    /// block.
+    fn merge(&mut self, radius: f32, blocks: &BlockRegistry) {
         let mut gone = vec![false; self.list.len()];
         for i in 0..self.list.len() {
             for j in i + 1..self.list.len() {
@@ -139,8 +166,10 @@ impl Items {
                 }
                 let (keep, lose) = if b.drop.amount > a.drop.amount { (j, i) } else { (i, j) };
                 let amount = self.list[lose].drop.amount;
-                let kept = &mut self.list[keep].drop.amount;
-                *kept = kept.saturating_add(amount);
+                let kept = &mut self.list[keep];
+                kept.drop.amount = kept.drop.amount.saturating_add(amount);
+                kept.block = blocks.material_block(kept.drop.material);
+                (kept.bounds, kept.block_volume) = shape_of(kept.block, blocks);
                 gone[lose] = true;
             }
         }
@@ -168,7 +197,7 @@ fn step_item(item: &mut Item, def: &ItemDropDef, dt: f32, terrain: &impl Terrain
         }
     }
 
-    let half = Vec3::splat(item.size(def) * 0.5);
+    let half = item.extent(def) * 0.5;
     let offset = item.pos.offset();
     let (min, max) = (offset - half, offset + half);
     let cell = item.pos.cell();
@@ -202,7 +231,6 @@ pub fn pop_velocity(def: &ItemDropDef, seed: u64) -> Vec3 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{BlockRegistry, CellBox};
     use api::{BlockDef, BoxelPos, I64Vec3};
 
     const DT: f32 = 1.0 / 60.0;
@@ -238,11 +266,38 @@ mod tests {
         }
     }
 
-    fn materials() -> (Drop, Drop) {
+    /// Stone, a stone slab and dirt.
+    struct Fixture {
+        blocks: BlockRegistry,
+        stone_block: BlockId,
+        slab_block: BlockId,
+        dirt_block: BlockId,
+        stone: Drop,
+        dirt: Drop,
+    }
+
+    fn fixture() -> Fixture {
         let mut blocks = BlockRegistry::default();
-        let stone = blocks.register(BlockDef::new("test:stone", true, [0; 3]).with_material("test:stone")).unwrap();
-        let dirt = blocks.register(BlockDef::new("test:dirt", true, [0; 3]).with_material("test:dirt")).unwrap();
-        (blocks.drop(stone).unwrap(), blocks.drop(dirt).unwrap())
+        let slab_shape = vec![api::BlockBox::new([0, 0, 0], [16, 16, 8])];
+        // The slab names stone first, so stone's own block is still the full one.
+        let slab_block = blocks
+            .register(BlockDef::new("test:stone_slab", true, [0; 3]).with_shape(slab_shape).with_material("test:stone"))
+            .unwrap();
+        let stone_block = blocks.register(BlockDef::new("test:stone", true, [0; 3]).with_material("test:stone")).unwrap();
+        let dirt_block = blocks.register(BlockDef::new("test:dirt", true, [0; 3]).with_material("test:dirt")).unwrap();
+        let stone = blocks.drop(stone_block).unwrap();
+        let dirt = blocks.drop(dirt_block).unwrap();
+        Fixture { blocks, stone_block, slab_block, dirt_block, stone, dirt }
+    }
+
+    impl Fixture {
+        fn spawn(&self, items: &mut Items, drop: Drop, block: BlockId, pos: WorldPos, velocity: Vec3) {
+            items.spawn(drop, block, &self.blocks, pos, velocity);
+        }
+
+        fn step(&self, items: &mut Items, terrain: &impl Terrain, collector: Option<Collector>) -> Vec<Drop> {
+            items.step(&def(), &self.blocks, DT, terrain, collector)
+        }
     }
 
     fn at(origin: I64Vec3, x: f32, y: f32, z: f32) -> WorldPos {
@@ -253,18 +308,18 @@ mod tests {
         WorldPos::new(origin, Vec3::ZERO).delta_to(pos).z
     }
 
-    #[test]
-    fn falls_bounces_lower_each_time_and_settles() {
+    /// Drops one item from `z` onto the floor and lets it settle. Returns the heights where it
+    /// peaked after each bounce, and the item at rest.
+    fn drop_and_settle(f: &Fixture, drop: Drop, block: BlockId) -> (Vec<f32>, Item) {
         let origin = I64Vec3::ZERO;
-        let (stone, _) = materials();
         let mut items = Items::default();
-        items.spawn(stone, at(origin, 0.5, 0.5, 3.0), Vec3::ZERO);
+        f.spawn(&mut items, drop, block, at(origin, 0.5, 0.5, 3.0), Vec3::ZERO);
         let floor = Floor { origin };
         let mut peaks = Vec::new();
         let mut rising = false;
         let mut last = 3.0;
         for _ in 0..600 {
-            items.step(&def(), DT, &floor, None);
+            f.step(&mut items, &floor, None);
             let h = height(origin, items.iter().next().unwrap().pos);
             if rising && h < last {
                 peaks.push(last);
@@ -272,23 +327,42 @@ mod tests {
             rising = h > last;
             last = h;
         }
+        (peaks, items.iter().next().unwrap().clone())
+    }
+
+    #[test]
+    fn falls_bounces_lower_each_time_and_settles() {
+        let f = fixture();
+        let (peaks, item) = drop_and_settle(&f, f.stone, f.stone_block);
         assert!(!peaks.is_empty(), "it bounced");
         assert!(peaks.windows(2).all(|w| w[1] < w[0]), "each bounce is lower: {peaks:?}");
-        let item = items.iter().next().unwrap();
         assert!(item.on_ground);
         assert_eq!(item.velocity, Vec3::ZERO);
-        assert!((last - item.size(&def()) * 0.5).abs() < 1e-3, "rests on the floor, at {last}");
+        let rest = height(I64Vec3::ZERO, item.pos);
+        assert!((rest - item.extent(&def()).z * 0.5).abs() < 1e-3, "rests on the floor, at {rest}");
+    }
+
+    #[test]
+    fn a_slab_drops_as_a_small_slab_that_lies_low() {
+        let f = fixture();
+        let slab = f.blocks.drop(f.slab_block).unwrap();
+        let (_, item) = drop_and_settle(&f, slab, f.slab_block);
+        assert_eq!(item.block, f.slab_block);
+        let size = def().size;
+        assert!((item.extent(&def()) - Vec3::new(size, size, size / 2.0)).length() < 1e-5, "a slab's shape at the same scale");
+        let rest = height(I64Vec3::ZERO, item.pos);
+        assert!((rest - size / 4.0).abs() < 1e-3, "its middle is a quarter of the size up, at {rest}");
     }
 
     #[test]
     fn slides_to_a_stop() {
         let origin = I64Vec3::ZERO;
-        let (stone, _) = materials();
+        let f = fixture();
         let mut items = Items::default();
-        items.spawn(stone, at(origin, 0.5, 0.5, 0.125), Vec3::new(4.0, 0.0, 0.0));
+        f.spawn(&mut items, f.stone, f.stone_block, at(origin, 0.5, 0.5, 0.125), Vec3::new(4.0, 0.0, 0.0));
         let floor = Floor { origin };
         for _ in 0..300 {
-            items.step(&def(), DT, &floor, None);
+            f.step(&mut items, &floor, None);
         }
         let item = items.iter().next().unwrap();
         assert!(item.velocity.length() < 1e-3);
@@ -298,54 +372,66 @@ mod tests {
     #[test]
     fn a_nearby_body_pulls_items_in_and_picks_them_up() {
         let origin = I64Vec3::ZERO;
-        let (stone, _) = materials();
+        let f = fixture();
         let mut items = Items::default();
-        items.spawn(stone, at(origin, 1.8, 0.5, 0.125), Vec3::ZERO);
+        f.spawn(&mut items, f.stone, f.stone_block, at(origin, 1.8, 0.5, 0.125), Vec3::ZERO);
         let floor = Floor { origin };
         let body = Collector { feet: at(origin, 0.0, 0.5, 0.0), width: 0.6, height: 1.8 };
         let mut picked = Vec::new();
         for _ in 0..120 {
-            picked.extend(items.step(&def(), DT, &floor, Some(body)));
+            picked.extend(f.step(&mut items, &floor, Some(body)));
         }
         assert!(items.is_empty());
-        assert_eq!(picked, [stone]);
+        assert_eq!(picked, [f.stone]);
 
         // Out of range nothing moves toward it.
-        items.spawn(stone, at(origin, 5.0, 0.5, 0.125), Vec3::ZERO);
+        f.spawn(&mut items, f.stone, f.stone_block, at(origin, 5.0, 0.5, 0.125), Vec3::ZERO);
         for _ in 0..120 {
-            assert!(items.step(&def(), DT, &floor, Some(body)).is_empty());
+            assert!(f.step(&mut items, &floor, Some(body)).is_empty());
         }
         assert!(!items.iter().next().unwrap().pulled);
     }
 
     #[test]
-    fn close_items_of_one_material_merge_into_the_larger() {
+    fn close_items_of_one_material_merge_into_the_larger_as_the_materials_block() {
         let origin = I64Vec3::ZERO;
-        let (stone, dirt) = materials();
-        let half = Drop { amount: FULL_VOLUME / 2, ..stone };
+        let f = fixture();
+        let slab = f.blocks.drop(f.slab_block).unwrap();
         let mut items = Items::default();
-        items.spawn(half, at(origin, 0.5, 0.5, 0.125), Vec3::ZERO);
-        items.spawn(stone, at(origin, 1.2, 0.5, 0.125), Vec3::ZERO);
-        items.spawn(dirt, at(origin, 0.9, 0.5, 0.125), Vec3::ZERO);
-        items.spawn(stone, at(origin, 4.0, 0.5, 0.125), Vec3::ZERO);
-        items.step(&def(), DT, &Floor { origin }, None);
-        let left: Vec<_> = items.iter().map(|i| (i.id, i.drop)).collect();
-        let merged = Drop { amount: FULL_VOLUME * 3 / 2, ..stone };
-        assert_eq!(left, [(1, merged), (2, dirt), (3, stone)], "the far stone and the dirt stay apart");
-        assert!(items.iter().next().unwrap().size(&def()) > def().size, "a bigger item is drawn bigger");
+        let mut add = |drop, block, x| f.spawn(&mut items, drop, block, at(origin, x, 0.5, 0.125), Vec3::ZERO);
+        add(slab, f.slab_block, 0.5);
+        add(slab, f.slab_block, 1.2);
+        add(f.dirt, f.dirt_block, 0.9);
+        add(f.stone, f.stone_block, 4.0);
+        f.step(&mut items, &Floor { origin }, None);
+        let left: Vec<_> = items.iter().map(|i| (i.id, i.drop, i.block)).collect();
+        assert_eq!(
+            left,
+            [(0, f.stone, f.stone_block), (2, f.dirt, f.dirt_block), (3, f.stone, f.stone_block)],
+            "two slabs make a stone cube; the far stone and the dirt stay apart"
+        );
+        let merged = items.iter().next().unwrap();
+        assert!((merged.extent(&def()) - Vec3::splat(def().size)).length() < 1e-5, "a cube at the same scale");
+
+        // Merging more makes it bigger.
+        let mut items = Items::default();
+        f.spawn(&mut items, f.stone, f.stone_block, at(origin, 0.5, 0.5, 0.125), Vec3::ZERO);
+        f.spawn(&mut items, f.stone, f.stone_block, at(origin, 1.0, 0.5, 0.125), Vec3::ZERO);
+        f.step(&mut items, &Floor { origin }, None);
+        assert!(items.iter().next().unwrap().scale(&def()) > def().size);
     }
 
     #[test]
     fn behaves_the_same_far_from_zero() {
-        let (stone, _) = materials();
+        let f = fixture();
         let run = |origin: I64Vec3| {
             let mut items = Items::default();
-            items.spawn(stone, at(origin, 0.3, 0.6, 2.0), Vec3::new(1.5, -0.7, 2.0));
+            f.spawn(&mut items, f.stone, f.slab_block, at(origin, 0.3, 0.6, 2.0), Vec3::new(1.5, -0.7, 2.0));
             let body = Collector { feet: at(origin, 2.5, 0.5, 0.0), width: 0.6, height: 1.8 };
             let floor = Floor { origin };
             let mut path = Vec::new();
             for _ in 0..240 {
-                items.step(&def(), DT, &floor, Some(body));
+                f.step(&mut items, &floor, Some(body));
                 path.extend(items.iter().map(|i| WorldPos::new(origin, Vec3::ZERO).delta_to(i.pos)));
             }
             path

@@ -1,26 +1,56 @@
-//! Drawing loose items: a small cube of each item's material, blended between ticks, turning
-//! slowly and bobbing while it rests. Purely a view; the simulation moves them.
+//! Drawing loose items as debris: a small copy of the block each came from, blended between
+//! ticks. In the air it tumbles about the axis it was thrown along; on landing it turns the
+//! short way onto a face so it lies flat, and squashes for a moment, as it does on each bounce.
+//! At rest it lies still. Purely a view; the simulation moves items and owns their boxes.
 
 use std::collections::HashMap;
 
-use api::Vec3 as ZVec3;
+use api::{BlockBox, Orientation, Vec3 as ZVec3};
 use bevy::prelude::*;
-use sim::{MaterialId, Occupant};
+use sim::{BlockId, BlockRegistry, Item, Occupant};
 
 use crate::editing::ChunkMeshes;
 use crate::{RenderOrigin, Sim, coords, mesher};
 
-/// Radians a second an item turns.
-const SPIN_SPEED: f32 = 1.2;
-/// How high a resting item bobs, in meters, and how many bobs a second.
-const BOB_HEIGHT: f32 = 0.05;
-const BOB_RATE: f32 = 0.6;
+/// Tumble speed, radians a second for each meter a second the item is thrown at.
+const TUMBLE_PER_SPEED: f32 = 2.5;
+/// Share of its tumble an item keeps through a bounce.
+const BOUNCE_TUMBLE: f32 = 0.6;
+/// How quickly a landed item turns onto its face, per second.
+const SETTLE_RATE: f32 = 25.0;
+/// How long a squash lasts, in seconds, and how far it squashes for each meter a second of
+/// impact, up to the most it ever squashes.
+const SQUASH_TIME: f32 = 0.12;
+const SQUASH_PER_SPEED: f32 = 0.05;
+const MAX_SQUASH: f32 = 0.3;
+/// Falling slower than this, in meters a second, when hitting the ground makes no squash.
+const MIN_IMPACT: f32 = 0.5;
 
-/// The entity drawing each item, by the item's ID, and one mesh per material.
+/// How each item is drawn, by the item's ID, and one mesh per block.
 #[derive(Resource, Default)]
 pub(crate) struct ItemViews {
-    entities: HashMap<u64, Entity>,
-    meshes: HashMap<MaterialId, Handle<Mesh>>,
+    views: HashMap<u64, View>,
+    meshes: HashMap<BlockId, Handle<Mesh>>,
+}
+
+/// One item's entities and motion. The outer entity holds the position and the squash, along
+/// the world's up; the inner one holds the tumble and the item's scale.
+struct View {
+    outer: Entity,
+    inner: Entity,
+    block: BlockId,
+    rotation: Quat,
+    /// Render-space axis times radians a second.
+    spin: Vec3,
+    /// The turns that leave the shape's box the same size along each axis, so lying on one
+    /// matches the box the simulation collides with.
+    rests: Vec<Quat>,
+    /// Where it's turning to on the ground.
+    target: Option<Quat>,
+    was_on_ground: bool,
+    last_vz: f32,
+    /// Seconds since the last impact, and how hard it squashed.
+    squash: (f32, f32),
 }
 
 #[derive(Component)]
@@ -36,52 +66,136 @@ pub(crate) fn sync_items(
     time: Res<Time>,
     chunk_meshes: Res<ChunkMeshes>,
     mut meshes: ResMut<Assets<Mesh>>,
-    mut views: ResMut<ItemViews>,
+    mut state: ResMut<ItemViews>,
     mut transforms: Query<&mut Transform, With<ItemView>>,
 ) {
     let Some(def) = sim.0.item_drop_def() else {
         return;
     };
     let alpha = fixed.overstep_fraction();
-    let seconds = time.elapsed_secs();
+    let dt = time.delta_secs();
     let blocks = sim.0.blocks();
+    let ItemViews { views, meshes: block_meshes } = &mut *state;
     let mut live = Vec::with_capacity(sim.0.items().len());
     for item in sim.0.items().iter() {
         live.push(item.id);
-        let center = item.prev_pos.translate(item.prev_pos.delta_to(item.pos) * alpha);
-        // Each item gets its own phase, so a pile doesn't turn in step.
-        let phase = item.id as f32 * 2.4;
-        // Bobs upward only, so it never sinks into the floor.
-        let bob = if item.on_ground { BOB_HEIGHT * 0.5 * (1.0 - (seconds * BOB_RATE * std::f32::consts::TAU + phase).cos()) } else { 0.0 };
-        let transform = Transform::from_translation(coords::render_translation(center.translate(ZVec3::Z * bob), origin.cell))
-            .with_rotation(coords::turn_about_up(seconds * SPIN_SPEED + phase))
-            .with_scale(Vec3::splat(item.size(def)));
-        if let Some(mut t) = views.entities.get(&item.id).and_then(|&e| transforms.get_mut(e).ok()) {
-            *t = transform;
-            continue;
+        let mesh = block_meshes.entry(item.block).or_insert_with(|| meshes.add(item_mesh(item, blocks, &chunk_meshes))).clone();
+        let view = views.entry(item.id).or_insert_with(|| {
+            let inner = commands.spawn((Mesh3d(mesh.clone()), MeshMaterial3d(chunk_meshes.material.clone()), Transform::default(), ItemView)).id();
+            let outer = commands.spawn((Transform::default(), Visibility::default(), ItemView)).add_child(inner).id();
+            View::new(item, outer, inner, blocks)
+        });
+        if view.block != item.block {
+            // Merged into its material's own block: show that shape instead.
+            view.block = item.block;
+            view.rests = rest_turns(item.block, blocks);
+            view.target = None;
+            commands.entity(view.inner).insert(Mesh3d(mesh));
         }
-        let material = item.drop.material;
-        let mesh = views
-            .meshes
-            .entry(material)
-            .or_insert_with(|| {
-                let mut data = mesher::MeshData::default();
-                // Built around the boxel's center, so it turns and scales in place.
-                let occupant = Occupant::new(blocks.material_block(material));
-                mesher::mesh_occupant(&mut data, occupant, [-0.5; 3], blocks, &chunk_meshes.atlas, |_| false, &mut Vec::new());
-                meshes.add(crate::to_bevy_mesh(data))
-            })
-            .clone();
-        let entity = commands.spawn((Mesh3d(mesh), MeshMaterial3d(chunk_meshes.material.clone()), transform, ItemView)).id();
-        views.entities.insert(item.id, entity);
+        view.update(item, dt);
+
+        let center = item.prev_pos.translate(item.prev_pos.delta_to(item.pos) * alpha);
+        let (since, amount) = view.squash;
+        let squash = if since < SQUASH_TIME { amount * (1.0 - since / SQUASH_TIME) } else { 0.0 };
+        // Squashed about its middle, then lowered so its bottom stays on the ground.
+        let drop = squash * item.extent(def).z * 0.5;
+        let outer = Transform::from_translation(coords::render_translation(center.translate(ZVec3::NEG_Z * drop), origin.cell))
+            .with_scale(coords::to_render(ZVec3::new(1.0 + squash * 0.5, 1.0 + squash * 0.5, 1.0 - squash)).abs());
+        let inner = Transform::from_rotation(view.rotation).with_scale(Vec3::splat(item.scale(def)));
+        if let Ok(mut t) = transforms.get_mut(view.outer) {
+            *t = outer;
+        }
+        if let Ok(mut t) = transforms.get_mut(view.inner) {
+            *t = inner;
+        }
     }
-    views.entities.retain(|id, entity| {
+    views.retain(|id, view| {
         let keep = live.contains(id);
         if !keep {
-            commands.entity(*entity).despawn();
+            commands.entity(view.outer).despawn();
         }
         keep
     });
+}
+
+impl View {
+    fn new(item: &Item, outer: Entity, inner: Entity, blocks: &BlockRegistry) -> Self {
+        // Thrown along its velocity, it tumbles forward: about the level axis across it.
+        let v = item.velocity;
+        let across = ZVec3::Z.cross(ZVec3::new(v.x, v.y, 0.0)).normalize_or(ZVec3::X);
+        Self {
+            outer,
+            inner,
+            block: item.block,
+            rotation: Quat::IDENTITY,
+            spin: coords::to_render(across) * v.length() * TUMBLE_PER_SPEED,
+            rests: rest_turns(item.block, blocks),
+            target: None,
+            was_on_ground: item.on_ground,
+            last_vz: v.z,
+            squash: (SQUASH_TIME, 0.0),
+        }
+    }
+
+    /// Advances the tumble, settling and squash by `dt` seconds of frame time.
+    fn update(&mut self, item: &Item, dt: f32) {
+        self.squash.0 += dt;
+        let vz = item.velocity.z;
+        let bounced = self.last_vz < -MIN_IMPACT && vz > 0.0 && !item.pulled;
+        let landed = item.on_ground && !self.was_on_ground;
+        if bounced || landed {
+            let impact = -self.last_vz.min(0.0);
+            if impact >= MIN_IMPACT {
+                self.squash = (0.0, (impact * SQUASH_PER_SPEED).min(MAX_SQUASH));
+            }
+            self.spin *= BOUNCE_TUMBLE;
+        }
+        if item.on_ground {
+            self.spin = Vec3::ZERO;
+            let rotation = self.rotation;
+            let target = *self.target.get_or_insert_with(|| nearest(&self.rests, rotation));
+            self.rotation = self.rotation.slerp(target, 1.0 - (-SETTLE_RATE * dt).exp());
+        } else {
+            self.target = None;
+            self.rotation = (Quat::from_scaled_axis(self.spin * dt) * self.rotation).normalize();
+        }
+        self.was_on_ground = item.on_ground;
+        self.last_vz = vz;
+    }
+}
+
+/// A mesh of `item`'s block, unturned and centered on the middle of its shape, so it turns and
+/// scales about the middle of the box the simulation collides with.
+fn item_mesh(item: &Item, blocks: &BlockRegistry, chunk_meshes: &ChunkMeshes) -> Mesh {
+    let mut data = mesher::MeshData::default();
+    let middle = ((item.bounds.min + item.bounds.max) * -0.5).to_array();
+    mesher::mesh_occupant(&mut data, Occupant::new(item.block), middle, blocks, &chunk_meshes.atlas, |_| false, &mut Vec::new());
+    crate::to_bevy_mesh(data)
+}
+
+/// Every turn of `block` that leaves its shape's box the same size along each axis, as render
+/// rotations. Items turn about the middle of that box, so these are the ways it can lie.
+fn rest_turns(block: BlockId, blocks: &BlockRegistry) -> Vec<Quat> {
+    let shape = blocks.get(block).map_or(&[][..], |def| &def.shape[..]);
+    let min = |i: usize| shape.iter().map(|b| b.min[i] as i32).min().unwrap_or(0);
+    let max = |i: usize| shape.iter().map(|b| b.max[i] as i32).max().unwrap_or(BlockBox::SIZE as i32);
+    let size = [0, 1, 2].map(|i| max(i) - min(i));
+    Orientation::all().into_iter().filter(|o| o.apply(size).map(i32::abs) == size).map(to_quat).collect()
+}
+
+/// The render rotation for a grid turn.
+fn to_quat(o: Orientation) -> Quat {
+    // Each render axis, turned in Z-up space and brought back.
+    let turn = |axis: Vec3| {
+        let z_up = coords::from_render(axis).round().as_ivec3().to_array();
+        coords::to_render(Vec3::from_array(o.apply(z_up).map(|c| c as f32)))
+    };
+    Quat::from_mat3(&Mat3::from_cols(turn(Vec3::X), turn(Vec3::Y), turn(Vec3::Z)))
+}
+
+/// The turn in `options` closest to `rotation`, or no turn if there are none.
+fn nearest(options: &[Quat], rotation: Quat) -> Quat {
+    options.iter().copied().max_by(|a, b| a.dot(rotation).abs().total_cmp(&b.dot(rotation).abs())).unwrap_or(Quat::IDENTITY)
 }
 
 /// An amount of material as boxels' worth, like `2.5`, without trailing zeros.
@@ -106,6 +220,7 @@ pub(crate) fn collected_line(sim: &sim::Simulation) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use api::BlockDef;
 
     #[test]
     fn amounts_read_as_boxels() {
@@ -114,5 +229,33 @@ mod tests {
         assert_eq!(amount_label(full * 5 / 2), "2.5");
         assert_eq!(amount_label(full * 3 / 4), "0.75");
         assert_eq!(amount_label(full * 10), "10");
+    }
+
+    #[test]
+    fn grid_turns_become_the_same_render_rotations() {
+        for o in Orientation::all() {
+            let q = to_quat(o);
+            for v in [[1, 0, 0], [0, 1, 0], [0, 0, 1]] {
+                let z_up = Vec3::from_array(v.map(|c| c as f32));
+                let want = coords::to_render(Vec3::from_array(o.apply(v).map(|c| c as f32)));
+                assert!((q * coords::to_render(z_up) - want).length() < 1e-5, "{o:?} on {v:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn a_slab_rests_only_flat_and_a_cube_on_any_face() {
+        let mut blocks = BlockRegistry::default();
+        let cube = blocks.register(BlockDef::new("test:cube", true, [0; 3])).unwrap();
+        let slab = blocks.register(BlockDef::new("test:slab", true, [0; 3]).with_shape(vec![BlockBox::new([0, 0, 0], [16, 16, 8])])).unwrap();
+        assert_eq!(rest_turns(cube, &blocks).len(), 24);
+        // A slab lies flat, either way up, turned any quarter about the vertical.
+        let slab_rests = rest_turns(slab, &blocks);
+        assert_eq!(slab_rests.len(), 8);
+        let up = coords::to_render(Vec3::Z);
+        assert!(slab_rests.iter().all(|q| (*q * up).dot(up).abs() > 1.0 - 1e-5), "every rest keeps it flat");
+        // Tipped most of the way onto its side, it turns the short way: on over, upside down.
+        let tipped = Quat::from_axis_angle(coords::to_render(Vec3::X), 2.0);
+        assert!((nearest(&slab_rests, tipped) * up + up).length() < 1e-5);
     }
 }

@@ -150,7 +150,7 @@ impl Simulation {
         }
         if let Some(def) = item_drop_def {
             let collector = player.as_ref().map(|p| Collector { feet: p.pos(), width: p.shape().width, height: p.height() });
-            for drop in items.step(def, Self::TICK_SECONDS, &terrain, collector) {
+            for drop in items.step(def, blocks, Self::TICK_SECONDS, &terrain, collector) {
                 if collected.len() <= drop.material.index() {
                     collected.resize(drop.material.index() + 1, 0);
                 }
@@ -287,7 +287,8 @@ impl Simulation {
             let boxes: Vec<_> = occupant_boxes(occupant, &self.blocks).collect();
             let middle = CellBox::bounds(&boxes).map_or(Vec3::splat(0.5), |b| (b.min + b.max) * 0.5);
             let seed = self.tick ^ (pos.0.x as u64).rotate_left(21) ^ (pos.0.y as u64).rotate_left(42) ^ pos.0.z as u64;
-            self.items.spawn(drop, WorldPos::at_boxel(pos).translate(middle), pop_velocity(def, seed));
+            let at = WorldPos::at_boxel(pos).translate(middle);
+            self.items.spawn(drop, occupant.block, &self.blocks, at, pop_velocity(def, seed));
         }
     }
 
@@ -371,7 +372,8 @@ impl Simulation {
     /// Drops `amount` of `material` with its center at `pos`, at rest. For tests and tools; in
     /// play, items come from breaking blocks.
     pub fn spawn_item(&mut self, material: MaterialId, amount: u32, pos: WorldPos) {
-        self.items.spawn(crate::Drop { material, amount }, pos, Vec3::ZERO);
+        let block = self.blocks.material_block(material);
+        self.items.spawn(crate::Drop { material, amount }, block, &self.blocks, pos, Vec3::ZERO);
     }
 
     /// How much of each material the player has picked up, in [`crate::FULL_VOLUME`] units,
