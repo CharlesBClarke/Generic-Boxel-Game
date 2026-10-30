@@ -20,6 +20,8 @@ pub enum ApiError {
     DuplicateInteractionDef,
     /// A push-out definition is already registered.
     DuplicatePushOutDef,
+    /// An item drop definition is already registered.
+    DuplicateItemDropDef,
     /// A definition has values that make no sense.
     InvalidDef(String),
     /// A block can't share the boxel with what's already there.
@@ -37,6 +39,7 @@ impl fmt::Display for ApiError {
             ApiError::DuplicatePlayerDef => write!(f, "a player definition is already registered"),
             ApiError::DuplicateInteractionDef => write!(f, "an interaction definition is already registered"),
             ApiError::DuplicatePushOutDef => write!(f, "a push-out definition is already registered"),
+            ApiError::DuplicateItemDropDef => write!(f, "an item drop definition is already registered"),
             ApiError::InvalidDef(why) => write!(f, "invalid definition: {why}"),
             ApiError::CannotShare(why) => write!(f, "can't add the block: {why}"),
         }

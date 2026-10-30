@@ -1,5 +1,5 @@
 //! The live tuning panel: sliders for every value the player's movement controller, the
-//! interaction and push-out definitions and the camera feel expose, whichever mod they come from.
+//! interaction, push-out and item drop definitions and the camera feel expose, whichever mod they come from.
 
 use api::{Tunable, Tunables};
 use bevy::prelude::*;
@@ -18,6 +18,8 @@ pub struct TuningPanel {
     interaction_defaults: Option<Vec<Tunable>>,
     /// The push-out definition when the game started, for reset.
     push_out_defaults: Option<Vec<Tunable>>,
+    /// The item drop definition when the game started, for reset.
+    item_drop_defaults: Option<Vec<Tunable>>,
     /// The last printout, shown in the panel so it can be copied.
     printout: String,
 }
@@ -37,6 +39,10 @@ pub fn tuning_panel(
     let mut push_out = sim.0.push_out_def().cloned();
     if panel.push_out_defaults.is_none() {
         panel.push_out_defaults = push_out.as_ref().map(|p| p.tunables());
+    }
+    let mut item_drops = sim.0.item_drop_def().cloned();
+    if panel.item_drop_defaults.is_none() {
+        panel.item_drop_defaults = item_drops.as_ref().map(|d| d.tunables());
     }
     let Some(player) = sim.0.player_mut() else {
         return Ok(());
@@ -64,6 +70,11 @@ pub fn tuning_panel(
                 ui.separator();
                 ui.heading("Push-out");
                 sliders(ui, "push_out", push_out);
+            }
+            if let Some(item_drops) = &mut item_drops {
+                ui.separator();
+                ui.heading("Item drops");
+                sliders(ui, "item_drops", item_drops);
             }
             ui.separator();
             ui.heading("Camera");
@@ -93,6 +104,11 @@ pub fn tuning_panel(
                         push_out.set_tunable(&t.name, t.value);
                     }
                 }
+                if let Some(item_drops) = &mut item_drops {
+                    for t in panel.item_drop_defaults.iter().flatten() {
+                        item_drops.set_tunable(&t.name, t.value);
+                    }
+                }
                 *feel = CameraFeel::default();
                 drill.tuning = DrillTuning::default();
             }
@@ -116,6 +132,10 @@ pub fn tuning_panel(
             out += "// push-out\n";
             out += &printout(&push_out.tunables());
         }
+        if let Some(item_drops) = &item_drops {
+            out += "// item drops\n";
+            out += &printout(&item_drops.tunables());
+        }
         out += "// camera\n";
         out += &printout(&feel.tunables());
         out += "// chase drill\n";
@@ -129,6 +149,11 @@ pub fn tuning_panel(
         *def = edited;
     }
     if let (Some(edited), Some(def)) = (push_out, sim.0.push_out_def_mut())
+        && edited != *def
+    {
+        *def = edited;
+    }
+    if let (Some(edited), Some(def)) = (item_drops, sim.0.item_drop_def_mut())
         && edited != *def
     {
         *def = edited;

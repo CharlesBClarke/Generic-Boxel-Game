@@ -16,6 +16,8 @@
 #              "any": the whole turn (slabs, stairs)
 #   turn_textures  false: textures stay lined up with the world, so bricks run level however
 #                  the block is turned (default). true: they turn with it, like bark.
+#   material   what breaking it drops: its volume of this material, so a slab drops half.
+#              Defaults to the block's own name; blocks of one material share it.
 #
 # Shapes are boxes in sixteenths of a boxel: [x0, y0, z0, x1, y1, z1], each from 0 to 16,
 # as the block stands unturned (+Z up, +Y north). Textures crop to the part each box covers.
@@ -37,6 +39,7 @@ textures = "dirt"
 [[block]]
 name = "grass"
 textures = { top = "grass", bottom = "dirt", side = "grass_side" }
+material = "dirt"
 
 [[block]]
 name = "brick"
@@ -57,24 +60,28 @@ name = "stone_slab"
 textures = "stone"
 shape = "slab"
 turning = "any"
+material = "stone"
 
 [[block]]
 name = "stone_stairs"
 textures = "stone"
 shape = "stairs"
 turning = "any"
+material = "stone"
 
 [[block]]
 name = "brick_slab"
 textures = "brick"
 shape = "slab"
 turning = "any"
+material = "brick"
 
 [[block]]
 name = "brick_stairs"
 textures = "brick"
 shape = "stairs"
 turning = "any"
+material = "brick"
 
 # A bare post for now; fences joining their neighbors come later. It can lie on its side as a
 # beam, with the grain along it.
@@ -84,6 +91,7 @@ textures = "wood"
 shape = "post"
 turning = "axis"
 turn_textures = true
+material = "wood"
 
 [[block]]
 name = "log"

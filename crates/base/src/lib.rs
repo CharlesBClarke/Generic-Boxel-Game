@@ -2,7 +2,7 @@
 //! and textures are a data mod in `mods/base`, loaded by the engine alongside it.
 
 use api::{
-    ApiError, BoxelPos, I64Vec3, InteractionDef, Mod, Orientation, PlayerDef, PushOutDef, Registrar, Vec3, WorldEdit,
+    ApiError, BoxelPos, I64Vec3, InteractionDef, ItemDropDef, Mod, Orientation, PlayerDef, PushOutDef, Registrar, Vec3, WorldEdit,
     WorldPos,
 };
 
@@ -69,7 +69,20 @@ impl Mod for BaseMod {
         // Minecraft-like for now: about Minecraft's survival reach, 4 edits a second held.
         r.register_interaction(InteractionDef { reach: 4.5, repeat_rate: 4.0 })?;
         // Block-jumping: placing a block at your feet lifts you onto it and launches you.
-        r.register_push_out(PushOutDef { strength: 6.0, upward_bias: 1.0 })
+        r.register_push_out(PushOutDef { strength: 6.0, upward_bias: 1.0 })?;
+        // Minecraft-like drops: a small hop out of the broken block, pulled in from a couple of
+        // meters, picked up on touch.
+        r.register_item_drops(ItemDropDef {
+            pop_speed: 3.0,
+            gravity: 20.0,
+            bounce: 0.3,
+            drag: 8.0,
+            size: 0.25,
+            pull_radius: 2.0,
+            pull_speed: 8.0,
+            pickup_radius: 0.3,
+            merge_radius: 1.0,
+        })
     }
 
     fn build_world(&self, w: &mut dyn WorldEdit) -> Result<(), ApiError> {

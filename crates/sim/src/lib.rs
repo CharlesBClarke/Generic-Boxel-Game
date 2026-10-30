@@ -3,6 +3,7 @@
 
 pub mod cell;
 pub mod edit;
+pub mod items;
 pub mod layer;
 pub mod player;
 pub mod raycast;
@@ -11,9 +12,10 @@ pub mod simulation;
 pub mod world;
 
 pub use cell::{CellBox, CellId, CellTable, MAX_OCCUPANTS, Occupant, ShareError, can_share, occupant_boxes};
+pub use items::{Collector, Item, Items};
 pub use layer::Layer;
 pub use player::{Player, PlayerInput, PushOut, Shape, Terrain};
 pub use raycast::{Hit, raycast};
-pub use registry::{BlockId, BlockRegistry, TextureRegistry};
+pub use registry::{BlockId, BlockRegistry, Drop, FULL_VOLUME, MaterialId, TextureRegistry, volume};
 pub use simulation::{FACE_CENTER, PlaceTarget, SimError, Simulation, face_region};
 pub use world::{Chunk, Grid, GridId, Universe};

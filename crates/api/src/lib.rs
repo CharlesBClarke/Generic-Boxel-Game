@@ -10,6 +10,7 @@ pub mod error;
 #[cfg(target_arch = "wasm32")]
 pub mod guest;
 pub mod interaction;
+pub mod item;
 pub mod modding;
 pub mod orientation;
 pub mod movement;
@@ -20,6 +21,7 @@ pub use block::{BlockBox, BlockDef, FaceTextures, TextureDef, Turning};
 pub use coords::{BoxelPos, CHUNK_SIZE, CHUNK_VOLUME, ChunkPos, LocalPos, WorldPos, look_direction};
 pub use error::ApiError;
 pub use interaction::{InteractionDef, PushOutDef};
+pub use item::ItemDropDef;
 pub use glam::{I64Vec3, Vec2, Vec3};
 pub use modding::{Mod, Registrar, WorldEdit};
 pub use orientation::Orientation;
