@@ -5,14 +5,15 @@ use std::fmt;
 
 use api::block::is_valid_name;
 use api::{
-    ApiError, BlockDef, BoxelPos, ChunkPos, I64Vec3, InteractionDef, Mod, MovementController, Orientation, PlayerDef,
+    ApiError, BlockDef, BoxelPos, ChunkPos, I64Vec3, InteractionDef, ItemDropDef, Mod, MovementController, Orientation, PlayerDef,
     PushOutDef, Registrar, TextureDef, Turning, Vec3, WorldEdit, WorldPos, look_direction,
 };
 
 use crate::edit::{ChangedChunks, Repeater};
+use crate::items::{Collector, Items, pop_velocity};
 use crate::player::{PushOut, Terrain};
 use crate::{
-    BlockId, BlockRegistry, CellBox, Grid, Hit, Occupant, Player, PlayerInput, TextureRegistry, Universe, can_share,
+    BlockId, BlockRegistry, CellBox, Grid, Hit, MaterialId, Occupant, Player, PlayerInput, TextureRegistry, Universe, can_share,
     occupant_boxes, raycast,
 };
 
@@ -64,6 +65,7 @@ pub struct Simulation {
     player_def: Option<PlayerDef>,
     interaction_def: Option<InteractionDef>,
     push_out_def: Option<PushOutDef>,
+    item_drop_def: Option<ItemDropDef>,
     universe: Universe,
     spawn: WorldPos,
     waypoints: Vec<(String, WorldPos)>,
@@ -71,6 +73,9 @@ pub struct Simulation {
     breaking: Repeater,
     placing: Repeater,
     changed: ChangedChunks,
+    items: Items,
+    /// How much of each material the player has picked up, by material index.
+    collected: Vec<u32>,
     tick: u64,
 }
 
@@ -96,6 +101,7 @@ impl Simulation {
                 player: &mut sim.player_def,
                 interaction: &mut sim.interaction_def,
                 push_out: &mut sim.push_out_def,
+                item_drops: &mut sim.item_drop_def,
             })?;
         }
         sim.textures.check_blocks(&sim.blocks)?;
@@ -133,13 +139,24 @@ impl Simulation {
     }
 
     /// Advances one fixed tick. Block edits happen first, from where the player stood at the
-    /// end of the last tick, which is what the client aimed from.
+    /// end of the last tick, which is what the client aimed from. Loose items move last, toward
+    /// where the player ended up.
     pub fn step(&mut self, input: &PlayerInput) {
         self.edit_blocks(input);
-        let Self { blocks, universe, player, .. } = self;
+        let Self { blocks, universe, player, items, item_drop_def, collected, .. } = self;
+        let terrain = GridTerrain { grid: universe.main(), blocks };
         if let Some(player) = player {
-            let terrain = GridTerrain { grid: universe.main(), blocks };
             player.step(input, Self::TICK_SECONDS, &terrain);
+        }
+        if let Some(def) = item_drop_def {
+            let collector = player.as_ref().map(|p| Collector { feet: p.pos(), width: p.shape().width, height: p.height() });
+            for drop in items.step(def, Self::TICK_SECONDS, &terrain, collector) {
+                if collected.len() <= drop.material.index() {
+                    collected.resize(drop.material.index() + 1, 0);
+                }
+                let total = &mut collected[drop.material.index()];
+                *total = total.saturating_add(drop.amount);
+            }
         }
         self.tick += 1;
     }
@@ -255,14 +272,22 @@ impl Simulation {
         }
     }
 
-    /// Removes one occupant from a boxel, by its index in the boxel's list.
+    /// Removes one occupant from a boxel, by its index in the boxel's list. It drops its
+    /// material as a loose item, from the middle of the space it filled, if items are defined.
     fn remove_occupant(&mut self, pos: BoxelPos, index: usize) {
         let grid = self.universe.main_mut();
         let mut cell = grid.cell(pos).to_vec();
-        if index < cell.len() {
-            cell.remove(index);
-            grid.set_cell(pos, &cell);
-            self.changed.mark(pos);
+        if index >= cell.len() {
+            return;
+        }
+        let occupant = cell.remove(index);
+        grid.set_cell(pos, &cell);
+        self.changed.mark(pos);
+        if let (Some(def), Some(drop)) = (&self.item_drop_def, self.blocks.drop(occupant.block)) {
+            let boxes: Vec<_> = occupant_boxes(occupant, &self.blocks).collect();
+            let middle = CellBox::bounds(&boxes).map_or(Vec3::splat(0.5), |b| (b.min + b.max) * 0.5);
+            let seed = self.tick ^ (pos.0.x as u64).rotate_left(21) ^ (pos.0.y as u64).rotate_left(42) ^ pos.0.z as u64;
+            self.items.spawn(drop, WorldPos::at_boxel(pos).translate(middle), pop_velocity(def, seed));
         }
     }
 
@@ -327,6 +352,35 @@ impl Simulation {
     /// For engine tools such as the tuning panel.
     pub fn push_out_def_mut(&mut self) -> Option<&mut PushOutDef> {
         self.push_out_def.as_mut()
+    }
+
+    pub fn item_drop_def(&self) -> Option<&ItemDropDef> {
+        self.item_drop_def.as_ref()
+    }
+
+    /// For engine tools such as the tuning panel.
+    pub fn item_drop_def_mut(&mut self) -> Option<&mut ItemDropDef> {
+        self.item_drop_def.as_mut()
+    }
+
+    /// The loose items lying in the world.
+    pub fn items(&self) -> &Items {
+        &self.items
+    }
+
+    /// Drops `amount` of `material` with its center at `pos`, at rest. For tests and tools; in
+    /// play, items come from breaking blocks.
+    pub fn spawn_item(&mut self, material: MaterialId, amount: u32, pos: WorldPos) {
+        self.items.spawn(crate::Drop { material, amount }, pos, Vec3::ZERO);
+    }
+
+    /// How much of each material the player has picked up, in [`crate::FULL_VOLUME`] units,
+    /// for every material picked up so far.
+    pub fn collected(&self) -> impl Iterator<Item = (MaterialId, u32)> + '_ {
+        (0..self.blocks.material_count())
+            .filter_map(|i| self.blocks.material_by_index(i))
+            .map(|m| (m, self.collected.get(m.index()).copied().unwrap_or(0)))
+            .filter(|&(_, amount)| amount > 0)
     }
 
     pub fn universe(&self) -> &Universe {
@@ -500,6 +554,7 @@ struct ContentRegistrar<'a> {
     player: &'a mut Option<PlayerDef>,
     interaction: &'a mut Option<InteractionDef>,
     push_out: &'a mut Option<PushOutDef>,
+    item_drops: &'a mut Option<ItemDropDef>,
 }
 
 impl Registrar for ContentRegistrar<'_> {
@@ -543,6 +598,15 @@ impl Registrar for ContentRegistrar<'_> {
         }
         def.validate().map_err(ApiError::InvalidDef)?;
         *self.push_out = Some(def);
+        Ok(())
+    }
+
+    fn register_item_drops(&mut self, def: ItemDropDef) -> Result<(), ApiError> {
+        if self.item_drops.is_some() {
+            return Err(ApiError::DuplicateItemDropDef);
+        }
+        def.validate().map_err(ApiError::InvalidDef)?;
+        *self.item_drops = Some(def);
         Ok(())
     }
 }

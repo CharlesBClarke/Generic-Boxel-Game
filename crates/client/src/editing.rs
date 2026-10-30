@@ -288,7 +288,9 @@ pub(crate) fn update_palette_hud(
     } else {
         "basic placement"
     };
-    let line = format!("{line}\n{mode} ({} switches)", controls.placement_mode.label());
+    let collected = crate::items::collected_line(&sim.0);
+    let collected = if collected.is_empty() { "picked up: nothing yet".to_owned() } else { format!("picked up: {collected}") };
+    let line = format!("{collected}\n{line}\n{mode} ({} switches)", controls.placement_mode.label());
     if text.0 != line {
         text.0 = line;
     }

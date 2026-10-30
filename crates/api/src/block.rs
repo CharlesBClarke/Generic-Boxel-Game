@@ -27,6 +27,10 @@ pub struct BlockDef {
     /// Whether its textures turn with it, like a log's bark following its axis. Otherwise they
     /// stay lined up with the world, so bricks run level however a slab or stair is turned.
     pub turn_textures: bool,
+    /// What breaking it gives: its volume of this material, as a loose item. Namespaced, like
+    /// `"base:stone"`; blocks of different shapes share one, so a slab gives half a stone.
+    /// `None` gives nothing.
+    pub material: Option<String>,
 }
 
 impl BlockDef {
@@ -42,6 +46,7 @@ impl BlockDef {
             shape: vec![BlockBox::FULL],
             turning: Turning::None,
             turn_textures: false,
+            material: None,
         }
     }
 
@@ -75,13 +80,24 @@ impl BlockDef {
         self
     }
 
+    pub fn with_material(mut self, material: impl Into<String>) -> Self {
+        self.material = Some(material.into());
+        self
+    }
+
     /// Whether it fills its whole boxel. A full block shares its boxel with nothing.
     pub fn is_full(&self) -> bool {
         self.shape == [BlockBox::FULL]
     }
 
-    /// Checks the shape: at least one box, each inside the boxel and not flat.
+    /// Checks the shape (at least one box, each inside the boxel and not flat) and the
+    /// material's name.
     pub fn validate(&self) -> Result<(), String> {
+        if let Some(material) = &self.material
+            && !is_valid_name(material)
+        {
+            return Err(format!("block {:?} has material {material:?}, expected namespace:path", self.name));
+        }
         if self.shape.is_empty() {
             return Err(format!("block {:?} has no shape boxes", self.name));
         }

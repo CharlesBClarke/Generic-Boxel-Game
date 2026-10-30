@@ -28,6 +28,11 @@ pub fn look_rotation(yaw: f32, pitch: f32) -> Quat {
         .rotation
 }
 
+/// The Bevy rotation for turning `angle` radians counterclockwise around Z-up's +Z.
+pub fn turn_about_up(angle: f32) -> Quat {
+    Quat::from_axis_angle(to_render(Vec3::Z), angle)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -61,6 +66,12 @@ mod tests {
         let pos = WorldPos::new(I64Vec3::new(3_000_010, -2_000_000, 1_002), Vec3::new(0.5, 0.25, 0.0));
         let origin = I64Vec3::new(3_000_000, -2_000_000, 1_000);
         assert_eq!(render_translation(pos, origin), Vec3::new(10.5, 2.0, -0.25));
+    }
+
+    #[test]
+    fn turning_about_up_is_counterclockwise_seen_from_above() {
+        let east = to_render(Vec3::X);
+        assert!(close(from_render(turn_about_up(std::f32::consts::FRAC_PI_2) * east), Vec3::Y));
     }
 
     #[test]

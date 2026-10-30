@@ -118,6 +118,7 @@ struct BlockEntry {
     turning: TurningName,
     #[serde(default)]
     turn_textures: bool,
+    material: Option<Spanned<String>>,
 }
 
 /// A shape: the name of one in `[shapes]`, or boxes given in place.
@@ -332,12 +333,27 @@ fn block_def(
         },
     };
 
+    // Every block drops itself unless it names a material: a short name is this mod's own.
+    let material = match &entry.material {
+        None => name.clone(),
+        Some(spanned) => {
+            let m = spanned.get_ref();
+            let full = if m.contains(':') { m.clone() } else { format!("{namespace}:{m}") };
+            if !is_valid_name(&full) {
+                let message = format!("block {short:?} has material {m:?}: use lowercase letters, digits and underscores");
+                return Err(file.error_at(spanned, message));
+            }
+            full
+        }
+    };
+
     let mut def = BlockDef::new(name, entry.solid, color)
         .with_friction(friction)
         .with_placeable(entry.placeable)
         .with_shape(shape)
         .with_turning(entry.turning.into())
-        .with_turn_textures(entry.turn_textures);
+        .with_turn_textures(entry.turn_textures)
+        .with_material(material);
     def.textures = faces;
     Ok(def)
 }
@@ -458,7 +474,8 @@ mod tests {
             grass.textures,
             Some(FaceTextures { top: "test:grass".into(), bottom: "test:stone".into(), side: "test:grass".into() })
         );
-        assert_eq!(*ice, BlockDef::new("test:ice", false, [170, 210, 240]).with_friction(0.1).with_placeable(false));
+        let plain_ice = BlockDef::new("test:ice", false, [170, 210, 240]).with_friction(0.1).with_placeable(false);
+        assert_eq!(*ice, plain_ice.with_material("test:ice"), "a block is its own material by default");
     }
 
     #[test]
@@ -497,6 +514,32 @@ mod tests {
         assert_eq!(stairs.turning, Turning::Any);
         assert!(log.is_full());
         assert_eq!((log.turning, log.turn_textures), (Turning::Axis, true));
+    }
+
+    #[test]
+    fn reads_materials() {
+        let folder = Folder::new("materials");
+        folder.write("mod.toml", MANIFEST).write(
+            "blocks.toml",
+            r#"
+                [[block]]
+                name = "stone_slab"
+                color = [1, 2, 3]
+                material = "stone"
+
+                [[block]]
+                name = "borrowed"
+                color = [1, 2, 3]
+                material = "other:clay"
+            "#,
+        );
+        let m = folder.load().unwrap();
+        let [slab, borrowed] = m.blocks() else { panic!("two blocks") };
+        assert_eq!(slab.material.as_deref(), Some("test:stone"));
+        assert_eq!(borrowed.material.as_deref(), Some("other:clay"));
+
+        let err = blocks_error("bad_material", "[[block]]\nname = \"a\"\ncolor = [1, 2, 3]\nmaterial = \"Stone\"\n", 4);
+        assert!(err.contains("material"), "{err}");
     }
 
     #[test]

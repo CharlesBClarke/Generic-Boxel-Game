@@ -482,7 +482,7 @@ impl Player {
 
 /// Moves a box one axis at a time (vertical first), stopping each axis at the first solid
 /// boxel. Returns how far it actually moved.
-fn sweep_box(mut min: Vec3, mut max: Vec3, delta: Vec3, cell: I64Vec3, terrain: &impl Terrain) -> Vec3 {
+pub(crate) fn sweep_box(mut min: Vec3, mut max: Vec3, delta: Vec3, cell: I64Vec3, terrain: &impl Terrain) -> Vec3 {
     let mut moved = Vec3::ZERO;
     for axis in [2, 0, 1] {
         if delta[axis] == 0.0 {
@@ -526,7 +526,7 @@ fn box_clear(min: Vec3, max: Vec3, cell: I64Vec3, terrain: &impl Terrain) -> boo
 
 /// How far a box from `min` to `max` (relative to `cell`) can move by `d` along `axis`. Boxes
 /// it already overlaps don't stop it.
-fn clamp_axis(axis: usize, d: f32, min: Vec3, max: Vec3, cell: I64Vec3, terrain: &impl Terrain) -> f32 {
+pub(crate) fn clamp_axis(axis: usize, d: f32, min: Vec3, max: Vec3, cell: I64Vec3, terrain: &impl Terrain) -> f32 {
     let (a, b) = ((axis + 1) % 3, (axis + 2) % 3);
     let (mut lo, mut hi) = (min, max);
     if d > 0.0 {

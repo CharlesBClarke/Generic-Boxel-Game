@@ -7,6 +7,7 @@ pub mod coords;
 pub mod drill;
 pub mod editing;
 pub mod feel;
+pub mod items;
 pub mod mesher;
 pub mod tuning;
 
@@ -57,6 +58,7 @@ pub fn run(sim: Simulation) {
         .init_resource::<FeelState>()
         .init_resource::<TuningPanel>()
         .init_resource::<Palette>()
+        .init_resource::<items::ItemViews>()
         .init_resource::<DoubleTapSprint>()
         .init_resource::<drill::Drill>()
         .add_systems(Startup, (setup_scene, spawn_chunk_meshes, drill::setup_drill))
@@ -75,6 +77,7 @@ pub fn run(sim: Simulation) {
                 (update_camera, sync_chunk_transforms).chain(),
                 editing::draw_outline,
                 editing::update_ghost,
+                items::sync_items,
                 editing::draw_region_guide,
                 drill::draw_drill,
                 update_hud,

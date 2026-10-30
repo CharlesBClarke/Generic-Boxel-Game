@@ -1,7 +1,7 @@
 //! The traits a mod implements and the engine services it is handed.
 
 use crate::{
-    ApiError, BlockDef, BoxelPos, InteractionDef, MovementController, Orientation, PlayerDef, PushOutDef, TextureDef,
+    ApiError, BlockDef, BoxelPos, InteractionDef, ItemDropDef, MovementController, Orientation, PlayerDef, PushOutDef, TextureDef,
     WorldPos,
 };
 
@@ -10,8 +10,8 @@ pub trait Mod {
     /// The mod's namespace, such as `"base"`.
     fn name(&self) -> &str;
 
-    /// Registers content: textures, blocks, movement controllers, the player, interaction and push-out
-    /// definitions.
+    /// Registers content: textures, blocks, movement controllers, the player, interaction, push-out
+    /// and item drop definitions.
     fn register(&self, registrar: &mut dyn Registrar) -> Result<(), ApiError>;
 
     /// Places blocks in the world once all content is registered.
@@ -37,6 +37,7 @@ pub trait Registrar {
     fn register_player(&mut self, def: PlayerDef) -> Result<(), ApiError>;
     fn register_interaction(&mut self, def: InteractionDef) -> Result<(), ApiError>;
     fn register_push_out(&mut self, def: PushOutDef) -> Result<(), ApiError>;
+    fn register_item_drops(&mut self, def: ItemDropDef) -> Result<(), ApiError>;
 }
 
 /// Edits the world by block name.
