@@ -104,26 +104,7 @@ A run of small toy slices. Each one takes a single game-feel feature that doesn'
 
 ### Current toy
 
-#### Block-jump trainer (branch `toy-block-jump-trainer`)
-
-**Stage:** Verify (paused 2026-10-30: built and tested, not played yet. Next: the user plays it with F5 and says whether the verdicts match what they feel.)
-
-**Goal:** a trainer, toggled on with a key, that watches each block-jump attempt (placing a block overlapping your feet while jumping, so the push-out launches you) and tells you what went wrong. A detour at the user's request (2026-10-30): block-jumping feels inconsistent. A dev tool like the chase drill, not a feature; it doesn't change how block-jumping works.
-
-**Approved plan** (2026-10-30)
-
-*Why it's inconsistent (from reading the code):* placing and jumping on the same tick stacks the kick on the jump. Placing and then jumping within coyote time loses the kick, because the jump sets vertical speed to 0. With `hold_to_hop` on, holding jump after a kick from the ground does this by itself. Placing after the jump adds the kick to a jump that has already slowed. Placing once the feet are above the boxel gives no push-out. Standing off-center tilts the kick, and walls or ceilings cancel it.
-
-- `sim`: read-only diagnostics, no behavior change. `Player::last_step()` records the tick's velocity going in, the controller's velocity and impulse, and the external impulses. `Simulation::last_place()` records the last placement attempt (tick, boxel, allowed, the push-out it caused).
-- `client::trainer`: a plain `Trainer` fed one observation per tick. It groups ticks into attempts (start on a jump or a placement, end on landing) and gives each attempt one verdict with the timing in ticks and ms, the kick lost, tilt, wall or ceiling hits, and the height reached. The HUD shows recent verdicts, counts and the best height. Toggle key `trainer`, default F5.
-- Tests: scripted input on a headless `Simulation` with `base` for each case (same tick, kick lost, held hop, late, too late, refused, missed, kick only).
-- Out of scope: changing push-out or the jump. That stays in Advanced movement revisited.
-
-*Test* (2026-10-30): 9 trainer tests pass; the workspace passes and clippy is clean. Heights from the scripted runs, feet above the floor: same tick 3.75 m, placed 8 ticks after the jump 3.19 m, jump 3 ticks after placing (kick lost) 1.48 m, too late 1.18 m, kick only 0.54 m. Losing the kick costs over half the height, from a 50 ms timing slip.
-
----
-
-Suggested next after the trainer: Inventory and items, which builds straight on the materials and the pickup counter from Loose items.
+None. Suggested next: Inventory and items, which builds straight on the materials and the pickup counter from Loose items.
 
 ### Toy backlog
 
@@ -185,6 +166,25 @@ Bugs found in already-merged code, each fixed on its own `fix-` branch (see the 
 - 2026-10-28, `fix-step-smoothing`: a step-up moved the body but not its previous position, so the renderer blended the rise between ticks while the camera feel also eased it, making the view dip and snap when climbing. Latent until the block shapes toy gave the player a step height.
 
 ### Done toys
+
+#### Block-jump trainer (branch `toy-block-jump-trainer`)
+
+**Stage:** Done (2026-10-30). Verified: the user played it and confirmed it works.
+
+**Goal:** a trainer, toggled on with a key, that watches each block-jump attempt (placing a block overlapping your feet while jumping, so the push-out launches you) and tells you what went wrong. A detour at the user's request (2026-10-30): block-jumping feels inconsistent. A dev tool like the chase drill, not a feature; it doesn't change how block-jumping works.
+
+**Approved plan** (2026-10-30)
+
+*Why it's inconsistent (from reading the code):* placing and jumping on the same tick stacks the kick on the jump. Placing and then jumping within coyote time loses the kick, because the jump sets vertical speed to 0. With `hold_to_hop` on, holding jump after a kick from the ground does this by itself. Placing after the jump adds the kick to a jump that has already slowed. Placing once the feet are above the boxel gives no push-out. Standing off-center tilts the kick, and walls or ceilings cancel it.
+
+- `sim`: read-only diagnostics, no behavior change. `Player::last_step()` records the tick's velocity going in, the controller's velocity and impulse, and the external impulses. `Simulation::last_place()` records the last placement attempt (tick, boxel, allowed, the push-out it caused).
+- `client::trainer`: a plain `Trainer` fed one observation per tick. It groups ticks into attempts (start on a jump or a placement, end on landing) and gives each attempt one verdict with the timing in ticks and ms, the kick lost, tilt, wall or ceiling hits, and the height reached. The HUD shows recent verdicts, counts and the best height. Toggle key `trainer`, default F5.
+- Tests: scripted input on a headless `Simulation` with `base` for each case (same tick, kick lost, held hop, late, too late, refused, missed, kick only).
+- Out of scope: changing push-out or the jump. That stays in Advanced movement revisited.
+
+*Test* (2026-10-30): 9 trainer tests pass; the workspace passes and clippy is clean. Heights from the scripted runs, feet above the floor: same tick 3.75 m, placed 8 ticks after the jump 3.19 m, jump 3 ticks after placing (kick lost) 1.48 m, too late 1.18 m, kick only 0.54 m. Losing the kick costs over half the height, from a 50 ms timing slip.
+
+*Result:* the trainer did its job. It showed that the inconsistency comes from how block-jumping is built, not only from the player's timing, and the redesign ideas that came out of it are in the Advanced movement revisited entry. *API debt:* one new entry, Block-jump trainer in the client.
 
 #### Loose items (branch `toy-loose-items`)
 
