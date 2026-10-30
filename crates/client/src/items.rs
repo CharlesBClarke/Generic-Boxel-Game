@@ -80,17 +80,17 @@ pub(crate) fn sync_items(
     for item in sim.0.items().iter() {
         live.push(item.id);
         let mesh = block_meshes.entry(item.block).or_insert_with(|| meshes.add(item_mesh(item, blocks, &chunk_meshes))).clone();
-        let view = views.entry(item.id).or_insert_with(|| {
-            let inner = commands.spawn((Mesh3d(mesh.clone()), MeshMaterial3d(chunk_meshes.material.clone()), Transform::default(), ItemView)).id();
-            let outer = commands.spawn((Transform::default(), Visibility::default(), ItemView)).add_child(inner).id();
-            View::new(item, outer, inner, blocks)
-        });
+        // A new item's entities are spawned below, once its transforms are known: spawned ones
+        // only exist after this system, so setting them through the query would miss the
+        // first frame and draw it at the origin.
+        let new = !views.contains_key(&item.id);
+        let view = views.entry(item.id).or_insert_with(|| View::new(item, Entity::PLACEHOLDER, Entity::PLACEHOLDER, blocks));
         if view.block != item.block {
             // Merged into its material's own block: show that shape instead.
             view.block = item.block;
             view.rests = rest_turns(item.block, blocks);
             view.target = None;
-            commands.entity(view.inner).insert(Mesh3d(mesh));
+            commands.entity(view.inner).insert(Mesh3d(mesh.clone()));
         }
         view.update(item, dt);
 
@@ -105,6 +105,11 @@ pub(crate) fn sync_items(
         let outer = Transform::from_translation(coords::render_translation(center.translate(ZVec3::Z * rise), origin.cell))
             .with_scale(coords::to_render(ZVec3::new(1.0 + squash * 0.5, 1.0 + squash * 0.5, 1.0 - squash)).abs());
         let inner = Transform::from_rotation(view.rotation).with_scale(Vec3::splat(item.scale(def) * item.growth()));
+        if new {
+            view.inner = commands.spawn((Mesh3d(mesh), MeshMaterial3d(chunk_meshes.material.clone()), inner, ItemView)).id();
+            view.outer = commands.spawn((outer, Visibility::default(), ItemView)).add_child(view.inner).id();
+            continue;
+        }
         if let Ok(mut t) = transforms.get_mut(view.outer) {
             *t = outer;
         }
@@ -224,6 +229,35 @@ pub(crate) fn collected_line(sim: &sim::Simulation) -> String {
 mod tests {
     use super::*;
     use api::BlockDef;
+
+    #[test]
+    fn a_new_item_is_drawn_where_it_is_from_its_first_frame() {
+        let data = data_mods::load(std::path::Path::new(base::DATA_DIR)).unwrap();
+        let mut sim = sim::Simulation::with_mods(&[&data, &base::BaseMod, &base_movement::BaseMovementMod]).unwrap();
+        sim.spawn_player().unwrap();
+        sim.teleport_player(api::WorldPos::new(api::I64Vec3::new(10, 10, 0), ZVec3::new(0.5, 0.5, 0.0)));
+        let down = -89f32.to_radians();
+        sim.step(&sim::PlayerInput { pitch: down, break_pressed: true, break_held: true, ..Default::default() });
+        let item_pos = sim.items().iter().next().expect("the broken floor dropped an item").pos;
+
+        let atlas = crate::atlas::Atlas::build(sim.textures(), sim.blocks());
+        let mut app = App::new();
+        app.add_plugins((MinimalPlugins, AssetPlugin::default()))
+            .init_asset::<Mesh>()
+            .init_asset::<StandardMaterial>()
+            .insert_resource(Sim(sim))
+            .init_resource::<RenderOrigin>()
+            .init_resource::<ItemViews>()
+            .insert_resource(ChunkMeshes { material: Handle::default(), atlas, entities: HashMap::new() })
+            .add_systems(Update, sync_items);
+        app.update();
+
+        let world = app.world_mut();
+        let outer: Vec<_> = world.query_filtered::<&Transform, (With<ItemView>, Without<Mesh3d>)>().iter(world).copied().collect();
+        let [outer] = outer[..] else { panic!("one item drawn, got {}", outer.len()) };
+        let want = coords::render_translation(item_pos, api::I64Vec3::ZERO);
+        assert!((outer.translation - want).length() < 0.2, "drawn at {} on its first frame, not at {want}", outer.translation);
+    }
 
     #[test]
     fn amounts_read_as_boxels() {
