@@ -497,13 +497,13 @@ pub(crate) fn sweep_box(mut min: Vec3, mut max: Vec3, delta: Vec3, cell: I64Vec3
 }
 
 /// Whether two boxes overlap. Touching faces don't count.
-pub(crate) fn overlap(min: Vec3, max: Vec3, b: CellBox) -> bool {
+fn overlap(min: Vec3, max: Vec3, b: CellBox) -> bool {
     (min.cmplt(b.max - EPS) & max.cmpgt(b.min + EPS)).all()
 }
 
 /// The solid boxes in every boxel the region from `min` to `max` (relative to `cell`) touches
 /// or borders, relative to `cell`.
-pub(crate) fn solid_boxes(min: Vec3, max: Vec3, cell: I64Vec3, terrain: &impl Terrain) -> Vec<CellBox> {
+fn solid_boxes(min: Vec3, max: Vec3, cell: I64Vec3, terrain: &impl Terrain) -> Vec<CellBox> {
     let range = |axis: usize| (min[axis] - EPS).floor() as i64..=(max[axis] + EPS).floor() as i64;
     let mut out = Vec::new();
     let mut found = Vec::new();

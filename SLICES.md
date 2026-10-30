@@ -108,7 +108,7 @@ Loose items, see below.
 
 #### Loose items (branch `toy-loose-items`)
 
-**Stage:** Verify (2026-10-29). Engaged 2026-10-29; the debris plan change is built and tested (228 tests pass, clippy clean), with the merge-sinking fix; waiting for the user to play it.
+**Stage:** Verify (2026-10-29). Engaged 2026-10-29; the debris plan change is built and tested (229 tests pass, clippy clean), with merge growth now only drawn; waiting for the user to play it.
 
 **Goal:** breaking a block drops a loose item of what it's made of, which pops out, falls, bounces and settles, and is pulled in and picked up when you come close. Split out of Inventory and items at the user's request (2026-10-29), Minecraft-style: items fall on the ground rather than going straight into an inventory.
 
@@ -147,7 +147,8 @@ Loose items, see below.
 - It has the shape of what broke: a slab drops a small slab, stairs small stairs, all at one scale. The collision box is that shape's bounds, so a small slab lies low. Merged items become the material's own block.
 - The tumble and squash are client-only; the simulation keeps each item's shape and box.
 - *Built:* `Item` keeps the block it looks like, that shape's bounds and volume; `Item::scale` replaces `size` and `Item::extent` gives the box. Merging switches the kept item to its material's block. `client::items` gives each item an outer entity (position, and a squash along the world's up that keeps its bottom on the ground) and an inner one (tumble and scale). Landing turns it to the nearest turn that keeps the box's size on every axis, so a slab lands flat either way up and a cube on any face. Tests: a slab's item has a slab's box and rests a quarter of its size up; two slabs merge into a stone cube; grid turns match render rotations; a slab rests only flat.
-- *Fixed in this toy* (2026-10-29, found by the user in play): a resting item that merged grew about its middle, so its bottom went into the floor, and since collision ignores boxes an item already overlaps, it sank through. A merged item now grows up from where its bottom was, then is lifted out of anything it still overlaps, by at most a boxel. Test: two resting slab items, and two cubes, merge and still rest on the floor. Not handled: an item grown sideways into a tall wall stays poking into it.
+- *Fixed in this toy* (2026-10-29, found by the user in play): a resting item that merged grew about its middle, so its bottom went into the floor, and since collision ignores boxes an item already overlaps, it sank through. A merged item now grows up from where its bottom was, then is lifted out of anything it still overlaps, by at most a boxel. Test: two resting slab items, and two cubes, merge and still rest on the floor.
+- *Changed in this toy at the user's suggestion* (2026-10-30, found in play): a grown item's box could reach into a wall beside it, rest partly on the wall's lower block and hang in the air when its own floor was broken. **Growth is now only drawn:** an item's box is always one block's worth of its shape, and the client draws it up to twice as big, growing up from the box's bottom (`Item::growth`). The lift out of overlaps was removed again; the box still keeps its bottom when merging changes its shape (slab to cube). Test: an item resting against a tall wall merges, its box stays the same size and clear of the wall, and it falls when the block under it breaks. Trade-off accepted: a big merged item can be drawn poking into a wall by up to about 12 cm, and fits through gaps by its box. Still open: a block placed over a resting item hides it inside the block (backlog, unless it bothers the user in play).
 
 ### Toy backlog
 

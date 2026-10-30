@@ -8,7 +8,7 @@
 
 use api::{ItemDropDef, Vec3, WorldPos};
 
-use crate::player::{Terrain, clamp_axis, overlap, solid_boxes, sweep_box};
+use crate::player::{Terrain, clamp_axis, sweep_box};
 use crate::{BlockId, BlockRegistry, CellBox, Drop};
 
 /// How far below an item still counts as resting on something.
@@ -18,15 +18,11 @@ const GROUND_PROBE: f32 = 0.01;
 const MIN_BOUNCE_SPEED: f32 = 1.0;
 /// How quickly a pulled item's velocity turns toward the body, per second.
 const PULL_RESPONSE: f32 = 12.0;
-/// The smallest and largest an item gets, as a share of its block's own size.
+/// The smallest and largest an item is drawn, as a share of its box.
 const MIN_SCALE: f32 = 0.5;
 const MAX_SCALE: f32 = 2.0;
 /// The longest an item's box gets, in meters, so it always fits in a boxel.
 const MAX_SIZE: f32 = 0.9;
-/// The farthest a grown item is lifted to get clear of what it grew into, in meters.
-const MAX_LIFT: f32 = 1.0;
-/// How far above what it grew into a lifted item ends up, so it isn't left touching it.
-const LIFT_GAP: f32 = 1e-3;
 
 /// One loose item.
 #[derive(Clone, Debug, PartialEq)]
@@ -50,13 +46,18 @@ pub struct Item {
 }
 
 impl Item {
-    /// How much smaller than its block it's drawn and collides: `def.size` when it holds as
-    /// much as its block, scaled by the cube root of the amount beyond that, so the volume it
-    /// shows follows the volume it holds, within limits.
+    /// How much bigger than its box it's drawn: the cube root of how many of its block's worth it
+    /// holds, so the volume it shows follows the volume it holds, within limits. Only for
+    /// drawing; its box stays the same.
+    pub fn growth(&self) -> f32 {
+        (self.drop.amount as f32 / self.block_volume.max(1) as f32).cbrt().clamp(MIN_SCALE, MAX_SCALE)
+    }
+
+    /// How much smaller than its block its box is: `def.size`, or less if the box would be too
+    /// big to fit in a boxel. Merging never changes it, so a merged item can't grow into a wall.
     pub fn scale(&self, def: &ItemDropDef) -> f32 {
-        let more = (self.drop.amount as f32 / self.block_volume.max(1) as f32).cbrt().clamp(MIN_SCALE, MAX_SCALE);
         let longest = (self.bounds.max - self.bounds.min).max_element();
-        (def.size * more).min(MAX_SIZE / longest)
+        def.size.min(MAX_SIZE / longest)
     }
 
     /// The size of its box, in meters.
@@ -150,15 +151,15 @@ impl Items {
         for item in &mut self.list {
             step_item(item, def, dt, terrain, collector);
         }
-        self.merge(def, blocks, terrain);
+        self.merge(def, blocks);
         picked
     }
 
     /// Merges items of the same material closer than `def.merge_radius`, each into the one
     /// holding more (the older on a tie), which keeps its place and motion and becomes the
-    /// material's own block. Its box grows up from where its bottom was, so it stays on what
-    /// it rested on.
-    fn merge(&mut self, def: &ItemDropDef, blocks: &BlockRegistry, terrain: &impl Terrain) {
+    /// material's own block. If that changes its box, the box keeps its bottom where it was, so
+    /// it stays on what it rested on.
+    fn merge(&mut self, def: &ItemDropDef, blocks: &BlockRegistry) {
         let radius = def.merge_radius;
         let mut gone = vec![false; self.list.len()];
         for i in 0..self.list.len() {
@@ -180,7 +181,6 @@ impl Items {
                 let grow = kept.extent(def).z * 0.5 - half_before;
                 kept.pos = kept.pos.translate(Vec3::Z * grow);
                 kept.prev_pos = kept.prev_pos.translate(Vec3::Z * grow);
-                lift_clear(kept, def, terrain);
                 gone[lose] = true;
             }
         }
@@ -224,29 +224,6 @@ fn step_item(item: &mut Item, def: &ItemDropDef, dt: f32, terrain: &impl Terrain
     item.pos = item.pos.translate(moved);
     let (min, max) = (min + moved, max + moved);
     item.on_ground = item.velocity.z <= 0.0 && clamp_axis(2, -GROUND_PROBE, min, max, cell, terrain) > -GROUND_PROBE;
-}
-
-/// Lifts `item` out of solid boxes its box overlaps, such as a wall it grew into, up to
-/// [`MAX_LIFT`]. Left where it is if that isn't enough.
-fn lift_clear(item: &mut Item, def: &ItemDropDef, terrain: &impl Terrain) {
-    let half = item.extent(def) * 0.5;
-    let (min, max) = (item.pos.offset() - half, item.pos.offset() + half);
-    let cell = item.pos.cell();
-    let mut lift = 0.0;
-    // Each pass clears what it overlaps now, which can bring it into something higher up.
-    for _ in 0..4 {
-        let (lo, hi) = (min + Vec3::Z * lift, max + Vec3::Z * lift);
-        let top = solid_boxes(lo, hi, cell, terrain).into_iter().filter(|&b| overlap(lo, hi, b)).map(|b| b.max.z).reduce(f32::max);
-        let Some(top) = top else {
-            item.pos = item.pos.translate(Vec3::Z * lift);
-            item.prev_pos = item.prev_pos.translate(Vec3::Z * lift);
-            return;
-        };
-        lift = top - min.z + LIFT_GAP;
-        if lift > MAX_LIFT {
-            return;
-        }
-    }
 }
 
 /// The velocity a dropped item pops out at: `def.pop_speed` upward, plus a third of that
@@ -452,7 +429,7 @@ mod tests {
         f.spawn(&mut items, f.stone, f.stone_block, at(origin, 0.5, 0.5, 0.125), Vec3::ZERO);
         f.spawn(&mut items, f.stone, f.stone_block, at(origin, 1.0, 0.5, 0.125), Vec3::ZERO);
         f.step(&mut items, &Floor { origin }, None);
-        assert!(items.iter().next().unwrap().scale(&def()) > def().size);
+        assert!(items.iter().next().unwrap().growth() > 1.0);
     }
 
     #[test]
@@ -476,6 +453,56 @@ mod tests {
             assert!(bottom.abs() < 1e-3, "{block:?} merged rests on the floor, its bottom at {bottom}");
             assert!(item.on_ground);
         }
+    }
+
+    /// Full solid boxels at the listed spots.
+    struct Boxels(Vec<BoxelPos>);
+
+    impl Terrain for Boxels {
+        fn boxes(&self, pos: BoxelPos, out: &mut Vec<CellBox>) {
+            if self.0.contains(&pos) {
+                out.push(CellBox::FULL);
+            }
+        }
+
+        fn friction(&self, _: BoxelPos) -> f32 {
+            1.0
+        }
+    }
+
+    #[test]
+    fn merging_beside_a_wall_keeps_the_box_out_of_it_so_the_item_falls_when_its_floor_goes() {
+        let origin = I64Vec3::ZERO;
+        let f = fixture();
+        // A block to rest on, a tall wall east of it, and a floor one boxel lower.
+        let support = BoxelPos::new(0, 0, -1);
+        let mut solid = vec![support];
+        solid.extend((-1..4).map(|z| BoxelPos::new(1, 0, z)));
+        solid.extend((-3..3).map(|x| BoxelPos::new(x, 0, -2)));
+        let mut terrain = Boxels(solid);
+
+        let mut items = Items::default();
+        let rest = def().size / 2.0;
+        // Right against the wall, and another to merge into it.
+        f.spawn(&mut items, f.stone, f.stone_block, at(origin, 1.0 - rest - 0.01, 0.5, rest), Vec3::ZERO);
+        f.spawn(&mut items, f.stone, f.stone_block, at(origin, 0.4, 0.5, rest), Vec3::ZERO);
+        for _ in 0..60 {
+            f.step(&mut items, &terrain, None);
+        }
+        assert_eq!(items.len(), 1, "merged");
+        let item = items.iter().next().unwrap();
+        assert!(item.growth() > 1.0, "a merged item is drawn bigger");
+        assert!((item.extent(&def()) - Vec3::splat(def().size)).length() < 1e-5, "but its box stays one block's worth");
+        let east = WorldPos::new(origin, Vec3::ZERO).delta_to(item.pos).x + item.extent(&def()).x * 0.5;
+        assert!(east <= 1.0, "clear of the wall, its east side at {east}");
+
+        terrain.0.retain(|&p| p != support);
+        for _ in 0..120 {
+            f.step(&mut items, &terrain, None);
+        }
+        let item = items.iter().next().unwrap();
+        let bottom = height(origin, item.pos) - item.extent(&def()).z * 0.5;
+        assert!((bottom + 1.0).abs() < 1e-3, "fell to the floor below, its bottom at {bottom}");
     }
 
     #[test]

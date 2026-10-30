@@ -97,11 +97,14 @@ pub(crate) fn sync_items(
         let center = item.prev_pos.translate(item.prev_pos.delta_to(item.pos) * alpha);
         let (since, amount) = view.squash;
         let squash = if since < SQUASH_TIME { amount * (1.0 - since / SQUASH_TIME) } else { 0.0 };
-        // Squashed about its middle, then lowered so its bottom stays on the ground.
-        let drop = squash * item.extent(def).z * 0.5;
-        let outer = Transform::from_translation(coords::render_translation(center.translate(ZVec3::NEG_Z * drop), origin.cell))
+        // Drawn bigger than its box when merged, growing up from the box's bottom; squashed
+        // about its middle, then lowered so its bottom stays on the ground.
+        let box_height = item.extent(def).z;
+        let height = box_height * item.growth();
+        let rise = (height - box_height) * 0.5 - squash * height * 0.5;
+        let outer = Transform::from_translation(coords::render_translation(center.translate(ZVec3::Z * rise), origin.cell))
             .with_scale(coords::to_render(ZVec3::new(1.0 + squash * 0.5, 1.0 + squash * 0.5, 1.0 - squash)).abs());
-        let inner = Transform::from_rotation(view.rotation).with_scale(Vec3::splat(item.scale(def)));
+        let inner = Transform::from_rotation(view.rotation).with_scale(Vec3::splat(item.scale(def) * item.growth()));
         if let Ok(mut t) = transforms.get_mut(view.outer) {
             *t = outer;
         }
