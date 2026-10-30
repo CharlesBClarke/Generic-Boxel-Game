@@ -104,57 +104,13 @@ A run of small toy slices. Each one takes a single game-feel feature that doesn'
 
 ### Current toy
 
-Loose items, see below.
-
-#### Loose items (branch `toy-loose-items`)
-
-**Stage:** Verify (2026-10-29). Engaged 2026-10-29; the debris plan change is built and tested (230 tests pass, clippy clean), with merge growth now only drawn and the first-frame flash fixed; waiting for the user to play it.
-
-**Goal:** breaking a block drops a loose item of what it's made of, which pops out, falls, bounces and settles, and is pulled in and picked up when you come close. Split out of Inventory and items at the user's request (2026-10-29), Minecraft-style: items fall on the ground rather than going straight into an inventory.
-
-**Approved plan** (2026-10-29)
-
-*Decisions*
-- **Items are an amount of a material.** A block names its material (`stone_slab` and `stone_stairs` are `stone`, `grass` is `dirt`); breaking it drops its volume of that material, worked out from its shape boxes in 1/4096ths of a boxel (16³), so a slab drops ½ and stairs ¾. Whole numbers, no float drift. In `blocks.toml` a block's material defaults to its own name.
-- **Loose items are small bodies** in a plain list in `sim`, not a general entity system: gravity, collision against block boxes with the player's sweep, a bounce, and ground drag. Drawn as a small cube of the material's first full block, spinning, sized by amount.
-- **Pickup is a pull** (the user agreed, 2026-10-29): within a radius of the body, items drift toward it, and close enough they're picked up. Picked-up amounts go into a plain counter per material, shown on the HUD. No capacity and no cost yet; the palette stays free.
-- **Merging** (the user agreed): loose items of the same material within about a boxel merge into one.
-- **No despawning** (the user's call, 2026-10-29): items stay until picked up. When despawning proves necessary, add a despawn time where 0 means never, and leave it at 0.
-- **API:** `BlockDef.material`; `ItemDropDef` (pop speed, gravity, bounce, drag, size, pull radius and speed, pickup radius, merge radius), registered by the mod and tunable while running. Without one registered, breaking drops nothing.
-
-*Tests:* volume from shapes (overlapping boxes counted once); materials and each material's drawn block; reading `material` from data; an item falls, bounces less each time and settles; pulled in and picked up; merging; the same at millions from zero; breaking a slab with the base mod drops half a stone that ends up in the counter; nothing drops without an `ItemDropDef`.
-
-*Out of scope:* capacity, placing using up material, picking a shape, a drop key, crafting, saving, despawning. These are Inventory and items (next).
-
-*Done when*
-1. Breaking a block drops an item of its material, sized by how much, which pops out, falls, bounces and settles.
-2. Walking near items pulls them in and picks them up, and the HUD counts what you've collected per material.
-3. Nearby items of the same material merge.
-4. The item values can be tuned while playing.
-5. `cargo test` and `cargo clippy` are clean.
-
-*Implementation notes* (2026-10-29)
-- **API.** `BlockDef.material` with `with_material`, checked as a namespaced name; `api::ItemDropDef` (tunable, validated); `Registrar::register_item_drops`; `ApiError::DuplicateItemDropDef`. `blocks.toml` has `material`, defaulting to the block's own name; in base, grass is `dirt`, slabs and stairs are `stone` or `brick`, the fence post is `wood`.
-- **Materials in the registry.** `BlockRegistry` gives each material a `MaterialId` in the order blocks first name it, and keeps what each block drops (`Drop { material, amount }`, from `volume(shape)`, overlaps counted once) and the block each material is drawn as (its first full block). `FULL_VOLUME` is 4096.
-- **`sim::items`.** `Items` is a plain list of `Item` (center position, previous position, velocity, on-ground, pulled), with IDs that are never reused. Items sweep with the player's `sweep_box` (made `pub(crate)`), bounce above 1 m/s and stop below it, and slow down sideways on the ground. A `Collector` (the player's box) picks up within `pickup_radius` and pulls within `pull_radius`; pulled items ignore gravity and turn toward the body's middle. Merging is all-pairs each tick, into the item holding more. An item's size follows the cube root of its amount, from half to twice `size`.
-- **Simulation.** Breaking an occupant drops its material from the middle of its boxes, popped up with a sideways direction from a hash of tick and position, so it's the same on every machine. Items step after the player each tick; picked-up amounts go into a counter per material (`Simulation::collected`).
-- **Client.** `client::items` draws each item as its material's block, meshed around its center, blended between ticks, turning and bobbing upward while it rests. The HUD line above the palette lists what's been picked up. The tuning panel has an Item drops section.
-- **Not handled:** a block placed over a resting item leaves it inside the block, still collectable. No new controls, so the controls file is unchanged.
-
-*Plan change at the user's request* (2026-10-29, before playing): "lets not copy MC so much". The slow spin and soft bob were Minecraft's, so items become **debris** instead (option A of three offered; the others, a robot magnet pickup with a beam and crushed pellets, are not built):
-- No spin or bob; a resting item lies still.
-- In the air it tumbles about the axis it popped along, faster the harder it popped. On landing it turns the short way onto a face so it lies flat, with a quick squash, and bounces squash too.
-- It has the shape of what broke: a slab drops a small slab, stairs small stairs, all at one scale. The collision box is that shape's bounds, so a small slab lies low. Merged items become the material's own block.
-- The tumble and squash are client-only; the simulation keeps each item's shape and box.
-- *Built:* `Item` keeps the block it looks like, that shape's bounds and volume; `Item::scale` replaces `size` and `Item::extent` gives the box. Merging switches the kept item to its material's block. `client::items` gives each item an outer entity (position, and a squash along the world's up that keeps its bottom on the ground) and an inner one (tumble and scale). Landing turns it to the nearest turn that keeps the box's size on every axis, so a slab lands flat either way up and a cube on any face. Tests: a slab's item has a slab's box and rests a quarter of its size up; two slabs merge into a stone cube; grid turns match render rotations; a slab rests only flat.
-- *Fixed in this toy* (2026-10-29, found by the user in play): a resting item that merged grew about its middle, so its bottom went into the floor, and since collision ignores boxes an item already overlaps, it sank through. A merged item now grows up from where its bottom was, then is lifted out of anything it still overlaps, by at most a boxel. Test: two resting slab items, and two cubes, merge and still rest on the floor.
-- *Changed in this toy at the user's suggestion* (2026-10-30, found in play): a grown item's box could reach into a wall beside it, rest partly on the wall's lower block and hang in the air when its own floor was broken. **Growth is now only drawn:** an item's box is always one block's worth of its shape, and the client draws it up to twice as big, growing up from the box's bottom (`Item::growth`). The lift out of overlaps was removed again; the box still keeps its bottom when merging changes its shape (slab to cube). Test: an item resting against a tall wall merges, its box stays the same size and clear of the wall, and it falls when the block under it breaks. Trade-off accepted: a big merged item can be drawn poking into a wall by up to about 12 cm, and fits through gaps by its box. Still open: a block placed over a resting item hides it inside the block (backlog, unless it bothers the user in play).
-- *Fixed in this toy* (2026-10-30, found by the user in play): each new item flashed at the render origin for one frame. Its entities were spawned with default transforms and then set through a query, which can't see entities spawned in the same system. They're now spawned with their transforms. Test: the client's first Bevy app test runs `sync_items` once after breaking a block and checks the item is drawn where it is.
+None. Suggested next: Inventory and items, which builds straight on the materials and the pickup counter from Loose items.
 
 ### Toy backlog
 
 - ~~**Block shapes and placement.**~~ Now the current toy, as Block shapes and shared cells. Suggested order after it: inventory and items, then interaction controls and block interactions, then combat feel.
-- **Inventory and items.** Added 2026-10-28, from the user's request that led to the block shapes toy. Real items and counts, breaking gives you the block, and the design doc's "inventory discourages variety" gripe: try limiting by weight or volume instead of slots, or carrying a material and choosing its shape when placing. Suggested next after block shapes, before combat feel.
+- **Inventory and items.** Added 2026-10-28, from the user's request that led to the block shapes toy. Real items and counts, breaking gives you the block, and the design doc's "inventory discourages variety" gripe: try limiting by weight or volume instead of slots, or carrying a material and choosing its shape when placing. Suggested next after block shapes, before combat feel. *Updated 2026-10-30:* Loose items was split out of this and is done: breaking drops materials by volume and the player collects them into a counter. What's left: placing uses up material, a shared capacity limit (volume first, maybe weight later), picking a material and then a shape, a drop key, and items staying on the ground when you're full. The plan proposed on 2026-10-29 had these; reuse it.
+- **Items inside placed blocks.** Added 2026-10-30, from Loose items. A block placed over a resting item hides it inside the block; it can still be picked up. Push items out the shortest way, or refuse the placement, once it gets in the way.
 - **Interaction controls.** Split out of Block editing (2026-10-25). Fix Minecraft's ambiguous right click once there are things to use, like crystals or devices. Principles: one input, one action (no catch-all "use" button that changes meaning with what you hold or look at), and what you see is what you get (a ghost of the result, red when not allowed).
   - *Added 2026-10-28:* decide how players reach shared boxels. Placing into an occupied boxel makes placement harder to read (every click has two possible boxels), so it may become a deliberate trick (a key, a tool, or a property of blocks like water) instead of happening on any click. Decide once combat and usable items show how crowded the controls get; the engine keeps full support either way. Also from play: two slabs at right angles make a stair, so a separate stairs block may not be needed.
 - **Block interactions.** Unstable crystals: two block types, a touch trigger, a directional blast, and a way to push blocks so devices are possible.
@@ -203,6 +159,63 @@ Bugs found in already-merged code, each fixed on its own `fix-` branch (see the 
 - 2026-10-28, `fix-step-smoothing`: a step-up moved the body but not its previous position, so the renderer blended the rise between ticks while the camera feel also eased it, making the view dip and snap when climbing. Latent until the block shapes toy gave the player a step height.
 
 ### Done toys
+
+#### Loose items (branch `toy-loose-items`)
+
+**Stage:** Done (2026-10-30). Verified: the user played it and confirmed all four criteria, including tuning in the panel ("I did that to").
+
+**Goal:** breaking a block drops a loose item of what it's made of, which pops out, falls, bounces and settles, and is pulled in and picked up when you come close. Split out of Inventory and items at the user's request (2026-10-29), Minecraft-style: items fall on the ground rather than going straight into an inventory.
+
+**Approved plan** (2026-10-29)
+
+*Decisions*
+- **Items are an amount of a material.** A block names its material (`stone_slab` and `stone_stairs` are `stone`, `grass` is `dirt`); breaking it drops its volume of that material, worked out from its shape boxes in 1/4096ths of a boxel (16³), so a slab drops ½ and stairs ¾. Whole numbers, no float drift. In `blocks.toml` a block's material defaults to its own name.
+- **Loose items are small bodies** in a plain list in `sim`, not a general entity system: gravity, collision against block boxes with the player's sweep, a bounce, and ground drag. Drawn as a small cube of the material's first full block, spinning, sized by amount.
+- **Pickup is a pull** (the user agreed, 2026-10-29): within a radius of the body, items drift toward it, and close enough they're picked up. Picked-up amounts go into a plain counter per material, shown on the HUD. No capacity and no cost yet; the palette stays free.
+- **Merging** (the user agreed): loose items of the same material within about a boxel merge into one.
+- **No despawning** (the user's call, 2026-10-29): items stay until picked up. When despawning proves necessary, add a despawn time where 0 means never, and leave it at 0.
+- **API:** `BlockDef.material`; `ItemDropDef` (pop speed, gravity, bounce, drag, size, pull radius and speed, pickup radius, merge radius), registered by the mod and tunable while running. Without one registered, breaking drops nothing.
+
+*Tests:* volume from shapes (overlapping boxes counted once); materials and each material's drawn block; reading `material` from data; an item falls, bounces less each time and settles; pulled in and picked up; merging; the same at millions from zero; breaking a slab with the base mod drops half a stone that ends up in the counter; nothing drops without an `ItemDropDef`.
+
+*Out of scope:* capacity, placing using up material, picking a shape, a drop key, crafting, saving, despawning. These are Inventory and items (next).
+
+*Done when*
+1. Breaking a block drops an item of its material, sized by how much, which pops out, falls, bounces and settles.
+2. Walking near items pulls them in and picks them up, and the HUD counts what you've collected per material.
+3. Nearby items of the same material merge.
+4. The item values can be tuned while playing.
+5. `cargo test` and `cargo clippy` are clean.
+
+*Implementation notes* (2026-10-29)
+- **API.** `BlockDef.material` with `with_material`, checked as a namespaced name; `api::ItemDropDef` (tunable, validated); `Registrar::register_item_drops`; `ApiError::DuplicateItemDropDef`. `blocks.toml` has `material`, defaulting to the block's own name; in base, grass is `dirt`, slabs and stairs are `stone` or `brick`, the fence post is `wood`.
+- **Materials in the registry.** `BlockRegistry` gives each material a `MaterialId` in the order blocks first name it, and keeps what each block drops (`Drop { material, amount }`, from `volume(shape)`, overlaps counted once) and the block each material is drawn as (its first full block). `FULL_VOLUME` is 4096.
+- **`sim::items`.** `Items` is a plain list of `Item` (center position, previous position, velocity, on-ground, pulled), with IDs that are never reused. Items sweep with the player's `sweep_box` (made `pub(crate)`), bounce above 1 m/s and stop below it, and slow down sideways on the ground. A `Collector` (the player's box) picks up within `pickup_radius` and pulls within `pull_radius`; pulled items ignore gravity and turn toward the body's middle. Merging is all-pairs each tick, into the item holding more. An item's size follows the cube root of its amount, from half to twice `size`.
+- **Simulation.** Breaking an occupant drops its material from the middle of its boxes, popped up with a sideways direction from a hash of tick and position, so it's the same on every machine. Items step after the player each tick; picked-up amounts go into a counter per material (`Simulation::collected`).
+- **Client.** `client::items` draws each item as its material's block, meshed around its center, blended between ticks, turning and bobbing upward while it rests. The HUD line above the palette lists what's been picked up. The tuning panel has an Item drops section.
+- **Not handled:** a block placed over a resting item leaves it inside the block, still collectable. No new controls, so the controls file is unchanged.
+
+*Plan change at the user's request* (2026-10-29, before playing): "lets not copy MC so much". The slow spin and soft bob were Minecraft's, so items become **debris** instead (option A of three offered; the others, a robot magnet pickup with a beam and crushed pellets, are not built):
+- No spin or bob; a resting item lies still.
+- In the air it tumbles about the axis it popped along, faster the harder it popped. On landing it turns the short way onto a face so it lies flat, with a quick squash, and bounces squash too.
+- It has the shape of what broke: a slab drops a small slab, stairs small stairs, all at one scale. The collision box is that shape's bounds, so a small slab lies low. Merged items become the material's own block.
+- The tumble and squash are client-only; the simulation keeps each item's shape and box.
+- *Built:* `Item` keeps the block it looks like, that shape's bounds and volume; `Item::scale` replaces `size` and `Item::extent` gives the box. Merging switches the kept item to its material's block. `client::items` gives each item an outer entity (position, and a squash along the world's up that keeps its bottom on the ground) and an inner one (tumble and scale). Landing turns it to the nearest turn that keeps the box's size on every axis, so a slab lands flat either way up and a cube on any face. Tests: a slab's item has a slab's box and rests a quarter of its size up; two slabs merge into a stone cube; grid turns match render rotations; a slab rests only flat.
+- *Fixed in this toy* (2026-10-29, found by the user in play): a resting item that merged grew about its middle, so its bottom went into the floor, and since collision ignores boxes an item already overlaps, it sank through. A merged item now grows up from where its bottom was, then is lifted out of anything it still overlaps, by at most a boxel. Test: two resting slab items, and two cubes, merge and still rest on the floor.
+- *Changed in this toy at the user's suggestion* (2026-10-30, found in play): a grown item's box could reach into a wall beside it, rest partly on the wall's lower block and hang in the air when its own floor was broken. **Growth is now only drawn:** an item's box is always one block's worth of its shape, and the client draws it up to twice as big, growing up from the box's bottom (`Item::growth`). The lift out of overlaps was removed again; the box still keeps its bottom when merging changes its shape (slab to cube). Test: an item resting against a tall wall merges, its box stays the same size and clear of the wall, and it falls when the block under it breaks. Trade-off accepted: a big merged item can be drawn poking into a wall by up to about 12 cm, and fits through gaps by its box. Still open: a block placed over a resting item hides it inside the block (backlog, unless it bothers the user in play).
+- *Fixed in this toy* (2026-10-30, found by the user in play): each new item flashed at the render origin for one frame. Its entities were spawned with default transforms and then set through a query, which can't see entities spawned in the same system. They're now spawned with their transforms. Test: the client's first Bevy app test runs `sync_items` once after breaking a block and checks the item is drawn where it is.
+
+*Verification* (2026-10-30)
+1. Breaking drops an item of its material, sized by amount, that pops out, falls, bounces and settles: met (played; tested).
+2. Walking near items pulls them in and picks them up, and the HUD counts each material: met (played; tested).
+3. Nearby items of the same material merge: met (played, after the visual-growth change; tested).
+4. The item values can be tuned while playing: met (played).
+5. `cargo test` and `cargo clippy` are clean: met (230 tests).
+
+*Result*
+- **Decisions:** blocks name a material, and breaking drops the block's volume of it in 1/4096ths of a boxel; loose items are a plain list of small bodies in `sim`, not an entity system; items are debris shaped like what broke, tumbling in the air and settling flat with a squash, not Minecraft's spin and bob; the collision box is one block's worth of the shape, and merging only changes how big it's drawn; pickup is a pull within 2 m; same-material items within 1 m merge; no despawning.
+- **Deferred:** a block placed over a resting item hides it inside the block (backlog); a big merged item can be drawn poking into a wall; the tumble, settle and squash strengths are client constants, not tunables; despawning, as a time where 0 means never, when it proves necessary.
+- **API debt:** none new. `ItemDropDef` and `BlockDef.material` are in the API; the base mod uses them like any other mod.
 
 #### Block shapes and shared cells (branch `toy-block-shapes`)
 
