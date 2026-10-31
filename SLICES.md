@@ -104,7 +104,7 @@ A run of small toy slices. Each one takes a single game-feel feature that doesn'
 
 ### Current toy
 
-None. Suggested next: Inventory and items, which builds straight on the materials and the pickup counter from Loose items, and now has real looks to show.
+None. Suggested next: Inventory and items, which was next before this detour and builds on the materials and the pickup counter from Loose items.
 
 ### Toy backlog
 
@@ -118,7 +118,8 @@ None. Suggested next: Inventory and items, which builds straight on the material
 - **Block interactions.** Unstable crystals: two block types, a touch trigger, a directional blast, and a way to push blocks so devices are possible.
 - **Emergent shapes from crafting.** Added 2026-10-28 at the user's request. Shapes come from recipes instead of each being its own block: a crafting pattern filled with one kind of block makes the pattern's shape as a prism, extruded through a full block. A stairs-like pattern gives stairs, as in Minecraft, but the pattern implies the shape, so the same idea gives a three-step stair. The partial blocks made this way can go into new recipes, so shapes build on shapes. The crafting grid could sit on different sides of the crafting table, and the side used sets which way the shape is extruded, so one pattern can make the shape in different orientations. Builds on the shapes and orientations from the block shapes toy; likely belongs with Generative crafting.
 - **Generative crafting.** A few materials, a few property ingredients and a capacity limit.
-- **Combat feel.** Weighty hits and aggressive, Doom-style combat.
+- ~~**Combat feel.**~~ Done (2026-10-31), see Done toys.
+- **Combat depth.** Added 2026-10-31, deferred from Combat feel. Ideas for a higher skill ceiling, to try once enemies, tools and movement give combat something to be tuned against: swing direction from the mouse during the wind-up (sweep sideways, slam down, launch up), air combos with growing knockback, a sweet spot at the club's full reach, cancelling the recovery into a jump or dash, a charged heavy swing with a perfect-release window (the robot's spring), and what the guard does once something hits back. Also the Doom loop: close kills restoring health once the player has some.
 - **Liquid rule sets.** The rule sets from the design doc.
 - **Advanced movement revisited.** Added 2026-10-26 at the user's request. Comes after toys that add tools, items and enemies. Rework push-out (block-jumping, and later pistons). The user doesn't like that the body is moved out of the block instantly, like a teleport, or that the launch is mostly upward. Prompted by spam-placing blocks at the dead end of a 1-high tunnel while crouched: the body crawls backward through position shifts while the speed readout stays at 0. Things to settle:
   - How the body gets out of the block with real motion instead of a shift, and how much of the launch should go up.
@@ -152,13 +153,15 @@ Ideas that come up while playing get added here.
 Shortcuts taken around the API, each with the toy that needed it. Paid down in seam slices.
 
 - **Fixed input actions** (movement toy; break, place and palette slots added by the block editing toy, crouch by the advanced movement toy, placement mode by the block shapes toy). Move, jump, sprint, crouch, break, place, the palette slots and the debug keys are a fixed engine set in `sim::PlayerInput` and `client::controls`. Mods can't define their own actions. API version: mods register named actions with default bindings, and controllers read actions by name.
-- **Chase drill in the client** (advanced movement toy, temporary). The ghost and objectives in `client::drill` are game logic living in the client, and it finds landmarks by the `landmark:` prefix on waypoint names. Remove the drill rather than moving it into the API, unless a later toy wants real enemies, which would need entities and a game-rules hook in the API.
+- **Chase drill in the client** (advanced movement toy, temporary; ghost hits added by the combat feel toy). The ghost and objectives in `client::drill` are game logic living in the client, and it finds landmarks by the `landmark:` prefix on waypoint names. Remove the drill rather than moving it into the API, unless a later toy wants real enemies, which would need entities and a game-rules hook in the API.
 - **Block-jump trainer in the client** (block-jump trainer toy, temporary). `client::trainer` judges attempts from read-only diagnostics, `Player::last_step` and `Simulation::last_place`. Remove it with the chase drill, or once Advanced movement revisited makes block-jumping consistent.
-- **Camera feel in the client** (movement toy). FOV widening, head bob, landing dip and step smoothing live in `client::feel`, so mods can't change them. API version: a client-side mod API for camera effects, presumably driven by the same tunables.
+- **Tool look in the client** (combat feel toy). Every tool is drawn as the same club, posed by `client::combat`; mods can't give a tool its own model or swing poses. API version: a tool names a model and its poses.
+- **Camera feel in the client** (movement toy; hit-stop, view kick and shake added by the combat feel toy in `client::combat`). FOV widening, head bob, landing dip and step smoothing live in `client::feel`, so mods can't change them. API version: a client-side mod API for camera effects, presumably driven by the same tunables.
 
 ### Phase 2 decisions
 
 - **A robotic player** (tentative, 2026-10-25): the user wants movement and camera feel to read as a robot. Landings are a shock absorber: soft landings compress smoothly, damaging ones bottom out hard. Later feel work (combat, damage, crouch charging) should keep to it.
+- **Skyrim-style controls** (2026-10-31, from Combat feel): whatever is held has a main use on left click and a second use on right click. Blocks break and place; a tool swings and guards. Part of the answer to the ambiguous-interactions gripe; the Interaction controls toy builds on it.
 - **Signature feature:** not decided yet. Choose it once the block interaction and crafting toys have been played, and record the choice and why in the design doc.
 
 ### Fixes
@@ -168,6 +171,55 @@ Bugs found in already-merged code, each fixed on its own `fix-` branch (see the 
 - 2026-10-28, `fix-step-smoothing`: a step-up moved the body but not its previous position, so the renderer blended the rise between ticks while the camera feel also eased it, making the view dip and snap when climbing. Latent until the block shapes toy gave the player a step height.
 
 ### Done toys
+
+#### Combat feel (branch `toy-combat-feel`)
+
+**Stage:** Done (2026-10-31). Picked by the user as a detour ahead of Inventory and items. Verified: the user played both rounds and closed it: "I think its as good as we can be informed of and need other toys to tune it correlty". Criteria 1 to 4 and 6 were played; 5 (the guard pose, blocks still editing) and 7 (the ghost) weren't called out separately in play and are covered by tests.
+
+**Goal:** beating up a cow feels heavy and fun. Not an AI toy: targets have no behavior ("we just wan't to beat something with juice").
+
+**Approved plan** (2026-10-31)
+- **Cow asset:** a Luanti critter, at the user's request ("pull a luanti critter to abuse"), chosen by the user from the CC0 ones in TenPlus1's `mobs_animal`: sirrobzerrone's cow, with a CC0 moo. Converted once to a checked-in model, credited in `mods/base/CREDITS.md`. The Y-up to Z-up turn happens at the import step. This is outside art again after Solid materials dropped it, but only for a creature model; block looks stay procedural.
+- **Targets in `sim`:** bodies with a box collider, health, weight, gravity, terrain collision, knockback, tumbling and friction until they settle. No behavior. Breaking is an event; a target comes back at its spot after a delay, or on a key.
+- **API:** `TargetDef` by name (model, size, health, weight, sound), placed with `WorldEdit`; `ToolDef` for a melee tool (reach, damage, knockback, swing timing); palette slots hold a block or a tool.
+- **Skyrim-style controls** (the user's direction): whatever is held has a main use on left click and a second use on right click. Blocks keep break and place. The tool swings on left click, with short reach that walls stop, and guards on right click ("I thougt it woud be a block"). Nothing attacks yet, so the guard is a visible pose only.
+- **Juice in the client, all tunable:** hit-stop scaled by the hit, view and tool recoil (the robot's arm taking the shock), a white flash, squash and stretch, knockback scaled by weight, wind-up and follow-through, a whiff on a miss, a moo, and a burst of chunks when a target breaks.
+- **Arena:** cows in the walled pen of the test area, with a waypoint.
+- **Chase drill ghost:** kept, and hittable with the same juice: knocked back and dazed, never killed, no effect on the score ("the ghost can have some juice applied to him to").
+- **The player can't die** for now ("infitine helth"); the heal-on-kill loop is deferred.
+- **Tests:** reach and walls; damage, breaking and respawn; knockback by weight; tumbling and settling against terrain (walls, steps); a slot holding a tool versus a block; the cow loading through `base`; ghost hits.
+- **Out of scope:** creature AI, player health, ranged weapons, sound beyond the moo, the cow's walk animation.
+
+**Done when**
+1. You can pick the weapon from a slot, and left click whacks a cow that is close enough.
+2. Hits feel heavy (hit-stop, recoil, flash, knockback), as judged by the user playing it.
+3. Cows tumble and settle properly against terrain and don't end up inside walls.
+4. Cows die, burst apart and respawn.
+5. Right click raises a guard you can see; blocks still break and place as before.
+6. The juice values can be tuned in the Tab panel while the game runs.
+7. Hitting the ghost during the drill knocks it back with the same juice, and the drill keeps working.
+
+*Implementation notes* (2026-10-31)
+- **Conversion:** assimp refused the cow's b3d file (its animation keys run past the animation's length), so `tools/b3d_to_obj.py` converts the rest pose to a Z-up OBJ in meters, without bones. The plan said `.glb`; OBJ is plain text and needs no glTF loader. Models and sounds reach the engine as plain data through the API (`ModelDef` with mesh and RGBA texture, `SoundDef` with Ogg bytes, `register_model`, `register_sound`), read by `data_mods` from a new `targets.toml`, so the client builds them like any other content and the simulation never looks inside.
+- **Controls:** `break`/`place` became `use`/`alt_use` (old names still read, so personal files keep working); `PlayerInput` fields are now `use_*`/`alt_*`, plus `tool`. New key `respawn_targets` (F6), added to the user's controls file.
+- **Swing in `sim`:** wind-up, strike, recover; the strike is aimed on the tick it lands, and solid blocks cut its reach. Hits are reported as `Strike` events the client drains. A solid block can't be placed into a target.
+- **Hit-stop** pauses simulation ticks in the client (skipped, not made up). Fine for one player; multiplayer will need something else (deferred).
+- **The cow's box** is 0.9 wide and 1.3 tall around the body; the head pokes out the front, so hits on the head rely on the tool's radius.
+- **Tests:** 283 pass across the workspace, clippy clean. New: target physics (falling, settling, sliding further on ice, walls, breaking and respawn, knockback by weight, nearest target, the tool's radius), swing timing through the simulation with the base club and cows, walls cutting a strike, a tool swinging and guarding instead of editing, no block placed into a cow, models/sounds/targets read from `targets.toml` with file-and-line errors, editing the cow's numbers, the palette's tools before blocks, controls' new names, hit-stop and view kick, a hit tumbling a target away, and the ghost being knocked back and dazed. Checked by screenshot: the cow draws with its texture, flashes white on a hit and tumbles away; the club shows in hand.
+
+*Plan change at Verify* (2026-10-31, "do your recommended set engage"). After first play: "the head has no colision, and the cows feel floaty like MC. so we want a combat system thats exprisive with a higher skill celing."
+- **Hit boxes:** a target lists named boxes in its model's space (turned with its facing), each with a damage multiplier; swings test those, terrain collision keeps the simple box. Exact hits beat near misses, so aiming at the head gets the head.
+- **Head hits:** the cow's head does double damage, with a bigger hit-stop, a different flash and a higher moo.
+- **Less floaty:** air drag on targets, heavier gravity, more push and less lift; a hard landing squashes the target and kicks up dust; a **wall slam** (knocked into a wall fast) deals damage by impact speed with its own juice.
+- **Momentum into the hit:** the player's speed toward the target adds to the knockback and the damage, so sprinting, falling or block-jumping into a swing hits harder.
+- **Feedback:** the last hit's damage and why (head, carried speed, slam) shows under the crosshair; the Tab panel open draws the hit boxes.
+- Deferred to later: swing direction from the mouse, air combos, the sweet spot, recovery cancels, charged swings.
+- *Built* (2026-10-31): `api::HitBox` and `TargetDef::{hit_boxes, air_drag, slam_speed, slam_damage}`, `ToolDef::{momentum, momentum_damage}`, `[[target.hit_box]]` in `targets.toml`. Strikes test each box in the target's turned space; hits report the zone and the speed carried. Momentum is the player's speed along the look; moving away adds nothing. Slams are horizontal only and come out as `Slam` events. Hit boxes turn with the facing but not with the drawn tumble. Cow retuned: gravity 40, ground drag 9, air drag 3, slams from 4 m/s at 2 damage per m/s over; club knockback 22, lift 4, momentum 0.8, 0.5 damage per m/s. Landing dust and squash are client-only. 292 tests pass, clippy clean.
+
+**Closed** (2026-10-31)
+- **Decisions:** Skyrim-style controls: whatever is held has a main use (left click) and a second use (right click); tools come before blocks in the palette. Targets get named hit boxes with damage multipliers, separate from their collision box. Combat rewards aim (head hits), speed carried into a swing, and knocking targets into walls. Creature models may be borrowed CC0 art, credited in the mod's `CREDITS.md`; block looks stay procedural. Hit-stop pauses the simulation, which only works single-player.
+- **Deferred:** final tuning, until toys with enemies, tools and movement give it something to be tuned against (the user's call); swing direction from the mouse, air combos, a sweet spot at full reach, recovery cancels, charged swings (backlog: Combat depth); what the guard does; hit boxes following the drawn tumble; targets colliding with the player and each other; hit-stop for multiplayer; the palette line wrapping into the trainer's label.
+- **API debt:** new: tool look in the client. Grown: camera feel (hit-stop, kick, shake) and the chase drill (ghost hits).
 
 #### Solid materials (branch `toy-solid-materials`)
 
