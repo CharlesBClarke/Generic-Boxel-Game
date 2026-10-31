@@ -3,7 +3,7 @@
 use std::collections::HashMap;
 
 use api::block::is_valid_name;
-use api::{ApiError, BlockBox, BlockDef, TextureDef};
+use api::{ApiError, BlockBox, BlockDef, LookDef};
 
 /// Volume units in a full boxel: one per sixteenth cubed. Amounts of material count in these,
 /// so a slab's worth is a whole number.
@@ -166,29 +166,28 @@ pub fn volume(shape: &[BlockBox]) -> u32 {
     filled.iter().filter(|&&f| f).count() as u32
 }
 
-/// Textures by name, in registration order. The simulation never draws them; it keeps them
-/// so clients, and later the network, can get every mod's textures from one place.
+/// Looks by name, in registration order. The simulation never draws them; it keeps them so
+/// clients, and later the network, can get every mod's looks from one place.
 #[derive(Default)]
-pub struct TextureRegistry {
-    defs: Vec<TextureDef>,
+pub struct LookRegistry {
+    defs: Vec<LookDef>,
     by_name: HashMap<String, usize>,
 }
 
-impl TextureRegistry {
-    pub fn register(&mut self, def: TextureDef) -> Result<(), ApiError> {
+impl LookRegistry {
+    pub fn register(&mut self, def: LookDef) -> Result<(), ApiError> {
         if !is_valid_name(&def.name) {
             return Err(ApiError::InvalidName(def.name));
         }
         if self.by_name.contains_key(&def.name) {
             return Err(ApiError::DuplicateName(def.name));
         }
-        let expected = def.width as usize * def.height as usize * 4;
-        if def.width == 0 || def.height == 0 || def.rgba.len() != expected {
+        let expected = LookDef::VOLUME * 4;
+        if def.rgba.len() != expected {
+            let size = LookDef::SIZE;
             return Err(ApiError::InvalidDef(format!(
-                "texture {:?} is {}×{} but has {} bytes, expected {expected}",
+                "look {:?} has {} bytes, expected {expected} for {size}×{size}×{size} texels",
                 def.name,
-                def.width,
-                def.height,
                 def.rgba.len()
             )));
         }
@@ -197,22 +196,22 @@ impl TextureRegistry {
         Ok(())
     }
 
-    pub fn get(&self, name: &str) -> Option<&TextureDef> {
+    pub fn get(&self, name: &str) -> Option<&LookDef> {
         self.by_name.get(name).map(|&i| &self.defs[i])
     }
 
-    /// Every texture, in registration order.
-    pub fn iter(&self) -> impl Iterator<Item = &TextureDef> {
+    /// Every look, in registration order.
+    pub fn iter(&self) -> impl Iterator<Item = &LookDef> {
         self.defs.iter()
     }
 
-    /// Checks that every texture a block names is registered.
+    /// Checks that every look a block names is registered.
     pub fn check_blocks(&self, blocks: &BlockRegistry) -> Result<(), ApiError> {
         for (_, def) in blocks.iter() {
-            for name in def.textures.iter().flat_map(|t| t.names()) {
-                if self.get(name).is_none() {
-                    return Err(ApiError::UnknownTexture(name.to_owned()));
-                }
+            if let Some(name) = &def.look
+                && self.get(name).is_none()
+            {
+                return Err(ApiError::UnknownLook(name.clone()));
             }
         }
         Ok(())
@@ -222,7 +221,6 @@ impl TextureRegistry {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use api::FaceTextures;
 
     fn stone() -> BlockDef {
         BlockDef::new("test:stone", true, [128, 128, 128])
@@ -311,35 +309,32 @@ mod tests {
         assert!(matches!(reg.register(bad), Err(ApiError::InvalidDef(_))));
     }
 
-    fn texture(name: &str) -> TextureDef {
-        TextureDef { name: name.into(), width: 2, height: 1, rgba: vec![255; 8] }
+    fn look(name: &str) -> LookDef {
+        LookDef { name: name.into(), turns: false, rgba: vec![255; LookDef::VOLUME * 4] }
     }
 
     #[test]
-    fn textures_look_up_by_name_and_check_their_size() {
-        let mut reg = TextureRegistry::default();
-        reg.register(texture("test:stone")).unwrap();
-        assert_eq!(reg.get("test:stone").unwrap().width, 2);
+    fn looks_look_up_by_name_and_check_their_size() {
+        let mut reg = LookRegistry::default();
+        reg.register(look("test:stone")).unwrap();
+        assert!(reg.get("test:stone").is_some());
         assert!(reg.get("test:dirt").is_none());
-        assert_eq!(reg.register(texture("test:stone")), Err(ApiError::DuplicateName("test:stone".into())));
-        assert_eq!(reg.register(texture("stone")), Err(ApiError::InvalidName("stone".into())));
-        let short = TextureDef { rgba: vec![0; 7], ..texture("test:short") };
+        assert_eq!(reg.register(look("test:stone")), Err(ApiError::DuplicateName("test:stone".into())));
+        assert_eq!(reg.register(look("stone")), Err(ApiError::InvalidName("stone".into())));
+        let short = LookDef { rgba: vec![0; 7], ..look("test:short") };
         assert!(matches!(reg.register(short), Err(ApiError::InvalidDef(_))));
-        let empty = TextureDef { width: 0, rgba: Vec::new(), ..texture("test:empty") };
-        assert!(matches!(reg.register(empty), Err(ApiError::InvalidDef(_))));
     }
 
     #[test]
-    fn blocks_must_name_registered_textures() {
-        let mut textures = TextureRegistry::default();
-        textures.register(texture("test:stone")).unwrap();
+    fn blocks_must_name_registered_looks() {
+        let mut looks = LookRegistry::default();
+        looks.register(look("test:stone")).unwrap();
         let mut blocks = BlockRegistry::default();
-        blocks.register(stone().with_textures(FaceTextures::all("test:stone"))).unwrap();
+        blocks.register(stone().with_look("test:stone")).unwrap();
         blocks.register(BlockDef::new("test:plain", true, [1, 2, 3])).unwrap();
-        assert_eq!(textures.check_blocks(&blocks), Ok(()));
+        assert_eq!(looks.check_blocks(&blocks), Ok(()));
 
-        let grass = FaceTextures { top: "test:grass".into(), ..FaceTextures::all("test:stone") };
-        blocks.register(BlockDef::new("test:grass", true, [0, 0, 0]).with_textures(grass)).unwrap();
-        assert_eq!(textures.check_blocks(&blocks), Err(ApiError::UnknownTexture("test:grass".into())));
+        blocks.register(BlockDef::new("test:grass", true, [0, 0, 0]).with_look("test:grass")).unwrap();
+        assert_eq!(looks.check_blocks(&blocks), Err(ApiError::UnknownLook("test:grass".into())));
     }
 }

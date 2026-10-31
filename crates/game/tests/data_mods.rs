@@ -61,9 +61,31 @@ fn a_broken_data_file_is_a_readable_error() {
 }
 
 #[test]
-fn a_block_naming_a_texture_no_mod_has_is_an_error() {
-    let copy = Copy::new("other_mod_texture");
-    copy.edit("blocks.toml", "textures = \"brick\"", "textures = \"other:brick\"");
+fn a_block_naming_a_look_no_mod_has_is_an_error() {
+    let copy = Copy::new("other_mod_look");
+    copy.edit("blocks.toml", "look = \"brick\"", "look = \"other:brick\"");
     let err = game::load_from(&copy.0, Movement::Native).err().expect("loading fails").to_string();
-    assert_eq!(err, "no texture named \"other:brick\"");
+    assert_eq!(err, "no look named \"other:brick\"");
+}
+
+#[test]
+fn editing_a_recipe_changes_the_look() {
+    let before = game::load_from(Path::new(base::DATA_DIR), Movement::Native).expect("the base mod loads");
+    let copy = Copy::new("recipe");
+    copy.edit("blocks.toml", "scale = 2, seed = 1", "scale = 2, seed = 99");
+    let after = game::load_from(&copy.0, Movement::Native).expect("the edited mod loads");
+    let stone = |sim: &sim::Simulation| sim.looks().get(base::STONE).unwrap().rgba.clone();
+    assert_ne!(stone(&before), stone(&after), "a new seed gives new speckle");
+    assert_eq!(before.looks().get("base:brick"), after.looks().get("base:brick"), "other looks stay the same");
+}
+
+#[test]
+fn a_broken_recipe_names_its_line() {
+    let copy = Copy::new("broken_recipe");
+    copy.edit("blocks.toml", "bricks = { length = 8,", "bricks = { length = 5,");
+    let err = game::load_from(&copy.0, Movement::Native).err().expect("loading fails").to_string();
+    let text = fs::read_to_string(copy.0.join("blocks.toml")).unwrap();
+    let line = text.lines().position(|l| l == "[looks.brick]").unwrap() + 1;
+    assert!(err.starts_with(&format!("{}:{line}: ", copy.0.join("blocks.toml").display())), "{err}");
+    assert!(err.contains("look \"brick\"") && err.contains("divide"), "{err}");
 }

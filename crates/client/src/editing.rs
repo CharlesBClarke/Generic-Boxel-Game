@@ -11,8 +11,9 @@ use bevy::prelude::*;
 use bevy::window::{CursorGrabMode, CursorOptions, PrimaryWindow};
 use sim::{BlockId, BlockRegistry, FACE_CENTER, Occupant, face_region, occupant_boxes};
 
-use crate::atlas::Atlas;
 use crate::controls::Controls;
+use crate::solid::SolidMaterial;
+use crate::volumes::Volumes;
 use crate::{ChunkMesh, Look, PendingToggles, RenderOrigin, Sim, coords, mesher};
 
 /// Scroll distance, in pixels, that moves the palette one slot on touchpads and other
@@ -41,11 +42,12 @@ pub fn placeable_blocks(blocks: &BlockRegistry) -> Vec<BlockId> {
     blocks.iter().filter(|(_, def)| def.placeable).map(|(id, _)| id).collect()
 }
 
-/// The mesh entity for each chunk that has geometry, and the material and atlas they share.
+/// The mesh entity for each chunk that has geometry, and the material and look volumes they
+/// share.
 #[derive(Resource)]
 pub(crate) struct ChunkMeshes {
-    pub material: Handle<StandardMaterial>,
-    pub atlas: Atlas,
+    pub material: Handle<SolidMaterial>,
+    pub volumes: Volumes,
     pub entities: HashMap<ChunkPos, Entity>,
 }
 
@@ -180,8 +182,8 @@ pub(crate) fn region_corners(region: Option<[i32; 3]>, axis: usize) -> Vec<(f32,
 #[derive(Resource)]
 pub(crate) struct Ghost {
     pub entity: Entity,
-    pub allowed: Handle<StandardMaterial>,
-    pub refused: Handle<StandardMaterial>,
+    pub allowed: Handle<SolidMaterial>,
+    pub refused: Handle<SolidMaterial>,
     /// The occupant its mesh was built for.
     pub shown: Option<Occupant>,
 }
@@ -201,7 +203,7 @@ pub(crate) fn update_ghost(
     chunk_meshes: Res<ChunkMeshes>,
     mut ghost: ResMut<Ghost>,
     mut meshes: ResMut<Assets<Mesh>>,
-    mut parts: Query<(&mut Mesh3d, &mut MeshMaterial3d<StandardMaterial>, &mut Transform, &mut Visibility)>,
+    mut parts: Query<(&mut Mesh3d, &mut MeshMaterial3d<SolidMaterial>, &mut Transform, &mut Visibility)>,
 ) {
     let Ok((mut mesh, mut material, mut transform, mut visibility)) = parts.get_mut(ghost.entity) else {
         return;
@@ -219,7 +221,7 @@ pub(crate) fn update_ghost(
     if ghost.shown != Some(place.occupant) {
         let mut data = mesher::MeshData::default();
         // Built around the boxel's center, so scaling shrinks it in place.
-        mesher::mesh_occupant(&mut data, place.occupant, [-0.5; 3], blocks, &chunk_meshes.atlas, |_| false, &mut Vec::new());
+        mesher::mesh_occupant(&mut data, place.occupant, [-0.5; 3], blocks, &chunk_meshes.volumes, |_| false, &mut Vec::new());
         mesh.0 = meshes.add(crate::to_bevy_mesh(data));
         ghost.shown = Some(place.occupant);
     }
@@ -244,7 +246,7 @@ pub(crate) fn remesh_changed_chunks(
     let changed = sim.0.take_changed_chunks();
     let grid = sim.0.universe().main();
     for pos in changed {
-        let data = mesher::mesh_chunk(grid, pos, sim.0.blocks(), &chunk_meshes.atlas);
+        let data = mesher::mesh_chunk(grid, pos, sim.0.blocks(), &chunk_meshes.volumes);
         match chunk_meshes.entities.get(&pos).copied() {
             Some(entity) if data.is_empty() => {
                 commands.entity(entity).despawn();
@@ -362,14 +364,14 @@ mod tests {
         let hit = sim.target(yaw, pitch).unwrap();
         assert_eq!(sim.universe().main().cell(hit.pos)[hit.occupant].block, fence);
 
-        let atlas = Atlas::build(sim.textures(), sim.blocks());
+        let volumes = Volumes::build(sim.looks(), sim.blocks());
         let chunk = ChunkPos::new(-1, -1, 0);
-        let before = mesher::mesh_chunk(sim.universe().main(), chunk, sim.blocks(), &atlas).quad_count();
+        let before = mesher::mesh_chunk(sim.universe().main(), chunk, sim.blocks(), &volumes).quad_count();
         sim.step(&PlayerInput { yaw, pitch, break_pressed: true, break_held: true, ..Default::default() });
         let left: Vec<_> = sim.universe().main().cell(cell).iter().map(|o| o.block).collect();
         assert_eq!(left, [slab]);
         assert!(sim.take_changed_chunks().contains(&chunk));
-        let after = mesher::mesh_chunk(sim.universe().main(), chunk, sim.blocks(), &atlas).quad_count();
+        let after = mesher::mesh_chunk(sim.universe().main(), chunk, sim.blocks(), &volumes).quad_count();
         assert_eq!(after, before - 5, "the post's faces are gone; its bottom was already hidden by the floor");
     }
 
@@ -380,8 +382,8 @@ mod tests {
         sim.spawn_player().unwrap();
         sim.teleport_player(WorldPos::new(I64Vec3::new(10, 10, 0), ZVec3::new(0.5, 0.5, 0.0)));
         let below = ChunkPos::new(0, 0, -1);
-        let atlas = Atlas::build(sim.textures(), sim.blocks());
-        let before = mesher::mesh_chunk(sim.universe().main(), below, sim.blocks(), &atlas).quad_count();
+        let volumes = Volumes::build(sim.looks(), sim.blocks());
+        let before = mesher::mesh_chunk(sim.universe().main(), below, sim.blocks(), &volumes).quad_count();
 
         let down = -89f32.to_radians();
         sim.step(&PlayerInput { pitch: down, break_pressed: true, break_held: true, ..Default::default() });
@@ -391,7 +393,7 @@ mod tests {
         assert!(changed.contains(&ChunkPos::new(0, 0, 0)));
 
         // One top face gone; four side faces and the floor of the hole appear.
-        let after = mesher::mesh_chunk(sim.universe().main(), below, sim.blocks(), &atlas).quad_count();
+        let after = mesher::mesh_chunk(sim.universe().main(), below, sim.blocks(), &volumes).quad_count();
         assert_eq!(after, before + 4);
     }
 }

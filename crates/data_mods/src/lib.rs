@@ -1,20 +1,22 @@
 //! Data mods: content defined in files rather than code. A mod folder holds
 //!
 //! - `mod.toml`: the mod's `name` (its namespace), `version` and an optional `description`.
-//! - `blocks.toml`: `[[block]]` entries, and a `[shapes]` table of named shapes they can share.
-//! - `textures/*.png`: each registered as `<namespace>:<file stem>`.
+//! - `blocks.toml`: `[[block]]` entries, a `[shapes]` table of named shapes they can share, and
+//!   `[looks.<name>]` recipes for how blocks look, generated into solid volumes (see [`looks`]).
 //!
 //! [`load`] reads a folder into a [`DataMod`], an ordinary [`Mod`] that registers its content
 //! through the same API as code. Mistakes are reported with the file and line, and unknown
 //! fields are errors, so a typo is never silently ignored.
 
-use std::collections::HashMap;
+mod looks;
+
+use std::collections::{BTreeMap, HashMap};
 use std::fmt;
 use std::fs;
 use std::path::{Path, PathBuf};
 
 use api::block::is_valid_name;
-use api::{ApiError, BlockBox, BlockDef, FaceTextures, Mod, Registrar, TextureDef, Turning};
+use api::{ApiError, BlockBox, BlockDef, LookDef, Mod, Registrar, Turning};
 use serde::Deserialize;
 use toml::Spanned;
 
@@ -24,7 +26,7 @@ pub struct DataMod {
     name: String,
     version: String,
     description: String,
-    textures: Vec<TextureDef>,
+    looks: Vec<LookDef>,
     blocks: Vec<BlockDef>,
 }
 
@@ -37,9 +39,9 @@ impl DataMod {
         &self.description
     }
 
-    /// Textures, in file name order.
-    pub fn textures(&self) -> &[TextureDef] {
-        &self.textures
+    /// Looks, in name order.
+    pub fn looks(&self) -> &[LookDef] {
+        &self.looks
     }
 
     /// Blocks, in file order.
@@ -54,8 +56,8 @@ impl Mod for DataMod {
     }
 
     fn register(&self, r: &mut dyn Registrar) -> Result<(), ApiError> {
-        for texture in &self.textures {
-            r.register_texture(texture.clone())?;
+        for look in &self.looks {
+            r.register_look(look.clone())?;
         }
         for block in &self.blocks {
             r.register_block(block.clone())?;
@@ -98,6 +100,8 @@ struct BlocksFile {
     #[serde(default)]
     shapes: HashMap<String, Spanned<Vec<[u8; 6]>>>,
     #[serde(default)]
+    looks: BTreeMap<String, Spanned<looks::Recipe>>,
+    #[serde(default)]
     block: Vec<BlockEntry>,
 }
 
@@ -112,12 +116,10 @@ struct BlockEntry {
     #[serde(default = "yes")]
     placeable: bool,
     color: Option<[u8; 3]>,
-    textures: Option<Spanned<Textures>>,
+    look: Option<Spanned<String>>,
     shape: Option<Spanned<Shape>>,
     #[serde(default)]
     turning: TurningName,
-    #[serde(default)]
-    turn_textures: bool,
     material: Option<Spanned<String>>,
 }
 
@@ -154,21 +156,6 @@ fn yes() -> bool {
 
 fn one() -> Spanned<f32> {
     Spanned::new(0..0, 1.0)
-}
-
-#[derive(Deserialize)]
-#[serde(untagged, expecting = "a texture name, or a table with top, bottom and side")]
-enum Textures {
-    All(String),
-    Faces(Faces),
-}
-
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct Faces {
-    top: String,
-    bottom: String,
-    side: String,
 }
 
 /// One file being read, for errors that point at a line in it.
@@ -215,66 +202,43 @@ pub fn load(dir: &Path) -> Result<DataMod, LoadError> {
         return Err(manifest_file.error_at(&manifest.name, message));
     }
 
-    let textures = load_textures(&dir.join("textures"), &namespace)?;
-
     let blocks_path = dir.join("blocks.toml");
-    let blocks = if blocks_path.exists() {
+    let (looks, blocks) = if blocks_path.exists() {
         let file = Source::read(blocks_path)?;
         let entries: BlocksFile = file.parse()?;
         let mut shapes = HashMap::new();
         for (name, boxes) in &entries.shapes {
             shapes.insert(name.as_str(), to_boxes(&file, boxes, &format!("shape {name:?}"))?);
         }
-        entries
+        let mut looks = Vec::new();
+        for (short, recipe) in &entries.looks {
+            let name = format!("{namespace}:{short}");
+            if !is_valid_name(&name) {
+                let message = format!("invalid look name {short:?}: use lowercase letters, digits and underscores");
+                return Err(file.error_at(recipe, message));
+            }
+            let rgba = recipe.get_ref().generate().map_err(|e| file.error_at(recipe, format!("look {short:?}: {e}")))?;
+            looks.push(LookDef { name, turns: recipe.get_ref().turns, rgba });
+        }
+        let blocks = entries
             .block
             .into_iter()
-            .map(|entry| block_def(&file, &namespace, &textures, &shapes, entry))
-            .collect::<Result<_, _>>()?
+            .map(|entry| block_def(&file, &namespace, &looks, &shapes, entry))
+            .collect::<Result<_, _>>()?;
+        (looks, blocks)
     } else {
-        Vec::new()
+        (Vec::new(), Vec::new())
     };
 
-    Ok(DataMod { name: namespace, version: manifest.version, description: manifest.description, textures, blocks })
-}
-
-/// Reads every PNG in `dir`, in file name order. A missing folder means no textures.
-fn load_textures(dir: &Path, namespace: &str) -> Result<Vec<TextureDef>, LoadError> {
-    let Ok(entries) = fs::read_dir(dir) else {
-        return Ok(Vec::new());
-    };
-    let error = |path: &Path, message: String| LoadError { path: path.to_owned(), line: None, message };
-    let mut paths = Vec::new();
-    for entry in entries {
-        let path = entry.map_err(|e| error(dir, e.to_string()))?.path();
-        if path.extension().is_some_and(|e| e == "png") {
-            paths.push(path);
-        }
-    }
-    paths.sort();
-    paths
-        .into_iter()
-        .map(|path| {
-            let stem = path.file_stem().and_then(|s| s.to_str()).unwrap_or_default();
-            let name = format!("{namespace}:{stem}");
-            if !is_valid_name(&name) {
-                let message = format!("invalid texture name {stem:?}: use lowercase letters, digits and underscores");
-                return Err(error(&path, message));
-            }
-            let bytes = fs::read(&path).map_err(|e| error(&path, e.to_string()))?;
-            let image = image::load_from_memory_with_format(&bytes, image::ImageFormat::Png)
-                .map_err(|e| error(&path, format!("not a readable PNG: {e}")))?
-                .to_rgba8();
-            Ok(TextureDef { name, width: image.width(), height: image.height(), rgba: image.into_raw() })
-        })
-        .collect()
+    Ok(DataMod { name: namespace, version: manifest.version, description: manifest.description, looks, blocks })
 }
 
 /// Turns one `[[block]]` entry into a definition. Names are short in the file and get the
-/// mod's namespace; texture names may also name another mod's texture in full.
+/// mod's namespace; a look may also name another mod's look in full.
 fn block_def(
     file: &Source,
     namespace: &str,
-    textures: &[TextureDef],
+    looks: &[LookDef],
     shapes: &HashMap<&str, Vec<BlockBox>>,
     entry: BlockEntry,
 ) -> Result<BlockDef, LoadError> {
@@ -291,33 +255,26 @@ fn block_def(
         return Err(file.error_at(&entry.friction, format!("friction must be 0 or more, not {friction}")));
     }
 
-    let faces = match &entry.textures {
+    let look = match &entry.look {
         None => None,
         Some(spanned) => {
-            let qualify = |t: &str| -> Result<String, LoadError> {
-                let full = if t.contains(':') { t.to_owned() } else { format!("{namespace}:{t}") };
-                // Only this mod's own textures can be checked now; others once every mod has loaded.
-                let own = full.strip_prefix(namespace).is_some_and(|rest| rest.starts_with(':'));
-                if !is_valid_name(&full) || (own && !textures.iter().any(|d| d.name == full)) {
-                    let message = format!("block {short:?} names texture {t:?}, but there is no textures/{t}.png");
-                    return Err(file.error_at(spanned, message));
-                }
-                Ok(full)
-            };
-            Some(match spanned.get_ref() {
-                Textures::All(t) => FaceTextures::all(qualify(t)?),
-                Textures::Faces(f) => {
-                    FaceTextures { top: qualify(&f.top)?, bottom: qualify(&f.bottom)?, side: qualify(&f.side)? }
-                }
-            })
+            let l = spanned.get_ref();
+            let full = if l.contains(':') { l.clone() } else { format!("{namespace}:{l}") };
+            // Only this mod's own looks can be checked now; others once every mod has loaded.
+            let own = full.strip_prefix(namespace).is_some_and(|rest| rest.starts_with(':'));
+            if !is_valid_name(&full) || (own && !looks.iter().any(|d| d.name == full)) {
+                let message = format!("block {short:?} names look {l:?}, but there is no [looks.{l}]");
+                return Err(file.error_at(spanned, message));
+            }
+            Some(full)
         }
     };
 
-    let color = match (entry.color, &faces) {
+    let color = match (entry.color, &look) {
         (Some(color), _) => color,
-        (None, Some(faces)) => textures.iter().find(|t| t.name == faces.side).map_or([128; 3], average_color),
+        (None, Some(look)) => looks.iter().find(|d| d.name == *look).map_or([128; 3], LookDef::average),
         (None, None) => {
-            return Err(file.error_at(&entry.name, format!("block {short:?} needs a color or textures")));
+            return Err(file.error_at(&entry.name, format!("block {short:?} needs a color or a look")));
         }
     };
 
@@ -352,9 +309,8 @@ fn block_def(
         .with_placeable(entry.placeable)
         .with_shape(shape)
         .with_turning(entry.turning.into())
-        .with_turn_textures(entry.turn_textures)
         .with_material(material);
-    def.textures = faces;
+    def.look = look;
     Ok(def)
 }
 
@@ -382,21 +338,6 @@ fn to_boxes(file: &Source, boxes: &Spanned<Vec<[u8; 6]>>, what: &str) -> Result<
         .collect()
 }
 
-/// The average color of a texture's visible pixels, for wherever a block is drawn as one color.
-fn average_color(t: &TextureDef) -> [u8; 3] {
-    let (mut sum, mut count) = ([0u64; 3], 0u64);
-    for px in t.rgba.as_chunks::<4>().0.iter().filter(|px| px[3] > 0) {
-        for (s, &c) in sum.iter_mut().zip(px) {
-            *s += c as u64;
-        }
-        count += 1;
-    }
-    match count {
-        0 => [128; 3],
-        n => sum.map(|s| (s / n) as u8),
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -408,19 +349,12 @@ mod tests {
         fn new(test: &str) -> Self {
             let dir = std::env::temp_dir().join(format!("boxel_data_mods_{}_{test}", std::process::id()));
             let _ = fs::remove_dir_all(&dir);
-            fs::create_dir_all(dir.join("textures")).unwrap();
+            fs::create_dir_all(&dir).unwrap();
             Folder(dir)
         }
 
         fn write(&self, name: &str, contents: impl AsRef<[u8]>) -> &Self {
             fs::write(self.0.join(name), contents).unwrap();
-            self
-        }
-
-        /// A 2×2 PNG, all one color.
-        fn png(&self, name: &str, rgba: [u8; 4]) -> &Self {
-            let image = image::RgbaImage::from_pixel(2, 2, image::Rgba(rgba));
-            image.save(self.0.join("textures").join(format!("{name}.png"))).unwrap();
             self
         }
 
@@ -437,19 +371,30 @@ mod tests {
 
     const MANIFEST: &str = "name = \"test\"\nversion = \"0.1.0\"\n";
 
+    /// A one-color look named `stone`, for blocks to name.
+    const STONE_LOOK: &str = "[looks.stone]\nnoise = { colors = [[100, 100, 100]] }\n\n";
+
     #[test]
-    fn reads_blocks_and_textures() {
+    fn reads_blocks_and_looks() {
         let folder = Folder::new("good");
-        folder.write("mod.toml", MANIFEST).png("stone", [100, 100, 100, 255]).png("grass", [0, 200, 0, 255]).write(
+        folder.write("mod.toml", MANIFEST).write(
             "blocks.toml",
             r#"
+                [looks.stone]
+                noise = { colors = [[100, 100, 100]] }
+
+                [looks.grass]
+                noise = { colors = [[120, 80, 50]] }
+                top = { colors = [[60, 140, 40]], depth = 2 }
+
                 [[block]]
                 name = "stone"
-                textures = "stone"
+                look = "stone"
 
                 [[block]]
                 name = "grass"
-                textures = { top = "grass", bottom = "stone", side = "grass" }
+                look = "grass"
+                color = [0, 200, 0]
 
                 [[block]]
                 name = "ice"
@@ -462,18 +407,17 @@ mod tests {
         let m = folder.load().unwrap();
         assert_eq!(m.name(), "test");
         assert_eq!(m.version(), "0.1.0");
-        let names: Vec<_> = m.textures().iter().map(|t| (t.name.as_str(), t.width, t.height)).collect();
-        assert_eq!(names, [("test:grass", 2, 2), ("test:stone", 2, 2)]);
-        assert_eq!(m.textures()[1].rgba, [100, 100, 100, 255].repeat(4));
+        let names: Vec<_> = m.looks().iter().map(|l| l.name.as_str()).collect();
+        assert_eq!(names, ["test:grass", "test:stone"]);
+        assert_eq!(m.looks()[1].rgba, [100, 100, 100, 255].repeat(LookDef::VOLUME));
+        assert_eq!(m.looks()[0].texel(0, 0, LookDef::SIZE - 1), [60, 140, 40, 255], "grass on top");
+        assert!(m.looks().iter().all(|l| !l.turns), "looks stay lined up with the world by default");
 
         let [stone, grass, ice] = m.blocks() else { panic!("three blocks") };
         assert_eq!(stone.name, "test:stone");
-        assert_eq!(stone.textures, Some(FaceTextures::all("test:stone")));
-        assert_eq!(stone.color, [100, 100, 100], "color defaults to the side texture's average");
-        assert_eq!(
-            grass.textures,
-            Some(FaceTextures { top: "test:grass".into(), bottom: "test:stone".into(), side: "test:grass".into() })
-        );
+        assert_eq!(stone.look.as_deref(), Some("test:stone"));
+        assert_eq!(stone.color, [100, 100, 100], "color defaults to the look's average");
+        assert_eq!((grass.look.as_deref(), grass.color), (Some("test:grass"), [0, 200, 0]));
         let plain_ice = BlockDef::new("test:ice", false, [170, 210, 240]).with_friction(0.1).with_placeable(false);
         assert_eq!(*ice, plain_ice.with_material("test:ice"), "a block is its own material by default");
     }
@@ -503,17 +447,16 @@ mod tests {
                 name = "log"
                 color = [1, 2, 3]
                 turning = "axis"
-                turn_textures = true
             "#,
         );
         let m = folder.load().unwrap();
         let [slab, stairs, log] = m.blocks() else { panic!("three blocks") };
         assert_eq!(slab.shape, [BlockBox::new([0, 0, 0], [16, 16, 8])]);
-        assert_eq!((slab.turning, slab.turn_textures), (Turning::Any, false));
+        assert_eq!(slab.turning, Turning::Any);
         assert_eq!(stairs.shape.len(), 2);
         assert_eq!(stairs.turning, Turning::Any);
         assert!(log.is_full());
-        assert_eq!((log.turning, log.turn_textures), (Turning::Axis, true));
+        assert_eq!(log.turning, Turning::Axis);
     }
 
     #[test]
@@ -555,18 +498,18 @@ mod tests {
     }
 
     #[test]
-    fn another_mods_texture_is_left_for_the_engine_to_check() {
-        let folder = Folder::new("other_mod_texture");
-        folder.write("mod.toml", MANIFEST).write("blocks.toml", "[[block]]\nname = \"a\"\ntextures = \"base:stone\"\n");
+    fn another_mods_look_is_left_for_the_engine_to_check() {
+        let folder = Folder::new("other_mod_look");
+        folder.write("mod.toml", MANIFEST).write("blocks.toml", "[[block]]\nname = \"a\"\nlook = \"base:stone\"\n");
         let m = folder.load().unwrap();
-        assert_eq!(m.blocks()[0].textures, Some(FaceTextures::all("base:stone")));
+        assert_eq!(m.blocks()[0].look.as_deref(), Some("base:stone"));
     }
 
     /// Loads a mod whose `blocks.toml` is `blocks` and returns the error, checking it names
     /// the file and `line`.
     fn blocks_error(test: &str, blocks: &str, line: usize) -> String {
         let folder = Folder::new(test);
-        folder.write("mod.toml", MANIFEST).png("stone", [1, 2, 3, 255]).write("blocks.toml", blocks);
+        folder.write("mod.toml", MANIFEST).write("blocks.toml", blocks);
         let err = folder.load().unwrap_err();
         assert_eq!(err.path, folder.0.join("blocks.toml"));
         assert_eq!(err.line, Some(line), "{err}");
@@ -580,13 +523,21 @@ mod tests {
     }
 
     #[test]
-    fn a_missing_texture_is_an_error() {
-        let err = blocks_error(
-            "missing_texture",
-            "[[block]]\nname = \"a\"\ntextures = \"stone\"\n\n[[block]]\nname = \"b\"\ntextures = { top = \"stone\", bottom = \"stone\", side = \"wood\" }\n",
-            7,
-        );
-        assert!(err.contains("textures/wood.png"), "{err}");
+    fn a_missing_look_is_an_error() {
+        let err = blocks_error("missing_look", &format!("{STONE_LOOK}[[block]]\nname = \"a\"\nlook = \"wood\"\n"), 6);
+        assert!(err.contains("no [looks.wood]"), "{err}");
+    }
+
+    /// Errors in a recipe point at its `[looks.<name>]` line.
+    #[test]
+    fn a_broken_recipe_is_an_error() {
+        let err = blocks_error("empty_colors", "[looks.stone]\nnoise = { colors = [] }\n", 1);
+        assert!(err.contains("look \"stone\"") && err.contains("at least one color"), "{err}");
+        let err = blocks_error("two_bases", &format!("{STONE_LOOK}[looks.b]\nnoise = {{ colors = [[1, 1, 1]] }}\nrings = {{ colors = [[1, 1, 1]], spacing = 2, bark = [[0, 0, 0]] }}\n"), 4);
+        assert!(err.contains("exactly one"), "{err}");
+        let err = blocks_error("unknown_recipe_field", "[looks.stone]\nnoise = { colors = [[1, 1, 1]], scael = 2 }\n", 2);
+        assert!(err.contains("scael"), "{err}");
+        blocks_error("bad_look_name", "[looks.Stone]\nnoise = { colors = [[1, 1, 1]] }\n", 1);
     }
 
     #[test]
@@ -601,17 +552,7 @@ mod tests {
     fn other_mistakes_are_errors() {
         blocks_error("no_look", "[[block]]\nname = \"a\"\n", 2);
         blocks_error("bad_friction", "[[block]]\nname = \"a\"\ncolor = [1, 2, 3]\nfriction = -1.0\n", 4);
-        blocks_error("bad_textures", "[[block]]\nname = \"a\"\ntextures = { top = \"stone\" }\n", 3);
         blocks_error("bad_toml", "[[block]\nname = \"a\"\n", 1);
-    }
-
-    #[test]
-    fn a_broken_png_is_an_error() {
-        let folder = Folder::new("broken_png");
-        folder.write("mod.toml", MANIFEST).write("textures/stone.png", b"not a png");
-        let err = folder.load().unwrap_err();
-        assert_eq!(err.path, folder.0.join("textures/stone.png"));
-        assert!(err.message.contains("PNG"), "{err}");
     }
 
     #[test]

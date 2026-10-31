@@ -104,12 +104,14 @@ A run of small toy slices. Each one takes a single game-feel feature that doesn'
 
 ### Current toy
 
-None. Suggested next: Inventory and items, which builds straight on the materials and the pickup counter from Loose items.
+None. Suggested next: Inventory and items, which builds straight on the materials and the pickup counter from Loose items, and now has real looks to show.
 
 ### Toy backlog
 
 - ~~**Block shapes and placement.**~~ Now the current toy, as Block shapes and shared cells. Suggested order after it: inventory and items, then interaction controls and block interactions, then combat feel.
 - **Inventory and items.** Added 2026-10-28, from the user's request that led to the block shapes toy. Real items and counts, breaking gives you the block, and the design doc's "inventory discourages variety" gripe: try limiting by weight or volume instead of slots, or carrying a material and choosing its shape when placing. Suggested next after block shapes, before combat feel. *Updated 2026-10-30:* Loose items was split out of this and is done: breaking drops materials by volume and the player collects them into a counter. What's left: placing uses up material, a shared capacity limit (volume first, maybe weight later), picking a material and then a shape, a drop key, and items staying on the ground when you're full. The plan proposed on 2026-10-29 had these; reuse it.
+- **Covered blocks.** Added 2026-10-31, deferred from Solid materials. Should blocks be roughly one material, with grass and snow a cover on a block rather than part of it? What should a cut through grass show: honest (a bottom slab is all dirt, since the look spans the boxel) or anchored (the look's top follows each box's top, so a grass slab has grass on top, at the cost of seams between a stair's steps)? Settle it once something needs to cut grass, like world generation or crafted shapes.
+- **Plank board ends.** Added 2026-10-31, from Solid materials. Planks stay lined up with the world, so a wood panel or stair facing east or west shows a grid of board ends instead of boards. The user dislikes it but accepted it as a compromise for now. Options: a pattern that reads as boards along both level axes, letting a material turn only about the up axis, or picking the board direction per block when placed.
 - **Items inside placed blocks.** Added 2026-10-30, from Loose items. A block placed over a resting item hides it inside the block; it can still be picked up. Push items out the shortest way, or refuse the placement, once it gets in the way.
 - **Interaction controls.** Split out of Block editing (2026-10-25). Fix Minecraft's ambiguous right click once there are things to use, like crystals or devices. Principles: one input, one action (no catch-all "use" button that changes meaning with what you hold or look at), and what you see is what you get (a ghost of the result, red when not allowed).
   - *Added 2026-10-28:* decide how players reach shared boxels. Placing into an occupied boxel makes placement harder to read (every click has two possible boxels), so it may become a deliberate trick (a key, a tool, or a property of blocks like water) instead of happening on any click. Decide once combat and usable items show how crowded the controls get; the engine keeps full support either way. Also from play: two slabs at right angles make a stair, so a separate stairs block may not be needed.
@@ -166,6 +168,46 @@ Bugs found in already-merged code, each fixed on its own `fix-` branch (see the 
 - 2026-10-28, `fix-step-smoothing`: a step-up moved the body but not its previous position, so the renderer blended the rise between ticks while the camera feel also eased it, making the view dip and snap when climbing. Latent until the block shapes toy gave the player a step height.
 
 ### Done toys
+
+#### Solid materials (branch `toy-solid-materials`)
+
+**Stage:** Done (2026-10-31). Verified: the user played it and found it good, apart from plank board ends ("its a comprimise and we will mess with it later"). Criteria 1 and 6 met in play. On closing, the user accepted 3 and 5 without a separate check in play, and 2 and 4 as covered by tests: 2 can't be reached in play since the log slab is hidden, and 4's recipe edit and broken-recipe error are tested through the game's own loader.
+
+**Goal:** blocks are drawn from a small 3D texture volume instead of 2D images on each face, so any cut through a block shows what's inside it, such as the rings of a cut log. Chosen by the user (2026-10-31), ahead of Inventory and items, because procedural and crafted shapes shouldn't need hand-made texture wrapping, and most block textures are just noise.
+
+**Approved plan** (2026-10-31)
+- **Every look is a recipe.** The Luanti textures go (`mods/base/textures/`, `CREDITS.md`, `LICENSE.txt`); the user prefers procedural looks to keeping borrowed art and its credits. `blocks.toml` gets `[looks.<name>]` recipes, and blocks name one with `look = "<name>"`. Generators: `noise` (speckle: stone, dirt, ice, gravel), `top` (a cover layer with a ragged edge, for grass), `bricks` (offset rows with mortar), `planks` (grain along boards with seams) and `rings` (a log's rings with a bark shell). Flat-color blocks like the marker stay.
+- **Baked, not computed per pixel.** `data_mods` generates each look once at load into a 16×16×16 volume (one constant, to try 32 in play). The volume spans one boxel and repeats every block, and noise wraps at its edges so neighbors meet without seams. Recipes stay plain data, so a look needs no shader code from a mod; a later WebAssembly mod could add generators.
+- **API:** `TextureDef` becomes `LookDef` (a name and a volume), `register_texture` becomes `register_look`, `BlockDef.textures`/`FaceTextures` become `look: Option<String>`, and `turn_textures` becomes `turn_look`. A block's color defaults to its look's average.
+- **Client:** `volumes.rs` replaces `atlas.rs`: every look packed into one 3D texture (16×16×16·N), volume 0 plain white for flat blocks. The mesher drops UVs for a `solid` vertex attribute: the position inside the volume in sixteenths, moved half a texel inward from the face (done in Rust so it's tested), plus the volume index. Positions are world-aligned in the boxel, unless the block turns its look (logs, the fence post). A new unlit `SolidMaterial` with a small WGSL shader reads texels with `textureLoad`, so nothing bleeds between volumes; chunks, the ghost and loose items all use it. `sim` keeps only the registry; it never draws.
+- **New blocks:** `log_slab` (turns its look) and `gravel` (noise).
+- **Tests:** each generator repeats exactly from the same settings, uses only its colors and puts its pattern where it belongs (cover on top, bark on the shell, mortar between bricks), and noise wraps; the mesher's sample positions (a full block's top face reads layer 15.5, a bottom slab's top 7.5, two slabs in one boxel agree, turned slabs use world positions and turned logs their own); `data_mods` parses recipes and reports bad ones with file and line; `base_world` registers every look.
+- **Deferred at the user's request:** grass when cut. Grass stays a full block only, with no slab or stairs; see Covered blocks in the backlog.
+
+**Done when**
+1. Every base block has a procedural look, and none of the Luanti textures are left.
+2. A log slab shows rings on its cut face and bark on its sides, in every orientation.
+3. Stairs, and two slabs sharing one boxel, look like one piece of material with no seam.
+4. Changing a recipe in `blocks.toml` and restarting changes the look, and a broken recipe's error names the file and line.
+5. Loose items and the ghost are drawn with the same looks.
+6. The user finds the result looks decent.
+
+*Implementation notes* (2026-10-31)
+- Built as planned. Looks are generated in `data_mods::looks`; the client's `volumes` and `solid` modules (with `solid.wgsl`, embedded in the binary) replace the 2D atlas. The shader applies tonemapping itself when Bevy asks for it, as `StandardMaterial` did, so colors match the old pipeline's treatment.
+- Recipe errors point at the recipe's `[looks.<name>]` line; unknown recipe fields point at the field itself.
+- Tests: 246 pass across the workspace (generators, look registry, volume packing, mesher sample positions, loader errors, base world, editing a recipe changes the look). Clippy clean. The game starts and runs with no shader errors; how it looks is for the user to judge.
+
+*Added at the user's request* (2026-10-31, during Verify, after first play): a plan change, approved with "engage".
+- **Grout looked broken** where a whole face lined up with a mortar layer (a full block's west, south and bottom faces read layer 0, which was all mortar). Mortar now runs half a row up and a quarter brick in by default, and plank seams half a board in, so no face of a full block, slab or stair lands on a line. Bricks take an optional `offset`, and `mortar` is optional (bricks then differ by color only). Plank joints keep off the block's ends and middle. Tested: no face layer (0, 7, 8, 15) on any axis is mostly lines.
+- **More shapes of fewer materials, for building a house:** brick gets `panel` (a 4-thick wall on the north side) and `window` (the panel with an 8×8 hole), joining its full block, slab and stairs. Wood gets a full block, slab, stairs, `fine_stairs` (four quarter-boxel steps, for gentler roofs) and a panel. Every shape is in sixteenths, so box edges fall between texels. Existing blocks stay, since the test area and tests use them.
+- **Palette cut to the house set** (2026-10-31, the user's choice of two options, "A engage"): every other block is `placeable = false`, so the palette holds just the 10 brick and wood blocks. The rest stay in the game, building the test area. Tests that check placement with hidden shapes (stone slabs, logs, fence posts) load the base mod through a test-only wrapper that makes every block placeable (`sim/tests/common`); the block-jump trainer's tests place brick. Done criterion 2 (a log slab's rings) can't be checked in play any more; its sample positions are covered by the mesher test.
+- **Turning is a rule of the material** (2026-10-31, at the user's request: planks shouldn't turn, logs should). The per-block `turn_look` flag is gone; a look recipe says `turns = true` instead (`LookDef::turns` in the API), and every block of that look follows it. Only the log's look turns. Planks now stay lined up with the world on every shape, so a wood panel or stair facing east or west shows board ends.
+
+**Closed** (2026-10-31)
+- **Decisions:** looks are data recipes baked into 16×16×16 solid volumes at load; no outside art (the design doc's "Borrowed assets" bullet is replaced). Whether a look turns with its blocks is a rule of the material. Mortar and seams keep off the layers faces show. The palette holds only the brick and wood house set for now.
+- **Deferred:** plank board ends on east- and west-facing shapes (backlog); grass when cut (Covered blocks, backlog); the log slab is hidden, so its rings aren't seen in play; weak GPUs cap 3D textures at 2048 deep, so at most 127 looks in one stack, to split into several textures if that's ever reached.
+- **API debt:** none new. Everything went through the API (`LookDef`, `register_look`, `BlockDef::look`).
+
 
 #### Block-jump trainer (branch `toy-block-jump-trainer`)
 

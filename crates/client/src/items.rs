@@ -177,7 +177,7 @@ impl View {
 fn item_mesh(item: &Item, blocks: &BlockRegistry, chunk_meshes: &ChunkMeshes) -> Mesh {
     let mut data = mesher::MeshData::default();
     let middle = ((item.bounds.min + item.bounds.max) * -0.5).to_array();
-    mesher::mesh_occupant(&mut data, Occupant::new(item.block), middle, blocks, &chunk_meshes.atlas, |_| false, &mut Vec::new());
+    mesher::mesh_occupant(&mut data, Occupant::new(item.block), middle, blocks, &chunk_meshes.volumes, |_| false, &mut Vec::new());
     crate::to_bevy_mesh(data)
 }
 
@@ -240,15 +240,15 @@ mod tests {
         sim.step(&sim::PlayerInput { pitch: down, break_pressed: true, break_held: true, ..Default::default() });
         let item_pos = sim.items().iter().next().expect("the broken floor dropped an item").pos;
 
-        let atlas = crate::atlas::Atlas::build(sim.textures(), sim.blocks());
+        let volumes = crate::volumes::Volumes::build(sim.looks(), sim.blocks());
         let mut app = App::new();
         app.add_plugins((MinimalPlugins, AssetPlugin::default()))
             .init_asset::<Mesh>()
-            .init_asset::<StandardMaterial>()
+            .init_asset::<crate::solid::SolidMaterial>()
             .insert_resource(Sim(sim))
             .init_resource::<RenderOrigin>()
             .init_resource::<ItemViews>()
-            .insert_resource(ChunkMeshes { material: Handle::default(), atlas, entities: HashMap::new() })
+            .insert_resource(ChunkMeshes { material: Handle::default(), volumes, entities: HashMap::new() })
             .add_systems(Update, sync_items);
         app.update();
 

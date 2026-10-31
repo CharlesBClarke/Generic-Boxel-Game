@@ -1,7 +1,7 @@
 //! The traits a mod implements and the engine services it is handed.
 
 use crate::{
-    ApiError, BlockDef, BoxelPos, InteractionDef, ItemDropDef, MovementController, Orientation, PlayerDef, PushOutDef, TextureDef,
+    ApiError, BlockDef, BoxelPos, InteractionDef, ItemDropDef, MovementController, Orientation, PlayerDef, PushOutDef, LookDef,
     WorldPos,
 };
 
@@ -10,7 +10,7 @@ pub trait Mod {
     /// The mod's namespace, such as `"base"`.
     fn name(&self) -> &str;
 
-    /// Registers content: textures, blocks, movement controllers, the player, interaction, push-out
+    /// Registers content: looks, blocks, movement controllers, the player, interaction, push-out
     /// and item drop definitions.
     fn register(&self, registrar: &mut dyn Registrar) -> Result<(), ApiError>;
 
@@ -22,9 +22,9 @@ pub trait Mod {
 
 /// Where mods register their content.
 pub trait Registrar {
-    /// Registers a texture for blocks to name. Blocks may name textures registered later, even
-    /// by another mod; every name is checked once all mods have registered.
-    fn register_texture(&mut self, def: TextureDef) -> Result<(), ApiError>;
+    /// Registers a look for blocks to name. Blocks may name looks registered later, even by
+    /// another mod; every name is checked once all mods have registered.
+    fn register_look(&mut self, def: LookDef) -> Result<(), ApiError>;
     fn register_block(&mut self, def: BlockDef) -> Result<(), ApiError>;
     /// Registers a movement controller under a namespaced name, for player definitions to
     /// refer to. Native mods only: a WebAssembly mod exports its controller instead (see

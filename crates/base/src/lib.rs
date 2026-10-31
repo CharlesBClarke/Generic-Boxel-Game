@@ -1,5 +1,5 @@
 //! The base game, written as a mod on the public API only. This is its code half; its blocks
-//! and textures are a data mod in `mods/base`, loaded by the engine alongside it.
+//! and their looks are a data mod in `mods/base`, loaded by the engine alongside it.
 
 use api::{
     ApiError, BoxelPos, I64Vec3, InteractionDef, ItemDropDef, Mod, Orientation, PlayerDef, PushOutDef, Registrar, Vec3, WorldEdit,
@@ -20,8 +20,17 @@ pub const STONE_SLAB: &str = "base:stone_slab";
 pub const STONE_STAIRS: &str = "base:stone_stairs";
 pub const BRICK_SLAB: &str = "base:brick_slab";
 pub const BRICK_STAIRS: &str = "base:brick_stairs";
+pub const BRICK_PANEL: &str = "base:brick_panel";
+pub const BRICK_WINDOW: &str = "base:brick_window";
+pub const WOOD: &str = "base:wood";
+pub const WOOD_SLAB: &str = "base:wood_slab";
+pub const WOOD_STAIRS: &str = "base:wood_stairs";
+pub const WOOD_FINE_STAIRS: &str = "base:wood_fine_stairs";
+pub const WOOD_PANEL: &str = "base:wood_panel";
 pub const WOOD_FENCE: &str = "base:wood_fence";
 pub const LOG: &str = "base:log";
+pub const LOG_SLAB: &str = "base:log_slab";
+pub const GRAVEL: &str = "base:gravel";
 
 /// Where the shapes corner of the test area starts, relative to its origin: where the feet stand
 /// at the foot of the staircase.
@@ -57,7 +66,7 @@ impl Mod for BaseMod {
     }
 
     fn register(&self, r: &mut dyn Registrar) -> Result<(), ApiError> {
-        // Blocks and textures are data, in `mods/base`; see `DATA_DIR`.
+        // Blocks and their looks are data, in `mods/base`; see `DATA_DIR`.
         r.register_player(PlayerDef {
             width: 0.6,
             height: 1.8,

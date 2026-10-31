@@ -1,100 +1,221 @@
-# The base game's blocks. Each block gets the `base:` namespace from mod.toml.
+# The base game's blocks and how they look. Each gets the `base:` namespace from mod.toml.
 #
-# Fields, with defaults:
+# Block fields, with defaults:
 #   name       required: lowercase letters, digits and underscores
 #   solid      true: whether bodies collide with it
 #   friction   1.0: grip for a body standing on it; near 0 is ice
 #   placeable  true: whether players can place it
-#   textures   a name from textures/ for every face, or { top, bottom, side }
-#   color      [r, g, b] sRGB, for blocks without textures. Optional with textures:
-#              it defaults to the side texture's average color.
-#   shape      a name from [shapes], or a list of boxes; default a full block
+#   look       a name from [looks]: how it looks, inside and out
+#   color      [r, g, b] sRGB, for blocks without a look. Optional with a look: it defaults
+#              to the look's average color.
+#   shape      a name from the shapes table, or a list of boxes; default a full block
 #   turning    which turns it takes when placed. Every block is placed the same way: its
 #              bottom against the face you aim at, its north side the way you look.
 #              "none": never turned (default)
 #              "axis": only which way its up axis points (logs)
 #              "any": the whole turn (slabs, stairs)
-#   turn_textures  false: textures stay lined up with the world, so bricks run level however
-#                  the block is turned (default). true: they turn with it, like bark.
 #   material   what breaking it drops: its volume of this material, so a slab drops half.
 #              Defaults to the block's own name; blocks of one material share it.
 #
+# Only the house set (brick and wood, five shapes each) is placeable for now; the rest build
+# the test area.
+#
 # Shapes are boxes in sixteenths of a boxel: [x0, y0, z0, x1, y1, z1], each from 0 to 16,
-# as the block stands unturned (+Z up, +Y north). Textures crop to the part each box covers.
+# as the block stands unturned (+Z up, +Y north).
+#
+# Looks are solid: a cube of 16×16×16 texels that fills the boxel and repeats every block.
+# Every face shows the texels just inside it, so a slab or stair shows the part of the cube
+# it cuts through. A shape's boxes are in sixteenths, so their edges fall between texels.
+# A look stays lined up with the world however its blocks are turned, so bricks and planks
+# run level, unless it has turns = true: then it turns with them, like a log's rings.
+# Each look has one base pattern, and may add a top cover. Colors are [r, g, b] sRGB; seed
+# (default 0) picks a different but repeatable variation.
+#   noise   speckle: { colors, scale, seed }. scale is texels across a blob, 1 to 16: one
+#           number, or [x, y, z] to stretch it (default 1).
+#   bricks  { length, height, colors, mortar, offset, seed }: rows of bricks, each row shifted
+#           half a brick. length and height are in texels, mortar included, and must divide 16.
+#           Without mortar, bricks are told apart by color alone. offset ([x, y, z] texels)
+#           shifts the pattern; by default the mortar keeps off the layers faces show.
+#   planks  { width, colors, seam, seed }: square boards along X, with seams between them
+#           and a joint along each, kept off the layers faces show. width must divide 16.
+#   rings   { colors, spacing, bark, bark_depth, seed }: rings around the up axis, one color
+#           per ring repeating outward, inside a shell of bark (bark_depth texels, default 1).
+#   top     { colors, depth, ragged, scale, seed }: a cover over the top, depth texels deep
+#           and up to ragged texels deeper in places, like grass on dirt.
+
+[looks.stone]
+noise = { colors = [[104, 104, 104], [117, 117, 117], [128, 128, 128], [141, 141, 141]], scale = 2, seed = 1 }
+
+[looks.dirt]
+noise = { colors = [[98, 67, 44], [112, 78, 52], [126, 89, 60], [139, 100, 68]], scale = 1.5, seed = 2 }
+
+# Grass is a full block only for now: what a cut through it should show is in the backlog.
+[looks.grass]
+noise = { colors = [[98, 67, 44], [112, 78, 52], [126, 89, 60], [139, 100, 68]], scale = 1.5, seed = 2 }
+top = { colors = [[76, 124, 44], [88, 140, 50], [101, 156, 58]], depth = 2, ragged = 2, scale = 2, seed = 3 }
+
+[looks.brick]
+bricks = { length = 8, height = 4, colors = [[146, 64, 50], [158, 73, 57], [134, 58, 46]], mortar = [184, 178, 168], seed = 4 }
+
+[looks.ice]
+noise = { colors = [[158, 198, 234], [172, 210, 241], [188, 221, 247]], scale = 4, seed = 5 }
+
+[looks.wood]
+planks = { width = 4, colors = [[174, 134, 84], [161, 123, 77], [187, 147, 95]], seam = [108, 78, 48], seed = 6 }
+
+[looks.log]
+turns = true
+rings = { colors = [[196, 158, 102], [168, 132, 82]], spacing = 2, bark = [[91, 67, 43], [77, 57, 37], [104, 78, 50]], seed = 7 }
+
+[looks.gravel]
+noise = { colors = [[78, 76, 74], [98, 94, 91], [120, 116, 111], [142, 136, 129]], scale = 1, seed = 8 }
 
 [shapes]
 slab = [[0, 0, 0, 16, 16, 8]]
 # The high step is on the north side.
 stairs = [[0, 0, 0, 16, 16, 8], [0, 8, 8, 16, 16, 16]]
 post = [[6, 6, 0, 10, 10, 16]]
+# Four steps of a quarter boxel, rising north, for gentler roofs.
+fine_stairs = [[0, 0, 0, 16, 16, 4], [0, 4, 4, 16, 16, 8], [0, 8, 8, 16, 16, 12], [0, 12, 12, 16, 16, 16]]
+# A thin wall on the north side, like the stairs' high step.
+panel = [[0, 12, 0, 16, 16, 16]]
+# The panel with a square hole in its middle.
+window = [[0, 12, 0, 16, 16, 4], [0, 12, 12, 16, 16, 16], [0, 12, 4, 4, 16, 12], [12, 12, 4, 16, 16, 12]]
 
 [[block]]
 name = "stone"
-textures = "stone"
+placeable = false
+look = "stone"
 
 [[block]]
 name = "dirt"
-textures = "dirt"
+placeable = false
+look = "dirt"
 
 [[block]]
 name = "grass"
-textures = { top = "grass", bottom = "dirt", side = "grass_side" }
+placeable = false
+look = "grass"
 material = "dirt"
 
 [[block]]
 name = "brick"
-textures = "brick"
+look = "brick"
 
 # A debug landmark, so it stays a flat, loud color.
 [[block]]
 name = "marker"
+placeable = false
 color = [240, 180, 40]
 
 [[block]]
 name = "ice"
-textures = "ice"
+placeable = false
+look = "ice"
 friction = 0.1
 
 [[block]]
 name = "stone_slab"
-textures = "stone"
+placeable = false
+look = "stone"
 shape = "slab"
 turning = "any"
 material = "stone"
 
 [[block]]
 name = "stone_stairs"
-textures = "stone"
+placeable = false
+look = "stone"
 shape = "stairs"
 turning = "any"
 material = "stone"
 
 [[block]]
 name = "brick_slab"
-textures = "brick"
+look = "brick"
 shape = "slab"
 turning = "any"
 material = "brick"
 
 [[block]]
 name = "brick_stairs"
-textures = "brick"
+look = "brick"
 shape = "stairs"
 turning = "any"
 material = "brick"
 
+[[block]]
+name = "brick_panel"
+look = "brick"
+shape = "panel"
+turning = "any"
+material = "brick"
+
+[[block]]
+name = "brick_window"
+look = "brick"
+shape = "window"
+turning = "any"
+material = "brick"
+
+[[block]]
+name = "wood"
+look = "wood"
+
+[[block]]
+name = "wood_slab"
+look = "wood"
+shape = "slab"
+turning = "any"
+material = "wood"
+
+[[block]]
+name = "wood_stairs"
+look = "wood"
+shape = "stairs"
+turning = "any"
+material = "wood"
+
+[[block]]
+name = "wood_fine_stairs"
+look = "wood"
+shape = "fine_stairs"
+turning = "any"
+material = "wood"
+
+[[block]]
+name = "wood_panel"
+look = "wood"
+shape = "panel"
+turning = "any"
+material = "wood"
+
 # A bare post for now; fences joining their neighbors come later. It can lie on its side as a
-# beam, with the grain along it.
+# beam.
 [[block]]
 name = "wood_fence"
-textures = "wood"
+placeable = false
+look = "wood"
 shape = "post"
 turning = "axis"
-turn_textures = true
 material = "wood"
 
 [[block]]
 name = "log"
-textures = { top = "log_top", bottom = "log_top", side = "log" }
+placeable = false
+look = "log"
 turning = "axis"
-turn_textures = true
+
+# A cut log, to show its rings. Its look turns with it, so lying down it shows bark on top.
+[[block]]
+name = "log_slab"
+placeable = false
+look = "log"
+shape = "slab"
+turning = "any"
+material = "log"
+
+[[block]]
+name = "gravel"
+placeable = false
+look = "gravel"

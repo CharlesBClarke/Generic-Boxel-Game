@@ -2535,7 +2535,6 @@ name = "data_mods"
 version = "0.1.0"
 dependencies = [
  "api",
- "image",
  "serde",
  "toml",
 ]

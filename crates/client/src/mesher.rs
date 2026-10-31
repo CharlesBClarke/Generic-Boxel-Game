@@ -2,15 +2,15 @@
 //! boxel's side against a full block. Where faces of two occupants of one boxel lie on the same
 //! plane facing the same way, the part they share is drawn only from the older occupant (the
 //! one placed first), so they never fight over which shows. Output is plain Z-up vertex data in chunk-local space;
-//! turning it into a Bevy mesh happens elsewhere. Textured faces take UVs from the atlas,
-//! cropped to the part of the boxel a box covers; flat-colored ones point at its white cell
-//! and carry their color in the vertices. Textures stay lined up with the world unless the
-//! block turns its textures with it, like a log.
+//! turning it into a Bevy mesh happens elsewhere. Every vertex carries where it sits in its
+//! block's look volume, so each face shows the part of the look it cuts through; flat-colored
+//! blocks point at the white volume and carry their color in the vertices. Looks stay lined up
+//! with the world unless the look turns with its blocks, like a log's.
 
-use api::{BlockBox, CHUNK_SIZE, CHUNK_VOLUME, ChunkPos, I64Vec3, LocalPos, Orientation};
+use api::{BlockBox, CHUNK_SIZE, CHUNK_VOLUME, ChunkPos, I64Vec3, LocalPos, LookDef, Orientation};
 use sim::{BlockRegistry, CellId, Grid, Occupant};
 
-use crate::atlas::Atlas;
+use crate::volumes::Volumes;
 
 /// Vertex data for one chunk, Z-up, relative to the chunk's minimum corner.
 #[derive(Default, Debug)]
@@ -19,8 +19,9 @@ pub struct MeshData {
     pub normals: Vec<[f32; 3]>,
     /// Linear RGBA, multiplied with the texture.
     pub colors: Vec<[f32; 4]>,
-    /// Atlas coordinates, 0 to 1 from the top left.
-    pub uvs: Vec<[f32; 2]>,
+    /// Where in the block's look, in texels, already half a texel inside the face so the face
+    /// shows the layer just under it; then which volume.
+    pub solid: Vec<[f32; 4]>,
     pub indices: Vec<u32>,
 }
 
@@ -36,8 +37,7 @@ impl MeshData {
 
 struct Face {
     normal: [i32; 3],
-    /// Corners of the unit cube, counterclockwise seen from outside. On the sides they run
-    /// bottom left, bottom right, top right, top left, so textures stand upright.
+    /// Corners of the unit cube, counterclockwise seen from outside.
     corners: [[i32; 3]; 4],
 }
 
@@ -67,19 +67,9 @@ fn srgb_to_linear(c: u8) -> f32 {
     if c <= 0.04045 { c / 12.92 } else { ((c + 0.055) / 1.055).powf(2.4) }
 }
 
-/// Which of a block's textures a face uses, by its normal before any turn the textures follow:
-/// top, bottom or side.
-fn texture_slot(face: &Face) -> usize {
-    match face.normal[2] {
-        1 => 0,
-        -1 => 1,
-        _ => 2,
-    }
-}
-
 /// Meshes the chunk at `pos`. Neighbors are read through `grid`, so faces on chunk borders
 /// are culled against the next chunk. Unloaded neighbors count as empty.
-pub fn mesh_chunk(grid: &Grid, pos: ChunkPos, blocks: &BlockRegistry, atlas: &Atlas) -> MeshData {
+pub fn mesh_chunk(grid: &Grid, pos: ChunkPos, blocks: &BlockRegistry, volumes: &Volumes) -> MeshData {
     let mut mesh = MeshData::default();
     let Some(chunk) = grid.chunk(pos) else {
         return mesh;
@@ -109,7 +99,7 @@ pub fn mesh_chunk(grid: &Grid, pos: ChunkPos, blocks: &BlockRegistry, atlas: &At
         let mut drawn = Vec::new();
         for &occupant in grid.occupants(id) {
             let hidden = |n: [i32; 3]| full(at + I64Vec3::new(n[0] as i64, n[1] as i64, n[2] as i64));
-            mesh_occupant(&mut mesh, occupant, at.as_vec3().to_array(), blocks, atlas, hidden, &mut drawn);
+            mesh_occupant(&mut mesh, occupant, at.as_vec3().to_array(), blocks, volumes, hidden, &mut drawn);
         }
     }
     mesh
@@ -157,19 +147,20 @@ pub fn mesh_occupant(
     occupant: Occupant,
     at: [f32; 3],
     blocks: &BlockRegistry,
-    atlas: &Atlas,
+    volumes: &Volumes,
     hidden: impl Fn([i32; 3]) -> bool,
     drawn: &mut Vec<DrawnFace>,
 ) {
     let Some(def) = blocks.get(occupant.block) else {
         return;
     };
-    let textures = atlas.faces(occupant.block);
-    // A textured block shows its texture's own colors; a flat one tints the white cell.
-    let base = if textures.is_some() { [1.0; 3] } else { def.color.map(srgb_to_linear) };
-    // Textures lined up with the world: mesh the turned boxes as if unturned, so each face
-    // takes its texture and layout from the way it faces in the world.
-    let (turn, shape): (Orientation, Vec<BlockBox>) = if def.turn_textures {
+    let look = volumes.of(occupant.block);
+    // A block with a look shows its look's own colors; a flat one tints the white volume.
+    let base = if look.is_some() { [1.0; 3] } else { def.color.map(srgb_to_linear) };
+    let volume = look.unwrap_or(Volumes::WHITE);
+    // A look lined up with the world: mesh the turned boxes as if unturned, so positions in
+    // the look are positions in the boxel as it stands in the world.
+    let (turn, shape): (Orientation, Vec<BlockBox>) = if volumes.turns(occupant.block) {
         (occupant.orientation, def.shape.clone())
     } else {
         (Orientation::IDENTITY, def.shape.iter().map(|&b| occupant.orientation.apply_box(b)).collect())
@@ -200,15 +191,14 @@ pub fn mesh_occupant(
                 // The piece as a box, turned back to how the block stands unturned.
                 let mut piece = turned;
                 (piece.min[a], piece.min[c], piece.max[a], piece.max[c]) = (min[0], min[1], max[0], max[1]);
-                let rect = textures.map_or(atlas.white(), |t| t[texture_slot(face)]);
-                quad(mesh, face, &turn.inverse().apply_box(piece), normal, at, base, rect, &place);
+                quad(mesh, face, &turn.inverse().apply_box(piece), normal, at, base, volume, &place);
             }
         }
     }
 }
 
 /// Adds one face of box `b` (in sixteenths, before turning) as a quad facing `normal` once
-/// turned by `place`.
+/// turned by `place`, drawn from look `volume`.
 #[allow(clippy::too_many_arguments)]
 fn quad(
     mesh: &mut MeshData,
@@ -217,28 +207,23 @@ fn quad(
     normal: [i32; 3],
     at: [f32; 3],
     base: [f32; 3],
-    rect: crate::atlas::Rect,
+    volume: u32,
     place: &impl Fn([i32; 3]) -> [f32; 3],
 ) {
     let first = mesh.positions.len() as u32;
     let s = shade(normal);
     let color = [base[0] * s, base[1] * s, base[2] * s, 1.0];
-    let [c0, c1, _, c3] = face.corners;
-    let (u_dir, up_dir) = ([0, 1, 2].map(|i| c1[i] - c0[i]), [0, 1, 2].map(|i| c3[i] - c0[i]));
+    let texels = LookDef::SIZE as f32 / BlockBox::SIZE as f32;
     for c in face.corners {
         // The corner of this box, in sixteenths, before turning.
         let p = [0, 1, 2].map(|i| if c[i] == 0 { b.min[i] as i32 } else { b.max[i] as i32 });
-        let along = |dir: [i32; 3]| -> f32 {
-            let d: i32 = (0..3).map(|i| (p[i] - c0[i] * BlockBox::SIZE as i32) * dir[i]).sum();
-            d as f32 / BlockBox::SIZE as f32
-        };
-        let (u, up) = (along(u_dir), along(up_dir));
-        let uv = [rect.min[0] + u * (rect.max[0] - rect.min[0]), rect.max[1] - up * (rect.max[1] - rect.min[1])];
+        // In the look, half a texel back from the face, into the block.
+        let [x, y, z] = [0, 1, 2].map(|i| p[i] as f32 * texels - face.normal[i] as f32 * 0.5);
         let q = place(p);
         mesh.positions.push([at[0] + q[0], at[1] + q[1], at[2] + q[2]]);
         mesh.normals.push(normal.map(|n| n as f32));
         mesh.colors.push(color);
-        mesh.uvs.push(uv);
+        mesh.solid.push([x, y, z, volume as f32]);
     }
     mesh.indices.extend([first, first + 1, first + 2, first, first + 2, first + 3]);
 }
@@ -246,9 +231,8 @@ fn quad(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use api::{BlockDef, BoxelPos, FaceTextures, Orientation, TextureDef, Vec3};
-    use crate::atlas::Rect;
-    use sim::{BlockId, TextureRegistry};
+    use api::{BlockDef, BoxelPos, Orientation, Vec3};
+    use sim::{BlockId, LookRegistry};
 
     fn setup() -> (Grid, BlockRegistry, BlockId) {
         let mut blocks = BlockRegistry::default();
@@ -256,9 +240,24 @@ mod tests {
         (Grid::default(), blocks, stone)
     }
 
-    /// An atlas for blocks without textures.
-    fn flat(blocks: &BlockRegistry) -> Atlas {
-        Atlas::build(&TextureRegistry::default(), blocks)
+    /// Volumes for blocks without looks.
+    fn flat(blocks: &BlockRegistry) -> Volumes {
+        Volumes::build(&LookRegistry::default(), blocks)
+    }
+
+    /// Looks named `test:a`, `test:b` and so on, each one plain color. Those named in `turning`
+    /// turn with their blocks.
+    fn looks_turning(names: &[&str], turning: &[&str]) -> LookRegistry {
+        let mut looks = LookRegistry::default();
+        for name in names {
+            let turns = turning.contains(name);
+            looks.register(LookDef { name: (*name).into(), turns, rgba: vec![200; LookDef::VOLUME * 4] }).unwrap();
+        }
+        looks
+    }
+
+    fn looks(names: &[&str]) -> LookRegistry {
+        looks_turning(names, &[])
     }
 
     fn mesh_chunk(grid: &Grid, pos: ChunkPos, blocks: &BlockRegistry) -> MeshData {
@@ -327,49 +326,40 @@ mod tests {
         }
     }
 
-    #[test]
-    fn faces_use_their_textures_upright() {
-        let mut textures = TextureRegistry::default();
-        for name in ["test:top", "test:bottom", "test:side"] {
-            textures.register(TextureDef { name: name.into(), width: 1, height: 1, rgba: vec![200; 4] }).unwrap();
-        }
-        let mut blocks = BlockRegistry::default();
-        let faces = FaceTextures { top: "test:top".into(), bottom: "test:bottom".into(), side: "test:side".into() };
-        let grass = blocks.register(BlockDef::new("test:grass", true, [0, 0, 0]).with_textures(faces)).unwrap();
-        let plain = blocks.register(BlockDef::new("test:plain", true, [255, 0, 0])).unwrap();
-        let atlas = Atlas::build(&textures, &blocks);
-        let mut grid = Grid::default();
-        grid.set_block(BoxelPos::new(0, 0, 0), grass);
-        grid.set_block(BoxelPos::new(5, 0, 0), plain);
-        let mesh = super::mesh_chunk(&grid, ChunkPos::new(0, 0, 0), &blocks, &atlas);
-        assert_eq!(mesh.uvs.len(), mesh.positions.len());
+    /// Each vertex's position in its look, back on the face (undoing the half-texel step
+    /// inward), in texels.
+    fn on_face(mesh: &MeshData, i: usize) -> [f32; 3] {
+        [0, 1, 2].map(|k| mesh.solid[i][k] + mesh.normals[i][k] * 0.5)
+    }
 
-        let [top, bottom, side] = *atlas.faces(grass).unwrap();
-        for quad in 0..mesh.quad_count() {
-            let corners = quad * 4..quad * 4 + 4;
-            let normal = mesh.normals[quad * 4];
-            let uvs = &mesh.uvs[corners.clone()];
-            if mesh.positions[quad * 4][0] >= 5.0 {
-                // The flat block: the white cell, tinted by its color.
-                assert!(uvs.iter().all(|uv| within(uv, atlas.white())));
-                assert!(mesh.colors[corners].iter().all(|c| c[0] > 0.0 && c[1] == 0.0));
+    #[test]
+    fn faces_sample_their_look_just_inside_themselves() {
+        let mut blocks = BlockRegistry::default();
+        let stone = blocks.register(BlockDef::new("test:stone", true, [0; 3]).with_look("test:a")).unwrap();
+        let plain = blocks.register(BlockDef::new("test:plain", true, [255, 0, 0])).unwrap();
+        let volumes = Volumes::build(&looks(&["test:a"]), &blocks);
+        let mut grid = Grid::default();
+        grid.set_block(BoxelPos::new(0, 0, 0), stone);
+        grid.set_block(BoxelPos::new(5, 0, 0), plain);
+        let mesh = super::mesh_chunk(&grid, ChunkPos::new(0, 0, 0), &blocks, &volumes);
+        assert_eq!(mesh.solid.len(), mesh.positions.len());
+        for i in 0..mesh.positions.len() {
+            let n = mesh.normals[i];
+            let axis = n.iter().position(|&c| c != 0.0).unwrap();
+            if mesh.positions[i][0] >= 5.0 {
+                // The flat block: the white volume, tinted by its color.
+                assert_eq!(mesh.solid[i][3], Volumes::WHITE as f32);
+                assert!(mesh.colors[i][0] > 0.0 && mesh.colors[i][1] == 0.0);
                 continue;
             }
-            let expected = match normal[2] {
-                1.0 => top,
-                -1.0 => bottom,
-                _ => side,
-            };
-            assert!(uvs.iter().all(|uv| within(uv, expected)), "normal {normal:?}");
-            assert!(mesh.colors[corners.clone()].iter().all(|c| c[0] == c[1] && c[1] == c[2]), "untinted");
-            if normal[2] == 0.0 {
-                // Upright: the corners higher up get the texture's top row (smaller v).
-                for (i, j) in [(0, 3), (1, 2)] {
-                    let (low, high) = (corners.start + i, corners.start + j);
-                    assert!(mesh.positions[high][2] > mesh.positions[low][2]);
-                    assert!(mesh.uvs[high][1] < mesh.uvs[low][1]);
-                }
-            }
+            assert_eq!(mesh.solid[i][3], volumes.of(stone).unwrap() as f32);
+            assert!(mesh.colors[i][0] == mesh.colors[i][1] && mesh.colors[i][1] == mesh.colors[i][2], "untinted");
+            // The outermost layer: 15.5 on a face looking up an axis, 0.5 looking down it.
+            let expected = if n[axis] > 0.0 { 15.5 } else { 0.5 };
+            assert_eq!(mesh.solid[i][axis], expected, "normal {n:?}");
+            // Lined up with the world: the look's position is the position in the boxel.
+            let in_boxel = mesh.positions[i].map(|c| c * LookDef::SIZE as f32);
+            assert_eq!(on_face(&mesh, i), in_boxel);
         }
     }
 
@@ -416,80 +406,73 @@ mod tests {
     }
 
     #[test]
-    fn side_textures_are_cropped_to_the_box() {
-        let mut textures = TextureRegistry::default();
-        textures.register(TextureDef { name: "test:t".into(), width: 1, height: 1, rgba: vec![200; 4] }).unwrap();
+    fn a_slab_shows_the_half_of_its_look_it_cuts_through() {
         let mut blocks = BlockRegistry::default();
-        let def = BlockDef::new("test:slab", true, [0; 3]).with_textures(FaceTextures::all("test:t")).with_shape(vec![SLAB]);
-        let slab = blocks.register(def).unwrap();
-        let atlas = Atlas::build(&textures, &blocks);
+        let slab = blocks.register(BlockDef::new("test:slab", true, [0; 3]).with_look("test:a").with_shape(vec![SLAB])).unwrap();
+        let volumes = Volumes::build(&looks(&["test:a"]), &blocks);
         let mut grid = Grid::default();
         grid.set_block(BoxelPos::new(0, 0, 0), slab);
-        let mesh = super::mesh_chunk(&grid, ChunkPos::new(0, 0, 0), &blocks, &atlas);
-        let side = atlas.faces(slab).unwrap()[2];
-        let mid = (side.min[1] + side.max[1]) / 2.0;
-        for quad in 0..mesh.quad_count() {
-            if mesh.normals[quad * 4][2] != 0.0 {
-                continue;
-            }
-            // A bottom slab's sides show the texture's lower half.
-            for i in quad * 4..quad * 4 + 4 {
-                let v = mesh.uvs[i][1];
-                let expected = if mesh.positions[i][2] > 0.0 { mid } else { side.max[1] };
-                assert!((v - expected).abs() < 1e-6, "v {v}, expected {expected}");
+        let mesh = super::mesh_chunk(&grid, ChunkPos::new(0, 0, 0), &blocks, &volumes);
+        for i in 0..mesh.positions.len() {
+            let z = mesh.solid[i][2];
+            match mesh.normals[i][2] {
+                // Its cut top reads the middle of the look, not the look's top.
+                1.0 => assert_eq!(z, 7.5),
+                -1.0 => assert_eq!(z, 0.5),
+                _ => assert!((0.0..=8.0).contains(&z), "sides show the lower half, not {z}"),
             }
         }
     }
 
     #[test]
-    fn a_log_on_its_side_shows_its_ends_east_and_west() {
-        let mut textures = TextureRegistry::default();
-        for name in ["test:rings", "test:bark"] {
-            textures.register(TextureDef { name: name.into(), width: 1, height: 1, rgba: vec![200; 4] }).unwrap();
-        }
+    fn two_slabs_in_one_boxel_read_one_look_without_a_seam() {
         let mut blocks = BlockRegistry::default();
-        let faces = FaceTextures { top: "test:rings".into(), bottom: "test:rings".into(), side: "test:bark".into() };
-        let def = BlockDef::new("test:log", true, [0; 3]).with_textures(faces).with_turn_textures(true);
-        let log = blocks.register(def).unwrap();
-        let atlas = Atlas::build(&textures, &blocks);
+        let slab = blocks.register(BlockDef::new("test:slab", true, [0; 3]).with_look("test:a").with_shape(vec![SLAB])).unwrap();
+        let volumes = Volumes::build(&looks(&["test:a"]), &blocks);
         let mut grid = Grid::default();
+        let top = Occupant::turned(slab, Orientation::quarter_turns(0, 2));
+        grid.set_cell(BoxelPos::new(0, 0, 0), &[Occupant::new(slab), top]);
+        let mesh = super::mesh_chunk(&grid, ChunkPos::new(0, 0, 0), &blocks, &volumes);
+        // On the east side, the two halves read one look: the same layer, heights running on.
+        let mut east: Vec<_> =
+            (0..mesh.positions.len()).filter(|&i| mesh.normals[i][0] == 1.0).map(|i| (mesh.solid[i][0], mesh.solid[i][2])).collect();
+        east.sort_by(|a, b| a.1.total_cmp(&b.1));
+        assert!(east.iter().all(|&(x, _)| x == 15.5));
+        let heights: Vec<f32> = east.iter().map(|&(_, z)| z).collect();
+        assert_eq!(heights, [0.0, 0.0, 8.0, 8.0, 8.0, 8.0, 16.0, 16.0]);
+        for i in 0..mesh.positions.len() {
+            assert_eq!(on_face(&mesh, i), mesh.positions[i].map(|c| c * LookDef::SIZE as f32), "lined up with the world");
+        }
+    }
+
+    #[test]
+    fn a_turned_log_reads_its_own_look_and_a_turned_slab_the_world() {
+        let mut blocks = BlockRegistry::default();
+        let log = blocks.register(BlockDef::new("test:log", true, [0; 3]).with_look("test:a")).unwrap();
+        let slab = blocks.register(BlockDef::new("test:slab", true, [0; 3]).with_look("test:b").with_shape(vec![SLAB])).unwrap();
+        let volumes = Volumes::build(&looks_turning(&["test:a", "test:b"], &["test:a"]), &blocks);
+        let mut grid = Grid::default();
+        // Lying along X; and a slab standing against the west side of its boxel.
         grid.set_cell(BoxelPos::new(0, 0, 0), &[Occupant::turned(log, Orientation::z_along(0))]);
-        let mesh = super::mesh_chunk(&grid, ChunkPos::new(0, 0, 0), &blocks, &atlas);
-        assert_eq!(mesh.quad_count(), 6);
-        let [rings, _, bark] = *atlas.faces(log).unwrap();
-        for quad in 0..6 {
-            let expected = if mesh.normals[quad * 4][0] != 0.0 { rings } else { bark };
-            assert!(mesh.uvs[quad * 4..quad * 4 + 4].iter().all(|uv| within(uv, expected)));
-        }
-    }
-
-    #[test]
-    fn world_lined_textures_stay_upright_on_a_turned_block() {
-        let mut textures = TextureRegistry::default();
-        for name in ["test:top", "test:side"] {
-            textures.register(TextureDef { name: name.into(), width: 1, height: 1, rgba: vec![200; 4] }).unwrap();
-        }
-        let mut blocks = BlockRegistry::default();
-        let faces = FaceTextures { top: "test:top".into(), bottom: "test:top".into(), side: "test:side".into() };
-        let def = BlockDef::new("test:slab", true, [0; 3]).with_textures(faces).with_shape(vec![SLAB]);
-        let slab = blocks.register(def).unwrap();
-        let atlas = Atlas::build(&textures, &blocks);
-        let mut grid = Grid::default();
-        // A slab standing against the west side of its boxel.
-        grid.set_cell(BoxelPos::new(0, 0, 0), &[Occupant::turned(slab, Orientation::z_along(0))]);
-        let mesh = super::mesh_chunk(&grid, ChunkPos::new(0, 0, 0), &blocks, &atlas);
-        let [top, _, side] = *atlas.faces(slab).unwrap();
-        for quad in 0..mesh.quad_count() {
-            let corners = quad * 4..quad * 4 + 4;
-            let up = mesh.normals[quad * 4][2] != 0.0;
-            let expected = if up { top } else { side };
-            assert!(mesh.uvs[corners.clone()].iter().all(|uv| within(uv, expected)));
-            if !up {
-                // Upright: higher corners get smaller v.
-                for (i, j) in [(0, 3), (1, 2)] {
-                    let (low, high) = (corners.start + i, corners.start + j);
-                    assert!(mesh.positions[high][2] > mesh.positions[low][2]);
-                    assert!(mesh.uvs[high][1] < mesh.uvs[low][1]);
+        grid.set_cell(BoxelPos::new(4, 0, 0), &[Occupant::turned(slab, Orientation::z_along(0))]);
+        let mesh = super::mesh_chunk(&grid, ChunkPos::new(0, 0, 0), &blocks, &volumes);
+        for i in 0..mesh.positions.len() {
+            let n = mesh.normals[i];
+            if mesh.positions[i][0] < 2.0 {
+                // The log's ends, east and west, show its look's top and bottom: the rings.
+                if n[0] != 0.0 {
+                    assert!([0.5, 15.5].contains(&mesh.solid[i][2]), "an end reads z {:?}", mesh.solid[i]);
+                } else {
+                    // Its long sides show the look's sides: the bark.
+                    let s = mesh.solid[i];
+                    assert!([0.5, 15.5].contains(&s[0]) || [0.5, 15.5].contains(&s[1]), "a side reads {s:?}");
+                }
+            } else {
+                // The slab's look stays lined up with the world: its cut east face reads x 7.5.
+                let at = [mesh.positions[i][0] - 4.0, mesh.positions[i][1], mesh.positions[i][2]];
+                assert_eq!(on_face(&mesh, i), at.map(|c| c * LookDef::SIZE as f32));
+                if n[0] == 1.0 {
+                    assert_eq!(mesh.solid[i][0], 7.5);
                 }
             }
         }
@@ -507,20 +490,14 @@ mod tests {
             .collect()
     }
 
-    /// Two different textured slabs, and a mesh of one boxel holding `cell`.
-    fn two_slabs() -> (BlockRegistry, Atlas, BlockId, BlockId) {
-        let mut textures = TextureRegistry::default();
-        for name in ["test:a", "test:b"] {
-            textures.register(TextureDef { name: name.into(), width: 1, height: 1, rgba: vec![200; 4] }).unwrap();
-        }
+    /// Two slabs with different looks.
+    fn two_slabs() -> (BlockRegistry, Volumes, BlockId, BlockId) {
         let mut blocks = BlockRegistry::default();
-        let slab = |name: &str, texture: &str| {
-            BlockDef::new(name, true, [0; 3]).with_textures(FaceTextures::all(texture)).with_shape(vec![SLAB])
-        };
+        let slab = |name: &str, look: &str| BlockDef::new(name, true, [0; 3]).with_look(look).with_shape(vec![SLAB]);
         let a = blocks.register(slab("test:slab_a", "test:a")).unwrap();
         let b = blocks.register(slab("test:slab_b", "test:b")).unwrap();
-        let atlas = Atlas::build(&textures, &blocks);
-        (blocks, atlas, a, b)
+        let volumes = Volumes::build(&looks(&["test:a", "test:b"]), &blocks);
+        (blocks, volumes, a, b)
     }
 
     /// A slab standing against the east side of its boxel.
@@ -530,11 +507,11 @@ mod tests {
 
     #[test]
     fn coinciding_faces_in_a_boxel_never_overlap() {
-        let (blocks, atlas, a, b) = two_slabs();
+        let (blocks, volumes, a, b) = two_slabs();
         for cell in [[Occupant::new(b), east(a)], [east(a), Occupant::new(b)]] {
             let mut grid = Grid::default();
             grid.set_cell(BoxelPos::new(3, 3, 3), &cell);
-            let quads = quads(&super::mesh_chunk(&grid, ChunkPos::new(0, 0, 0), &blocks, &atlas));
+            let quads = quads(&super::mesh_chunk(&grid, ChunkPos::new(0, 0, 0), &blocks, &volumes));
             for (i, (n1, min1, max1)) in quads.iter().enumerate() {
                 for (n2, min2, max2) in &quads[i + 1..] {
                     let axis = n1.iter().position(|&c| c != 0.0).unwrap();
@@ -551,18 +528,18 @@ mod tests {
 
     #[test]
     fn the_oldest_occupant_shows_where_faces_coincide() {
-        let (blocks, atlas, a, b) = two_slabs();
-        let ta = atlas.faces(a).unwrap()[2];
-        // Which texture shows on the boxel's east side, by height: (z range, texture).
+        let (blocks, volumes, a, b) = two_slabs();
+        let va = volumes.of(a).unwrap() as f32;
+        // Which slab's look shows on the boxel's east side, by height: (z range, whether a's).
         let east_side = |cell: &[Occupant]| {
             let mut grid = Grid::default();
             grid.set_cell(BoxelPos::new(3, 3, 3), cell);
-            let mesh = super::mesh_chunk(&grid, ChunkPos::new(0, 0, 0), &blocks, &atlas);
+            let mesh = super::mesh_chunk(&grid, ChunkPos::new(0, 0, 0), &blocks, &volumes);
             let mut sides: Vec<_> = quads(&mesh)
                 .into_iter()
                 .enumerate()
                 .filter(|(_, (n, min, _))| n[0] == 1.0 && min[0] == 4.0)
-                .map(|(q, (_, min, max))| ((min[2], max[2]), within(&mesh.uvs[q * 4], ta)))
+                .map(|(q, (_, min, max))| ((min[2], max[2]), mesh.solid[q * 4][3] == va))
                 .collect();
             sides.sort_by(|x, y| x.0.0.total_cmp(&y.0.0));
             sides
@@ -585,9 +562,5 @@ mod tests {
         grid.set_cell(BoxelPos::new(1, 1, 1), &[Occupant::new(slab), Occupant::new(fence)]);
         // The post's bottom lies on the older slab's bottom, so only the slab's is drawn.
         assert_eq!(mesh_chunk(&grid, ChunkPos::new(0, 0, 0), &blocks).quad_count(), 6 + 5);
-    }
-
-    fn within(uv: &[f32; 2], r: Rect) -> bool {
-        (r.min[0]..=r.max[0]).contains(&uv[0]) && (r.min[1]..=r.max[1]).contains(&uv[1])
     }
 }
