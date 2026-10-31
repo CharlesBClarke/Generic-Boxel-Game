@@ -104,12 +104,36 @@ A run of small toy slices. Each one takes a single game-feel feature that doesn'
 
 ### Current toy
 
-None. Suggested next: Inventory and items, which was next before this detour and builds on the materials and the pickup counter from Loose items.
+#### Inventory and items (branch `toy-inventory`)
+
+**Stage:** Implement (2026-10-31).
+
+**Goal:** you carry materials, not blocks. Placing uses them up, everything you carry shares one volume limit, and you pick the shape when placing, so carrying many kinds of block costs nothing extra (the design doc's "inventory discourages variety" gripe). Builds on Loose items. The plan proposed on 2026-10-29 was never written down, so this one was rebuilt from the backlog's list of what's left.
+
+**Approved plan** (2026-10-31, "engage, its ok": the suggested answers to the open questions stand)
+- **`sim::inventory`:** an `Inventory` holding an amount per material in 1/4096ths of a boxel, the unit drops use, with one shared capacity. It replaces `Simulation::collected`.
+- **Placing costs** the block's volume of its material (a slab ½, stairs ¾); without enough it's refused and the ghost shows red. Breaking gives material back through the drop, as now.
+- **Full:** pickup takes only what fits and the rest stays on the ground as a smaller item; items aren't pulled toward a player with no room for them.
+- **Drop key:** throws one full block of the held material (or what's left, if less) forward as a loose item, which the thrower can't pick up again for a short delay. Holding it keeps dropping, like holding break.
+- **API:** `InventoryDef` (capacity in boxels, throw speed, pickup delay, starting stock by material name), registered by the mod, validated and tunable. Without one there's no inventory and placing is free, as today. `data_mods` reads an `[inventory]` table. `PlayerInput` gets `drop` and the material to drop.
+- **Base:** capacity 64 boxels, starting with 32 brick and 32 wood (the test area has brick to break but no wood).
+- **Client:** palette slots become tools, then materials (any material with a placeable block). A `shape` key cycles the held material's placeable shapes, remembered per material; scroll and digits still pick slots. The HUD shows each material's amount, the held shape, a fill line ("18½ / 64") and "full" when nothing more fits. New actions `drop` (Q) and `shape` (G), added to the user's controls file.
+- **Tests:** placing costs the shape's volume and is refused when short; break, pick up and place again conserves the total; a full pickup takes what fits and leaves the rest; no pull when full; a dropped item waits out the delay before it's picked up; capacity is shared across materials; starting stock read by name, an unknown material reported with file and line; no `InventoryDef` means free placing; the palette lists materials and cycles shapes; end to end with `base`.
+- **Out of scope:** weight, crafting, saving, building from storage within some range, pushing items out of placed blocks, an inventory screen.
+
+**Done when**
+1. Placing uses up material by shape volume and stops when you run out, with the ghost red.
+2. Breaking and picking up gives the material back, and the HUD shows each material's amount and the shared fill.
+3. You pick a material, then a shape: every brick and wood shape can be placed from one slot per material.
+4. When full, items stay on the ground (partly picked up if some fits) and aren't pulled in.
+5. The drop key throws material that lands as a normal loose item, collectable again after the delay.
+6. Capacity and the drop values can be tuned while playing.
+7. `cargo test` and `cargo clippy` are clean.
 
 ### Toy backlog
 
 - ~~**Block shapes and placement.**~~ Now the current toy, as Block shapes and shared cells. Suggested order after it: inventory and items, then interaction controls and block interactions, then combat feel.
-- **Inventory and items.** Added 2026-10-28, from the user's request that led to the block shapes toy. Real items and counts, breaking gives you the block, and the design doc's "inventory discourages variety" gripe: try limiting by weight or volume instead of slots, or carrying a material and choosing its shape when placing. Suggested next after block shapes, before combat feel. *Updated 2026-10-30:* Loose items was split out of this and is done: breaking drops materials by volume and the player collects them into a counter. What's left: placing uses up material, a shared capacity limit (volume first, maybe weight later), picking a material and then a shape, a drop key, and items staying on the ground when you're full. The plan proposed on 2026-10-29 had these; reuse it.
+- **Inventory and items.** Now the current toy. Added 2026-10-28, from the user's request that led to the block shapes toy. Real items and counts, breaking gives you the block, and the design doc's "inventory discourages variety" gripe: try limiting by weight or volume instead of slots, or carrying a material and choosing its shape when placing. Suggested next after block shapes, before combat feel. *Updated 2026-10-30:* Loose items was split out of this and is done: breaking drops materials by volume and the player collects them into a counter. What's left: placing uses up material, a shared capacity limit (volume first, maybe weight later), picking a material and then a shape, a drop key, and items staying on the ground when you're full. The plan proposed on 2026-10-29 had these; reuse it.
 - **Covered blocks.** Added 2026-10-31, deferred from Solid materials. Should blocks be roughly one material, with grass and snow a cover on a block rather than part of it? What should a cut through grass show: honest (a bottom slab is all dirt, since the look spans the boxel) or anchored (the look's top follows each box's top, so a grass slab has grass on top, at the cost of seams between a stair's steps)? Settle it once something needs to cut grass, like world generation or crafted shapes.
 - **Plank board ends.** Added 2026-10-31, from Solid materials. Planks stay lined up with the world, so a wood panel or stair facing east or west shows a grid of board ends instead of boards. The user dislikes it but accepted it as a compromise for now. Options: a pattern that reads as boards along both level axes, letting a material turn only about the up axis, or picking the board direction per block when placed.
 - **Items inside placed blocks.** Added 2026-10-30, from Loose items. A block placed over a resting item hides it inside the block; it can still be picked up. Push items out the shortest way, or refuse the placement, once it gets in the way.
