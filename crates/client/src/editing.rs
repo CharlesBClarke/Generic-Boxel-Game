@@ -1,7 +1,7 @@
-//! Breaking and placing blocks on the client side: picking from the palette, catching button
-//! presses between ticks, the outline on the targeted block, the ghost of what placing would
-//! do, and remeshing changed chunks. The simulation decides whether an edit happens; this only
-//! asks and shows.
+//! Breaking and placing blocks on the client side: picking a tool or a material and its shape
+//! from the palette, catching button presses between ticks, the outline on the targeted block,
+//! the ghost of what placing would do, and remeshing changed chunks. The simulation decides
+//! whether an edit happens; this only asks and shows.
 
 use std::collections::HashMap;
 
@@ -9,7 +9,7 @@ use api::{ChunkPos, Vec3 as ZVec3, WorldPos};
 use bevy::input::mouse::{AccumulatedMouseScroll, MouseScrollUnit};
 use bevy::prelude::*;
 use bevy::window::{CursorGrabMode, CursorOptions, PrimaryWindow};
-use sim::{BlockId, BlockRegistry, FACE_CENTER, Occupant, Simulation, ToolId, face_region, occupant_boxes};
+use sim::{BlockId, BlockRegistry, FACE_CENTER, MaterialId, Occupant, Simulation, ToolId, face_region, occupant_boxes};
 
 use crate::controls::Controls;
 use crate::solid::SolidMaterial;
@@ -20,14 +20,44 @@ use crate::{ChunkMesh, Look, PendingToggles, RenderOrigin, Sim, coords, mesher};
 /// pixel-scrolling devices.
 const PIXELS_PER_SLOT: f32 = 40.0;
 
-/// What's in hand, and how blocks get placed. There's no inventory yet, so every tool and every
-/// placeable block is on offer: the tools first, then the blocks.
+/// What's in hand, and how blocks get placed. Every tool is on offer, then every material with
+/// a placeable block, whether any is carried or not: a slot holds a material, and the shape key
+/// picks which of its placeable blocks goes down. See [`entries`].
 #[derive(Resource, Default)]
 pub struct Palette {
     pub slot: usize,
     scrolled: f32,
     /// Precise placement instead of basic placement.
     pub precise: bool,
+    /// The shape picked for each material, as an index into its blocks.
+    shapes: HashMap<MaterialId, usize>,
+}
+
+/// What a palette slot offers.
+#[derive(Clone, Debug, PartialEq)]
+pub enum Entry {
+    Tool(ToolId),
+    /// A material and its placeable blocks, its shapes, in registration order.
+    Material(MaterialId, Vec<BlockId>),
+    /// A placeable block made of no material, so it costs nothing.
+    Block(BlockId),
+}
+
+/// The palette's slots: every tool, then each material with a placeable block, in the order
+/// materials were first named, then placeable blocks with no material.
+pub fn entries(sim: &Simulation) -> Vec<Entry> {
+    let blocks = sim.blocks();
+    let mut out: Vec<Entry> = sim.tool_ids().map(Entry::Tool).collect();
+    let placeable = placeable_blocks(blocks);
+    for m in (0..blocks.material_count()).filter_map(|i| blocks.material_by_index(i)) {
+        let shapes: Vec<BlockId> =
+            placeable.iter().copied().filter(|&b| blocks.drop(b).is_some_and(|d| d.material == m)).collect();
+        if !shapes.is_empty() {
+            out.push(Entry::Material(m, shapes));
+        }
+    }
+    out.extend(placeable.into_iter().filter(|&b| blocks.drop(b).is_none()).map(Entry::Block));
+    out
 }
 
 /// What a palette slot holds.
@@ -39,12 +69,34 @@ pub enum Held {
 }
 
 impl Palette {
-    /// What's in the selected slot.
+    /// What's in the selected slot: for a material, the block of its picked shape.
     pub fn held(&self, sim: &Simulation) -> Held {
-        let tools: Vec<ToolId> = sim.tool_ids().collect();
-        match tools.get(self.slot) {
-            Some(&tool) => Held::Tool(tool),
-            None => placeable_blocks(sim.blocks()).get(self.slot - tools.len()).map_or(Held::Nothing, |&b| Held::Block(b)),
+        match entries(sim).get(self.slot) {
+            Some(Entry::Tool(tool)) => Held::Tool(*tool),
+            Some(Entry::Material(m, shapes)) => Held::Block(shapes[self.shape(*m) % shapes.len()]),
+            Some(Entry::Block(block)) => Held::Block(*block),
+            None => Held::Nothing,
+        }
+    }
+
+    /// The material in the selected slot, if it holds one.
+    pub fn material(&self, sim: &Simulation) -> Option<MaterialId> {
+        match entries(sim).get(self.slot) {
+            Some(Entry::Material(m, _)) => Some(*m),
+            _ => None,
+        }
+    }
+
+    /// The shape picked for `material`, as an index into its blocks; wrap it by their count.
+    fn shape(&self, material: MaterialId) -> usize {
+        self.shapes.get(&material).copied().unwrap_or(0)
+    }
+
+    /// Picks the held material's next shape, or with `step` -1 its previous one, wrapping.
+    pub fn next_shape(&mut self, sim: &Simulation, step: i64) {
+        if let Some(Entry::Material(m, shapes)) = entries(sim).get(self.slot) {
+            let picked = (self.shape(*m) % shapes.len()) as i64;
+            self.shapes.insert(*m, (picked + step).rem_euclid(shapes.len() as i64) as usize);
         }
     }
 
@@ -65,9 +117,9 @@ impl Palette {
     }
 }
 
-/// How many slots the palette has: every tool, then every placeable block.
+/// How many slots the palette has.
 pub fn slot_count(sim: &Simulation) -> usize {
-    sim.tools().len() + placeable_blocks(sim.blocks()).len()
+    entries(sim).len()
 }
 
 /// Every block a player may place, in registration order.
@@ -90,7 +142,8 @@ pub(crate) fn playing(cursor: &CursorOptions) -> bool {
     cursor.grab_mode != CursorGrabMode::None
 }
 
-/// Latches break and place presses for the next tick, and picks the palette slot.
+/// Latches use and drop presses for the next tick, and picks the palette slot and shape. While
+/// the shape key is held, scrolling picks the shape instead of the slot.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn edit_input(
     keys: Res<ButtonInput<KeyCode>>,
@@ -111,8 +164,14 @@ pub(crate) fn edit_input(
     if controls.use_alt.just_pressed(&keys, &mouse) {
         toggles.alt_pressed = true;
     }
+    if keys.just_pressed(controls.drop) {
+        toggles.drop_pressed = true;
+    }
     if controls.placement_mode.just_pressed(&keys, &mouse) {
         palette.precise = !palette.precise;
+    }
+    if keys.just_pressed(controls.shape) {
+        palette.next_shape(&sim.0, 1);
     }
 
     let count = slot_count(&sim.0);
@@ -129,7 +188,11 @@ pub(crate) fn edit_input(
     };
     let steps = palette.scrolled.trunc();
     palette.scrolled -= steps;
-    palette.slot = (palette.slot as i64 - steps as i64).rem_euclid(count as i64) as usize;
+    if keys.pressed(controls.shape) {
+        palette.next_shape(&sim.0, -steps as i64);
+    } else {
+        palette.slot = (palette.slot as i64 - steps as i64).rem_euclid(count as i64) as usize;
+    }
 }
 
 /// Outlines the boxes of the occupant that breaking would remove, unless a tool is in hand.
@@ -303,34 +366,82 @@ pub(crate) fn remesh_changed_chunks(
     }
 }
 
-/// The palette along the bottom of the screen, tools then blocks, with the selected one in
-/// brackets, and the placement mode.
+/// The palette along the bottom of the screen, as three lines: how full the inventory is, the
+/// slots (tools, then materials with how much is carried), with the selected one in brackets,
+/// and what's held with the keys that change it.
 pub(crate) fn update_palette_hud(
     sim: Res<Sim>,
     palette: Res<Palette>,
     controls: Res<Controls>,
     mut text: Single<&mut Text, With<PaletteHud>>,
 ) {
-    let blocks = sim.0.blocks();
-    let short = |name: &str| name.split_once(':').map_or(name, |(_, path)| path).to_owned();
-    let tools = sim.0.tools().iter().map(|def| short(&def.name));
-    let placeable = placeable_blocks(blocks).into_iter().map(|id| blocks.get(id).map_or("?".to_owned(), |def| short(&def.name)));
-    let line = tools
-        .chain(placeable)
+    let line = palette_text(&sim.0, &palette, &controls);
+    if text.0 != line {
+        text.0 = line;
+    }
+}
+
+/// The text of the palette HUD.
+pub(crate) fn palette_text(sim: &Simulation, palette: &Palette, controls: &Controls) -> String {
+    let blocks = sim.blocks();
+    let inventory = sim.inventory();
+    let amount = crate::items::amount_label;
+    let block_name = |id: BlockId| blocks.get(id).map_or("?".to_owned(), |def| short(&def.name).to_owned());
+    let slots = entries(sim)
+        .iter()
+        .map(|entry| match entry {
+            Entry::Tool(tool) => short(&sim.tool(*tool).name).to_owned(),
+            Entry::Material(m, _) => format!("{} {}", short(blocks.material_name(*m)), amount(inventory.amount(*m))),
+            Entry::Block(block) => block_name(*block),
+        })
         .enumerate()
         .map(|(i, name)| if i == palette.slot { format!("[{} {name}]", i + 1) } else { format!(" {} {name} ", i + 1) })
         .collect::<Vec<_>>()
         .join("  ");
+
+    let carried = match sim.capacity() {
+        Some(capacity) => {
+            let full = if inventory.room(Some(capacity)) == 0 { "  FULL" } else { "" };
+            format!("carrying {} / {}{full}", amount(inventory.total()), amount(capacity))
+        }
+        None => "carrying, no limit".to_owned(),
+    };
+
     let mode = if palette.precise {
         "precise placement: the middle of a face lays it flat, an edge stands it there"
     } else {
         "basic placement"
     };
-    let collected = crate::items::collected_line(&sim.0);
-    let collected = if collected.is_empty() { "picked up: nothing yet".to_owned() } else { format!("picked up: {collected}") };
-    let line = format!("{collected}\n{line}\n{mode} ({} switches)", controls.placement_mode.label());
-    if text.0 != line {
-        text.0 = line;
+    let mode = format!("{mode} ({} switches)", controls.placement_mode.label());
+    let held = match (palette.material(sim), palette.held(sim)) {
+        (Some(m), Held::Block(block)) => {
+            let shape = shape_name(blocks.material_name(m), &block_name(block));
+            let throw = if sim.inventory_def().is_some() {
+                format!(", {} throws", crate::controls::label(controls.drop))
+            } else {
+                String::new()
+            };
+            format!("{shape} ({} next shape, hold and scroll{throw})  ·  {mode}", crate::controls::label(controls.shape))
+        }
+        (_, Held::Block(_)) => mode,
+        _ => String::new(),
+    };
+    format!("{carried}\n{slots}\n{held}")
+}
+
+/// A name without its namespace.
+fn short(name: &str) -> &str {
+    name.split_once(':').map_or(name, |(_, path)| path)
+}
+
+/// What a block of `material` is called as a shape of it: `brick_slab` is a slab of brick, and
+/// `brick` itself is the full block.
+fn shape_name(material: &str, block: &str) -> String {
+    let material = short(material);
+    match block.strip_prefix(material) {
+        Some("") => "block".to_owned(),
+        Some(rest) => rest.trim_start_matches('_').replace('_', " "),
+        None => block.replace('_', " "),
     }
 }
 
@@ -352,20 +463,68 @@ mod tests {
         assert_eq!(placeable_blocks(&blocks), [stone, dirt]);
     }
 
-    #[test]
-    fn the_palette_holds_the_tools_then_the_blocks() {
+    fn base_sim() -> Simulation {
         let data = data_mods::load(std::path::Path::new(base::DATA_DIR)).unwrap();
-        let sim = Simulation::with_mods(&[&data, &base::BaseMod, &base_movement::BaseMovementMod]).unwrap();
+        Simulation::with_mods(&[&data, &base::BaseMod, &base_movement::BaseMovementMod]).unwrap()
+    }
+
+    #[test]
+    fn the_palette_holds_the_tools_then_the_materials() {
+        let sim = base_sim();
+        let blocks = sim.blocks();
         let club = sim.tool_ids().next().expect("base registers a tool");
         assert_eq!(sim.tool(club).name, base::CLUB);
-        let first_block = placeable_blocks(sim.blocks())[0];
+        let (brick, wood) = (blocks.material("base:brick").unwrap(), blocks.material("base:wood").unwrap());
+        let names = |ids: &[BlockId]| ids.iter().map(|&b| blocks.get(b).unwrap().name.clone()).collect::<Vec<_>>();
+        let slots = entries(&sim);
+        let [Entry::Tool(tool), Entry::Material(m1, bricks), Entry::Material(m2, woods)] = &slots[..] else {
+            panic!("a club and two materials: {slots:?}");
+        };
+        assert_eq!((*tool, *m1, *m2), (club, brick, wood));
+        let brick_shapes = [base::BRICK, base::BRICK_SLAB, base::BRICK_STAIRS, base::BRICK_PANEL, base::BRICK_WINDOW];
+        assert_eq!(names(bricks), brick_shapes);
+        assert_eq!(names(woods), [base::WOOD, base::WOOD_SLAB, base::WOOD_STAIRS, base::WOOD_FINE_STAIRS, base::WOOD_PANEL]);
+
         let at = |slot| Palette { slot, ..Default::default() };
         assert_eq!(at(0).held(&sim), Held::Tool(club));
         assert_eq!((at(0).tool(&sim), at(0).selected(&sim)), (Some(club), BlockId::EMPTY), "a tool places nothing");
-        assert_eq!(at(1).held(&sim), Held::Block(first_block));
-        assert_eq!((at(1).tool(&sim), at(1).selected(&sim)), (None, first_block));
-        let past = slot_count(&sim);
-        assert_eq!(at(past).held(&sim), Held::Nothing);
+        assert_eq!(at(0).material(&sim), None, "nor throws");
+        assert_eq!((at(1).tool(&sim), at(1).selected(&sim), at(1).material(&sim)), (None, bricks[0], Some(brick)));
+        assert_eq!(at(slot_count(&sim)).held(&sim), Held::Nothing);
+    }
+
+    #[test]
+    fn each_material_remembers_its_shape() {
+        let sim = base_sim();
+        let slots = entries(&sim);
+        let (Entry::Material(_, bricks), Entry::Material(_, woods)) = (&slots[1], &slots[2]) else { panic!() };
+        let mut palette = Palette { slot: 1, ..Default::default() };
+        palette.next_shape(&sim, 1);
+        palette.next_shape(&sim, 1);
+        assert_eq!(palette.selected(&sim), bricks[2], "brick stairs");
+        palette.slot = 2;
+        assert_eq!(palette.selected(&sim), woods[0], "wood keeps its own shape");
+        palette.next_shape(&sim, -1);
+        assert_eq!(palette.selected(&sim), woods[woods.len() - 1], "going back wraps");
+        palette.slot = 1;
+        assert_eq!(palette.selected(&sim), bricks[2]);
+        palette.slot = 0;
+        palette.next_shape(&sim, 1);
+        assert_eq!(palette.held(&sim), Held::Tool(sim.tool_ids().next().unwrap()), "a tool has no shapes");
+    }
+
+    #[test]
+    fn the_hud_shows_amounts_the_fill_and_the_shape() {
+        let sim = base_sim();
+        let mut palette = Palette { slot: 1, ..Default::default() };
+        palette.next_shape(&sim, 1);
+        let text = palette_text(&sim, &palette, &Controls::default());
+        let lines: Vec<&str> = text.lines().collect();
+        assert_eq!(lines[0], "carrying 32 / 64");
+        assert!(lines[1].contains("[2 brick 16]") && lines[1].contains("3 wood 16"), "{}", lines[1]);
+        assert!(lines[2].starts_with("slab (G next shape"), "{}", lines[2]);
+        assert_eq!(shape_name("base:wood", "wood_fine_stairs"), "fine stairs");
+        assert_eq!(shape_name("base:wood", "wood"), "block");
     }
 
     #[test]

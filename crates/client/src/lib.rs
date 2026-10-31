@@ -134,6 +134,7 @@ pub(crate) struct PendingToggles {
     jump_pressed: bool,
     use_pressed: bool,
     alt_pressed: bool,
+    drop_pressed: bool,
 }
 
 /// The world view's origin. Everything is drawn relative to this cell, so the GPU only
@@ -291,6 +292,9 @@ fn tick_simulation(
         tool: palette.tool(&sim.0),
         place_block: palette.selected(&sim.0),
         place_precise: palette.precise,
+        drop_pressed: std::mem::take(&mut toggles.drop_pressed),
+        drop_held: playing && keys.pressed(controls.drop),
+        drop_material: palette.material(&sim.0),
     };
     sim.0.step(&input);
     trainer::observe_tick(&sim.0, &input, &mut trainer);

@@ -85,7 +85,7 @@ fn breaking_a_slab_drops_half_its_material_which_the_player_picks_up() {
     let start = WorldPos::new(I64Vec3::new(2, 0, 0), Vec3::new(0.5, 0.5, 0.25));
     assert!(start.delta_to(item.pos).length() < 0.2, "drops from where the slab was");
     assert!(item.velocity.z > 0.0, "and pops up");
-    assert_eq!(sim.collected().count(), 0);
+    assert_eq!(sim.inventory().iter().count(), 0);
 
     // Step toward it until it's pulled in and picked up.
     for tick in 0..120 {
@@ -93,7 +93,7 @@ fn breaking_a_slab_drops_half_its_material_which_the_player_picks_up() {
         sim.step(&PlayerInput { movement, ..Default::default() });
     }
     assert!(sim.items().is_empty(), "picked up");
-    assert_eq!(sim.collected().collect::<Vec<_>>(), [(stone, FULL_VOLUME / 2)]);
+    assert_eq!(sim.inventory().iter().collect::<Vec<_>>(), [(stone, FULL_VOLUME / 2)]);
 }
 
 #[test]

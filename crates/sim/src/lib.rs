@@ -4,6 +4,7 @@
 pub mod cell;
 pub mod combat;
 pub mod edit;
+pub mod inventory;
 pub mod items;
 pub mod layer;
 pub mod player;
@@ -14,6 +15,7 @@ pub mod world;
 
 pub use combat::{Slam, Strike, Swing, SwingStage, Target, TargetHit, TargetKind, Targets, ToolId};
 pub use cell::{CellBox, CellId, CellTable, MAX_OCCUPANTS, Occupant, ShareError, can_share, occupant_boxes};
+pub use inventory::Inventory;
 pub use items::{Collector, Item, Items};
 pub use layer::Layer;
 pub use player::{Player, PlayerInput, PushOut, Shape, StepReport, Terrain};

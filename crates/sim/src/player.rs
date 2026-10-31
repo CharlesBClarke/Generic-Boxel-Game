@@ -65,6 +65,11 @@ pub struct PlayerInput {
     pub tool: Option<crate::ToolId>,
     /// The block to place. Empty places nothing.
     pub place_block: BlockId,
+    /// The drop button went down since the last tick: throws some of `drop_material`.
+    pub drop_pressed: bool,
+    pub drop_held: bool,
+    /// The material the drop button throws, if any.
+    pub drop_material: Option<crate::MaterialId>,
     /// Precise placement, where the part of the face aimed at picks how a block sits, instead
     /// of basic placement.
     pub place_precise: bool,

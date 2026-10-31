@@ -213,18 +213,6 @@ pub(crate) fn amount_label(amount: u32) -> String {
     text.trim_end_matches('0').trim_end_matches('.').to_owned()
 }
 
-/// What the player has picked up, as `stone 2.5, dirt 1`, or empty with nothing yet.
-pub(crate) fn collected_line(sim: &sim::Simulation) -> String {
-    let blocks = sim.blocks();
-    sim.collected()
-        .map(|(m, amount)| {
-            let name = blocks.material_name(m);
-            format!("{} {}", name.split_once(':').map_or(name, |(_, path)| path), amount_label(amount))
-        })
-        .collect::<Vec<_>>()
-        .join(", ")
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;

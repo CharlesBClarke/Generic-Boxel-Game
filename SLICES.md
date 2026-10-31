@@ -106,7 +106,7 @@ A run of small toy slices. Each one takes a single game-feel feature that doesn'
 
 #### Inventory and items (branch `toy-inventory`)
 
-**Stage:** Implement (2026-10-31).
+**Stage:** Verify (2026-10-31): built and tested, waiting for the user to play it.
 
 **Goal:** you carry materials, not blocks. Placing uses them up, everything you carry shares one volume limit, and you pick the shape when placing, so carrying many kinds of block costs nothing extra (the design doc's "inventory discourages variety" gripe). Builds on Loose items. The plan proposed on 2026-10-29 was never written down, so this one was rebuilt from the backlog's list of what's left.
 
@@ -129,6 +129,17 @@ A run of small toy slices. Each one takes a single game-feel feature that doesn'
 5. The drop key throws material that lands as a normal loose item, collectable again after the delay.
 6. Capacity and the drop values can be tuned while playing.
 7. `cargo test` and `cargo clippy` are clean.
+
+*Implementation notes* (2026-10-31)
+- **Changed from the plan:** the base mod starts with 16 brick and 16 wood, not 32 of each. 32 + 32 fills the 64 capacity, so you'd start full and nothing could be picked up.
+- **API:** `api::InventoryDef` (validated: capacity 0 to 100,000 boxels, the start no more than the capacity; tunable: capacity, throw speed, pickup delay), `Registrar::register_inventory`, `ApiError::{DuplicateInventoryDef, UnknownMaterial}`. Start materials are checked once every mod's blocks are registered.
+- **Data:** `mods/base/inventory.toml` (`capacity`, `throw_speed`, `pickup_delay`, `[start]`), read by `data_mods::inventory`. A short material name must be one of the mod's own blocks' materials; mistakes point at the file and line.
+- **`sim::inventory`:** `Inventory` keeps amounts by material in 1/4096ths of a boxel; the capacity comes from the definition each time it's needed, so tuning it takes effect at once. Lowering it below what's carried keeps everything but leaves no room. `Simulation::collected` is gone; use `inventory()` and `capacity()`.
+- **Placing:** `placement()` refuses (and the ghost shows red) when the block's volume of its material isn't carried; a placed block takes it. Blocks with no material, and every block without an `InventoryDef`, cost nothing. The test-only `AllPlaceable` wrapper registers no inventory, so placement tests stay free.
+- **Pickup:** `Collector` has a `room`; a body with none pulls nothing, and an item bigger than the room is picked up in part. `Item::wait` holds off pull and pickup; merging keeps the longer wait.
+- **Throwing:** `PlayerInput::{drop_pressed, drop_held, drop_material}`. A full block's worth (or what's left) leaves 0.3 m below the eye along the look at `throw_speed` plus the player's own speed, repeating at the interaction rate while held. Needs item drops and an interaction definition too.
+- **Client:** `editing::entries` lists the palette: tools, then each material with a placeable block (its placeable blocks are its shapes, in registration order), then placeable blocks with no material. `Palette` remembers each material's shape. The HUD shows `carrying 32 / 64` (with `FULL`), each material's amount in its slot, and the held shape with its keys. New controls `drop` (Q) and `shape` (G; held, the scroll wheel picks shapes), added to the user's controls file. The tuning panel has an Inventory section.
+- **Tests:** 312 pass across the workspace, clippy clean. New: inventory sharing, taking and lowered capacity; partial pickup, no pull when full, and the throw delay in `sim::items`; placing costs and refusals (the ghost agreeing), free placing without an inventory, break and re-place keeping the total, full inventories leaving items, throwing up and catching after the delay, held drop, unknown start material, and the base game end to end (`sim/tests/inventory.rs`); reading `inventory.toml` and its errors; the palette's materials, shapes remembered per material, and the HUD text. The game starts with no errors.
 
 ### Toy backlog
 

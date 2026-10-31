@@ -1,0 +1,69 @@
+//! `inventory.toml`: what a player carries.
+//!
+//! ```toml
+//! capacity = 64       # boxels' worth, every material together
+//! throw_speed = 6     # meters per second, along the look
+//! pickup_delay = 1.5  # seconds before a thrown item can be picked up again
+//!
+//! [start]             # what a player starts with, in boxels' worth (optional)
+//! brick = 16
+//! ```
+//!
+//! Material names are short and get the mod's namespace; a short name must be the material of
+//! one of this mod's blocks. A full name may name another mod's, checked by the engine.
+
+use std::collections::BTreeMap;
+use std::path::Path;
+
+use api::block::is_valid_name;
+use api::{BlockDef, InventoryDef};
+use serde::Deserialize;
+use toml::Spanned;
+
+use crate::{LoadError, Source};
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct InventoryFile {
+    capacity: Spanned<f32>,
+    throw_speed: f32,
+    pickup_delay: f32,
+    #[serde(default)]
+    start: BTreeMap<Spanned<String>, Spanned<f32>>,
+}
+
+/// What `inventory.toml` in `dir` defines, or nothing if there's no such file. `blocks` are
+/// this mod's, for checking short material names.
+pub(crate) fn load(dir: &Path, namespace: &str, blocks: &[BlockDef]) -> Result<Option<InventoryDef>, LoadError> {
+    let path = dir.join("inventory.toml");
+    if !path.exists() {
+        return Ok(None);
+    }
+    let file = Source::read(path)?;
+    let entries: InventoryFile = file.parse()?;
+    let mut start = Vec::new();
+    for (short, amount) in &entries.start {
+        let m = short.get_ref();
+        let full = if m.contains(':') { m.clone() } else { format!("{namespace}:{m}") };
+        if !is_valid_name(&full) {
+            let message = format!("start material {m:?}: use lowercase letters, digits and underscores");
+            return Err(file.error_at(short, message));
+        }
+        if !m.contains(':') && !blocks.iter().any(|b| b.material.as_deref() == Some(full.as_str())) {
+            return Err(file.error_at(short, format!("start material {m:?}: no block in this mod is made of it")));
+        }
+        let amount = *amount.get_ref();
+        if !(amount.is_finite() && amount >= 0.0) {
+            return Err(file.error_at(short, format!("start amount of {m:?} must be at least 0, got {amount}")));
+        }
+        start.push((full, amount));
+    }
+    let def = InventoryDef {
+        capacity: *entries.capacity.get_ref(),
+        throw_speed: entries.throw_speed,
+        pickup_delay: entries.pickup_delay,
+        start,
+    };
+    def.validate().map_err(|why| file.error_at(&entries.capacity, why))?;
+    Ok(Some(def))
+}
