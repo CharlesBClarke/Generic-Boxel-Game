@@ -6,14 +6,14 @@ use std::fmt;
 use api::block::is_valid_name;
 use api::{
     ApiError, BlockDef, BoxelPos, ChunkPos, I64Vec3, InteractionDef, ItemDropDef, Mod, MovementController, Orientation, PlayerDef,
-    PushOutDef, Registrar, TextureDef, Turning, Vec3, WorldEdit, WorldPos, look_direction,
+    PushOutDef, Registrar, LookDef, Turning, Vec3, WorldEdit, WorldPos, look_direction,
 };
 
 use crate::edit::{ChangedChunks, Repeater};
 use crate::items::{Collector, Items, pop_velocity};
 use crate::player::{PushOut, Terrain};
 use crate::{
-    BlockId, BlockRegistry, CellBox, Grid, Hit, MaterialId, Occupant, Player, PlayerInput, TextureRegistry, Universe, can_share,
+    BlockId, BlockRegistry, CellBox, Grid, Hit, MaterialId, Occupant, Player, PlayerInput, LookRegistry, Universe, can_share,
     occupant_boxes, raycast,
 };
 
@@ -70,7 +70,7 @@ pub struct PlaceReport {
 #[derive(Default)]
 pub struct Simulation {
     blocks: BlockRegistry,
-    textures: TextureRegistry,
+    looks: LookRegistry,
     /// Movement controllers by name, as registered. Each body gets its own from `spawn`.
     controllers: HashMap<String, Box<dyn MovementController>>,
     player_def: Option<PlayerDef>,
@@ -107,7 +107,7 @@ impl Simulation {
         let mut sim = Self::new();
         for m in mods {
             m.register(&mut ContentRegistrar {
-                textures: &mut sim.textures,
+                looks: &mut sim.looks,
                 blocks: &mut sim.blocks,
                 controllers: &mut sim.controllers,
                 player: &mut sim.player_def,
@@ -116,7 +116,7 @@ impl Simulation {
                 item_drops: &mut sim.item_drop_def,
             })?;
         }
-        sim.textures.check_blocks(&sim.blocks)?;
+        sim.looks.check_blocks(&sim.blocks)?;
         for m in mods {
             m.build_world(&mut WorldEditor {
                 blocks: &sim.blocks,
@@ -344,8 +344,8 @@ impl Simulation {
         &self.blocks
     }
 
-    pub fn textures(&self) -> &TextureRegistry {
-        &self.textures
+    pub fn looks(&self) -> &LookRegistry {
+        &self.looks
     }
 
     pub fn player_def(&self) -> Option<&PlayerDef> {
@@ -570,7 +570,7 @@ fn add_controller(
 }
 
 struct ContentRegistrar<'a> {
-    textures: &'a mut TextureRegistry,
+    looks: &'a mut LookRegistry,
     blocks: &'a mut BlockRegistry,
     controllers: &'a mut HashMap<String, Box<dyn MovementController>>,
     player: &'a mut Option<PlayerDef>,
@@ -580,8 +580,8 @@ struct ContentRegistrar<'a> {
 }
 
 impl Registrar for ContentRegistrar<'_> {
-    fn register_texture(&mut self, def: TextureDef) -> Result<(), ApiError> {
-        self.textures.register(def)
+    fn register_look(&mut self, def: LookDef) -> Result<(), ApiError> {
+        self.looks.register(def)
     }
 
     fn register_block(&mut self, def: BlockDef) -> Result<(), ApiError> {

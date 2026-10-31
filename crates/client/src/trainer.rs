@@ -415,7 +415,8 @@ mod tests {
     struct Rig {
         sim: Simulation,
         trainer: Trainer,
-        stone: BlockId,
+        /// A placeable full block.
+        brick: BlockId,
         pitch: f32,
         yaw: f32,
     }
@@ -426,9 +427,9 @@ mod tests {
             for _ in 0..30 {
                 sim.step(&PlayerInput::default());
             }
-            let stone = sim.blocks().id("base:stone").unwrap();
+            let brick = sim.blocks().id("base:brick").unwrap();
             let trainer = Trainer { active: true, ..Trainer::default() };
-            Self { sim, trainer, stone, pitch: DOWN, yaw: 0.0 }
+            Self { sim, trainer, brick, pitch: DOWN, yaw: 0.0 }
         }
 
         fn tick(&mut self, press: Press) -> Option<Verdict> {
@@ -439,7 +440,7 @@ mod tests {
                 jump_held: press.jump || press.hold_jump,
                 place_pressed: press.place,
                 place_held: press.place,
-                place_block: self.stone,
+                place_block: self.brick,
                 ..Default::default()
             };
             self.sim.step(&input);

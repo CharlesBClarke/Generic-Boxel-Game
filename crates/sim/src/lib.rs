@@ -16,6 +16,6 @@ pub use items::{Collector, Item, Items};
 pub use layer::Layer;
 pub use player::{Player, PlayerInput, PushOut, Shape, StepReport, Terrain};
 pub use raycast::{Hit, raycast};
-pub use registry::{BlockId, BlockRegistry, Drop, FULL_VOLUME, MaterialId, TextureRegistry, volume};
+pub use registry::{BlockId, BlockRegistry, Drop, FULL_VOLUME, LookRegistry, MaterialId, volume};
 pub use simulation::{FACE_CENTER, PlaceReport, PlaceTarget, SimError, Simulation, face_region};
 pub use world::{Chunk, Grid, GridId, Universe};

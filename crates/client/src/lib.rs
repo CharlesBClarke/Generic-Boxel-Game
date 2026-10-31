@@ -1,7 +1,6 @@
 //! The Bevy client: opens a window, feeds input to the simulation at a fixed 60 Hz, and
 //! draws the world relative to a floating render origin, interpolated between ticks.
 
-pub mod atlas;
 pub mod controls;
 pub mod coords;
 pub mod drill;
@@ -9,28 +8,29 @@ pub mod editing;
 pub mod feel;
 pub mod items;
 pub mod mesher;
+pub mod solid;
 pub mod trainer;
 pub mod tuning;
+pub mod volumes;
 
 use std::time::{Duration, Instant};
 
 use api::{ChunkPos, I64Vec3, Vec3 as ZVec3, WorldPos};
 use bevy::asset::RenderAssetUsages;
-use bevy::image::ImageSampler;
 use bevy::input::mouse::AccumulatedMouseMotion;
 use bevy::mesh::{Indices, PrimitiveTopology};
-use bevy::render::render_resource::{Extent3d, TextureDimension, TextureFormat};
 use bevy::prelude::*;
 use bevy::window::{CursorGrabMode, CursorOptions, PresentMode, PrimaryWindow};
 use bevy_egui::{EguiPlugin, EguiPrimaryContextPass};
 use sim::{PlayerInput, Simulation};
 
-use crate::atlas::Atlas;
 use crate::controls::{Controls, DoubleTapSprint, label};
 use crate::editing::{ChunkMeshes, Ghost, Palette, PaletteHud};
 use crate::feel::{CameraFeel, FeelState, Motion};
 use crate::mesher::MeshData;
+use crate::solid::{ATTRIBUTE_SOLID, SolidMaterial, SolidPlugin};
 use crate::tuning::TuningPanel;
+use crate::volumes::Volumes;
 
 /// How far, in boxels along any axis, the camera may get from the render origin before
 /// the origin recenters on it.
@@ -45,7 +45,7 @@ pub fn run(sim: Simulation) {
             primary_window: Some(Window { title: "Boxel".into(), ..default() }),
             ..default()
         }))
-        .add_plugins(EguiPlugin::default())
+        .add_plugins((EguiPlugin::default(), SolidPlugin))
         .insert_resource(ClearColor(Color::srgb(0.55, 0.75, 0.95)))
         .insert_resource(Time::<Fixed>::from_hz(Simulation::TICK_RATE))
         .insert_resource(Sim(sim))
@@ -168,33 +168,15 @@ fn spawn_chunk_meshes(
     sim: Res<Sim>,
     origin: Res<RenderOrigin>,
     mut meshes: ResMut<Assets<Mesh>>,
-    mut materials: ResMut<Assets<StandardMaterial>>,
+    mut materials: ResMut<Assets<SolidMaterial>>,
     mut images: ResMut<Assets<Image>>,
 ) {
-    let atlas = Atlas::build(sim.0.textures(), sim.0.blocks());
-    let mut image = Image::new(
-        Extent3d { width: atlas.width, height: atlas.height, depth_or_array_layers: 1 },
-        TextureDimension::D2,
-        atlas.rgba.clone(),
-        TextureFormat::Rgba8UnormSrgb,
-        RenderAssetUsages::RENDER_WORLD,
-    );
-    // Crisp pixels, and no mipmaps to blur neighboring textures together.
-    image.sampler = ImageSampler::nearest();
+    let volumes = Volumes::build(sim.0.looks(), sim.0.blocks());
     // Unlit: shading is baked into vertex colors until there is a lighting system.
-    let texture = images.add(image);
-    let material = materials.add(StandardMaterial {
-        base_color_texture: Some(texture.clone()),
-        unlit: true,
-        ..default()
-    });
-    let ghost_material = |color: Color| StandardMaterial {
-        base_color: color,
-        base_color_texture: Some(texture.clone()),
-        alpha_mode: AlphaMode::Blend,
-        unlit: true,
-        ..default()
-    };
+    let image = images.add(solid::volume_image(&volumes));
+    let solid = |tint: Color, alpha_mode: AlphaMode| SolidMaterial { tint: tint.into(), volumes: image.clone(), alpha_mode };
+    let material = materials.add(solid(Color::WHITE, AlphaMode::Opaque));
+    let ghost_material = |color: Color| solid(color, AlphaMode::Blend);
     let ghost = Ghost {
         entity: commands
             .spawn((
@@ -212,19 +194,19 @@ fn spawn_chunk_meshes(
     let grid = sim.0.universe().main();
     let mut entities = std::collections::HashMap::new();
     for (pos, _) in grid.chunks() {
-        let data = mesher::mesh_chunk(grid, pos, sim.0.blocks(), &atlas);
+        let data = mesher::mesh_chunk(grid, pos, sim.0.blocks(), &volumes);
         if data.is_empty() {
             continue;
         }
         entities.insert(pos, spawn_chunk(&mut commands, &mut meshes, material.clone(), pos, data, origin.cell));
     }
-    commands.insert_resource(ChunkMeshes { material, atlas, entities });
+    commands.insert_resource(ChunkMeshes { material, volumes, entities });
 }
 
 pub(crate) fn spawn_chunk(
     commands: &mut Commands,
     meshes: &mut Assets<Mesh>,
-    material: Handle<StandardMaterial>,
+    material: Handle<SolidMaterial>,
     pos: ChunkPos,
     data: MeshData,
     origin: I64Vec3,
@@ -242,7 +224,7 @@ pub(crate) fn to_bevy_mesh(data: MeshData) -> Mesh {
         .with_inserted_attribute(Mesh::ATTRIBUTE_POSITION, convert(data.positions))
         .with_inserted_attribute(Mesh::ATTRIBUTE_NORMAL, convert(data.normals))
         .with_inserted_attribute(Mesh::ATTRIBUTE_COLOR, data.colors)
-        .with_inserted_attribute(Mesh::ATTRIBUTE_UV_0, data.uvs)
+        .with_inserted_attribute(ATTRIBUTE_SOLID, data.solid)
         .with_inserted_indices(Indices::U32(data.indices))
 }
 

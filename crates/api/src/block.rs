@@ -8,10 +8,11 @@ pub struct BlockDef {
     pub name: String,
     /// Whether players and other bodies collide with it.
     pub solid: bool,
-    /// Flat color, sRGB. Used where the block has no textures.
+    /// Flat color, sRGB. Used where the block has no look, and wherever it's drawn as one color.
     pub color: [u8; 3],
-    /// Textures by face, if any. Each names a registered texture.
-    pub textures: Option<FaceTextures>,
+    /// The registered look it's drawn with, if any: a solid volume, so any cut through the
+    /// block shows what's inside.
+    pub look: Option<String>,
     /// How much grip the surface gives a body standing on it. 1 is normal, near 0 is ice.
     /// Movement controllers decide what it means exactly.
     pub friction: f32,
@@ -24,9 +25,6 @@ pub struct BlockDef {
     /// Which turns it takes when placed. Every block is placed by the same rule: its bottom
     /// against the face aimed at, its front (+Y) the way the player looks.
     pub turning: Turning,
-    /// Whether its textures turn with it, like a log's bark following its axis. Otherwise they
-    /// stay lined up with the world, so bricks run level however a slab or stair is turned.
-    pub turn_textures: bool,
     /// What breaking it gives: its volume of this material, as a loose item. Namespaced, like
     /// `"base:stone"`; blocks of different shapes share one, so a slab gives half a stone.
     /// `None` gives nothing.
@@ -40,18 +38,17 @@ impl BlockDef {
             name: name.into(),
             solid,
             color,
-            textures: None,
+            look: None,
             friction: 1.0,
             placeable: true,
             shape: vec![BlockBox::FULL],
             turning: Turning::None,
-            turn_textures: false,
             material: None,
         }
     }
 
-    pub fn with_textures(mut self, textures: FaceTextures) -> Self {
-        self.textures = Some(textures);
+    pub fn with_look(mut self, look: impl Into<String>) -> Self {
+        self.look = Some(look.into());
         self
     }
 
@@ -72,11 +69,6 @@ impl BlockDef {
 
     pub fn with_turning(mut self, turning: Turning) -> Self {
         self.turning = turning;
-        self
-    }
-
-    pub fn with_turn_textures(mut self, turn_textures: bool) -> Self {
-        self.turn_textures = turn_textures;
         self
     }
 
@@ -146,38 +138,51 @@ pub enum Turning {
     Any,
 }
 
-/// Which texture goes on which faces of a block, by texture name.
+/// How a block looks inside and out, registered by name like everything else: a cube of
+/// [`LookDef::SIZE`] texels a side that spans one boxel and repeats every block. Faces show the
+/// texels just inside them, so a cut shows what's inside. Plain pixels, so it crosses any
+/// boundary as data.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct FaceTextures {
-    pub top: String,
-    pub bottom: String,
-    /// The four sides, drawn upright.
-    pub side: String,
-}
-
-impl FaceTextures {
-    /// The same texture on every face.
-    pub fn all(name: impl Into<String>) -> Self {
-        let name = name.into();
-        Self { top: name.clone(), bottom: name.clone(), side: name }
-    }
-
-    /// Every texture named, top, bottom then side.
-    pub fn names(&self) -> [&str; 3] {
-        [&self.top, &self.bottom, &self.side]
-    }
-}
-
-/// An image blocks can name, registered by name like everything else. Plain pixels, so it
-/// crosses any boundary as data.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct TextureDef {
+pub struct LookDef {
     /// Namespaced name, such as `"base:stone"`.
     pub name: String,
-    pub width: u32,
-    pub height: u32,
-    /// Row by row from the top left, four bytes a pixel, sRGB with straight alpha.
+    /// Whether it turns with the blocks drawn from it, like a log's rings following its axis.
+    /// Otherwise it stays lined up with the world, so bricks run level however a slab or stair
+    /// is turned. A rule of the material, so every shape of it agrees.
+    pub turns: bool,
+    /// Four bytes a texel, sRGB, opaque. X runs fastest, then Y, then Z (up, as in the world):
+    /// texel `(x, y, z)` starts at byte `4 * LookDef::index(x, y, z)`.
     pub rgba: Vec<u8>,
+}
+
+impl LookDef {
+    /// Texels along each side.
+    pub const SIZE: usize = 16;
+    /// Texels in the whole cube.
+    pub const VOLUME: usize = Self::SIZE * Self::SIZE * Self::SIZE;
+
+    /// The texel number of `(x, y, z)`, each below `SIZE`.
+    pub const fn index(x: usize, y: usize, z: usize) -> usize {
+        x + Self::SIZE * (y + Self::SIZE * z)
+    }
+
+    /// The color at `(x, y, z)`.
+    pub fn texel(&self, x: usize, y: usize, z: usize) -> [u8; 4] {
+        let at = 4 * Self::index(x, y, z);
+        self.rgba[at..at + 4].try_into().unwrap()
+    }
+
+    /// The average color, for wherever the block is drawn as one color.
+    pub fn average(&self) -> [u8; 3] {
+        let mut sum = [0u64; 3];
+        for px in self.rgba.as_chunks::<4>().0 {
+            for (s, &c) in sum.iter_mut().zip(px) {
+                *s += c as u64;
+            }
+        }
+        let count = (self.rgba.len() / 4).max(1) as u64;
+        sum.map(|s| (s / count) as u8)
+    }
 }
 
 /// Whether `name` has the `namespace:path` form, each part non-empty and made of
