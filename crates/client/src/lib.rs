@@ -1,6 +1,7 @@
 //! The Bevy client: opens a window, feeds input to the simulation at a fixed 60 Hz, and
 //! draws the world relative to a floating render origin, interpolated between ticks.
 
+pub mod combat;
 pub mod controls;
 pub mod coords;
 pub mod drill;
@@ -63,7 +64,24 @@ pub fn run(sim: Simulation) {
         .init_resource::<DoubleTapSprint>()
         .init_resource::<drill::Drill>()
         .init_resource::<trainer::Trainer>()
-        .add_systems(Startup, (setup_scene, spawn_chunk_meshes, drill::setup_drill, trainer::setup_trainer))
+        .init_resource::<combat::CombatFeel>()
+        .init_resource::<combat::HitStop>()
+        .init_resource::<combat::ViewKick>()
+        .init_resource::<combat::TargetViews>()
+        .init_resource::<combat::WeaponState>()
+        .init_resource::<combat::HitReadout>()
+        .add_systems(
+            Startup,
+            (
+                setup_scene,
+                spawn_chunk_meshes,
+                drill::setup_drill,
+                trainer::setup_trainer,
+                combat::setup_media,
+                combat::setup_weapon.after(setup_scene),
+                combat::setup_readout,
+            ),
+        )
         .add_systems(FixedUpdate, (tick_simulation, drill::drill_tick).chain())
         .add_systems(
             Update,
@@ -77,10 +95,14 @@ pub fn run(sim: Simulation) {
                 drill::drill_keys,
                 trainer::trainer_keys,
                 editing::remesh_changed_chunks,
+                // Strikes first: a broken target bursts from where its view was drawn.
+                (combat::play_strikes, combat::play_slams, combat::update_hit_stop).chain(),
                 (update_camera, sync_chunk_transforms).chain(),
                 editing::draw_outline,
                 editing::update_ghost,
                 items::sync_items,
+                (combat::sync_targets, combat::update_chunks, combat::animate_weapon, combat::draw_hit_boxes, combat::update_readout)
+                    .chain(),
                 editing::draw_region_guide,
                 drill::draw_drill,
                 trainer::draw_trainer,
@@ -110,8 +132,8 @@ pub(crate) struct Look {
 pub(crate) struct PendingToggles {
     toggle_fly: bool,
     jump_pressed: bool,
-    break_pressed: bool,
-    place_pressed: bool,
+    use_pressed: bool,
+    alt_pressed: bool,
 }
 
 /// The world view's origin. Everything is drawn relative to this cell, so the GPU only
@@ -128,7 +150,7 @@ struct WaypointCursor(usize);
 pub(crate) struct ChunkMesh(ChunkPos);
 
 #[derive(Component)]
-struct PlayerCamera;
+pub(crate) struct PlayerCamera;
 
 #[derive(Component)]
 struct Hud;
@@ -244,7 +266,12 @@ fn tick_simulation(
     cursor: Single<&CursorOptions, With<PrimaryWindow>>,
     mut toggles: ResMut<PendingToggles>,
     mut trainer: ResMut<trainer::Trainer>,
+    stop: Res<combat::HitStop>,
 ) {
+    // Held presses wait for the hit-stop to end.
+    if stop.frozen() {
+        return;
+    }
     let axis = |pos: KeyCode, neg: KeyCode| keys.pressed(pos) as i32 as f32 - keys.pressed(neg) as i32 as f32;
     let playing = editing::playing(&cursor);
     let input = PlayerInput {
@@ -257,11 +284,12 @@ fn tick_simulation(
         sprint: keys.pressed(controls.sprint) || double_tap.active,
         crouch: keys.pressed(controls.crouch),
         toggle_fly: std::mem::take(&mut toggles.toggle_fly),
-        break_pressed: std::mem::take(&mut toggles.break_pressed),
-        break_held: playing && controls.break_block.pressed(&keys, &mouse),
-        place_pressed: std::mem::take(&mut toggles.place_pressed),
-        place_held: playing && controls.place_block.pressed(&keys, &mouse),
-        place_block: palette.selected(sim.0.blocks()),
+        use_pressed: std::mem::take(&mut toggles.use_pressed),
+        use_held: playing && controls.use_main.pressed(&keys, &mouse),
+        alt_pressed: std::mem::take(&mut toggles.alt_pressed),
+        alt_held: playing && controls.use_alt.pressed(&keys, &mouse),
+        tool: palette.tool(&sim.0),
+        place_block: palette.selected(&sim.0),
         place_precise: palette.precise,
     };
     sim.0.step(&input);
@@ -337,6 +365,9 @@ fn debug_keys(
         toggles.jump_pressed = true;
     }
 
+    if keys.just_pressed(controls.respawn_targets) {
+        sim.0.respawn_targets();
+    }
     if keys.just_pressed(controls.teleport) && !sim.0.waypoints().is_empty() {
         waypoint.0 = (waypoint.0 + 1) % sim.0.waypoints().len();
         let target = sim.0.waypoints()[waypoint.0].1;
@@ -361,6 +392,7 @@ fn update_camera(
     time: Res<Time>,
     feel: Res<CameraFeel>,
     mut feel_state: ResMut<FeelState>,
+    kick: Res<combat::ViewKick>,
     mut origin: ResMut<RenderOrigin>,
     mut camera: Single<(&mut Transform, &mut Projection), With<PlayerCamera>>,
 ) {
@@ -392,9 +424,9 @@ fn update_camera(
         origin.cell = eye.cell();
     }
     let (transform, projection) = &mut *camera;
-    transform.translation = coords::render_translation(eye, origin.cell);
     let limit = 89f32.to_radians();
-    transform.rotation = coords::look_rotation(look.yaw, (look.pitch - feel_state.nod()).clamp(-limit, limit));
+    transform.rotation = coords::look_rotation(look.yaw, (look.pitch - feel_state.nod() + kick.pitch()).clamp(-limit, limit));
+    transform.translation = coords::render_translation(eye, origin.cell) + transform.rotation * kick.shake_offset();
     if let Projection::Perspective(perspective) = &mut **projection {
         perspective.fov = feel_state.fov.to_radians();
     }
@@ -425,7 +457,7 @@ fn update_hud(
     let precise = pos.cell().as_dvec3() + pos.offset().as_dvec3();
     let fps = 1.0 / time.delta_secs().max(1e-6);
     text.0 = format!(
-        "pos {:.2}, {:.2}, {:.2}  speed {:.1} m/s  last landing {:.1} m/s ({})\norigin {}, {}, {}\n{} | {:.0} fps | cap {} ({})\n{}{}{}{} move, {} jump, {} sprint (or double-tap forward), {} crouch, {} down, {} fly, {} teleport, {} tuning, Esc release mouse\n{} break, {} place, 1-9 or scroll pick block",
+        "pos {:.2}, {:.2}, {:.2}  speed {:.1} m/s  last landing {:.1} m/s ({})\norigin {}, {}, {}\n{} | {:.0} fps | cap {} ({})\n{}{}{}{} move, {} jump, {} sprint (or double-tap forward), {} crouch, {} down, {} fly, {} teleport, {} tuning, Esc release mouse\n{} use (break, swing), {} second use (place, guard), 1-9 or scroll pick, {} respawn targets",
         precise.x,
         precise.y,
         precise.z,
@@ -450,8 +482,9 @@ fn update_hud(
         label(controls.fly),
         label(controls.teleport),
         label(controls.tuning),
-        controls.break_block.label(),
-        controls.place_block.label(),
+        controls.use_main.label(),
+        controls.use_alt.label(),
+        label(controls.respawn_targets),
     );
 }
 

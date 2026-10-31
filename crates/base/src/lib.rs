@@ -2,8 +2,8 @@
 //! and their looks are a data mod in `mods/base`, loaded by the engine alongside it.
 
 use api::{
-    ApiError, BoxelPos, I64Vec3, InteractionDef, ItemDropDef, Mod, Orientation, PlayerDef, PushOutDef, Registrar, Vec3, WorldEdit,
-    WorldPos,
+    ApiError, BoxelPos, I64Vec3, InteractionDef, ItemDropDef, Mod, Orientation, PlayerDef, PushOutDef, Registrar, ToolDef, Vec3,
+    WorldEdit, WorldPos,
 };
 
 /// The base game's data half, in the source tree. Both halves share the `base` namespace.
@@ -31,6 +31,17 @@ pub const WOOD_FENCE: &str = "base:wood_fence";
 pub const LOG: &str = "base:log";
 pub const LOG_SLAB: &str = "base:log_slab";
 pub const GRAVEL: &str = "base:gravel";
+
+/// The cow-shaped training dummy, defined in `mods/base/targets.toml`.
+pub const COW: &str = "base:cow";
+/// The melee tool.
+pub const CLUB: &str = "base:club";
+
+/// Where the cows stand in the walled pen, relative to the test area's origin, and which way
+/// each faces, in degrees counterclockwise from east.
+pub const COWS: &[(i64, i64, f32)] = &[(-16, 11, 20.0), (-12, 11, 160.0), (-16, 17, -60.0), (-12, 16, 250.0)];
+/// Just outside the pen's doorway, looking in.
+pub const COW_PEN_SPOT: (i64, i64, i64) = (-6, 14, 0);
 
 /// Where the shapes corner of the test area starts, relative to its origin: where the feet stand
 /// at the foot of the staircase.
@@ -91,6 +102,20 @@ impl Mod for BaseMod {
             pull_speed: 8.0,
             pickup_radius: 0.3,
             merge_radius: 1.0,
+        })?;
+        // A blunt club: a quick wind-up, a heavy knock along the ground more than up, and a short
+        // recovery. Running into a swing passes most of your speed on.
+        r.register_tool(ToolDef {
+            name: CLUB.into(),
+            reach: 2.8,
+            radius: 0.35,
+            damage: 5.0,
+            knockback: 22.0,
+            lift: 4.0,
+            momentum: 0.8,
+            momentum_damage: 0.5,
+            windup: 0.07,
+            recover: 0.28,
         })
     }
 
@@ -105,6 +130,11 @@ impl Mod for BaseMod {
         w.add_waypoint("far", spawn(FAR_ORIGIN));
         let (x, y, z) = SHAPES_SPOT;
         w.add_waypoint("shapes", WorldPos::new(origin.0 + I64Vec3::new(x, y, z), Vec3::new(0.5, 0.5, 0.0)));
+        let (x, y, z) = COW_PEN_SPOT;
+        w.add_waypoint("cow pen", WorldPos::new(origin.0 + I64Vec3::new(x, y, z), Vec3::new(0.5, 0.5, 0.0)));
+        for &(x, y, facing) in COWS {
+            w.add_target(COW, WorldPos::new(origin.0 + I64Vec3::new(x, y, 0), Vec3::new(0.5, 0.5, 0.0)), facing.to_radians())?;
+        }
         for o in [origin, FAR_ORIGIN] {
             for (name, x, y, z) in LANDMARKS {
                 w.add_waypoint(&format!("landmark:{name}"), WorldPos::new(o.0 + I64Vec3::new(*x, *y, *z), Vec3::new(0.5, 0.5, 0.0)));

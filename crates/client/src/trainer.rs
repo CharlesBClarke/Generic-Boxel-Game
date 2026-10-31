@@ -438,8 +438,8 @@ mod tests {
                 pitch: self.pitch,
                 jump_pressed: press.jump,
                 jump_held: press.jump || press.hold_jump,
-                place_pressed: press.place,
-                place_held: press.place,
+                alt_pressed: press.place,
+                alt_held: press.place,
                 place_block: self.brick,
                 ..Default::default()
             };

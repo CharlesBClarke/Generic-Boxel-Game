@@ -89,3 +89,23 @@ fn a_broken_recipe_names_its_line() {
     assert!(err.starts_with(&format!("{}:{line}: ", copy.0.join("blocks.toml").display())), "{err}");
     assert!(err.contains("look \"brick\"") && err.contains("divide"), "{err}");
 }
+
+#[test]
+fn the_cow_is_data_and_its_numbers_can_be_edited() {
+    let sim = game::load(Movement::Native).unwrap();
+    let cow = sim.target_defs().iter().find(|d| d.name == base::COW).expect("base defines the cow");
+    let model = sim.models().iter().find(|m| m.name == cow.model).expect("with its model");
+    assert_eq!((model.texture.width, model.texture.height), (128, 128));
+    assert!(model.indices.len() > 300, "the whole cow, {} indices", model.indices.len());
+    assert!(cow.hit_sound.as_ref().is_some_and(|s| sim.sounds().iter().any(|d| &d.name == s)), "and its moo");
+
+    let copy = Copy::new("cow");
+    copy.edit("targets.toml", "health = 20", "health = 55");
+    let sim = game::load_from(&copy.0, Movement::Native).unwrap();
+    assert_eq!(sim.target_defs().iter().find(|d| d.name == base::COW).unwrap().health, 55.0);
+
+    let copy = Copy::new("cow_broken");
+    copy.edit("targets.toml", "mesh = \"models/cow.obj\"", "mesh = \"models/bull.obj\"");
+    let error = game::load_from(&copy.0, Movement::Native).err().unwrap().to_string();
+    assert!(error.contains("targets.toml:") && error.contains("bull.obj"), "{error}");
+}

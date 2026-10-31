@@ -31,11 +31,11 @@ fn id(sim: &Simulation, name: &str) -> BlockId {
 
 /// One tick with the break or place button freshly pressed.
 fn break_at(yaw: f32, pitch: f32) -> PlayerInput {
-    PlayerInput { yaw, pitch, break_pressed: true, break_held: true, ..Default::default() }
+    PlayerInput { yaw, pitch, use_pressed: true, use_held: true, ..Default::default() }
 }
 
 fn place_at(yaw: f32, pitch: f32, block: BlockId) -> PlayerInput {
-    PlayerInput { yaw, pitch, place_pressed: true, place_held: true, place_block: block, ..Default::default() }
+    PlayerInput { yaw, pitch, alt_pressed: true, alt_held: true, place_block: block, ..Default::default() }
 }
 
 const DOWN: f32 = -89.0 * std::f32::consts::PI / 180.0;
@@ -139,7 +139,7 @@ fn holding_break_repeats_at_the_repeat_rate() {
     sim.step(&PlayerInput { toggle_fly: true, ..Default::default() });
     let mut input = break_at(0.0, DOWN);
     sim.step(&input);
-    input.break_pressed = false;
+    input.use_pressed = false;
     for _ in 0..30 {
         sim.step(&input);
     }

@@ -1,11 +1,13 @@
 //! The live tuning panel: sliders for every value the player's movement controller, the
-//! interaction, push-out and item drop definitions and the camera feel expose, whichever mod they come from.
+//! interaction, push-out and item drop definitions, tools, targets, the camera feel and the combat
+//! feel expose, whichever mod they come from.
 
 use api::{Tunable, Tunables};
 use bevy::prelude::*;
 use bevy_egui::{EguiContexts, egui};
 
 use crate::Sim;
+use crate::combat::CombatFeel;
 use crate::drill::{Drill, DrillTuning};
 use crate::feel::CameraFeel;
 
@@ -20,6 +22,9 @@ pub struct TuningPanel {
     push_out_defaults: Option<Vec<Tunable>>,
     /// The item drop definition when the game started, for reset.
     item_drop_defaults: Option<Vec<Tunable>>,
+    /// Each tool's and each target's values when the game started, for reset.
+    tool_defaults: Option<Vec<Vec<Tunable>>>,
+    target_defaults: Option<Vec<Vec<Tunable>>>,
     /// The last printout, shown in the panel so it can be copied.
     printout: String,
 }
@@ -29,6 +34,7 @@ pub fn tuning_panel(
     mut panel: ResMut<TuningPanel>,
     mut sim: ResMut<Sim>,
     mut feel: ResMut<CameraFeel>,
+    mut combat: ResMut<CombatFeel>,
     mut drill: ResMut<Drill>,
 ) -> Result {
     // A copy, since the controller below borrows the simulation; written back at the end.
@@ -43,6 +49,14 @@ pub fn tuning_panel(
     let mut item_drops = sim.0.item_drop_def().cloned();
     if panel.item_drop_defaults.is_none() {
         panel.item_drop_defaults = item_drops.as_ref().map(|d| d.tunables());
+    }
+    let mut tools = sim.0.tools().to_vec();
+    if panel.tool_defaults.is_none() {
+        panel.tool_defaults = Some(tools.iter().map(|t| t.tunables()).collect());
+    }
+    let mut targets = sim.0.target_defs().to_vec();
+    if panel.target_defaults.is_none() {
+        panel.target_defaults = Some(targets.iter().map(|t| t.tunables()).collect());
     }
     let Some(player) = sim.0.player_mut() else {
         return Ok(());
@@ -75,6 +89,25 @@ pub fn tuning_panel(
                 ui.separator();
                 ui.heading("Item drops");
                 sliders(ui, "item_drops", item_drops);
+            }
+            for tool in &mut tools {
+                ui.separator();
+                ui.heading(format!("Tool: {}", tool.name));
+                let id = format!("tool {}", tool.name);
+                sliders(ui, &id, tool);
+            }
+            for target in &mut targets {
+                ui.separator();
+                ui.heading(format!("Target: {}", target.name));
+                let id = format!("target {}", target.name);
+                sliders(ui, &id, target);
+            }
+            ui.separator();
+            ui.heading("Combat feel");
+            let mut juice = combat.clone();
+            sliders(ui, "combat", &mut juice);
+            if juice != *combat {
+                *combat = juice;
             }
             ui.separator();
             ui.heading("Camera");
@@ -109,7 +142,18 @@ pub fn tuning_panel(
                         item_drops.set_tunable(&t.name, t.value);
                     }
                 }
+                for (tool, defaults) in tools.iter_mut().zip(panel.tool_defaults.iter().flatten()) {
+                    for t in defaults {
+                        tool.set_tunable(&t.name, t.value);
+                    }
+                }
+                for (target, defaults) in targets.iter_mut().zip(panel.target_defaults.iter().flatten()) {
+                    for t in defaults {
+                        target.set_tunable(&t.name, t.value);
+                    }
+                }
                 *feel = CameraFeel::default();
+                *combat = CombatFeel::default();
                 drill.tuning = DrillTuning::default();
             }
             print = ui.button("Print values").clicked();
@@ -136,6 +180,16 @@ pub fn tuning_panel(
             out += "// item drops\n";
             out += &printout(&item_drops.tunables());
         }
+        for tool in &tools {
+            out += &format!("// tool {}\n", tool.name);
+            out += &printout(&tool.tunables());
+        }
+        for target in &targets {
+            out += &format!("// target {}\n", target.name);
+            out += &printout(&target.tunables());
+        }
+        out += "// combat feel\n";
+        out += &printout(&combat.tunables());
         out += "// camera\n";
         out += &printout(&feel.tunables());
         out += "// chase drill\n";
@@ -157,6 +211,12 @@ pub fn tuning_panel(
         && edited != *def
     {
         *def = edited;
+    }
+    if tools != sim.0.tools() {
+        sim.0.tools_mut().clone_from_slice(&tools);
+    }
+    if targets != sim.0.target_defs() {
+        sim.0.target_defs_mut().clone_from_slice(&targets);
     }
     Ok(())
 }

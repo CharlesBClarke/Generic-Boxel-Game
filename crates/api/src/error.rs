@@ -14,6 +14,12 @@ pub enum ApiError {
     UnknownLook(String),
     /// No movement controller is registered under this name.
     UnknownController(String),
+    /// No model is registered under this name.
+    UnknownModel(String),
+    /// No sound is registered under this name.
+    UnknownSound(String),
+    /// No target is registered under this name.
+    UnknownTarget(String),
     /// A player definition is already registered.
     DuplicatePlayerDef,
     /// An interaction definition is already registered.
@@ -36,6 +42,9 @@ impl fmt::Display for ApiError {
             ApiError::UnknownBlock(name) => write!(f, "no block named {name:?}"),
             ApiError::UnknownLook(name) => write!(f, "no look named {name:?}"),
             ApiError::UnknownController(name) => write!(f, "no movement controller named {name:?}"),
+            ApiError::UnknownModel(name) => write!(f, "no model named {name:?}"),
+            ApiError::UnknownSound(name) => write!(f, "no sound named {name:?}"),
+            ApiError::UnknownTarget(name) => write!(f, "no target named {name:?}"),
             ApiError::DuplicatePlayerDef => write!(f, "a player definition is already registered"),
             ApiError::DuplicateInteractionDef => write!(f, "an interaction definition is already registered"),
             ApiError::DuplicatePushOutDef => write!(f, "a push-out definition is already registered"),

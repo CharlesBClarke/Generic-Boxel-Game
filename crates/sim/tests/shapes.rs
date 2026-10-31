@@ -223,8 +223,8 @@ fn a_slab_aimed_at_a_post_shares_the_post_boxel() {
     sim.step(&PlayerInput { toggle_fly: true, ..Default::default() });
     let place_input = |block| PlayerInput {
         pitch: DOWN,
-        place_pressed: true,
-        place_held: true,
+        alt_pressed: true,
+        alt_held: true,
         place_block: block,
         ..Default::default()
     };
@@ -317,7 +317,7 @@ fn breaking_removes_only_the_occupant_aimed_at() {
     let hit = sim.target(0.0, DOWN).unwrap();
     assert_eq!(hit.pos, cell);
     assert!((hit.point.z - 1.0).abs() < 1e-4);
-    sim.step(&PlayerInput { pitch: DOWN, break_pressed: true, break_held: true, ..Default::default() });
+    sim.step(&PlayerInput { pitch: DOWN, use_pressed: true, use_held: true, ..Default::default() });
     assert_eq!(sim.universe().main().cell(cell), [Occupant::new(slab)], "the bottom slab stays");
     let hit = sim.target(0.0, DOWN).unwrap();
     assert!((hit.point.z - 0.5).abs() < 1e-4, "now the bottom slab's top is hit");

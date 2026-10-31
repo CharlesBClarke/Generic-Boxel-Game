@@ -5,10 +5,12 @@ use std::fmt;
 
 use api::block::is_valid_name;
 use api::{
-    ApiError, BlockDef, BoxelPos, ChunkPos, I64Vec3, InteractionDef, ItemDropDef, Mod, MovementController, Orientation, PlayerDef,
-    PushOutDef, Registrar, LookDef, Turning, Vec3, WorldEdit, WorldPos, look_direction,
+    ApiError, BlockDef, BoxelPos, ChunkPos, I64Vec3, InteractionDef, ItemDropDef, LookDef, ModelDef, Mod, MovementController,
+    Orientation, PlayerDef, PushOutDef, Registrar, SoundDef, TargetDef, ToolDef, Turning, Vec3, WorldEdit, WorldPos,
+    look_direction,
 };
 
+use crate::combat::{Strike, Swing, SwingStage, TargetKind, Targets, ToolId};
 use crate::edit::{ChangedChunks, Repeater};
 use crate::items::{Collector, Items, pop_velocity};
 use crate::player::{PushOut, Terrain};
@@ -77,6 +79,10 @@ pub struct Simulation {
     interaction_def: Option<InteractionDef>,
     push_out_def: Option<PushOutDef>,
     item_drop_def: Option<ItemDropDef>,
+    models: Vec<ModelDef>,
+    sounds: Vec<SoundDef>,
+    target_defs: Vec<TargetDef>,
+    tools: Vec<ToolDef>,
     universe: Universe,
     spawn: WorldPos,
     waypoints: Vec<(String, WorldPos)>,
@@ -87,6 +93,11 @@ pub struct Simulation {
     items: Items,
     /// How much of each material the player has picked up, by material index.
     collected: Vec<u32>,
+    targets: Targets,
+    swing: Option<Swing>,
+    guarding: bool,
+    /// Strikes since the last [`Simulation::take_strikes`].
+    strikes: Vec<Strike>,
     tick: u64,
     last_place: Option<PlaceReport>,
 }
@@ -114,15 +125,29 @@ impl Simulation {
                 interaction: &mut sim.interaction_def,
                 push_out: &mut sim.push_out_def,
                 item_drops: &mut sim.item_drop_def,
+                models: &mut sim.models,
+                sounds: &mut sim.sounds,
+                targets: &mut sim.target_defs,
+                tools: &mut sim.tools,
             })?;
         }
         sim.looks.check_blocks(&sim.blocks)?;
+        for def in &sim.target_defs {
+            if !sim.models.iter().any(|m| m.name == def.model) {
+                return Err(ApiError::UnknownModel(def.model.clone()).into());
+            }
+            if let Some(sound) = def.hit_sound.as_ref().filter(|&name| !sim.sounds.iter().any(|s| s.name == *name)) {
+                return Err(ApiError::UnknownSound(sound.clone()).into());
+            }
+        }
         for m in mods {
             m.build_world(&mut WorldEditor {
                 blocks: &sim.blocks,
                 grid: sim.universe.main_mut(),
                 spawn: &mut sim.spawn,
                 waypoints: &mut sim.waypoints,
+                target_defs: &sim.target_defs,
+                targets: &mut sim.targets,
             })?;
         }
         Ok(sim)
@@ -150,16 +175,18 @@ impl Simulation {
         Ok(())
     }
 
-    /// Advances one fixed tick. Block edits happen first, from where the player stood at the
-    /// end of the last tick, which is what the client aimed from. Loose items move last, toward
-    /// where the player ended up.
+    /// Advances one fixed tick. Block edits and tool swings happen first, from where the
+    /// player stood at the end of the last tick, which is what the client aimed from. Targets
+    /// move after the player, and loose items last, toward where the player ended up.
     pub fn step(&mut self, input: &PlayerInput) {
         self.edit_blocks(input);
-        let Self { blocks, universe, player, items, item_drop_def, collected, .. } = self;
+        self.use_tool(input);
+        let Self { blocks, universe, player, items, item_drop_def, collected, targets, target_defs, .. } = self;
         let terrain = GridTerrain { grid: universe.main(), blocks };
         if let Some(player) = player {
             player.step(input, Self::TICK_SECONDS, &terrain);
         }
+        targets.step(target_defs, Self::TICK_SECONDS, &terrain);
         if let Some(def) = item_drop_def {
             let collector = player.as_ref().map(|p| Collector { feet: p.pos(), width: p.shape().width, height: p.height() });
             for drop in items.step(def, blocks, Self::TICK_SECONDS, &terrain, collector) {
@@ -230,16 +257,20 @@ impl Simulation {
         first
     }
 
-    /// Whether the player's body leaves room for `occupant` at `pos`: it isn't solid, doesn't
-    /// overlap the body, or the body can be pushed out.
+    /// Whether the bodies in the world leave room for `occupant` at `pos`: it isn't solid, or
+    /// it overlaps no target and either doesn't overlap the player or the player can be pushed
+    /// out.
     fn body_allows(&self, pos: BoxelPos, occupant: Occupant) -> bool {
-        let Some(player) = &self.player else {
-            return true;
-        };
         if !self.blocks.is_solid(occupant.block) {
             return true;
         }
         let boxes: Vec<_> = occupant_boxes(occupant, &self.blocks).collect();
+        if self.targets.iter().any(|t| t.overlaps_boxes(&self.target_defs[t.kind.index()], pos, &boxes)) {
+            return false;
+        }
+        let Some(player) = &self.player else {
+            return true;
+        };
         !player.overlaps_boxes(pos, &boxes) || self.push_out(player, pos, &boxes).is_some()
     }
 
@@ -264,10 +295,13 @@ impl Simulation {
         let Some(def) = &self.interaction_def else {
             return;
         };
+        if input.tool.is_some() {
+            return;
+        }
         let interval = 1.0 / def.repeat_rate;
         let dt = Self::TICK_SECONDS;
-        let breaking = self.breaking.update(input.break_pressed, input.break_held, interval, dt);
-        let placing = self.placing.update(input.place_pressed, input.place_held, interval, dt);
+        let breaking = self.breaking.update(input.use_pressed, input.use_held, interval, dt);
+        let placing = self.placing.update(input.alt_pressed, input.alt_held, interval, dt);
         if !breaking && !placing {
             return;
         }
@@ -284,6 +318,60 @@ impl Simulation {
             _ => None,
         };
         self.last_place = Some(PlaceReport { tick: self.tick, target, push_out });
+    }
+
+    /// Works the tool in hand: the main use starts a swing when none is under way, held or
+    /// pressed, and the strike lands at the end of the wind-up, aimed where the player looks
+    /// on that tick. The second use guards while no swing is under way. Putting the tool away,
+    /// or switching tools, drops the swing.
+    fn use_tool(&mut self, input: &PlayerInput) {
+        let dt = Self::TICK_SECONDS;
+        let tool = input.tool.filter(|t| t.index() < self.tools.len());
+        if self.swing.is_some_and(|s| Some(s.tool) != tool) {
+            self.swing = None;
+        }
+        let Some(tool) = tool else {
+            self.guarding = false;
+            return;
+        };
+        if self.swing.is_none() && (input.use_pressed || input.use_held) {
+            self.swing = Some(Swing { tool, stage: SwingStage::Windup, time: 0.0 });
+        }
+        self.guarding = self.swing.is_none() && input.alt_held;
+        let Some(swing) = &mut self.swing else {
+            return;
+        };
+        let def = &self.tools[tool.index()];
+        swing.time += dt;
+        match swing.stage {
+            SwingStage::Windup if swing.time >= def.windup => {
+                *swing = Swing { tool, stage: SwingStage::Recover, time: 0.0 };
+                self.strike(tool, input.yaw, input.pitch);
+            }
+            SwingStage::Recover if swing.time >= def.recover => self.swing = None,
+            _ => {}
+        }
+    }
+
+    /// A strike with `tool` looking along `yaw` and `pitch`. Blocks in the way cut its reach.
+    fn strike(&mut self, tool: ToolId, yaw: f32, pitch: f32) {
+        let Some(player) = &self.player else {
+            return;
+        };
+        let def = &self.tools[tool.index()];
+        let (eye, look, carry) = (player.eye(), look_direction(yaw, pitch), player.velocity());
+        let grid = self.universe.main();
+        let blocks = &self.blocks;
+        let wall = raycast(eye, look, def.reach, |p, out| {
+            for (i, &o) in grid.cell(p).iter().enumerate() {
+                if blocks.is_solid(o.block) {
+                    out.extend(occupant_boxes(o, blocks).map(|b| (b, i)));
+                }
+            }
+        });
+        let reach = wall.map_or(def.reach, |w| w.distance);
+        let hit = self.targets.strike(&self.target_defs, def, eye, look, reach, carry);
+        self.strikes.push(Strike { tick: self.tick, tool, eye, look, reach, hit });
     }
 
     /// Removes one occupant from a boxel, by its index in the boxel's list. It drops its
@@ -398,6 +486,79 @@ impl Simulation {
             .filter_map(|i| self.blocks.material_by_index(i))
             .map(|m| (m, self.collected.get(m.index()).copied().unwrap_or(0)))
             .filter(|&(_, amount)| amount > 0)
+    }
+
+    /// Every registered model, in registration order.
+    pub fn models(&self) -> &[ModelDef] {
+        &self.models
+    }
+
+    /// Every registered sound, in registration order.
+    pub fn sounds(&self) -> &[SoundDef] {
+        &self.sounds
+    }
+
+    /// Every registered target definition, by [`TargetKind`] index.
+    pub fn target_defs(&self) -> &[TargetDef] {
+        &self.target_defs
+    }
+
+    pub fn target_def(&self, kind: TargetKind) -> &TargetDef {
+        &self.target_defs[kind.index()]
+    }
+
+    /// For engine tools such as the tuning panel.
+    pub fn target_defs_mut(&mut self) -> &mut [TargetDef] {
+        &mut self.target_defs
+    }
+
+    /// Every registered tool, by [`ToolId`] index.
+    pub fn tools(&self) -> &[ToolDef] {
+        &self.tools
+    }
+
+    /// Every tool's ID, in registration order.
+    pub fn tool_ids(&self) -> impl Iterator<Item = ToolId> {
+        (0..self.tools.len()).map(|i| ToolId(i as u16))
+    }
+
+    pub fn tool(&self, id: ToolId) -> &ToolDef {
+        &self.tools[id.index()]
+    }
+
+    /// For engine tools such as the tuning panel.
+    pub fn tools_mut(&mut self) -> &mut [ToolDef] {
+        &mut self.tools
+    }
+
+    /// The targets in the world, broken ones excluded.
+    pub fn targets(&self) -> &Targets {
+        &self.targets
+    }
+
+    /// Puts every target back at its spot, whole.
+    pub fn respawn_targets(&mut self) {
+        self.targets.respawn_all(&self.target_defs);
+    }
+
+    /// The tool swing under way, if any.
+    pub fn swing(&self) -> Option<&Swing> {
+        self.swing.as_ref()
+    }
+
+    /// Whether the player is guarding with the tool in hand.
+    pub fn guarding(&self) -> bool {
+        self.guarding
+    }
+
+    /// Targets slammed into walls since the last call, oldest first.
+    pub fn take_slams(&mut self) -> Vec<crate::Slam> {
+        self.targets.take_slams()
+    }
+
+    /// Tool strikes since the last call, hits and misses, oldest first.
+    pub fn take_strikes(&mut self) -> Vec<Strike> {
+        std::mem::take(&mut self.strikes)
     }
 
     pub fn universe(&self) -> &Universe {
@@ -577,6 +738,21 @@ struct ContentRegistrar<'a> {
     interaction: &'a mut Option<InteractionDef>,
     push_out: &'a mut Option<PushOutDef>,
     item_drops: &'a mut Option<ItemDropDef>,
+    models: &'a mut Vec<ModelDef>,
+    sounds: &'a mut Vec<SoundDef>,
+    targets: &'a mut Vec<TargetDef>,
+    tools: &'a mut Vec<ToolDef>,
+}
+
+/// Checks `name` is a valid name that `taken` doesn't already hold.
+fn check_new_name(name: &str, mut taken: impl Iterator<Item = String>) -> Result<(), ApiError> {
+    if !is_valid_name(name) {
+        return Err(ApiError::InvalidName(name.into()));
+    }
+    if taken.any(|t| t == name) {
+        return Err(ApiError::DuplicateName(name.into()));
+    }
+    Ok(())
 }
 
 impl Registrar for ContentRegistrar<'_> {
@@ -631,6 +807,33 @@ impl Registrar for ContentRegistrar<'_> {
         *self.item_drops = Some(def);
         Ok(())
     }
+
+    fn register_model(&mut self, def: ModelDef) -> Result<(), ApiError> {
+        check_new_name(&def.name, self.models.iter().map(|m| m.name.clone()))?;
+        def.validate().map_err(|why| ApiError::InvalidDef(format!("model {}: {why}", def.name)))?;
+        self.models.push(def);
+        Ok(())
+    }
+
+    fn register_sound(&mut self, def: SoundDef) -> Result<(), ApiError> {
+        check_new_name(&def.name, self.sounds.iter().map(|s| s.name.clone()))?;
+        self.sounds.push(def);
+        Ok(())
+    }
+
+    fn register_target(&mut self, def: TargetDef) -> Result<(), ApiError> {
+        check_new_name(&def.name, self.targets.iter().map(|t| t.name.clone()))?;
+        def.validate().map_err(|why| ApiError::InvalidDef(format!("target {}: {why}", def.name)))?;
+        self.targets.push(def);
+        Ok(())
+    }
+
+    fn register_tool(&mut self, def: ToolDef) -> Result<(), ApiError> {
+        check_new_name(&def.name, self.tools.iter().map(|t| t.name.clone()))?;
+        def.validate().map_err(|why| ApiError::InvalidDef(format!("tool {}: {why}", def.name)))?;
+        self.tools.push(def);
+        Ok(())
+    }
 }
 
 struct WorldEditor<'a> {
@@ -638,6 +841,8 @@ struct WorldEditor<'a> {
     grid: &'a mut Grid,
     spawn: &'a mut WorldPos,
     waypoints: &'a mut Vec<(String, WorldPos)>,
+    target_defs: &'a [TargetDef],
+    targets: &'a mut Targets,
 }
 
 impl WorldEdit for WorldEditor<'_> {
@@ -668,5 +873,11 @@ impl WorldEdit for WorldEditor<'_> {
 
     fn add_waypoint(&mut self, name: &str, pos: WorldPos) {
         self.waypoints.push((name.into(), pos));
+    }
+
+    fn add_target(&mut self, name: &str, pos: WorldPos, yaw: f32) -> Result<(), ApiError> {
+        let index = self.target_defs.iter().position(|d| d.name == name).ok_or_else(|| ApiError::UnknownTarget(name.into()))?;
+        self.targets.add_spot(TargetKind(index as u16), pos, yaw, &self.target_defs[index]);
+        Ok(())
     }
 }

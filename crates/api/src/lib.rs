@@ -5,12 +5,14 @@
 //! plain data: no references into engine or mod memory, no closures, no generic traits.
 
 pub mod block;
+pub mod combat;
 pub mod coords;
 pub mod error;
 #[cfg(target_arch = "wasm32")]
 pub mod guest;
 pub mod interaction;
 pub mod item;
+pub mod media;
 pub mod modding;
 pub mod orientation;
 pub mod movement;
@@ -18,10 +20,12 @@ pub mod player;
 pub mod tuning;
 
 pub use block::{BlockBox, BlockDef, LookDef, Turning};
+pub use combat::{HitBox, TargetDef, ToolDef};
 pub use coords::{BoxelPos, CHUNK_SIZE, CHUNK_VOLUME, ChunkPos, LocalPos, WorldPos, look_direction};
 pub use error::ApiError;
 pub use interaction::{InteractionDef, PushOutDef};
 pub use item::ItemDropDef;
+pub use media::{ModelDef, SoundDef, Texture};
 pub use glam::{I64Vec3, Vec2, Vec3};
 pub use modding::{Mod, Registrar, WorldEdit};
 pub use orientation::Orientation;

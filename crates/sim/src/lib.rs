@@ -2,6 +2,7 @@
 //! rendering, so a headless server is just this crate plus mods.
 
 pub mod cell;
+pub mod combat;
 pub mod edit;
 pub mod items;
 pub mod layer;
@@ -11,6 +12,7 @@ pub mod registry;
 pub mod simulation;
 pub mod world;
 
+pub use combat::{Slam, Strike, Swing, SwingStage, Target, TargetHit, TargetKind, Targets, ToolId};
 pub use cell::{CellBox, CellId, CellTable, MAX_OCCUPANTS, Occupant, ShareError, can_share, occupant_boxes};
 pub use items::{Collector, Item, Items};
 pub use layer::Layer;
