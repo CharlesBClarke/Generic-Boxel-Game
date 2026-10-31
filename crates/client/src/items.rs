@@ -237,7 +237,7 @@ mod tests {
         sim.spawn_player().unwrap();
         sim.teleport_player(api::WorldPos::new(api::I64Vec3::new(10, 10, 0), ZVec3::new(0.5, 0.5, 0.0)));
         let down = -89f32.to_radians();
-        sim.step(&sim::PlayerInput { pitch: down, break_pressed: true, break_held: true, ..Default::default() });
+        sim.step(&sim::PlayerInput { pitch: down, use_pressed: true, use_held: true, ..Default::default() });
         let item_pos = sim.items().iter().next().expect("the broken floor dropped an item").pos;
 
         let volumes = crate::volumes::Volumes::build(sim.looks(), sim.blocks());

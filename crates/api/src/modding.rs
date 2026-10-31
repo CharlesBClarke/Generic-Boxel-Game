@@ -1,8 +1,8 @@
 //! The traits a mod implements and the engine services it is handed.
 
 use crate::{
-    ApiError, BlockDef, BoxelPos, InteractionDef, ItemDropDef, MovementController, Orientation, PlayerDef, PushOutDef, LookDef,
-    WorldPos,
+    ApiError, BlockDef, BoxelPos, InteractionDef, ItemDropDef, LookDef, ModelDef, MovementController, Orientation, PlayerDef,
+    PushOutDef, SoundDef, TargetDef, ToolDef, WorldPos,
 };
 
 /// A mod. The engine calls `register` on every mod first, then `build_world` on every mod.
@@ -11,7 +11,7 @@ pub trait Mod {
     fn name(&self) -> &str;
 
     /// Registers content: looks, blocks, movement controllers, the player, interaction, push-out
-    /// and item drop definitions.
+    /// and item drop definitions, models, sounds, targets and tools.
     fn register(&self, registrar: &mut dyn Registrar) -> Result<(), ApiError>;
 
     /// Places blocks in the world once all content is registered.
@@ -38,6 +38,15 @@ pub trait Registrar {
     fn register_interaction(&mut self, def: InteractionDef) -> Result<(), ApiError>;
     fn register_push_out(&mut self, def: PushOutDef) -> Result<(), ApiError>;
     fn register_item_drops(&mut self, def: ItemDropDef) -> Result<(), ApiError>;
+    /// Registers a model for content to name. Like looks, names are checked once all mods have
+    /// registered, so a target may name a model another mod registers later.
+    fn register_model(&mut self, def: ModelDef) -> Result<(), ApiError>;
+    /// Registers a sound for content to name, checked the same way as models.
+    fn register_sound(&mut self, def: SoundDef) -> Result<(), ApiError>;
+    fn register_target(&mut self, def: TargetDef) -> Result<(), ApiError>;
+    /// Registers a tool. Players can pick every registered tool, in registration order, ahead
+    /// of the blocks they can place.
+    fn register_tool(&mut self, def: ToolDef) -> Result<(), ApiError>;
 }
 
 /// Edits the world by block name.
@@ -55,6 +64,10 @@ pub trait WorldEdit {
 
     /// A named place the debug teleport can jump to.
     fn add_waypoint(&mut self, name: &str, pos: WorldPos);
+
+    /// Places a registered target with its feet at `pos`, facing `yaw` (radians counterclockwise
+    /// from +X around +Z). That's its spot: it comes back there after breaking.
+    fn add_target(&mut self, name: &str, pos: WorldPos, yaw: f32) -> Result<(), ApiError>;
 
     /// Fills the box from `min` to `max`, both inclusive.
     fn fill(&mut self, min: BoxelPos, max: BoxelPos, name: &str) -> Result<(), ApiError> {

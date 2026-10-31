@@ -102,7 +102,7 @@ pub fn raycast(
 
 /// Where a ray from `from` along unit `dir` enters box `b`: the distance and the outward
 /// normal of the face, or distance 0 and no normal if it starts inside. `None` if it misses.
-fn ray_box(from: Vec3, dir: Vec3, b: CellBox) -> Option<(f32, I64Vec3)> {
+pub(crate) fn ray_box(from: Vec3, dir: Vec3, b: CellBox) -> Option<(f32, I64Vec3)> {
     let (mut enter, mut exit) = (f32::NEG_INFINITY, f32::INFINITY);
     let mut enter_axis = None;
     for axis in 0..3 {

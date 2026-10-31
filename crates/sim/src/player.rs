@@ -54,12 +54,15 @@ pub struct PlayerInput {
     pub crouch: bool,
     /// Switches fly mode on or off this tick.
     pub toggle_fly: bool,
-    /// The break button went down since the last tick.
-    pub break_pressed: bool,
-    pub break_held: bool,
-    /// The place button went down since the last tick.
-    pub place_pressed: bool,
-    pub place_held: bool,
+    /// The main use button went down since the last tick: breaks a block, or swings the tool.
+    pub use_pressed: bool,
+    pub use_held: bool,
+    /// The second use button went down since the last tick: places a block, or guards with the
+    /// tool.
+    pub alt_pressed: bool,
+    pub alt_held: bool,
+    /// The tool in hand, if any. Holding one, the use buttons work it instead of editing blocks.
+    pub tool: Option<crate::ToolId>,
     /// The block to place. Empty places nothing.
     pub place_block: BlockId,
     /// Precise placement, where the part of the face aimed at picks how a block sits, instead

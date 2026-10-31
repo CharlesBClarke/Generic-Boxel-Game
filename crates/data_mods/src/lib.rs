@@ -3,12 +3,15 @@
 //! - `mod.toml`: the mod's `name` (its namespace), `version` and an optional `description`.
 //! - `blocks.toml`: `[[block]]` entries, a `[shapes]` table of named shapes they can share, and
 //!   `[looks.<name>]` recipes for how blocks look, generated into solid volumes (see [`looks`]).
+//! - `targets.toml`: `[models.<name>]` and `[sounds.<name>]` read from files in the folder, and
+//!   `[[target]]` entries drawn and heard through them (see [`targets`]).
 //!
 //! [`load`] reads a folder into a [`DataMod`], an ordinary [`Mod`] that registers its content
 //! through the same API as code. Mistakes are reported with the file and line, and unknown
 //! fields are errors, so a typo is never silently ignored.
 
 mod looks;
+mod targets;
 
 use std::collections::{BTreeMap, HashMap};
 use std::fmt;
@@ -16,7 +19,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use api::block::is_valid_name;
-use api::{ApiError, BlockBox, BlockDef, LookDef, Mod, Registrar, Turning};
+use api::{ApiError, BlockBox, BlockDef, LookDef, Mod, ModelDef, Registrar, SoundDef, TargetDef, Turning};
 use serde::Deserialize;
 use toml::Spanned;
 
@@ -28,6 +31,9 @@ pub struct DataMod {
     description: String,
     looks: Vec<LookDef>,
     blocks: Vec<BlockDef>,
+    models: Vec<ModelDef>,
+    sounds: Vec<SoundDef>,
+    targets: Vec<TargetDef>,
 }
 
 impl DataMod {
@@ -48,6 +54,21 @@ impl DataMod {
     pub fn blocks(&self) -> &[BlockDef] {
         &self.blocks
     }
+
+    /// Models, in name order.
+    pub fn models(&self) -> &[ModelDef] {
+        &self.models
+    }
+
+    /// Sounds, in name order.
+    pub fn sounds(&self) -> &[SoundDef] {
+        &self.sounds
+    }
+
+    /// Targets, in file order.
+    pub fn targets(&self) -> &[TargetDef] {
+        &self.targets
+    }
 }
 
 impl Mod for DataMod {
@@ -61,6 +82,15 @@ impl Mod for DataMod {
         }
         for block in &self.blocks {
             r.register_block(block.clone())?;
+        }
+        for model in &self.models {
+            r.register_model(model.clone())?;
+        }
+        for sound in &self.sounds {
+            r.register_sound(sound.clone())?;
+        }
+        for target in &self.targets {
+            r.register_target(target.clone())?;
         }
         Ok(())
     }
@@ -230,7 +260,17 @@ pub fn load(dir: &Path) -> Result<DataMod, LoadError> {
         (Vec::new(), Vec::new())
     };
 
-    Ok(DataMod { name: namespace, version: manifest.version, description: manifest.description, looks, blocks })
+    let (models, sounds, targets) = targets::load(dir, &namespace)?;
+    Ok(DataMod {
+        name: namespace,
+        version: manifest.version,
+        description: manifest.description,
+        looks,
+        blocks,
+        models,
+        sounds,
+        targets,
+    })
 }
 
 /// Turns one `[[block]]` entry into a definition. Names are short in the file and get the
@@ -565,5 +605,103 @@ mod tests {
         let missing = Folder::new("no_manifest");
         fs::remove_file(missing.0.join("mod.toml")).ok();
         assert_eq!(missing.load().unwrap_err().path, missing.0.join("mod.toml"));
+    }
+
+    /// A 2×1 PNG: an opaque red texel, then a see-through one.
+    fn tiny_png() -> Vec<u8> {
+        let mut bytes = Vec::new();
+        let mut encoder = png::Encoder::new(&mut bytes, 2, 1);
+        encoder.set_color(png::ColorType::Rgba);
+        encoder.set_depth(png::BitDepth::Eight);
+        encoder.write_header().unwrap().write_image_data(&[255, 0, 0, 255, 0, 0, 0, 0]).unwrap();
+        bytes
+    }
+
+    const TRIANGLE: &str = "v 0 0 0\nv 1 0 0\nv 0 0 1\nvt 0 0\nvt 1 0\nvt 0 1\nf 1/1 2/2 3/3\n";
+
+    const TARGETS: &str = r#"
+        [models.box]
+        mesh = "box.obj"
+        texture = "box.png"
+
+        [sounds.thud]
+        file = "thud.ogg"
+
+        [[target]]
+        name = "dummy"
+        model = "box"
+        hit_sound = "thud"
+        width = 0.8
+        height = 1.2
+        health = 10
+        weight = 2
+        gravity = 25
+        drag = 5
+        air_drag = 2
+        bounce = 0.2
+        respawn_time = 2
+        slam_speed = 4
+        slam_damage = 1
+
+        [[target.hit_box]]
+        name = "top"
+        min = [-0.4, -0.4, 0.8]
+        max = [0.4, 0.4, 1.2]
+        damage = 2
+    "#;
+
+    fn target_folder(test: &str, targets: &str) -> Folder {
+        let folder = Folder::new(test);
+        folder.write("mod.toml", MANIFEST).write("box.obj", TRIANGLE).write("box.png", tiny_png()).write("thud.ogg", b"OggS");
+        folder.write("targets.toml", targets);
+        folder
+    }
+
+    #[test]
+    fn reads_models_sounds_and_targets() {
+        let m = target_folder("targets", TARGETS).load().unwrap();
+        let [model] = m.models() else { panic!("one model") };
+        assert_eq!(model.name, "test:box");
+        assert_eq!((model.positions.len(), model.indices.len()), (3, 3));
+        assert_eq!((model.texture.width, model.texture.height), (2, 1));
+        assert_eq!(model.texture.rgba, [255, 0, 0, 255, 0, 0, 0, 0]);
+        assert_eq!(m.sounds()[0].name, "test:thud");
+        assert_eq!(m.sounds()[0].ogg, b"OggS");
+        let [target] = m.targets() else { panic!("one target") };
+        assert_eq!((target.name.as_str(), target.model.as_str()), ("test:dummy", "test:box"));
+        assert_eq!(target.hit_sound.as_deref(), Some("test:thud"));
+        assert_eq!((target.health, target.weight, target.air_drag, target.slam_speed), (10.0, 2.0, 2.0, 4.0));
+        let [top] = &target.hit_boxes[..] else { panic!("one hit box") };
+        assert_eq!((top.name.as_str(), top.min, top.max, top.damage), ("top", [-0.4, -0.4, 0.8], [0.4, 0.4, 1.2], 2.0));
+    }
+
+    #[test]
+    fn target_mistakes_name_the_file_and_line() {
+        let error = |test: &str, from: &str, to: &str| {
+            let e = target_folder(test, &TARGETS.replacen(from, to, 1)).load().unwrap_err();
+            assert!(e.path.ends_with("targets.toml"), "{e}");
+            (e.line, e.message)
+        };
+        let (line, message) = error("t_model", "model = \"box\"", "model = \"crate\"");
+        assert_eq!(line, Some(11));
+        assert!(message.contains("no model \"crate\""), "{message}");
+        let (line, message) = error("t_mesh", "mesh = \"box.obj\"", "mesh = \"gone.obj\"");
+        assert_eq!(line, Some(2));
+        assert!(message.contains("gone.obj"), "{message}");
+        let (_, message) = error("t_health", "health = 10", "health = 0");
+        assert!(message.contains("health must be positive"), "{message}");
+        let (line, message) = error("t_field", "drag = 5", "drag = 5\n        speed = 3");
+        assert_eq!(line, Some(19));
+        assert!(message.contains("unknown field"), "{message}");
+        let (_, message) = error("t_missing", "        weight = 2\n", "");
+        assert!(message.contains("weight"), "{message}");
+        let (_, message) = error("t_box", "max = [0.4, 0.4, 1.2]", "max = [0.4, 0.4, 0.5]");
+        assert!(message.contains("hit box \"top\""), "{message}");
+    }
+
+    #[test]
+    fn another_mods_model_is_left_for_the_engine_to_check() {
+        let m = target_folder("t_other", &TARGETS.replacen("model = \"box\"", "model = \"other:box\"", 1)).load().unwrap();
+        assert_eq!(m.targets()[0].model, "other:box");
     }
 }

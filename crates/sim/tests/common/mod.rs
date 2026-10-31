@@ -25,6 +25,15 @@ impl Mod for AllPlaceable {
         for block in self.0.blocks() {
             r.register_block(BlockDef { placeable: true, ..block.clone() })?;
         }
+        for model in self.0.models() {
+            r.register_model(model.clone())?;
+        }
+        for sound in self.0.sounds() {
+            r.register_sound(sound.clone())?;
+        }
+        for target in self.0.targets() {
+            r.register_target(target.clone())?;
+        }
         Ok(())
     }
 }

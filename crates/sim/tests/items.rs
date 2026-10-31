@@ -71,7 +71,7 @@ fn slab_pitch(sim: &Simulation) -> f32 {
 fn break_slab(sim: &mut Simulation) {
     let pitch = slab_pitch(sim);
     assert_eq!(sim.target(0.0, pitch).map(|h| h.pos), Some(BoxelPos::new(2, 0, 0)));
-    sim.step(&PlayerInput { pitch, break_pressed: true, break_held: true, ..Default::default() });
+    sim.step(&PlayerInput { pitch, use_pressed: true, use_held: true, ..Default::default() });
     assert!(sim.universe().main().block(BoxelPos::new(2, 0, 0)).is_empty(), "the slab broke");
 }
 

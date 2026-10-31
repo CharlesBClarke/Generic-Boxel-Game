@@ -14,8 +14,11 @@
 //! forward that start sprinting, or 0 to turn double-tap sprint off.
 //!
 //! Keys use Bevy's physical key names, which are QWERTY positions: `KeyW` is whichever key
-//! sends the W scancode. Break and place also take mouse buttons: `MouseLeft`, `MouseRight`,
-//! `MouseMiddle`, `MouseBack`, `MouseForward`.
+//! sends the W scancode. `use`, `alt_use` and `placement_mode` also take mouse buttons:
+//! `MouseLeft`, `MouseRight`, `MouseMiddle`, `MouseBack`, `MouseForward`.
+//!
+//! Whatever the player holds has a main use and a second use: a block breaks and places, a
+//! tool swings and guards. `break` and `place` are older names for `use` and `alt_use`.
 
 use std::path::PathBuf;
 
@@ -42,11 +45,15 @@ pub struct Controls {
     pub drill: KeyCode,
     /// Starts and stops the block-jump trainer.
     pub trainer: KeyCode,
+    /// Puts every target back at its spot, whole.
+    pub respawn_targets: KeyCode,
     /// Tapping forward twice within this many seconds sprints until forward is released.
     /// 0 turns it off. The sprint key works either way.
     pub double_tap_window: f32,
-    pub break_block: Binding,
-    pub place_block: Binding,
+    /// The main use of what's held: breaks a block, swings a tool.
+    pub use_main: Binding,
+    /// The second use of what's held: places a block, raises a tool's guard.
+    pub use_alt: Binding,
     /// Switches between basic placement and precise placement.
     pub placement_mode: Binding,
     /// Picks a block from the palette, first to ninth. The scroll wheel also cycles it.
@@ -104,9 +111,10 @@ impl Default for Controls {
             tuning: KeyCode::Tab,
             drill: KeyCode::F4,
             trainer: KeyCode::F5,
+            respawn_targets: KeyCode::F6,
             double_tap_window: 0.3,
-            break_block: Binding::Mouse(MouseButton::Left),
-            place_block: Binding::Mouse(MouseButton::Right),
+            use_main: Binding::Mouse(MouseButton::Left),
+            use_alt: Binding::Mouse(MouseButton::Right),
             placement_mode: Binding::Mouse(MouseButton::Middle),
             slots: [
                 KeyCode::Digit1,
@@ -166,12 +174,12 @@ impl Controls {
                 continue;
             };
             match action {
-                "break" => {
-                    self.break_block = binding;
+                "use" | "break" => {
+                    self.use_main = binding;
                     continue;
                 }
-                "place" => {
-                    self.place_block = binding;
+                "alt_use" | "place" => {
+                    self.use_alt = binding;
                     continue;
                 }
                 "placement_mode" => {
@@ -204,6 +212,7 @@ impl Controls {
                 "tuning" => &mut self.tuning,
                 "drill" => &mut self.drill,
                 "trainer" => &mut self.trainer,
+                "respawn_targets" => &mut self.respawn_targets,
                 _ => {
                     problems.push(format!("line {}: unknown action {action:?}", number + 1));
                     continue;
@@ -368,19 +377,30 @@ mod tests {
     }
 
     #[test]
-    fn break_and_place_take_keys_or_mouse_buttons() {
+    fn uses_take_keys_or_mouse_buttons() {
         let mut controls = Controls::default();
         let problems = controls.apply(
             "break = KeyQ\nplace = mousemiddle\nplacement_mode = KeyG\nslot_3 = KeyZ\njump = MouseLeft\nslot_10 = KeyX\n",
         );
         assert_eq!(problems.len(), 2, "{problems:?}");
-        assert_eq!(controls.break_block, Binding::Key(KeyCode::KeyQ));
-        assert_eq!(controls.place_block, Binding::Mouse(MouseButton::Middle));
+        assert_eq!(controls.use_main, Binding::Key(KeyCode::KeyQ));
+        assert_eq!(controls.use_alt, Binding::Mouse(MouseButton::Middle));
         assert_eq!(controls.placement_mode, Binding::Key(KeyCode::KeyG));
         assert_eq!(Controls::default().placement_mode, Binding::Mouse(MouseButton::Middle));
         assert_eq!(controls.slots[2], KeyCode::KeyZ);
         assert_eq!(controls.slots[0], KeyCode::Digit1);
         assert_eq!(controls.jump, Controls::default().jump);
+    }
+
+    #[test]
+    fn use_and_alt_use_have_their_old_names_too() {
+        let mut controls = Controls::default();
+        assert!(controls.apply("use = KeyQ\nalt_use = KeyE\n").is_empty());
+        assert_eq!((controls.use_main, controls.use_alt), (Binding::Key(KeyCode::KeyQ), Binding::Key(KeyCode::KeyE)));
+        assert!(controls.apply("break = MouseRight\nplace = MouseLeft\nrespawn_targets = F7\n").is_empty());
+        assert_eq!(controls.use_main, Binding::Mouse(MouseButton::Right));
+        assert_eq!(controls.use_alt, Binding::Mouse(MouseButton::Left));
+        assert_eq!(controls.respawn_targets, KeyCode::F7);
     }
 
     #[test]

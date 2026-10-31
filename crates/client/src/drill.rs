@@ -1,6 +1,6 @@
 //! The chase drill: a temporary tool for feeling the movement, not a feature. A ghost floats
 //! straight at the player through walls and resets the score on touch; objectives appear at
-//! random landmarks. Meant to be deleted once later toys no longer need it, so it lives here
+//! random landmarks. A tool's strike knocks the ghost back and dazes it for a moment. Meant to be deleted once later toys no longer need it, so it lives here
 //! on its own rather than in the API (see the API debt list in `SLICES.md`).
 //!
 //! Landmarks are waypoints whose names start with `landmark:`, supplied by the mod.
@@ -20,6 +20,10 @@ const NEAR: f32 = 300.0;
 const LOST: f32 = 400.0;
 /// Objective markers float this high above the landmark's floor, about chest height.
 const OBJECTIVE_HEIGHT: f32 = 0.9;
+/// The ghost's radius, as drawn and as struck.
+const GHOST_RADIUS: f32 = 0.45;
+/// How long a struck ghost flashes, seconds.
+const GHOST_FLASH: f32 = 0.12;
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct DrillTuning {
@@ -33,11 +37,26 @@ pub struct DrillTuning {
     pub catch_radius: f32,
     /// An objective counts as reached within this distance of the body's center.
     pub reach_radius: f32,
+    /// Speed a strike knocks the ghost back at, meters per second.
+    pub ghost_knockback: f32,
+    /// How quickly the knock wears off, per second.
+    pub knock_drag: f32,
+    /// Seconds a struck ghost stops chasing.
+    pub daze_time: f32,
 }
 
 impl Default for DrillTuning {
     fn default() -> Self {
-        Self { ghost_speed: 5.5, speed_per_point: 0.25, spawn_distance: 40.0, catch_radius: 0.9, reach_radius: 1.3 }
+        Self {
+            ghost_speed: 5.5,
+            speed_per_point: 0.25,
+            spawn_distance: 40.0,
+            catch_radius: 0.9,
+            reach_radius: 1.3,
+            ghost_knockback: 18.0,
+            knock_drag: 4.0,
+            daze_time: 0.6,
+        }
     }
 }
 
@@ -49,6 +68,9 @@ impl Tunables for DrillTuning {
             Tunable::new("spawn_distance", self.spawn_distance, 5.0, 150.0),
             Tunable::new("catch_radius", self.catch_radius, 0.2, 3.0),
             Tunable::new("reach_radius", self.reach_radius, 0.3, 4.0),
+            Tunable::new("ghost_knockback", self.ghost_knockback, 0.0, 60.0),
+            Tunable::new("knock_drag", self.knock_drag, 0.0, 20.0),
+            Tunable::new("daze_time", self.daze_time, 0.0, 3.0),
         ]
     }
 
@@ -59,6 +81,9 @@ impl Tunables for DrillTuning {
             "spawn_distance" => &mut self.spawn_distance,
             "catch_radius" => &mut self.catch_radius,
             "reach_radius" => &mut self.reach_radius,
+            "ghost_knockback" => &mut self.ghost_knockback,
+            "knock_drag" => &mut self.knock_drag,
+            "daze_time" => &mut self.daze_time,
             _ => return false,
         };
         *field = value;
@@ -107,6 +132,12 @@ pub struct Drill {
     score: u32,
     best: u32,
     rng: u64,
+    /// The ghost's velocity from being struck, Z up.
+    knock: ZVec3,
+    /// Seconds until a struck ghost chases again.
+    dazed: f32,
+    /// Seconds of flash left from being struck, counted in real time.
+    flash: f32,
 }
 
 impl Default for Drill {
@@ -127,6 +158,9 @@ impl Drill {
             score: 0,
             best: 0,
             rng: seed | 1,
+            knock: ZVec3::ZERO,
+            dazed: 0.0,
+            flash: 0.0,
         }
     }
 
@@ -154,13 +188,39 @@ impl Drill {
         self.pick_objective(center, landmarks);
     }
 
+    /// Whether the ghost is dazed from a strike.
+    pub fn dazed(&self) -> bool {
+        self.dazed > 0.0
+    }
+
+    /// A strike from `eye` along `look` (a unit vector), out to `reach` and widened by `radius`.
+    /// Walls don't stop it, since the ghost goes through them anyway. If it reaches the ghost
+    /// during a run, the ghost is knocked away along the look and dazed. Returns whether it hit.
+    pub fn hit(&mut self, eye: WorldPos, look: ZVec3, reach: f32, radius: f32) -> bool {
+        if !self.active {
+            return false;
+        }
+        let to_ghost = eye.delta_to(self.ghost);
+        let along = to_ghost.dot(look).clamp(0.0, reach);
+        if (to_ghost - look * along).length() > GHOST_RADIUS + radius || to_ghost.dot(look) < -GHOST_RADIUS {
+            return false;
+        }
+        self.knock = look * self.tuning.ghost_knockback;
+        self.dazed = self.tuning.daze_time;
+        self.flash = GHOST_FLASH;
+        true
+    }
+
     /// Advances one tick of `dt` seconds.
     pub fn tick(&mut self, center: WorldPos, landmarks: &[Landmark], dt: f32) -> Option<DrillEvent> {
         self.prev_ghost = self.ghost;
+        self.ghost = self.ghost.translate(self.knock * dt);
+        self.knock *= (-self.tuning.knock_drag * dt).exp();
+        self.dazed = (self.dazed - dt).max(0.0);
         let to_player = self.ghost.delta_to(center);
         if to_player.length() > LOST {
             self.respawn_ghost(center);
-        } else {
+        } else if self.dazed <= 0.0 {
             let speed = self.tuning.ghost_speed + self.tuning.speed_per_point * self.score as f32;
             let step = (speed * dt).min(to_player.length());
             self.ghost = self.ghost.translate(to_player.normalize_or_zero() * step);
@@ -192,6 +252,8 @@ impl Drill {
         let (sin, cos) = angle.sin_cos();
         self.ghost = center.translate(ZVec3::new(cos, sin, 0.0) * self.tuning.spawn_distance + ZVec3::Z * 3.0);
         self.prev_ghost = self.ghost;
+        self.knock = ZVec3::ZERO;
+        self.dazed = 0.0;
     }
 
     /// A random landmark other than the current one, preferring ones at least 15 meters away.
@@ -216,8 +278,12 @@ impl Drill {
     }
 }
 
+/// The ghost's sphere, with its own material so it can flash.
 #[derive(Component)]
-pub(crate) struct GhostMarker;
+pub(crate) struct GhostMarker(Handle<StandardMaterial>);
+
+/// The ghost's color at rest.
+const GHOST_COLOR: Color = Color::srgba(0.85, 0.9, 1.0, 0.55);
 
 #[derive(Component)]
 pub(crate) struct ObjectiveMarker;
@@ -230,13 +296,14 @@ pub(crate) fn setup_drill(
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
 ) {
-    let ghost = materials.add(StandardMaterial {
-        base_color: Color::srgba(0.85, 0.9, 1.0, 0.55),
-        alpha_mode: AlphaMode::Blend,
-        unlit: true,
-        ..default()
-    });
-    commands.spawn((Mesh3d(meshes.add(Sphere::new(0.45))), MeshMaterial3d(ghost), Transform::default(), Visibility::Hidden, GhostMarker));
+    let ghost = materials.add(StandardMaterial { base_color: GHOST_COLOR, alpha_mode: AlphaMode::Blend, unlit: true, ..default() });
+    commands.spawn((
+        Mesh3d(meshes.add(Sphere::new(GHOST_RADIUS))),
+        MeshMaterial3d(ghost.clone()),
+        Transform::default(),
+        Visibility::Hidden,
+        GhostMarker(ghost),
+    ));
 
     let glow = materials.add(StandardMaterial { base_color: Color::srgb(0.3, 1.0, 0.4), unlit: true, ..default() });
     let beam = materials.add(StandardMaterial {
@@ -296,11 +363,13 @@ pub(crate) fn drill_tick(sim: Res<Sim>, mut drill: ResMut<Drill>) {
 #[allow(clippy::type_complexity, clippy::too_many_arguments)]
 pub(crate) fn draw_drill(
     sim: Res<Sim>,
-    drill: Res<Drill>,
+    mut drill: ResMut<Drill>,
     fixed: Res<Time<Fixed>>,
+    time: Res<Time>,
     origin: Res<RenderOrigin>,
     controls: Res<Controls>,
-    mut ghost: Single<(&mut Transform, &mut Visibility), (With<GhostMarker>, Without<ObjectiveMarker>)>,
+    mut materials: ResMut<Assets<StandardMaterial>>,
+    mut ghost: Single<(&mut Transform, &mut Visibility, &GhostMarker), Without<ObjectiveMarker>>,
     mut objective: Single<(&mut Transform, &mut Visibility), (With<ObjectiveMarker>, Without<GhostMarker>)>,
     mut text: Single<&mut Text, With<DrillHud>>,
 ) {
@@ -313,9 +382,20 @@ pub(crate) fn draw_drill(
     }
     let ghost_pos = drill.ghost_at(fixed.overstep_fraction());
     ghost.0.translation = coords::render_translation(ghost_pos, origin.cell);
+    // A struck ghost flashes solid white and swells for a moment.
+    drill.flash = (drill.flash - time.delta_secs()).max(0.0);
+    let flash = drill.flash / GHOST_FLASH;
+    ghost.0.scale = Vec3::splat(1.0 + flash * 0.4);
+    if let Some(material) = materials.get_mut(&ghost.2.0) {
+        let wanted = if flash > 0.0 { Color::WHITE } else { GHOST_COLOR };
+        if material.base_color != wanted {
+            material.base_color = wanted;
+        }
+    }
     let center = player_center(&sim);
     let distance = |pos: WorldPos| center.map_or(0.0, |c| c.delta_to(pos).length());
-    let mut line = format!("CHASE  score {}  best {}\nghost {:.0} m", drill.score(), drill.best(), distance(ghost_pos));
+    let dazed = if drill.dazed() { " (dazed)" } else { "" };
+    let mut line = format!("CHASE  score {}  best {}\nghost {:.0} m{dazed}", drill.score(), drill.best(), distance(ghost_pos));
     if let Some(target) = drill.objective() {
         objective.0.translation = coords::render_translation(target.target(), origin.cell);
         line += &format!("\nnext: {}, {:.0} m", target.name, distance(target.target()));
@@ -391,6 +471,50 @@ mod tests {
         assert_eq!(drill.score(), 0);
         assert_eq!(drill.best(), 1);
         assert!(drill.ghost().delta_to(target).length() > 30.0, "the ghost respawns far away");
+    }
+
+    #[test]
+    fn a_strike_in_reach_knocks_the_ghost_back_and_dazes_it() {
+        let mut drill = Drill::with_seed(9);
+        let player = at(0.5, 0.5, 0.9);
+        drill.active = true;
+        drill.start(player, &marks());
+        // Let it come close, then strike straight at it.
+        while drill.ghost().delta_to(player).length() > 2.0 {
+            drill.tick(player, &marks(), DT);
+        }
+        let eye = player.translate(ZVec3::Z * 0.7);
+        let look = eye.delta_to(drill.ghost()).normalize();
+        let side = look.cross(ZVec3::Z).normalize();
+        assert!(!drill.hit(eye, side, 2.5, 0.3), "aimed away");
+        assert!(!drill.hit(eye, look, 1.0, 0.3), "out of reach");
+        assert!(drill.hit(eye, look, 2.5, 0.3));
+        assert!(drill.dazed());
+        let before = drill.ghost().delta_to(player).length();
+        for _ in 0..20 {
+            assert_eq!(drill.tick(player, &marks(), DT), None);
+        }
+        let after = drill.ghost().delta_to(player).length();
+        assert!(after > before + 2.0, "knocked back from {before} to {after}");
+        let mut ticks = 20;
+        while drill.dazed() {
+            drill.tick(player, &marks(), DT);
+            ticks += 1;
+        }
+        let expected = (drill.tuning.daze_time / DT).round() as i64;
+        assert!((ticks - expected).abs() <= 1, "dazed for its daze time: {ticks} ticks");
+        let later = drill.ghost().delta_to(player).length();
+        for _ in 0..10 {
+            drill.tick(player, &marks(), DT);
+        }
+        assert!(drill.ghost().delta_to(player).length() < later, "chasing again");
+    }
+
+    #[test]
+    fn strikes_miss_the_ghost_when_the_drill_is_off() {
+        let mut drill = Drill::with_seed(9);
+        let ghost = drill.ghost();
+        assert!(!drill.hit(ghost.translate(ZVec3::X * -1.0), ZVec3::X, 2.0, 0.3));
     }
 
     #[test]

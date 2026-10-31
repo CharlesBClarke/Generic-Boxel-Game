@@ -9,7 +9,7 @@ use api::{ChunkPos, Vec3 as ZVec3, WorldPos};
 use bevy::input::mouse::{AccumulatedMouseScroll, MouseScrollUnit};
 use bevy::prelude::*;
 use bevy::window::{CursorGrabMode, CursorOptions, PrimaryWindow};
-use sim::{BlockId, BlockRegistry, FACE_CENTER, Occupant, face_region, occupant_boxes};
+use sim::{BlockId, BlockRegistry, FACE_CENTER, Occupant, Simulation, ToolId, face_region, occupant_boxes};
 
 use crate::controls::Controls;
 use crate::solid::SolidMaterial;
@@ -20,8 +20,8 @@ use crate::{ChunkMesh, Look, PendingToggles, RenderOrigin, Sim, coords, mesher};
 /// pixel-scrolling devices.
 const PIXELS_PER_SLOT: f32 = 40.0;
 
-/// Which block gets placed, and how. There's no inventory yet, so every placeable block is on
-/// offer.
+/// What's in hand, and how blocks get placed. There's no inventory yet, so every tool and every
+/// placeable block is on offer: the tools first, then the blocks.
 #[derive(Resource, Default)]
 pub struct Palette {
     pub slot: usize,
@@ -30,11 +30,44 @@ pub struct Palette {
     pub precise: bool,
 }
 
+/// What a palette slot holds.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Held {
+    Tool(ToolId),
+    Block(BlockId),
+    Nothing,
+}
+
 impl Palette {
-    /// The selected block, or empty if nothing is placeable.
-    pub fn selected(&self, blocks: &BlockRegistry) -> BlockId {
-        placeable_blocks(blocks).get(self.slot).copied().unwrap_or(BlockId::EMPTY)
+    /// What's in the selected slot.
+    pub fn held(&self, sim: &Simulation) -> Held {
+        let tools: Vec<ToolId> = sim.tool_ids().collect();
+        match tools.get(self.slot) {
+            Some(&tool) => Held::Tool(tool),
+            None => placeable_blocks(sim.blocks()).get(self.slot - tools.len()).map_or(Held::Nothing, |&b| Held::Block(b)),
+        }
     }
+
+    /// The selected block, or empty if a tool or nothing is selected.
+    pub fn selected(&self, sim: &Simulation) -> BlockId {
+        match self.held(sim) {
+            Held::Block(block) => block,
+            _ => BlockId::EMPTY,
+        }
+    }
+
+    /// The selected tool, if one is.
+    pub fn tool(&self, sim: &Simulation) -> Option<ToolId> {
+        match self.held(sim) {
+            Held::Tool(tool) => Some(tool),
+            _ => None,
+        }
+    }
+}
+
+/// How many slots the palette has: every tool, then every placeable block.
+pub fn slot_count(sim: &Simulation) -> usize {
+    sim.tools().len() + placeable_blocks(sim.blocks()).len()
 }
 
 /// Every block a player may place, in registration order.
@@ -72,17 +105,17 @@ pub(crate) fn edit_input(
     if !playing(&cursor) {
         return;
     }
-    if controls.break_block.just_pressed(&keys, &mouse) {
-        toggles.break_pressed = true;
+    if controls.use_main.just_pressed(&keys, &mouse) {
+        toggles.use_pressed = true;
     }
-    if controls.place_block.just_pressed(&keys, &mouse) {
-        toggles.place_pressed = true;
+    if controls.use_alt.just_pressed(&keys, &mouse) {
+        toggles.alt_pressed = true;
     }
     if controls.placement_mode.just_pressed(&keys, &mouse) {
         palette.precise = !palette.precise;
     }
 
-    let count = placeable_blocks(sim.0.blocks()).len();
+    let count = slot_count(&sim.0);
     if count == 0 {
         return;
     }
@@ -99,8 +132,11 @@ pub(crate) fn edit_input(
     palette.slot = (palette.slot as i64 - steps as i64).rem_euclid(count as i64) as usize;
 }
 
-/// Outlines the boxes of the occupant that breaking would remove.
-pub(crate) fn draw_outline(sim: Res<Sim>, look: Res<Look>, origin: Res<RenderOrigin>, mut gizmos: Gizmos) {
+/// Outlines the boxes of the occupant that breaking would remove, unless a tool is in hand.
+pub(crate) fn draw_outline(sim: Res<Sim>, look: Res<Look>, palette: Res<Palette>, origin: Res<RenderOrigin>, mut gizmos: Gizmos) {
+    if palette.tool(&sim.0).is_some() {
+        return;
+    }
     let Some(hit) = sim.0.target(look.yaw, look.pitch) else {
         return;
     };
@@ -129,7 +165,7 @@ pub(crate) fn draw_region_guide(
     origin: Res<RenderOrigin>,
     mut gizmos: Gizmos,
 ) {
-    if !palette.precise {
+    if !palette.precise || palette.tool(&sim.0).is_some() {
         return;
     }
     let Some(hit) = sim.0.target(look.yaw, look.pitch) else {
@@ -212,7 +248,7 @@ pub(crate) fn update_ghost(
     let place = sim
         .0
         .target(look.yaw, look.pitch)
-        .and_then(|hit| sim.0.placement(&hit, palette.selected(blocks), look.yaw, look.pitch, palette.precise));
+        .and_then(|hit| sim.0.placement(&hit, palette.selected(&sim.0), look.yaw, look.pitch, palette.precise));
     let Some(place) = place else {
         visibility.set_if_neq(Visibility::Hidden);
         return;
@@ -267,8 +303,8 @@ pub(crate) fn remesh_changed_chunks(
     }
 }
 
-/// The palette along the bottom of the screen, with the selected block in brackets, and the
-/// placement mode.
+/// The palette along the bottom of the screen, tools then blocks, with the selected one in
+/// brackets, and the placement mode.
 pub(crate) fn update_palette_hud(
     sim: Res<Sim>,
     palette: Res<Palette>,
@@ -276,13 +312,13 @@ pub(crate) fn update_palette_hud(
     mut text: Single<&mut Text, With<PaletteHud>>,
 ) {
     let blocks = sim.0.blocks();
-    let line = placeable_blocks(blocks)
-        .iter()
+    let short = |name: &str| name.split_once(':').map_or(name, |(_, path)| path).to_owned();
+    let tools = sim.0.tools().iter().map(|def| short(&def.name));
+    let placeable = placeable_blocks(blocks).into_iter().map(|id| blocks.get(id).map_or("?".to_owned(), |def| short(&def.name)));
+    let line = tools
+        .chain(placeable)
         .enumerate()
-        .map(|(i, &id)| {
-            let name = blocks.get(id).map_or("?", |def| def.name.split_once(':').map_or(&def.name, |(_, path)| path));
-            if i == palette.slot { format!("[{} {name}]", i + 1) } else { format!(" {} {name} ", i + 1) }
-        })
+        .map(|(i, name)| if i == palette.slot { format!("[{} {name}]", i + 1) } else { format!(" {} {name} ", i + 1) })
         .collect::<Vec<_>>()
         .join("  ");
     let mode = if palette.precise {
@@ -314,8 +350,22 @@ mod tests {
         blocks.register(BlockDef::new("test:bedrock", true, [0, 0, 0]).with_placeable(false)).unwrap();
         let dirt = blocks.register(BlockDef::new("test:dirt", true, [0, 0, 0])).unwrap();
         assert_eq!(placeable_blocks(&blocks), [stone, dirt]);
-        assert_eq!(Palette { slot: 1, ..Default::default() }.selected(&blocks), dirt);
-        assert_eq!(Palette { slot: 5, ..Default::default() }.selected(&blocks), BlockId::EMPTY);
+    }
+
+    #[test]
+    fn the_palette_holds_the_tools_then_the_blocks() {
+        let data = data_mods::load(std::path::Path::new(base::DATA_DIR)).unwrap();
+        let sim = Simulation::with_mods(&[&data, &base::BaseMod, &base_movement::BaseMovementMod]).unwrap();
+        let club = sim.tool_ids().next().expect("base registers a tool");
+        assert_eq!(sim.tool(club).name, base::CLUB);
+        let first_block = placeable_blocks(sim.blocks())[0];
+        let at = |slot| Palette { slot, ..Default::default() };
+        assert_eq!(at(0).held(&sim), Held::Tool(club));
+        assert_eq!((at(0).tool(&sim), at(0).selected(&sim)), (Some(club), BlockId::EMPTY), "a tool places nothing");
+        assert_eq!(at(1).held(&sim), Held::Block(first_block));
+        assert_eq!((at(1).tool(&sim), at(1).selected(&sim)), (None, first_block));
+        let past = slot_count(&sim);
+        assert_eq!(at(past).held(&sim), Held::Nothing);
     }
 
     #[test]
@@ -367,7 +417,7 @@ mod tests {
         let volumes = Volumes::build(sim.looks(), sim.blocks());
         let chunk = ChunkPos::new(-1, -1, 0);
         let before = mesher::mesh_chunk(sim.universe().main(), chunk, sim.blocks(), &volumes).quad_count();
-        sim.step(&PlayerInput { yaw, pitch, break_pressed: true, break_held: true, ..Default::default() });
+        sim.step(&PlayerInput { yaw, pitch, use_pressed: true, use_held: true, ..Default::default() });
         let left: Vec<_> = sim.universe().main().cell(cell).iter().map(|o| o.block).collect();
         assert_eq!(left, [slab]);
         assert!(sim.take_changed_chunks().contains(&chunk));
@@ -386,7 +436,7 @@ mod tests {
         let before = mesher::mesh_chunk(sim.universe().main(), below, sim.blocks(), &volumes).quad_count();
 
         let down = -89f32.to_radians();
-        sim.step(&PlayerInput { pitch: down, break_pressed: true, break_held: true, ..Default::default() });
+        sim.step(&PlayerInput { pitch: down, use_pressed: true, use_held: true, ..Default::default() });
         let changed = sim.take_changed_chunks();
         assert!(changed.contains(&below));
         // The floor's top layer is the top of this chunk, so the chunk above is told too.
