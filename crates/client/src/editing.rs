@@ -484,29 +484,33 @@ mod tests {
         let club = sim.tool_ids().next().expect("base registers a tool");
         assert_eq!(sim.tool(club).name, base::CLUB);
         let blocks = sim.blocks();
-        let (brick, wood) = (blocks.material(base::BRICK).unwrap(), blocks.material(base::WOOD).unwrap());
-        let (brick_block, wood_block, table) =
-            (blocks.id(base::BRICK).unwrap(), blocks.id(base::WOOD).unwrap(), blocks.id(base::CRAFTING_TABLE).unwrap());
-        let table_material = blocks.material(base::CRAFTING_TABLE).unwrap();
-        // The test area's crafted shapes aren't carried, so they aren't on offer.
-        assert_eq!(
-            entries(&sim),
-            [
-                Entry::Tool(club),
-                Entry::Material(brick, brick_block),
-                Entry::Material(wood, wood_block),
-                Entry::Material(table_material, table),
-            ]
-        );
+        let brick = blocks.material(base::BRICK).unwrap();
+        let brick_block = blocks.id(base::BRICK).unwrap();
+        // Every material with a placeable block, in the order they were first named, carried
+        // or not. Grass is made of dirt and the marker isn't placeable. The test area's crafted
+        // shapes aren't carried, so they aren't on offer.
+        let order = [
+            base::STONE,
+            base::DIRT,
+            base::BRICK,
+            base::ICE,
+            base::WOOD,
+            base::LOG,
+            base::GRAVEL,
+            base::CRAFTING_TABLE,
+        ];
+        let materials = order.map(|name| Entry::Material(blocks.material(name).unwrap(), blocks.id(name).unwrap()));
+        assert_eq!(entries(&sim), [&[Entry::Tool(club)][..], &materials[..]].concat());
 
         let at = |slot| Palette { slot, ..Default::default() };
         assert_eq!(at(0).held(&sim), Held::Tool(club));
         assert_eq!((at(0).tool(&sim), at(0).selected(&sim)), (Some(club), BlockId::EMPTY), "a tool places nothing");
         assert_eq!(at(0).material(&sim), None, "nor throws");
-        assert_eq!((at(1).tool(&sim), at(1).selected(&sim), at(1).material(&sim)), (None, brick_block, Some(brick)));
+        assert_eq!((at(3).tool(&sim), at(3).selected(&sim), at(3).material(&sim)), (None, brick_block, Some(brick)));
         assert_eq!(at(slot_count(&sim)).held(&sim), Held::Nothing);
 
         // A part shows up once one is carried, after the materials.
+        let wood = sim.blocks().material(base::WOOD).unwrap();
         let slab = sim.shaped_block(wood, &base::shapes::slab()).unwrap();
         let part = sim.blocks().drop(slab).unwrap().material;
         sim.spawn_player().unwrap();
@@ -518,17 +522,18 @@ mod tests {
         assert_eq!(entries(&sim).last(), Some(&Entry::Part(part, slab)));
         let mut palette = at(0);
         palette.select_part(&sim, part);
-        assert_eq!((palette.slot, palette.selected(&sim), palette.material(&sim)), (4, slab, Some(part)));
+        assert_eq!((palette.slot, palette.selected(&sim), palette.material(&sim)), (9, slab, Some(part)));
     }
 
     #[test]
     fn the_hud_shows_amounts_the_fill_and_what_is_held() {
         let sim = base_sim();
-        let palette = Palette { slot: 1, ..Default::default() };
+        let palette = Palette { slot: 3, ..Default::default() };
         let text = palette_text(&sim, &palette, &Controls::default());
         let lines: Vec<&str> = text.lines().collect();
         assert_eq!(lines[0], "carrying 32 / 64");
-        assert!(lines[1].contains("[2 brick 16]") && lines[1].contains("3 wood 16"), "{}", lines[1]);
+        assert!(lines[1].contains("[4 brick 16]") && lines[1].contains("6 wood 16"), "{}", lines[1]);
+        assert!(lines[1].contains("3 dirt 0"), "materials not carried are listed too: {}", lines[1]);
         assert!(lines[2].starts_with("brick block, shapes are crafted at a table, Q throws"), "{}", lines[2]);
         let blocks = sim.blocks();
         let stone = blocks.material(base::STONE).unwrap();

@@ -20,8 +20,8 @@
 # Every block here is a full block: shapes aren't listed, they're crafted. A crafting table
 # (see crafting.toml) turns a pattern of a material into a part of any shape, and the test
 # area's stairs, slabs and posts are built the same way. The shape and turning fields are
-# still there for mods that want a fixed shape. Brick, wood and the crafting table are
-# placeable; the rest build the test area.
+# still there for mods that want a fixed shape. Every material's block is placeable; grass
+# breaks into dirt, and the marker is only for the test area.
 #
 # Shapes are boxes in sixteenths of a boxel: [x0, y0, z0, x1, y1, z1], each from 0 to 16,
 # as the block stands unturned (+Z up, +Y north). A [shapes] table can name shapes for blocks
@@ -81,12 +81,10 @@ top = { colors = [[204, 170, 120], [192, 158, 110]], depth = 2, ragged = 0, scal
 
 [[block]]
 name = "stone"
-placeable = false
 look = "stone"
 
 [[block]]
 name = "dirt"
-placeable = false
 look = "dirt"
 
 [[block]]
@@ -107,7 +105,6 @@ color = [240, 180, 40]
 
 [[block]]
 name = "ice"
-placeable = false
 look = "ice"
 friction = 0.1
 
@@ -117,13 +114,11 @@ look = "wood"
 
 [[block]]
 name = "log"
-placeable = false
 look = "log"
 turning = "axis"
 
 [[block]]
 name = "gravel"
-placeable = false
 look = "gravel"
 
 # Where shapes are crafted (see crafting.toml). It turns like stairs: placed, its front faces

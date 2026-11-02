@@ -70,13 +70,13 @@ fn base_blocks_come_from_its_data_files() {
         assert_eq!(blocks.part_of(blocks.drop(id).unwrap().material), Some(m), "{} breaks into a part", d.name);
     }
 
-    // Brick, wood and the table are placeable, and every crafted shape; the rest build the test
-    // area. Every block is full but the crafted ones.
-    let placeable = [base::BRICK, base::WOOD, base::CRAFTING_TABLE];
+    // Everything is placeable but grass (it breaks into dirt) and the debug marker. Every block
+    // is full but the crafted ones.
+    let hidden = [base::GRASS, base::MARKER];
     for (id, d) in blocks.iter() {
         let shaped = blocks.drop(id).is_some_and(|drop| blocks.part_of(drop.material).is_some());
         assert!(d.solid, "{}", d.name);
-        assert_eq!(d.placeable, shaped || placeable.contains(&d.name.as_str()), "{}", d.name);
+        assert_eq!(d.placeable, !hidden.contains(&d.name.as_str()), "{}", d.name);
         assert_eq!(d.is_full(), !shaped, "{}", d.name);
         let friction = if d.name == base::ICE { 0.1 } else { 1.0 };
         assert_eq!(d.friction, friction, "{}", d.name);

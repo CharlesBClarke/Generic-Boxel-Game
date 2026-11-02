@@ -518,13 +518,14 @@ impl Simulation {
         if player.eye().delta_to(center).length() > reach + 0.5 {
             return Err(CraftRefusal::TooFar);
         }
-        crate::crafting::plan(&self.blocks, &self.inventory, craft.face, &craft.cells, craft.count)
+        crate::crafting::plan(&self.blocks, &self.inventory, self.capacity(), craft.face, &craft.cells, craft.count)
     }
 
     /// Crafts: makes the parts `craft` asks for, if it can.
     fn craft(&mut self, craft: &Craft) -> Result<(MaterialId, u32), CraftRefusal> {
         let plan = self.craft_plan(craft)?;
-        let part = crate::crafting::make(&mut self.blocks, &mut self.inventory, &plan)?;
+        let capacity = self.capacity();
+        let part = crate::crafting::make(&mut self.blocks, &mut self.inventory, capacity, &plan)?;
         Ok((part, plan.count))
     }
 

@@ -110,7 +110,7 @@ fn crafting_makes_parts_that_are_placed_broken_and_picked_up_again() {
 
     craft(&mut sim, TableFace::Front, cells(SLAB, brick), 2);
     let Some(Ok((part, 2))) = sim.last_craft() else { panic!("two slabs: {:?}", sim.last_craft()) };
-    assert_eq!(sim.inventory().amount(brick), 15 * FULL_VOLUME, "two half slabs cost a brick");
+    assert_eq!(sim.inventory().amount(brick), 16 * FULL_VOLUME, "crafting is free");
     assert_eq!(sim.inventory().amount(part), FULL_VOLUME, "two slabs carried");
     let slab = sim.blocks().material_block(part);
     assert_eq!(Some(slab), sim.blocks().find_shaped(brick, &base::shapes::slab()), "the test area's own brick slab");
@@ -132,11 +132,11 @@ fn crafting_makes_parts_that_are_placed_broken_and_picked_up_again() {
     }
     assert!(sim.items().is_empty(), "picked up");
     assert_eq!(sim.inventory().amount(part), FULL_VOLUME);
-    assert_eq!(sim.inventory().amount(brick), 15 * FULL_VOLUME, "and still not brick");
+    assert_eq!(sim.inventory().amount(brick), 16 * FULL_VOLUME, "and still not brick");
 }
 
 #[test]
-fn crafting_needs_the_table_in_reach_and_enough_material() {
+fn crafting_needs_the_table_in_reach_and_room_to_carry() {
     let mut sim = base_sim();
     let t = table();
     let brick = material(&sim, base::BRICK);
@@ -145,13 +145,20 @@ fn crafting_needs_the_table_in_reach_and_enough_material() {
     assert_eq!(sim.last_craft(), Some(Err(CraftRefusal::TooFar)));
 
     stand(&mut sim, t.0.x, t.0.y - 2);
+    // None of a material is needed: stone isn't carried, and stone slabs are made anyway.
     let stone = material(&sim, base::STONE);
     craft(&mut sim, TableFace::Front, cells(SLAB, stone), 1);
-    assert_eq!(sim.last_craft(), Some(Err(CraftRefusal::Short)), "no stone carried");
-    let elsewhere = Craft { table: BoxelPos::new(t.0.x + 1, t.0.y, t.0.z), face: TableFace::Front, cells: cells(SLAB, brick), count: 1 };
+    assert!(matches!(sim.last_craft(), Some(Ok((_, 1)))), "{:?}", sim.last_craft());
+    // But they take room: 32 of 64 is carried and a half slab went in, so 63 more fit.
+    craft(&mut sim, TableFace::Front, cells(SLAB, stone), 1000);
+    assert!(matches!(sim.last_craft(), Some(Ok((_, 63)))), "{:?}", sim.last_craft());
+    craft(&mut sim, TableFace::Front, cells(SLAB, stone), 1);
+    assert_eq!(sim.last_craft(), Some(Err(CraftRefusal::Full)));
+    let elsewhere =
+        Craft { table: BoxelPos::new(t.0.x + 1, t.0.y, t.0.z), face: TableFace::Front, cells: cells(SLAB, brick), count: 1 };
     sim.step(&PlayerInput { craft: Some(elsewhere), ..Default::default() });
     assert_eq!(sim.last_craft(), Some(Err(CraftRefusal::NoTable)));
-    assert_eq!(sim.inventory().amount(brick), 16 * FULL_VOLUME, "refusals cost nothing");
+    assert_eq!(sim.inventory().amount(brick), 16 * FULL_VOLUME, "brick was never touched");
 }
 
 #[test]
@@ -167,7 +174,7 @@ fn a_part_in_a_cell_makes_a_finer_part_and_stays() {
     grid[3][0] = Some(pipe);
     let craft = Craft { table: t, face: TableFace::Right, cells: grid, count: 1 };
     let plan = sim.craft_plan(&craft).unwrap();
-    assert_eq!(plan.cost, FULL_VOLUME / 16 * 12 / 16, "a quarter column, three quarters filled");
+    assert_eq!(plan.volume, FULL_VOLUME / 16 * 12 / 16, "a quarter column, three quarters filled");
     sim.step(&PlayerInput { craft: Some(craft), ..Default::default() });
     let Some(Ok((holes, 1))) = sim.last_craft() else { panic!("{:?}", sim.last_craft()) };
     assert_ne!(holes, pipe);

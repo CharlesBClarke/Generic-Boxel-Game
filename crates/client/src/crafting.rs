@@ -258,12 +258,12 @@ fn result(ui: &mut egui::Ui, sim: &Simulation, menu: &mut CraftingMenu, palette:
             paint_shape(ui.painter(), rect.shrink(12.0), &plan.shape, color);
             let material = short(blocks.material_name(plan.material));
             ui.label(format!(
-                "{} of a block of {material} each; you can make {}",
-                crate::editing::fraction(plan.cost),
+                "{} of a block of {material} each, free to make; room for {}",
+                crate::editing::fraction(plan.volume),
                 plan.count
             ));
             ui.horizontal(|ui| {
-                let one = ui.button("Craft").on_hover_text("shift-click crafts as many as you can");
+                let one = ui.button("Craft").on_hover_text("shift-click crafts as many as fit");
                 let all = ui.button(format!("Craft {}", plan.count));
                 let count = if all.clicked() || (one.clicked() && shift) {
                     Some(plan.count)

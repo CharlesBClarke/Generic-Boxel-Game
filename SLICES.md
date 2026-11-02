@@ -130,7 +130,7 @@ A run of small toy slices. Each one takes a single game-feel feature that doesn'
 5. The palette holds no registered shapes, and the test area's shapes are crafted ones.
 6. `cargo test` and `cargo clippy` are clean.
 
-**Deferred:** nesting deeper than two levels; mixed materials in one pattern; saving parts between sessions; Generative crafting's properties; swapping left and right click.
+**Deferred:** paying for crafting (free since 2026-11-02, at the user's request); nesting deeper than two levels; mixed materials in one pattern; saving parts between sessions; Generative crafting's properties; swapping left and right click.
 
 **API debt to add:** the crafting menu in the client (`client::crafting`): mods can't change the menu.
 
@@ -142,6 +142,8 @@ A run of small toy slices. Each one takes a single game-feel feature that doesn'
   - The table has no visible front. The hint under the crosshair names the face aimed at ("crafting table, left side: E to craft").
   - The crafted fence post turns freely like every shaped block, where the old one only turned its axis; it fills the same space.
   - *From play (2026-11-02):* drag-only filling couldn't reach scattered cells, like the middle four. Now clicking something carried picks it as a brush (highlighted, click again to drop it). Clicking a cell fills it, and holding the left button fills every cell passed over. The right button empties cells the same way. Dragging from the list still works and picks the brush too.
+  - *From play (2026-11-02):* paying with material blocked patterns made from parts once the plain wood ran out. The user chose to make crafting **free**, with payment deferred. A craft takes no material; parts still take their volume of the capacity, so "Craft N" makes as many as fit, and with no room it's refused ("no room to carry it"). Placing a part still uses it, and breaking gives it back.
+  - *From play (2026-11-02):* picked-up dirt couldn't be used. Every material's full block is now placeable (stone, dirt, ice, log and gravel join brick, wood and the table); grass, which breaks into dirt, and the marker stay unplaceable. The palette lists every material, carried or not, so brick is now slot 4 and wood slot 6, and parts come after slot 9.
 - **API (`api`):**
   - `shape::ShapeGrid`: 16×16×16 bits, with `from_boxes`, greedy `to_boxes`, `turned`, `quarters` (`None` when there's detail finer than quarters) and `hash64`.
   - `crafting`: `TableFace` (from a normal in the table's frame, plus the grid's right and up for each face), `Cell` (`Empty`, `Solid`, `Shape`), `craft_shape`, `CraftError` (`Empty`, `TooFine`), `CraftingDef`, and a `pattern` helper for text rows.
