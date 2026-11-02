@@ -141,6 +141,7 @@ A run of small toy slices. Each one takes a single game-feel feature that doesn'
   - The preview is a picture in the menu, seen from in front of the table's front, a little to the left and above. It isn't a 3D view in the world.
   - The table has no visible front. The hint under the crosshair names the face aimed at ("crafting table, left side: E to craft").
   - The crafted fence post turns freely like every shaped block, where the old one only turned its axis; it fills the same space.
+  - *From play (2026-11-02):* drag-only filling couldn't reach scattered cells, like the middle four. Now clicking something carried picks it as a brush (highlighted, click again to drop it). Clicking a cell fills it, and holding the left button fills every cell passed over. The right button empties cells the same way. Dragging from the list still works and picks the brush too.
 - **API (`api`):**
   - `shape::ShapeGrid`: 16×16×16 bits, with `from_boxes`, greedy `to_boxes`, `turned`, `quarters` (`None` when there's detail finer than quarters) and `hash64`.
   - `crafting`: `TableFace` (from a normal in the table's frame, plus the grid's right and up for each face), `Cell` (`Empty`, `Solid`, `Shape`), `craft_shape`, `CraftError` (`Empty`, `TooFine`), `CraftingDef`, and a `pattern` helper for text rows.

@@ -1,8 +1,9 @@
 //! The crafting menu: opened at a face of a crafting table with the interact key, it shows the
-//! face's 4×4 grid, what the player carries, and a picture of what the pattern makes. Things
-//! carried are dragged onto cells (dragging across cells fills each), right-click empties a
-//! cell, and the craft button sends the craft with the next tick. The simulation decides what's
-//! made; this only asks and shows.
+//! face's 4×4 grid, what the player carries, and a picture of what the pattern makes. Clicking
+//! something carried picks it as the brush; clicking a cell fills it with the brush, and holding
+//! the button down fills every cell passed over. Things can also be dragged straight from the
+//! list. The right button empties cells the same way. The craft button sends the craft with
+//! the next tick. The simulation decides what's made; this only asks and shows.
 
 use api::crafting::GRID;
 use api::{BoxelPos, ShapeGrid, TableFace, Vec3 as ZVec3};
@@ -22,6 +23,8 @@ pub struct CraftingMenu {
     pub open: Option<(BoxelPos, TableFace)>,
     /// A material or part in each cell, by row from the top and column from the left.
     pub cells: [[Option<MaterialId>; GRID]; GRID],
+    /// What clicking a cell puts there.
+    pub brush: Option<MaterialId>,
     /// A craft to send with the next tick.
     pub pending: Option<Craft>,
     /// What the last craft sent did.
@@ -129,16 +132,17 @@ pub(crate) fn crafting_menu(
             ));
             ui.horizontal_top(|ui| {
                 ui.vertical(|ui| {
-                    ui.label("Pattern (drag here, right-click empties)");
-                    grid(ui, blocks, &mut menu.cells);
+                    ui.label("Pattern: click or hold to fill, right button empties");
+                    let CraftingMenu { cells, brush, .. } = &mut *menu;
+                    grid(ui, blocks, cells, brush);
                     if ui.button("Clear").clicked() {
                         menu.cells = Default::default();
                     }
                 });
                 ui.separator();
                 ui.vertical(|ui| {
-                    ui.label("Carried (drag onto the grid)");
-                    carried(ui, sim, &mut palette);
+                    ui.label("Carried: click to pick a brush, or drag");
+                    carried(ui, sim, &mut palette, &mut menu.brush);
                 });
                 ui.separator();
                 ui.vertical(|ui| result(ui, sim, &mut menu, &mut palette, shift));
@@ -147,21 +151,50 @@ pub(crate) fn crafting_menu(
     Ok(())
 }
 
-/// The 4×4 grid. A cell under the pointer takes whatever is being dragged, so dragging across
-/// cells fills each one.
-fn grid(ui: &mut egui::Ui, blocks: &BlockRegistry, cells: &mut [[Option<MaterialId>; GRID]; GRID]) {
-    let dragging = ui.ctx().input(|i| i.pointer.primary_down());
+/// What the pointer does to a cell this frame: `Some(new contents)`, or `None` to leave it.
+/// Only a cell under the pointer changes. Something dragged from the list goes in while the
+/// button is down or as it's let go; otherwise the left button down puts the brush in, and the
+/// right button down empties it.
+fn stroke(
+    over: bool,
+    dragged: Option<MaterialId>,
+    brush: Option<MaterialId>,
+    primary: bool,
+    secondary: bool,
+) -> Option<Option<MaterialId>> {
+    if !over {
+        return None;
+    }
+    match dragged {
+        Some(id) if primary => Some(Some(id)),
+        Some(_) => None,
+        None if secondary => Some(None),
+        None if primary => brush.map(Some),
+        None => None,
+    }
+}
+
+/// The 4×4 grid, painted with the brush or whatever is dragged from the list.
+fn grid(
+    ui: &mut egui::Ui,
+    blocks: &BlockRegistry,
+    cells: &mut [[Option<MaterialId>; GRID]; GRID],
+    brush: &mut Option<MaterialId>,
+) {
+    let (primary, secondary) = ui.ctx().input(|i| (i.pointer.primary_down(), i.pointer.secondary_down()));
     egui::Grid::new("crafting_grid").spacing([2.0, 2.0]).show(ui, |ui| {
         for row in cells.iter_mut() {
             for cell in row.iter_mut() {
                 let (rect, response) = ui.allocate_exact_size(egui::vec2(CELL, CELL), egui::Sense::click());
-                if let Some(id) = response.dnd_hover_payload::<MaterialId>()
-                    && (dragging || response.dnd_release_payload::<MaterialId>().is_some())
-                {
-                    *cell = Some(*id);
+                let dropped = response.dnd_release_payload::<MaterialId>().map(|id| *id);
+                let dragged = dropped.or_else(|| response.dnd_hover_payload::<MaterialId>().map(|id| *id));
+                if let Some(id) = dragged {
+                    // Dragging something picks it as the brush too.
+                    *brush = Some(id);
                 }
-                if response.secondary_clicked() {
-                    *cell = None;
+                let over = response.contains_pointer();
+                if let Some(new) = stroke(over, dragged, *brush, primary || dropped.is_some(), secondary) {
+                    *cell = new;
                 }
                 let painter = ui.painter_at(rect);
                 let hovered = response.contains_pointer();
@@ -180,8 +213,9 @@ fn grid(ui: &mut egui::Ui, blocks: &BlockRegistry, cells: &mut [[Option<Material
     });
 }
 
-/// Everything carried, each a drag source; a part also has a button to hold it.
-fn carried(ui: &mut egui::Ui, sim: &Simulation, palette: &mut Palette) {
+/// Everything carried, each a brush to pick and a drag source; a part also has a button to hold
+/// it.
+fn carried(ui: &mut egui::Ui, sim: &Simulation, palette: &mut Palette, brush: &mut Option<MaterialId>) {
     let blocks = sim.blocks();
     let things: Vec<(MaterialId, u32)> = sim.inventory().iter().collect();
     if things.is_empty() {
@@ -198,7 +232,11 @@ fn carried(ui: &mut egui::Ui, sim: &Simulation, palette: &mut Palette) {
                         Some(_) => format!("×{}", amount / blocks.unit(id)),
                         None => crate::items::amount_label(amount),
                     };
-                    ui.label(format!("{} {amount}", thing_name(blocks, id)));
+                    let picked = *brush == Some(id);
+                    let label = ui.selectable_label(picked, format!("{} {amount}", thing_name(blocks, id)));
+                    if label.on_hover_text("click to paint with it, again to stop").clicked() {
+                        *brush = if picked { None } else { Some(id) };
+                    }
                 });
                 if blocks.part_of(id).is_some() && ui.small_button("hold").on_hover_text("put it in hand").clicked() {
                     palette.select_part(sim, id);
@@ -364,6 +402,26 @@ mod tests {
         assert_eq!(quads(&slab).len(), 16 * 16 + 2 * 16 * 8);
         let q = quads(&slab);
         assert!(q.windows(2).all(|w| w[0].depth >= w[1].depth), "farthest first");
+    }
+
+    #[test]
+    fn strokes_fill_with_the_brush_or_what_is_dragged_and_empty_with_the_right_button() {
+        let mut blocks = BlockRegistry::default();
+        for name in ["test:stone", "test:wood"] {
+            blocks.register(api::BlockDef::new(name, true, [0; 3]).with_material(name)).unwrap();
+        }
+        let (stone, wood) = (blocks.material("test:stone").unwrap(), blocks.material("test:wood").unwrap());
+        // Not under the pointer: nothing changes.
+        assert_eq!(stroke(false, Some(wood), Some(stone), true, false), None);
+        // The left button down paints the brush; up, nothing happens.
+        assert_eq!(stroke(true, None, Some(stone), true, false), Some(Some(stone)));
+        assert_eq!(stroke(true, None, Some(stone), false, false), None);
+        assert_eq!(stroke(true, None, None, true, false), None, "no brush, nothing to paint");
+        // The right button empties.
+        assert_eq!(stroke(true, None, Some(stone), false, true), Some(None));
+        // Something dragged wins over the brush, once the button is down or let go.
+        assert_eq!(stroke(true, Some(wood), Some(stone), true, false), Some(Some(wood)));
+        assert_eq!(stroke(true, Some(wood), Some(stone), false, true), None);
     }
 
     #[test]
