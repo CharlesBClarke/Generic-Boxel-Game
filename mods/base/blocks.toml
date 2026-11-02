@@ -17,11 +17,15 @@
 #   material   what breaking it drops: its volume of this material, so a slab drops half.
 #              Defaults to the block's own name; blocks of one material share it.
 #
-# Only the house set (brick and wood, five shapes each) is placeable for now; the rest build
-# the test area.
+# Every block here is a full block: shapes aren't listed, they're crafted. A crafting table
+# (see crafting.toml) turns a pattern of a material into a part of any shape, and the test
+# area's stairs, slabs and posts are built the same way. The shape and turning fields are
+# still there for mods that want a fixed shape. Every material's block is placeable; grass
+# breaks into dirt, and the marker is only for the test area.
 #
 # Shapes are boxes in sixteenths of a boxel: [x0, y0, z0, x1, y1, z1], each from 0 to 16,
-# as the block stands unturned (+Z up, +Y north).
+# as the block stands unturned (+Z up, +Y north). A [shapes] table can name shapes for blocks
+# to share.
 #
 # Looks are solid: a cube of 16×16×16 texels that fills the boxel and repeats every block.
 # Every face shows the texels just inside it, so a slab or stair shows the part of the cube
@@ -70,26 +74,17 @@ rings = { colors = [[196, 158, 102], [168, 132, 82]], spacing = 2, bark = [[91, 
 [looks.gravel]
 noise = { colors = [[78, 76, 74], [98, 94, 91], [120, 116, 111], [142, 136, 129]], scale = 1, seed = 8 }
 
-[shapes]
-slab = [[0, 0, 0, 16, 16, 8]]
-# The high step is on the north side.
-stairs = [[0, 0, 0, 16, 16, 8], [0, 8, 8, 16, 16, 16]]
-post = [[6, 6, 0, 10, 10, 16]]
-# Four steps of a quarter boxel, rising north, for gentler roofs.
-fine_stairs = [[0, 0, 0, 16, 16, 4], [0, 4, 4, 16, 16, 8], [0, 8, 8, 16, 16, 12], [0, 12, 12, 16, 16, 16]]
-# A thin wall on the north side, like the stairs' high step.
-panel = [[0, 12, 0, 16, 16, 16]]
-# The panel with a square hole in its middle.
-window = [[0, 12, 0, 16, 16, 4], [0, 12, 12, 16, 16, 16], [0, 12, 4, 4, 16, 12], [12, 12, 4, 16, 16, 12]]
+# Dark boards under a light top, so the table reads as a work surface.
+[looks.crafting_table]
+planks = { width = 4, colors = [[120, 84, 50], [108, 76, 45], [131, 93, 56]], seam = [70, 48, 28], seed = 9 }
+top = { colors = [[204, 170, 120], [192, 158, 110]], depth = 2, ragged = 0, scale = 2, seed = 10 }
 
 [[block]]
 name = "stone"
-placeable = false
 look = "stone"
 
 [[block]]
 name = "dirt"
-placeable = false
 look = "dirt"
 
 [[block]]
@@ -110,112 +105,25 @@ color = [240, 180, 40]
 
 [[block]]
 name = "ice"
-placeable = false
 look = "ice"
 friction = 0.1
-
-[[block]]
-name = "stone_slab"
-placeable = false
-look = "stone"
-shape = "slab"
-turning = "any"
-material = "stone"
-
-[[block]]
-name = "stone_stairs"
-placeable = false
-look = "stone"
-shape = "stairs"
-turning = "any"
-material = "stone"
-
-[[block]]
-name = "brick_slab"
-look = "brick"
-shape = "slab"
-turning = "any"
-material = "brick"
-
-[[block]]
-name = "brick_stairs"
-look = "brick"
-shape = "stairs"
-turning = "any"
-material = "brick"
-
-[[block]]
-name = "brick_panel"
-look = "brick"
-shape = "panel"
-turning = "any"
-material = "brick"
-
-[[block]]
-name = "brick_window"
-look = "brick"
-shape = "window"
-turning = "any"
-material = "brick"
 
 [[block]]
 name = "wood"
 look = "wood"
 
 [[block]]
-name = "wood_slab"
-look = "wood"
-shape = "slab"
-turning = "any"
-material = "wood"
-
-[[block]]
-name = "wood_stairs"
-look = "wood"
-shape = "stairs"
-turning = "any"
-material = "wood"
-
-[[block]]
-name = "wood_fine_stairs"
-look = "wood"
-shape = "fine_stairs"
-turning = "any"
-material = "wood"
-
-[[block]]
-name = "wood_panel"
-look = "wood"
-shape = "panel"
-turning = "any"
-material = "wood"
-
-# A bare post for now; fences joining their neighbors come later. It can lie on its side as a
-# beam.
-[[block]]
-name = "wood_fence"
-placeable = false
-look = "wood"
-shape = "post"
-turning = "axis"
-material = "wood"
-
-[[block]]
 name = "log"
-placeable = false
 look = "log"
 turning = "axis"
-
-# A cut log, to show its rings. Its look turns with it, so lying down it shows bark on top.
-[[block]]
-name = "log_slab"
-placeable = false
-look = "log"
-shape = "slab"
-turning = "any"
-material = "log"
 
 [[block]]
 name = "gravel"
-placeable = false
 look = "gravel"
+
+# Where shapes are crafted (see crafting.toml). It turns like stairs: placed, its front faces
+# you, and each face of it makes shapes a different way.
+[[block]]
+name = "crafting_table"
+look = "crafting_table"
+turning = "any"

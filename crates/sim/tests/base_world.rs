@@ -2,7 +2,7 @@
 
 use std::collections::HashSet;
 
-use api::{ChunkPos, Vec3, WorldPos};
+use api::{ChunkPos, Turning, Vec3, WorldPos};
 use glam::Vec2;
 use sim::{PlayerInput, SimError, Simulation};
 
@@ -35,89 +35,75 @@ fn base_registers_blocks_by_name() {
 #[test]
 fn base_blocks_come_from_its_data_files() {
     let sim = base_sim();
-    let def = |name| sim.blocks().get(sim.blocks().id(name).unwrap()).unwrap();
-    // The blocks the code half used to register, now with looks, then the partial ones.
-    let names: Vec<_> = sim.blocks().iter().map(|(_, d)| d.name.as_str()).collect();
-    assert_eq!(
-        names,
-        [
-            base::STONE,
-            base::DIRT,
-            base::GRASS,
-            base::BRICK,
-            base::MARKER,
-            base::ICE,
-            base::STONE_SLAB,
-            base::STONE_STAIRS,
-            base::BRICK_SLAB,
-            base::BRICK_STAIRS,
-            base::BRICK_PANEL,
-            base::BRICK_WINDOW,
-            base::WOOD,
-            base::WOOD_SLAB,
-            base::WOOD_STAIRS,
-            base::WOOD_FINE_STAIRS,
-            base::WOOD_PANEL,
-            base::WOOD_FENCE,
-            base::LOG,
-            base::LOG_SLAB,
-            base::GRAVEL,
-        ]
-    );
-    // Only the house set is placeable; the rest build the test area.
-    let house = [
+    let blocks = sim.blocks();
+    let def = |name| blocks.get(blocks.id(name).unwrap()).unwrap();
+    // The data file's full blocks, then the shapes the test area was built with, crafted as it
+    // was built: stone stairs, brick slabs, wood posts, a stone slab.
+    let names: Vec<_> = blocks.iter().map(|(_, d)| d.name.as_str()).collect();
+    let listed = [
+        base::STONE,
+        base::DIRT,
+        base::GRASS,
         base::BRICK,
-        base::BRICK_SLAB,
-        base::BRICK_STAIRS,
-        base::BRICK_PANEL,
-        base::BRICK_WINDOW,
+        base::MARKER,
+        base::ICE,
         base::WOOD,
-        base::WOOD_SLAB,
-        base::WOOD_STAIRS,
-        base::WOOD_FINE_STAIRS,
-        base::WOOD_PANEL,
+        base::LOG,
+        base::GRAVEL,
+        base::CRAFTING_TABLE,
     ];
-    for (_, d) in sim.blocks().iter() {
+    assert_eq!(names[..listed.len()], listed);
+    let crafted = [
+        (base::STONE, base::shapes::stairs()),
+        (base::BRICK, base::shapes::slab()),
+        (base::WOOD, base::shapes::post()),
+        (base::STONE, base::shapes::slab()),
+    ];
+    assert_eq!(names.len(), listed.len() + crafted.len(), "no other shapes: {names:?}");
+    for (i, (material, shape)) in crafted.iter().enumerate() {
+        let (id, d) = blocks.iter().nth(listed.len() + i).unwrap();
+        let m = blocks.material(material).unwrap();
+        assert_eq!(blocks.find_shaped(m, shape), Some(id), "{}", d.name);
+        assert!(d.name.starts_with(&format!("{material}_s")), "{}", d.name);
+        assert_eq!(d.look, def(material).look, "{} shares its material's look", d.name);
+        assert_eq!(d.turning, Turning::Any);
+        assert_eq!(blocks.part_of(blocks.drop(id).unwrap().material), Some(m), "{} breaks into a part", d.name);
+    }
+
+    // Everything is placeable but grass (it breaks into dirt) and the debug marker. Every block
+    // is full but the crafted ones.
+    let hidden = [base::GRASS, base::MARKER];
+    for (id, d) in blocks.iter() {
+        let shaped = blocks.drop(id).is_some_and(|drop| blocks.part_of(drop.material).is_some());
         assert!(d.solid, "{}", d.name);
-        assert_eq!(d.placeable, house.contains(&d.name.as_str()), "{}", d.name);
+        assert_eq!(d.placeable, !hidden.contains(&d.name.as_str()), "{}", d.name);
+        assert_eq!(d.is_full(), !shaped, "{}", d.name);
         let friction = if d.name == base::ICE { 0.1 } else { 1.0 };
         assert_eq!(d.friction, friction, "{}", d.name);
     }
     assert_eq!(def(base::GRASS).look.as_deref(), Some("base:grass"));
-    assert_eq!(def(base::STONE_STAIRS).look.as_deref(), Some("base:stone"), "shapes share their material's look");
     assert_eq!(def(base::MARKER).look, None, "the marker stays a flat color");
     assert_eq!(def(base::MARKER).color, [240, 180, 40]);
-    use api::{BlockBox, Turning};
-    let slab = [BlockBox::new([0, 0, 0], [16, 16, 8])];
-    for (name, boxes, turning) in [
-        (base::STONE_SLAB, 1, Turning::Any),
-        (base::BRICK_SLAB, 1, Turning::Any),
-        (base::STONE_STAIRS, 2, Turning::Any),
-        (base::BRICK_STAIRS, 2, Turning::Any),
-        (base::WOOD_FENCE, 1, Turning::Axis),
-        (base::LOG, 1, Turning::Axis),
-        (base::LOG_SLAB, 1, Turning::Any),
-        (base::BRICK_PANEL, 1, Turning::Any),
-        (base::BRICK_WINDOW, 4, Turning::Any),
-        (base::WOOD, 1, Turning::None),
-        (base::WOOD_SLAB, 1, Turning::Any),
-        (base::WOOD_STAIRS, 2, Turning::Any),
-        (base::WOOD_FINE_STAIRS, 4, Turning::Any),
-        (base::WOOD_PANEL, 1, Turning::Any),
-        (base::STONE, 1, Turning::None),
-    ] {
-        let d = def(name);
-        assert_eq!((d.shape.len(), d.turning), (boxes, turning), "{name}");
-    }
+    assert_eq!(def(base::LOG).turning, Turning::Axis);
+    assert_eq!(def(base::CRAFTING_TABLE).turning, Turning::Any);
+    assert_eq!(sim.crafting_def().map(|d| d.table.as_str()), Some(base::CRAFTING_TABLE));
     let turns = |look: &str| sim.looks().get(look).unwrap().turns;
     assert!(turns("base:log"), "a log's rings turn with it");
     assert!(!turns("base:wood") && !turns("base:brick"), "planks and bricks stay lined up with the world");
-    assert_eq!(def(base::STONE_SLAB).shape, slab);
-    assert!(def(base::LOG).is_full() && !def(base::WOOD_FENCE).is_full());
     let looks: Vec<_> = sim.looks().iter().map(|l| l.name.as_str()).collect();
     assert_eq!(
         looks,
-        ["base:brick", "base:dirt", "base:grass", "base:gravel", "base:ice", "base:log", "base:stone", "base:wood"]
+        [
+            "base:brick",
+            "base:crafting_table",
+            "base:dirt",
+            "base:grass",
+            "base:gravel",
+            "base:ice",
+            "base:log",
+            "base:stone",
+            "base:wood"
+        ]
     );
     for look in sim.looks().iter() {
         assert!(look.rgba.as_chunks::<4>().0.iter().all(|px| px[3] == 255), "{} should be opaque", look.name);

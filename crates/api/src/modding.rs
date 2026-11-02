@@ -1,8 +1,8 @@
 //! The traits a mod implements and the engine services it is handed.
 
 use crate::{
-    ApiError, BlockDef, BoxelPos, InteractionDef, InventoryDef, ItemDropDef, LookDef, ModelDef, MovementController,
-    Orientation, PlayerDef, PushOutDef, SoundDef, TargetDef, ToolDef, WorldPos,
+    ApiError, BlockDef, BoxelPos, CraftingDef, InteractionDef, InventoryDef, ItemDropDef, LookDef, ModelDef,
+    MovementController, Orientation, PlayerDef, PushOutDef, ShapeGrid, SoundDef, TargetDef, ToolDef, WorldPos,
 };
 
 /// A mod. The engine calls `register` on every mod first, then `build_world` on every mod.
@@ -11,7 +11,7 @@ pub trait Mod {
     fn name(&self) -> &str;
 
     /// Registers content: looks, blocks, movement controllers, the player, interaction, push-out
-    /// item drop and inventory definitions, models, sounds, targets and tools.
+    /// item drop, inventory and crafting definitions, models, sounds, targets and tools.
     fn register(&self, registrar: &mut dyn Registrar) -> Result<(), ApiError>;
 
     /// Places blocks in the world once all content is registered.
@@ -41,6 +41,9 @@ pub trait Registrar {
     /// Registers what players carry. Its starting materials are checked once every mod has
     /// registered its blocks.
     fn register_inventory(&mut self, def: InventoryDef) -> Result<(), ApiError>;
+    /// Registers the crafting table. Its block is checked once every mod has registered its
+    /// blocks.
+    fn register_crafting(&mut self, def: CraftingDef) -> Result<(), ApiError>;
     /// Registers a model for content to name. Like looks, names are checked once all mods have
     /// registered, so a target may name a model another mod registers later.
     fn register_model(&mut self, def: ModelDef) -> Result<(), ApiError>;
@@ -59,6 +62,16 @@ pub trait WorldEdit {
     /// Adds a block to what's already in the boxel, turned by `orientation`. The same rules as
     /// a player placing it decide whether it may share the boxel.
     fn add_block(&mut self, pos: BoxelPos, name: &str, orientation: Orientation) -> Result<(), ApiError>;
+    /// Adds a block of `material` in `shape`, turned by `orientation`, to what's already in the
+    /// boxel: the same block crafting that shape makes. The same rules as a player placing it
+    /// decide whether it may share the boxel. A full shape is the material's own block.
+    fn add_shaped(
+        &mut self,
+        pos: BoxelPos,
+        material: &str,
+        shape: &ShapeGrid,
+        orientation: Orientation,
+    ) -> Result<(), ApiError>;
     /// Empties the boxel.
     fn clear_block(&mut self, pos: BoxelPos);
 

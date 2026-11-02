@@ -5,12 +5,13 @@ use std::fmt;
 
 use api::block::is_valid_name;
 use api::{
-    ApiError, BlockDef, BoxelPos, ChunkPos, I64Vec3, InteractionDef, InventoryDef, ItemDropDef, LookDef, ModelDef, Mod,
-    MovementController, Orientation, PlayerDef, PushOutDef, Registrar, SoundDef, TargetDef, ToolDef, Turning, Vec3,
-    WorldEdit, WorldPos, look_direction,
+    ApiError, BlockDef, BoxelPos, ChunkPos, CraftingDef, I64Vec3, InteractionDef, InventoryDef, ItemDropDef, LookDef,
+    ModelDef, Mod, MovementController, Orientation, PlayerDef, PushOutDef, Registrar, ShapeGrid, SoundDef,
+    TargetDef, ToolDef, Turning, Vec3, WorldEdit, WorldPos, look_direction,
 };
 
 use crate::combat::{Strike, Swing, SwingStage, TargetKind, Targets, ToolId};
+use crate::crafting::{Craft, CraftPlan, CraftRefusal};
 use crate::edit::{ChangedChunks, Repeater};
 use crate::inventory::{Inventory, capacity_units};
 use crate::items::{Collector, Items, pop_velocity};
@@ -98,6 +99,9 @@ pub struct Simulation {
     inventory_def: Option<InventoryDef>,
     /// What the player carries.
     inventory: Inventory,
+    crafting_def: Option<CraftingDef>,
+    /// The last craft: the part made and how many, or why nothing was.
+    last_craft: Option<Result<(MaterialId, u32), CraftRefusal>>,
     targets: Targets,
     swing: Option<Swing>,
     guarding: bool,
@@ -131,6 +135,7 @@ impl Simulation {
                 push_out: &mut sim.push_out_def,
                 item_drops: &mut sim.item_drop_def,
                 inventory: &mut sim.inventory_def,
+                crafting: &mut sim.crafting_def,
                 models: &mut sim.models,
                 sounds: &mut sim.sounds,
                 targets: &mut sim.target_defs,
@@ -138,6 +143,11 @@ impl Simulation {
             })?;
         }
         sim.looks.check_blocks(&sim.blocks)?;
+        if let Some(def) = &sim.crafting_def
+            && sim.blocks.id(&def.table).is_none()
+        {
+            return Err(ApiError::UnknownBlock(def.table.clone()).into());
+        }
         if let Some(def) = &sim.inventory_def {
             for (name, boxels) in &def.start {
                 let material = sim.blocks.material(name).ok_or_else(|| ApiError::UnknownMaterial(name.clone()))?;
@@ -154,7 +164,7 @@ impl Simulation {
         }
         for m in mods {
             m.build_world(&mut WorldEditor {
-                blocks: &sim.blocks,
+                blocks: &mut sim.blocks,
                 grid: sim.universe.main_mut(),
                 spawn: &mut sim.spawn,
                 waypoints: &mut sim.waypoints,
@@ -191,6 +201,12 @@ impl Simulation {
     /// player stood at the end of the last tick, which is what the client aimed from. Targets
     /// move after the player, and loose items last, toward where the player ended up.
     pub fn step(&mut self, input: &PlayerInput) {
+        if let Some(craft) = &input.craft {
+            self.last_craft = Some(self.craft(craft));
+        }
+        if let Some(m) = input.discard {
+            self.inventory.take(m, self.inventory.amount(m));
+        }
         self.edit_blocks(input);
         self.use_tool(input);
         self.throw(input);
@@ -367,8 +383,11 @@ impl Simulation {
         if material.index() >= self.blocks.material_count() {
             return;
         }
-        let amount = self.inventory.amount(material).min(crate::FULL_VOLUME);
-        if amount == 0 {
+        // A part goes whole; a material a full block's worth, or what's left.
+        let unit = self.blocks.unit(material);
+        let have = self.inventory.amount(material);
+        let amount = if unit > 1 { unit } else { have.min(crate::FULL_VOLUME) };
+        if amount == 0 || have < amount {
             return;
         }
         let look = look_direction(input.yaw, input.pitch);
@@ -475,6 +494,55 @@ impl Simulation {
         push
     }
 
+    /// Whether `hit` is on a crafting table. Every face of it opens the same table.
+    pub fn is_table(&self, hit: &Hit) -> bool {
+        let Some(table) = self.crafting_def.as_ref().and_then(|def| self.blocks.id(&def.table)) else {
+            return false;
+        };
+        self.universe.main().cell(hit.pos).get(hit.occupant).is_some_and(|o| o.block == table)
+    }
+
+    /// What crafting `craft` would make, without making it: the same checks a craft makes.
+    /// The table must be in the player's reach.
+    pub fn craft_plan(&self, craft: &Craft) -> Result<CraftPlan, CraftRefusal> {
+        let def = self.crafting_def.as_ref().ok_or(CraftRefusal::NoCrafting)?;
+        let table = self.blocks.id(&def.table).ok_or(CraftRefusal::NoCrafting)?;
+        if !self.universe.main().cell(craft.table).iter().any(|o| o.block == table) {
+            return Err(CraftRefusal::NoTable);
+        }
+        let reach = self.interaction_def.as_ref().map_or(0.0, |d| d.reach);
+        let player = self.player.as_ref().ok_or(CraftRefusal::TooFar)?;
+        let center = WorldPos::at_boxel(craft.table).translate(Vec3::splat(0.5));
+        // Measured to the table's middle, so a whole face in reach counts.
+        if player.eye().delta_to(center).length() > reach + 0.5 {
+            return Err(CraftRefusal::TooFar);
+        }
+        crate::crafting::plan(&self.blocks, &self.inventory, self.capacity(), &craft.cells, craft.flip, craft.count)
+    }
+
+    /// Crafts: makes the parts `craft` asks for, if it can.
+    fn craft(&mut self, craft: &Craft) -> Result<(MaterialId, u32), CraftRefusal> {
+        let plan = self.craft_plan(craft)?;
+        let capacity = self.capacity();
+        let part = crate::crafting::make(&mut self.blocks, &mut self.inventory, capacity, &plan)?;
+        Ok((part, plan.count))
+    }
+
+    /// The last craft's outcome: the part made and how many, or why nothing was.
+    pub fn last_craft(&self) -> Option<Result<(MaterialId, u32), CraftRefusal>> {
+        self.last_craft
+    }
+
+    pub fn crafting_def(&self) -> Option<&CraftingDef> {
+        self.crafting_def.as_ref()
+    }
+
+    /// The block of `material` in `shape`, registering it if it's new, as crafting does. For
+    /// tests and tools.
+    pub fn shaped_block(&mut self, material: MaterialId, shape: &ShapeGrid) -> Result<BlockId, ApiError> {
+        self.blocks.shaped(material, shape)
+    }
+
     pub fn teleport_player(&mut self, pos: WorldPos) {
         if let Some(player) = &mut self.player {
             player.teleport(pos);
@@ -545,9 +613,9 @@ impl Simulation {
     }
 
     /// How much the player can carry, every material together, in [`crate::FULL_VOLUME`] units,
-    /// or `None` for no limit without an inventory definition.
+    /// or `None` for no limit: without an inventory definition, or one with no capacity.
     pub fn capacity(&self) -> Option<u32> {
-        self.inventory_def.as_ref().map(|def| capacity_units(def.capacity))
+        self.inventory_def.as_ref().and_then(|def| def.capacity).map(capacity_units)
     }
 
     pub fn inventory_def(&self) -> Option<&InventoryDef> {
@@ -744,11 +812,11 @@ struct Aim {
 /// the player looks, and upside down against a ceiling or when aimed at the upper half of a
 /// wall; a block that only turns its axis lines up with the face.
 ///
-/// Precise placement looks at the part of the face aimed at. In the middle square the block's
-/// bottom goes against the face, its front the way the player looks along the face. In one of
-/// the four triangles it stands in the half of the boxel toward that edge, with its back
-/// against the face: on a wall the top triangle makes a top slab, a side triangle a slab
-/// standing against that side.
+/// Precise placement puts the block's bottom against the face aimed at, and looks at the part
+/// of the face aimed at to turn it about the face: in the middle square its front points the
+/// way the player looks along the face, in one of the four triangles toward that edge. A slab
+/// lies flat against a wall, a post sticks out of it. A block that only turns its axis lines
+/// up with the face in the middle, and lies toward the edge in a triangle.
 fn orient(turning: Turning, aim: &Aim) -> Orientation {
     let normal = aim.face.to_array().map(|c| c as i32);
     let axis = aim.face.abs().max_position();
@@ -777,7 +845,9 @@ fn orient(turning: Turning, aim: &Aim) -> Orientation {
             }
         }
         Some(None) => (normal, look_except(axis)),
-        Some(Some(edge)) => (edge.map(|c| -c), normal.map(|c| -c)),
+        // A block that only turns its axis lies along the triangle's edge, like a log on its side.
+        Some(Some(edge)) if turning == Turning::Axis => (edge.map(|c| -c), normal.map(|c| -c)),
+        Some(Some(edge)) => (normal, edge),
     };
     match turning {
         Turning::None => Orientation::IDENTITY,
@@ -810,6 +880,7 @@ struct ContentRegistrar<'a> {
     push_out: &'a mut Option<PushOutDef>,
     item_drops: &'a mut Option<ItemDropDef>,
     inventory: &'a mut Option<InventoryDef>,
+    crafting: &'a mut Option<CraftingDef>,
     models: &'a mut Vec<ModelDef>,
     sounds: &'a mut Vec<SoundDef>,
     targets: &'a mut Vec<TargetDef>,
@@ -889,6 +960,17 @@ impl Registrar for ContentRegistrar<'_> {
         Ok(())
     }
 
+    fn register_crafting(&mut self, def: CraftingDef) -> Result<(), ApiError> {
+        if self.crafting.is_some() {
+            return Err(ApiError::DuplicateCraftingDef);
+        }
+        if !is_valid_name(&def.table) {
+            return Err(ApiError::InvalidName(def.table));
+        }
+        *self.crafting = Some(def);
+        Ok(())
+    }
+
     fn register_model(&mut self, def: ModelDef) -> Result<(), ApiError> {
         check_new_name(&def.name, self.models.iter().map(|m| m.name.clone()))?;
         def.validate().map_err(|why| ApiError::InvalidDef(format!("model {}: {why}", def.name)))?;
@@ -918,12 +1000,26 @@ impl Registrar for ContentRegistrar<'_> {
 }
 
 struct WorldEditor<'a> {
-    blocks: &'a BlockRegistry,
+    blocks: &'a mut BlockRegistry,
     grid: &'a mut Grid,
     spawn: &'a mut WorldPos,
     waypoints: &'a mut Vec<(String, WorldPos)>,
     target_defs: &'a [TargetDef],
     targets: &'a mut Targets,
+}
+
+impl WorldEditor<'_> {
+    fn add(&mut self, pos: BoxelPos, id: BlockId, orientation: Orientation) -> Result<(), ApiError> {
+        let occupant = Occupant::turned(id, orientation);
+        let mut cell = self.grid.cell(pos).to_vec();
+        can_share(&cell, occupant, self.blocks).map_err(|e| {
+            let name = self.blocks.get(id).map_or("?", |d| d.name.as_str());
+            ApiError::CannotShare(format!("{name} at {:?}: {e}", pos.0.to_array()))
+        })?;
+        cell.push(occupant);
+        self.grid.set_cell(pos, &cell);
+        Ok(())
+    }
 }
 
 impl WorldEdit for WorldEditor<'_> {
@@ -935,13 +1031,19 @@ impl WorldEdit for WorldEditor<'_> {
 
     fn add_block(&mut self, pos: BoxelPos, name: &str, orientation: Orientation) -> Result<(), ApiError> {
         let id = self.blocks.id(name).ok_or_else(|| ApiError::UnknownBlock(name.into()))?;
-        let occupant = Occupant::turned(id, orientation);
-        let mut cell = self.grid.cell(pos).to_vec();
-        can_share(&cell, occupant, self.blocks)
-            .map_err(|e| ApiError::CannotShare(format!("{name} at {:?}: {e}", pos.0.to_array())))?;
-        cell.push(occupant);
-        self.grid.set_cell(pos, &cell);
-        Ok(())
+        self.add(pos, id, orientation)
+    }
+
+    fn add_shaped(
+        &mut self,
+        pos: BoxelPos,
+        material: &str,
+        shape: &ShapeGrid,
+        orientation: Orientation,
+    ) -> Result<(), ApiError> {
+        let m = self.blocks.material(material).ok_or_else(|| ApiError::UnknownMaterial(material.into()))?;
+        let id = self.blocks.shaped(m, shape)?;
+        self.add(pos, id, orientation)
     }
 
     fn clear_block(&mut self, pos: BoxelPos) {

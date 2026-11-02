@@ -1,7 +1,7 @@
 //! `inventory.toml`: what a player carries.
 //!
 //! ```toml
-//! capacity = 64       # boxels' worth, every material together
+//! capacity = 64       # boxels' worth, every material together; leave out for no limit
 //! throw_speed = 6     # meters per second, along the look
 //! pickup_delay = 1.5  # seconds before a thrown item can be picked up again
 //!
@@ -25,7 +25,7 @@ use crate::{LoadError, Source};
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct InventoryFile {
-    capacity: Spanned<f32>,
+    capacity: Option<Spanned<f32>>,
     throw_speed: f32,
     pickup_delay: f32,
     #[serde(default)]
@@ -59,11 +59,13 @@ pub(crate) fn load(dir: &Path, namespace: &str, blocks: &[BlockDef]) -> Result<O
         start.push((full, amount));
     }
     let def = InventoryDef {
-        capacity: *entries.capacity.get_ref(),
+        capacity: entries.capacity.as_ref().map(|c| *c.get_ref()),
         throw_speed: entries.throw_speed,
         pickup_delay: entries.pickup_delay,
         start,
     };
-    def.validate().map_err(|why| file.error_at(&entries.capacity, why))?;
+    // Point at the capacity if there is one; it's what the start is measured against too.
+    let at = entries.capacity.clone().unwrap_or_else(|| Spanned::new(0..0, 0.0));
+    def.validate().map_err(|why| file.error_at(&at, why))?;
     Ok(Some(def))
 }

@@ -49,9 +49,10 @@ pub struct Controls {
     pub respawn_targets: KeyCode,
     /// Throws a block's worth of the held material. Held, it keeps throwing.
     pub drop: KeyCode,
-    /// Picks the held material's next shape. Held, the scroll wheel picks shapes instead of
-    /// slots.
-    pub shape: KeyCode,
+    /// Opens the crafting menu at a crafting table aimed at, and closes it.
+    pub interact: KeyCode,
+    /// In the crafting menu: turns the part being painted with a quarter turn.
+    pub turn_part: KeyCode,
     /// Tapping forward twice within this many seconds sprints until forward is released.
     /// 0 turns it off. The sprint key works either way.
     pub double_tap_window: f32,
@@ -118,7 +119,8 @@ impl Default for Controls {
             trainer: KeyCode::F5,
             respawn_targets: KeyCode::F6,
             drop: KeyCode::KeyQ,
-            shape: KeyCode::KeyG,
+            interact: KeyCode::KeyE,
+            turn_part: KeyCode::KeyR,
             double_tap_window: 0.3,
             use_main: Binding::Mouse(MouseButton::Left),
             use_alt: Binding::Mouse(MouseButton::Right),
@@ -221,7 +223,8 @@ impl Controls {
                 "trainer" => &mut self.trainer,
                 "respawn_targets" => &mut self.respawn_targets,
                 "drop" => &mut self.drop,
-                "shape" => &mut self.shape,
+                "interact" => &mut self.interact,
+                "turn_part" => &mut self.turn_part,
                 _ => {
                     problems.push(format!("line {}: unknown action {action:?}", number + 1));
                     continue;
@@ -410,6 +413,25 @@ mod tests {
         assert_eq!(controls.use_main, Binding::Mouse(MouseButton::Right));
         assert_eq!(controls.use_alt, Binding::Mouse(MouseButton::Left));
         assert_eq!(controls.respawn_targets, KeyCode::F7);
+    }
+
+    #[test]
+    fn interact_is_bound_and_the_shape_key_is_gone() {
+        let mut controls = Controls::default();
+        assert_eq!(controls.interact, KeyCode::KeyE);
+        assert!(controls.apply("interact = KeyR
+").is_empty());
+        assert_eq!(controls.interact, KeyCode::KeyR);
+        assert_eq!(controls.apply("shape = KeyG
+").len(), 1, "shapes are crafted now, not picked");
+    }
+
+    #[test]
+    fn turn_part_is_bound() {
+        let mut controls = Controls::default();
+        assert_eq!(controls.turn_part, KeyCode::KeyR);
+        assert!(controls.apply("turn_part = KeyG\n").is_empty());
+        assert_eq!(controls.turn_part, KeyCode::KeyG);
     }
 
     #[test]

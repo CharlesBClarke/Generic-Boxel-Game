@@ -7,6 +7,8 @@ use api::{
 };
 use sim::{BlockId, FULL_VOLUME, MaterialId, PlayerInput, SimError, Simulation};
 
+mod common;
+
 /// A stone floor with a stone slab two boxels east of spawn, item drops, and an inventory if
 /// one is given.
 struct Yard {
@@ -58,7 +60,7 @@ impl Mod for Yard {
 
 /// Room for `capacity` boxels, starting with `stone` boxels of stone.
 fn inventory(capacity: f32, stone: f32) -> InventoryDef {
-    InventoryDef { capacity, throw_speed: 6.0, pickup_delay: 1.0, start: vec![("test:stone".into(), stone)] }
+    InventoryDef { capacity: Some(capacity), throw_speed: 6.0, pickup_delay: 1.0, start: vec![("test:stone".into(), stone)] }
 }
 
 fn yard(inventory: Option<InventoryDef>) -> Simulation {
@@ -233,7 +235,7 @@ fn the_start_names_a_material_some_block_is_made_of() {
 }
 
 #[test]
-fn the_base_game_starts_with_brick_and_wood_and_charges_for_shapes() {
+fn the_base_game_starts_with_brick_and_wood_and_shapes_need_parts() {
     let data = data_mods::load(std::path::Path::new(base::DATA_DIR)).unwrap();
     let mods: [&dyn Mod; 3] = [&data, &base::BaseMod, &base_movement::BaseMovementMod];
     let mut sim = Simulation::with_mods(&mods).unwrap();
@@ -242,13 +244,16 @@ fn the_base_game_starts_with_brick_and_wood_and_charges_for_shapes() {
     let (brick, wood) = (blocks.material("base:brick").unwrap(), blocks.material("base:wood").unwrap());
     assert_eq!(sim.inventory().amount(brick), 16 * FULL_VOLUME);
     assert_eq!(sim.inventory().amount(wood), 16 * FULL_VOLUME);
-    assert_eq!(sim.capacity(), Some(64 * FULL_VOLUME));
+    assert_eq!(sim.capacity(), None, "the base game carries without limit");
 
-    // A brick slab on the floor beside the spawn costs half a brick.
-    let slab = block(&sim, base::BRICK_SLAB);
+    // A full brick costs a brick. A brick slab is a part: without one carried, it can't be
+    // placed, and brick doesn't pay for it.
+    let (full, slab) = (sim.blocks().id(base::BRICK).unwrap(), common::brick_slab(&sim));
     for _ in 0..30 {
         sim.step(&PlayerInput::default());
     }
-    assert!(place_on_floor(&mut sim, 2, 2, slab));
-    assert_eq!(sim.inventory().amount(brick), 16 * FULL_VOLUME - FULL_VOLUME / 2);
+    assert!(place_on_floor(&mut sim, 2, 2, full));
+    assert_eq!(sim.inventory().amount(brick), 15 * FULL_VOLUME);
+    assert!(!place_on_floor(&mut sim, 2, -2, slab));
+    assert_eq!(sim.inventory().amount(brick), 15 * FULL_VOLUME);
 }

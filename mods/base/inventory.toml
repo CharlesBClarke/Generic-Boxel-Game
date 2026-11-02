@@ -1,18 +1,18 @@
-# What the player carries: an amount of each material, all sharing one capacity by volume, so
-# carrying many kinds costs no more than carrying one. Placing a block uses up its volume of its
-# material; breaking one drops it back. Amounts are in boxels' worth: a slab is 0.5.
+# What the player carries: an amount of each material and part. Placing a block uses up its
+# volume of its material, or one part; breaking one drops it back. Amounts are in boxels' worth:
+# a slab is 0.5.
 #
-#   capacity      how much fits, every material together
+#   capacity      how much fits, every material together; leave it out for no limit
 #   throw_speed   meters per second a thrown item leaves at, along the look
 #   pickup_delay  seconds before a thrown item can be picked up again
 #   [start]       what the player starts with, by material
 
-capacity = 64
+# No capacity: the player carries without limit (2026-11-02, at the user's request; see
+# "Rethink the inventory" in SLICES.md).
 throw_speed = 6
 pickup_delay = 1.5
 
-# The test area has brick to break but no wood, so start with some of both, leaving room to
-# pick more up.
+# The test area has brick to break but no wood, so start with some of both.
 [start]
 brick = 16
 wood = 16

@@ -1,10 +1,36 @@
 //! Shared by the tests that place the base mod's blocks.
 
-use api::{ApiError, BlockDef, Mod, Registrar};
-use data_mods::DataMod;
+#![allow(dead_code)]
 
-/// The base mod's data half with every block placeable, so tests can place the shapes the
-/// palette hides (stone slabs, logs, fence posts) to check how placement works.
+use api::{ApiError, BlockDef, Mod, Registrar, ShapeGrid};
+use data_mods::DataMod;
+use sim::{BlockId, Simulation};
+
+/// The block of `material` in `shape`, which the base test area already built with.
+pub fn shaped(sim: &Simulation, material: &str, shape: &ShapeGrid) -> BlockId {
+    let blocks = sim.blocks();
+    let m = blocks.material(material).unwrap_or_else(|| panic!("no material {material}"));
+    blocks.find_shaped(m, shape).unwrap_or_else(|| panic!("the test area has no {material} {shape:?}"))
+}
+
+pub fn stone_slab(sim: &Simulation) -> BlockId {
+    shaped(sim, base::STONE, &base::shapes::slab())
+}
+
+pub fn brick_slab(sim: &Simulation) -> BlockId {
+    shaped(sim, base::BRICK, &base::shapes::slab())
+}
+
+pub fn stone_stairs(sim: &Simulation) -> BlockId {
+    shaped(sim, base::STONE, &base::shapes::stairs())
+}
+
+pub fn wood_post(sim: &Simulation) -> BlockId {
+    shaped(sim, base::WOOD, &base::shapes::post())
+}
+
+/// The base mod's data half with every block placeable, so tests can place the blocks the
+/// palette hides (stone, logs) to check how placement works.
 pub struct AllPlaceable(pub DataMod);
 
 impl AllPlaceable {
@@ -33,6 +59,9 @@ impl Mod for AllPlaceable {
         }
         for target in self.0.targets() {
             r.register_target(target.clone())?;
+        }
+        if let Some(crafting) = self.0.crafting() {
+            r.register_crafting(crafting.clone())?;
         }
         Ok(())
     }

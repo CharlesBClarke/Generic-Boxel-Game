@@ -4,6 +4,7 @@
 pub mod combat;
 pub mod controls;
 pub mod coords;
+pub mod crafting;
 pub mod drill;
 pub mod editing;
 pub mod feel;
@@ -26,7 +27,7 @@ use bevy_egui::{EguiPlugin, EguiPrimaryContextPass};
 use sim::{PlayerInput, Simulation};
 
 use crate::controls::{Controls, DoubleTapSprint, label};
-use crate::editing::{ChunkMeshes, Ghost, Palette, PaletteHud};
+use crate::editing::{ChunkMeshes, Ghost, Palette, PartNames};
 use crate::feel::{CameraFeel, FeelState, Motion};
 use crate::mesher::MeshData;
 use crate::solid::{ATTRIBUTE_SOLID, SolidMaterial, SolidPlugin};
@@ -60,6 +61,8 @@ pub fn run(sim: Simulation) {
         .init_resource::<FeelState>()
         .init_resource::<TuningPanel>()
         .init_resource::<Palette>()
+        .init_resource::<crafting::CraftingMenu>()
+        .init_resource::<PartNames>()
         .init_resource::<items::ItemViews>()
         .init_resource::<DoubleTapSprint>()
         .init_resource::<drill::Drill>()
@@ -87,8 +90,7 @@ pub fn run(sim: Simulation) {
             Update,
             (
                 // Before grab_cursor, so the click that captures the mouse doesn't edit.
-                editing::edit_input,
-                grab_cursor,
+                (editing::edit_input, crafting::crafting_keys, grab_cursor).chain(),
                 mouse_look,
                 debug_keys,
                 double_tap_sprint,
@@ -107,11 +109,11 @@ pub fn run(sim: Simulation) {
                 drill::draw_drill,
                 trainer::draw_trainer,
                 update_hud,
-                editing::update_palette_hud,
+                crafting::update_table_hint,
             )
                 .chain(),
         )
-        .add_systems(EguiPrimaryContextPass, tuning::tuning_panel)
+        .add_systems(EguiPrimaryContextPass, (editing::hotbar, tuning::tuning_panel, crafting::crafting_menu).chain())
         .add_systems(Last, limit_frame_rate)
         .run();
 }
@@ -163,7 +165,8 @@ fn setup_scene(mut commands: Commands, mut cursor: Single<&mut CursorOptions, Wi
         Node { position_type: PositionType::Absolute, top: px(8), left: px(8), ..default() },
         Hud,
     ));
-    // A crosshair in the middle of the screen, and the block palette along the bottom.
+    // A crosshair in the middle of the screen. The hotbar along the bottom is drawn with egui
+    // (see `editing::hotbar`).
     commands
         .spawn(Node {
             position_type: PositionType::Absolute,
@@ -174,15 +177,16 @@ fn setup_scene(mut commands: Commands, mut cursor: Single<&mut CursorOptions, Wi
             ..default()
         })
         .with_child(Text::new("+"));
+    // What aiming at a crafting table would do, just under the crosshair.
     commands
         .spawn(Node {
             position_type: PositionType::Absolute,
             width: percent(100),
-            bottom: px(12),
+            top: percent(53),
             justify_content: JustifyContent::Center,
             ..default()
         })
-        .with_child((Text::new(""), PaletteHud));
+        .with_child((Text::new(""), crafting::TableHint));
     set_grab(&mut cursor, true);
 }
 
@@ -267,13 +271,18 @@ fn tick_simulation(
     cursor: Single<&CursorOptions, With<PrimaryWindow>>,
     mut toggles: ResMut<PendingToggles>,
     mut trainer: ResMut<trainer::Trainer>,
+    mut menu: ResMut<crafting::CraftingMenu>,
     stop: Res<combat::HitStop>,
 ) {
     // Held presses wait for the hit-stop to end.
     if stop.frozen() {
         return;
     }
-    let axis = |pos: KeyCode, neg: KeyCode| keys.pressed(pos) as i32 as f32 - keys.pressed(neg) as i32 as f32;
+    // With the crafting menu open, keys belong to it (a part's name is being typed, say), so the
+    // body stands still.
+    let free = menu.open.is_none();
+    let down = |key: KeyCode| free && keys.pressed(key);
+    let axis = |pos: KeyCode, neg: KeyCode| down(pos) as i32 as f32 - down(neg) as i32 as f32;
     let playing = editing::playing(&cursor);
     let input = PlayerInput {
         movement: Vec2::new(axis(controls.right, controls.left), axis(controls.forward, controls.back)),
@@ -281,9 +290,9 @@ fn tick_simulation(
         yaw: look.yaw,
         pitch: look.pitch,
         jump_pressed: std::mem::take(&mut toggles.jump_pressed),
-        jump_held: keys.pressed(controls.jump),
-        sprint: keys.pressed(controls.sprint) || double_tap.active,
-        crouch: keys.pressed(controls.crouch),
+        jump_held: down(controls.jump),
+        sprint: down(controls.sprint) || (free && double_tap.active),
+        crouch: down(controls.crouch),
         toggle_fly: std::mem::take(&mut toggles.toggle_fly),
         use_pressed: std::mem::take(&mut toggles.use_pressed),
         use_held: playing && controls.use_main.pressed(&keys, &mouse),
@@ -295,8 +304,13 @@ fn tick_simulation(
         drop_pressed: std::mem::take(&mut toggles.drop_pressed),
         drop_held: playing && keys.pressed(controls.drop),
         drop_material: palette.material(&sim.0),
+        craft: menu.pending.take(),
+        discard: menu.discard.take(),
     };
     sim.0.step(&input);
+    if input.craft.is_some() {
+        menu.result = sim.0.last_craft();
+    }
     trainer::observe_tick(&sim.0, &input, &mut trainer);
 }
 
@@ -306,22 +320,25 @@ fn grab_cursor(
     keys: Res<ButtonInput<KeyCode>>,
     controls: Res<Controls>,
     mut panel: ResMut<TuningPanel>,
+    mut menu: ResMut<crafting::CraftingMenu>,
 ) {
     if keys.just_pressed(controls.tuning) {
         panel.open = !panel.open;
-        set_grab(&mut cursor, !panel.open);
+        set_grab(&mut cursor, !panel.open && menu.open.is_none());
     }
-    // While the panel is open, clicks belong to it.
-    if mouse.just_pressed(MouseButton::Left) && !panel.open {
+    // While the panel or the crafting menu is open, clicks belong to it.
+    if mouse.just_pressed(MouseButton::Left) && !panel.open && menu.open.is_none() {
         set_grab(&mut cursor, true);
     }
     if keys.just_pressed(KeyCode::Escape) {
+        // Escape closes the crafting menu and goes back to playing; otherwise it lets the mouse go.
+        let crafting = menu.open.take().is_some();
         panel.open = false;
-        set_grab(&mut cursor, false);
+        set_grab(&mut cursor, crafting);
     }
 }
 
-fn set_grab(cursor: &mut CursorOptions, grab: bool) {
+pub(crate) fn set_grab(cursor: &mut CursorOptions, grab: bool) {
     cursor.grab_mode = if grab { CursorGrabMode::Locked } else { CursorGrabMode::None };
     cursor.visible = !grab;
 }
@@ -353,6 +370,7 @@ fn double_tap_sprint(
     );
 }
 
+#[allow(clippy::too_many_arguments)]
 fn debug_keys(
     keys: Res<ButtonInput<KeyCode>>,
     controls: Res<Controls>,
@@ -361,7 +379,12 @@ fn debug_keys(
     mut cap: ResMut<FrameCap>,
     mut window: Single<&mut Window, With<PrimaryWindow>>,
     mut waypoint: ResMut<WaypointCursor>,
+    menu: Res<crafting::CraftingMenu>,
 ) {
+    // Keys belong to the crafting menu while it's open.
+    if menu.open.is_some() {
+        return;
+    }
     if keys.just_pressed(controls.fly) {
         toggles.toggle_fly = !toggles.toggle_fly;
     }
@@ -461,7 +484,7 @@ fn update_hud(
     let precise = pos.cell().as_dvec3() + pos.offset().as_dvec3();
     let fps = 1.0 / time.delta_secs().max(1e-6);
     text.0 = format!(
-        "pos {:.2}, {:.2}, {:.2}  speed {:.1} m/s  last landing {:.1} m/s ({})\norigin {}, {}, {}\n{} | {:.0} fps | cap {} ({})\n{}{}{}{} move, {} jump, {} sprint (or double-tap forward), {} crouch, {} down, {} fly, {} teleport, {} tuning, Esc release mouse\n{} use (break, swing), {} second use (place, guard), 1-9 or scroll pick, {} respawn targets",
+        "pos {:.2}, {:.2}, {:.2}  speed {:.1} m/s  last landing {:.1} m/s ({})\norigin {}, {}, {}\n{} | {:.0} fps | cap {} ({})\n{}{}{}{} move, {} jump, {} sprint (or double-tap forward), {} crouch, {} down, {} fly, {} teleport, {} tuning, Esc release mouse\n{} use (break, swing), {} second use (place, guard), 1-9 or scroll pick, {} craft at a table, {} respawn targets",
         precise.x,
         precise.y,
         precise.z,
@@ -488,6 +511,7 @@ fn update_hud(
         label(controls.tuning),
         controls.use_main.label(),
         controls.use_alt.label(),
+        label(controls.interact),
         label(controls.respawn_targets),
     );
 }

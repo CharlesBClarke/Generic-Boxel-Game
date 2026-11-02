@@ -3,14 +3,19 @@
 use std::collections::HashMap;
 
 use api::block::is_valid_name;
-use api::{ApiError, BlockBox, BlockDef, LookDef};
+use api::{ApiError, BlockBox, BlockDef, LookDef, ShapeGrid, Turning};
 
 /// Volume units in a full boxel: one per sixteenth cubed. Amounts of material count in these,
 /// so a slab's worth is a whole number.
 pub const FULL_VOLUME: u32 = (BlockBox::SIZE as u32).pow(3);
 
-/// A runtime material ID, like [`BlockId`]: assigned in the order blocks first name each
-/// material, never saved. Names are the identity.
+/// A runtime ID for something carried, like [`BlockId`]: assigned in the order blocks first
+/// name each, never saved. Names are the identity.
+///
+/// Most are materials, carried by volume in any amount. A crafted shape is carried too, as a
+/// part: its own kind, named after its block, carried in whole parts and made of a material
+/// (see [`BlockRegistry::shaped`]). Both count toward the capacity by volume, so inventories,
+/// loose items and costs treat them alike.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct MaterialId(u16);
 
@@ -58,8 +63,15 @@ pub struct BlockRegistry {
     by_name: HashMap<String, BlockId>,
     /// What each block drops, by its index less one.
     drops: Vec<Option<Drop>>,
-    /// Each material's name and the block it's drawn as.
-    materials: Vec<(String, BlockId)>,
+    /// Each material's and part's name and the block it's drawn as, and what a part is made of.
+    materials: Vec<Material>,
+}
+
+struct Material {
+    name: String,
+    block: BlockId,
+    /// For a part, the material it's made of and its volume, carried only in whole parts.
+    part: Option<(MaterialId, u32)>,
 }
 
 impl BlockRegistry {
@@ -87,15 +99,83 @@ impl BlockRegistry {
     /// The ID for material `name`, adding it if it's new. A material is drawn as the first full
     /// block made of it, or the first block if none is full.
     fn add_material(&mut self, name: &str, block: BlockId, full: bool) -> Result<MaterialId, ApiError> {
-        if let Some(i) = self.materials.iter().position(|(n, _)| n == name) {
-            if full && !self.get(self.materials[i].1).is_some_and(BlockDef::is_full) {
-                self.materials[i].1 = block;
+        if let Some(i) = self.materials.iter().position(|m| m.name == name) {
+            if full && !self.get(self.materials[i].block).is_some_and(BlockDef::is_full) {
+                self.materials[i].block = block;
             }
             return Ok(MaterialId(i as u16));
         }
         let index = u16::try_from(self.materials.len()).map_err(|_| ApiError::InvalidDef("too many materials".into()))?;
-        self.materials.push((name.to_owned(), block));
+        self.materials.push(Material { name: name.to_owned(), block, part: None });
         Ok(MaterialId(index))
+    }
+
+    /// The block of `material` in `shape`, registering it the first time it's needed: crafting
+    /// makes these, so every shape of every material can exist without being listed anywhere.
+    ///
+    /// It copies the material's full block (its look, solidity and friction), turns freely, and
+    /// is named from the material and a hash of the shape, like `base:wood_s0123456789abcdef`.
+    /// Breaking it gives back one part: the block is its own kind of carried thing, made of
+    /// `material`. A full shape is the material's full block itself.
+    pub fn shaped(&mut self, material: MaterialId, shape: &ShapeGrid) -> Result<BlockId, ApiError> {
+        let entry = self.materials.get(material.index()).ok_or_else(|| ApiError::InvalidDef("no such material".into()))?;
+        if entry.part.is_some() {
+            return Err(ApiError::InvalidDef(format!("{} is a part, not a material", entry.name)));
+        }
+        let full = self.get(entry.block).filter(|def| def.is_full()).cloned().ok_or_else(|| {
+            ApiError::InvalidDef(format!("material {} has no full block to shape", entry.name))
+        })?;
+        if shape.is_empty() {
+            return Err(ApiError::InvalidDef("an empty shape".into()));
+        }
+        if shape.is_full() {
+            return Ok(entry.block);
+        }
+        let name = shaped_name(&entry.name, shape);
+        if let Some(id) = self.id(&name) {
+            return match self.shape(id) == *shape {
+                true => Ok(id),
+                false => Err(ApiError::DuplicateName(name)),
+            };
+        }
+        let def = BlockDef {
+            name: name.clone(),
+            shape: shape.to_boxes(),
+            turning: Turning::Any,
+            placeable: true,
+            material: Some(name),
+            ..full
+        };
+        let id = self.register(def)?;
+        let part = self.drop(id).expect("a shaped block drops itself").material;
+        self.materials[part.index()].part = Some((material, shape.volume()));
+        Ok(id)
+    }
+
+    /// The block of `material` in `shape`, if it's registered already: the one
+    /// [`BlockRegistry::shaped`] gives, without registering anything.
+    pub fn find_shaped(&self, material: MaterialId, shape: &ShapeGrid) -> Option<BlockId> {
+        let entry = self.materials.get(material.index())?;
+        if shape.is_full() {
+            return self.get(entry.block).filter(|def| def.is_full()).map(|_| entry.block);
+        }
+        self.id(&shaped_name(&entry.name, shape)).filter(|&id| self.shape(id) == *shape)
+    }
+
+    /// The sixteenths a block fills, unturned.
+    pub fn shape(&self, id: BlockId) -> ShapeGrid {
+        self.get(id).map_or(ShapeGrid::EMPTY, |def| ShapeGrid::from_boxes(&def.shape))
+    }
+
+    /// For a part, the material it's made of; `None` for a material.
+    pub fn part_of(&self, id: MaterialId) -> Option<MaterialId> {
+        self.materials.get(id.index()).and_then(|m| m.part).map(|(of, _)| of)
+    }
+
+    /// The smallest amount that can be carried or moved, in [`FULL_VOLUME`] units: one part's
+    /// volume for a part, 1 for a material.
+    pub fn unit(&self, id: MaterialId) -> u32 {
+        self.materials.get(id.index()).and_then(|m| m.part).map_or(1, |(_, volume)| volume.max(1))
     }
 
     /// What breaking `id` drops, if anything.
@@ -105,16 +185,16 @@ impl BlockRegistry {
 
     /// The material's namespaced name.
     pub fn material_name(&self, id: MaterialId) -> &str {
-        &self.materials[id.index()].0
+        &self.materials[id.index()].name
     }
 
     /// The block a loose item of the material is drawn as.
     pub fn material_block(&self, id: MaterialId) -> BlockId {
-        self.materials[id.index()].1
+        self.materials[id.index()].block
     }
 
     pub fn material(&self, name: &str) -> Option<MaterialId> {
-        self.materials.iter().position(|(n, _)| n == name).map(|i| MaterialId(i as u16))
+        self.materials.iter().position(|m| m.name == name).map(|i| MaterialId(i as u16))
     }
 
     /// The material with dense index `index`, if there is one.
@@ -122,7 +202,7 @@ impl BlockRegistry {
         (index < self.materials.len()).then_some(MaterialId(index as u16))
     }
 
-    /// How many materials blocks name.
+    /// How many materials and parts blocks name.
     pub fn material_count(&self) -> usize {
         self.materials.len()
     }
@@ -152,6 +232,11 @@ impl BlockRegistry {
     pub fn is_empty(&self) -> bool {
         self.defs.is_empty()
     }
+}
+
+/// A shaped block's name: its material's and a hash of the shape.
+fn shaped_name(material: &str, shape: &ShapeGrid) -> String {
+    format!("{material}_s{:016x}", shape.hash64())
 }
 
 /// The space a shape fills, in [`FULL_VOLUME`] units. Where boxes overlap, the space counts once.
@@ -311,6 +396,52 @@ mod tests {
 
         let bad = BlockDef::new("test:bad", true, [0; 3]).with_material("stone");
         assert!(matches!(reg.register(bad), Err(ApiError::InvalidDef(_))));
+    }
+
+    fn slab() -> ShapeGrid {
+        ShapeGrid::from_boxes(&[BlockBox::new([0, 0, 0], [16, 16, 8])])
+    }
+
+    #[test]
+    fn shaped_blocks_are_registered_once_per_shape_and_material() {
+        let mut reg = BlockRegistry::default();
+        reg.register(stone().with_look("test:stone").with_friction(0.5).with_material("test:stone")).unwrap();
+        reg.register(BlockDef::new("test:wood", true, [0; 3]).with_material("test:wood")).unwrap();
+        let (stone, wood) = (reg.material("test:stone").unwrap(), reg.material("test:wood").unwrap());
+
+        assert_eq!(reg.find_shaped(stone, &slab()), None);
+        let slab_id = reg.shaped(stone, &slab()).unwrap();
+        assert_eq!(reg.shaped(stone, &slab()), Ok(slab_id), "one shape, one block");
+        assert_eq!(reg.find_shaped(stone, &slab()), Some(slab_id));
+        let def = reg.get(slab_id).unwrap().clone();
+        assert!(def.name.starts_with("test:stone_s") && def.name.len() == "test:stone_s".len() + 16);
+        assert_eq!((def.look.as_deref(), def.friction, def.turning), (Some("test:stone"), 0.5, Turning::Any));
+        assert_eq!(reg.shape(slab_id), slab());
+        let wood_slab = reg.shaped(wood, &slab()).unwrap();
+        assert_ne!(wood_slab, slab_id, "another material, another block");
+        let turned = reg.shaped(stone, &slab().turned(api::Orientation::quarter_turns(0, 2))).unwrap();
+        assert_ne!(turned, slab_id, "a shape turned in the table's frame is another part");
+
+        // Breaking one gives back one part, made of stone, carried whole.
+        let part = reg.drop(slab_id).unwrap();
+        assert_eq!(part.amount, FULL_VOLUME / 2);
+        assert_eq!(reg.part_of(part.material), Some(stone));
+        assert_eq!(reg.unit(part.material), FULL_VOLUME / 2);
+        assert_eq!((reg.part_of(stone), reg.unit(stone)), (None, 1));
+        assert_eq!(reg.material_block(part.material), slab_id);
+
+        assert_eq!(reg.shaped(stone, &ShapeGrid::FULL), reg.id("test:stone").ok_or(ApiError::UnknownBlock(String::new())));
+        assert!(reg.shaped(stone, &ShapeGrid::EMPTY).is_err());
+        assert!(reg.shaped(part.material, &slab()).is_err(), "parts aren't shaped again");
+    }
+
+    #[test]
+    fn only_materials_with_a_full_block_take_shapes() {
+        let mut reg = BlockRegistry::default();
+        let only = vec![BlockBox::new([0, 0, 0], [16, 16, 8])];
+        reg.register(BlockDef::new("test:moss", true, [0; 3]).with_shape(only).with_material("test:moss")).unwrap();
+        let moss = reg.material("test:moss").unwrap();
+        assert!(matches!(reg.shaped(moss, &slab()), Err(ApiError::InvalidDef(_))));
     }
 
     fn look(name: &str) -> LookDef {

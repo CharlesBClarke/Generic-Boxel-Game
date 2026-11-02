@@ -1,0 +1,7 @@
+# Crafting: which block players craft shapes at. Aim at a face of it and press interact: a 4×4
+# grid of that face takes materials and parts, and makes a part of that shape, pushed through
+# the table along that face's axis. See the engine's api::crafting for the whole rule.
+#
+#   table   the crafting table block; a short name is one of this mod's blocks
+
+table = "crafting_table"
