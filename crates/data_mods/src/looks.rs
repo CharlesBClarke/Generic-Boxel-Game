@@ -74,6 +74,10 @@ enum BrickPattern {
     /// In each course, bricks lying along X and along Y meet at right angles in a zigzag.
     /// Each course shifts a brick's width along X from the one below.
     Herringbone,
+    /// Cubes a brick long, each holding four bricks that all run one way. Touching cubes run
+    /// different ways: upright cubes checkered with cubes along X in the bottom half of the
+    /// block, and with cubes along Y in the top half, so every face shows all three.
+    Weave,
 }
 
 /// Boards running along X, with a joint somewhere along each. Seams run half a board in from
@@ -287,6 +291,7 @@ impl Bricks {
         let ids = match self.pattern {
             BrickPattern::Running => self.running(),
             BrickPattern::Herringbone => self.herringbone()?,
+            BrickPattern::Weave => self.weave()?,
         };
         let pick = distinct(&ids, self.colors.len(), self.seed)
             .ok_or_else(|| format!("bricks need more than {} colors, so neighbors always differ", self.colors.len()))?;
@@ -323,6 +328,40 @@ impl Bricks {
                 }
             })
             .collect()
+    }
+
+    /// Which brick each texel is in, for the weave. Bricks are `length` by half that by half
+    /// that, four to a cube `length` across.
+    fn weave(&self) -> Result<Vec<u32>, String> {
+        if self.mortar.is_some() {
+            return Err("woven bricks don't have mortar yet".into());
+        }
+        // An even number of cubes across, so the checkerboard repeats.
+        if self.length < 2 || !(SIZE / self.length).is_multiple_of(2) {
+            return Err(format!("woven bricks need a length of 2, 4 or 8, not {}", self.length));
+        }
+        if self.height * 2 != self.length {
+            return Err(format!("woven bricks need a height of half their length, {}", self.length / 2));
+        }
+        let (side, half) = (self.length, self.height);
+        let cubes = SIZE / side;
+        let [ox, oy, oz] = self.offset.unwrap_or([0, 0, 0]);
+        Ok(positions()
+            .map(|(_, [x, y, z])| {
+                let p = [(x + ox) % SIZE, (y + oy) % SIZE, (z + oz) % SIZE];
+                let c = p.map(|t| t / side);
+                // Which way the cube's bricks run: 0 along X, 1 along Y, 2 upright.
+                let along = if (c[0] + c[1] + c[2]) % 2 == 1 { 2 } else if c[2] % 2 == 0 { 0 } else { 1 };
+                // Which of the four bricks, by the halves of the cube across them.
+                let [a, b] = match along {
+                    0 => [1, 2],
+                    1 => [0, 2],
+                    _ => [0, 1],
+                };
+                let brick = p[a] % side / half * 2 + p[b] % side / half;
+                ((((c[2] * cubes + c[1]) * cubes + c[0]) * 4) + brick) as u32
+            })
+            .collect())
     }
 
     /// Which brick each texel is in, for herringbone. Bricks are `length` by half that by
@@ -733,6 +772,54 @@ mod tests {
             let v = recipe(&format!("{HERRINGBONE}, {FOUR_REDS}, seed = {seed} }}")).generate().unwrap();
             assert_eq!(patches(&v), 32, "seed {seed}");
         }
+    }
+
+    const WEAVE: &str = "bricks = { pattern = \"weave\", length = 8, height = 4, speckle = 0";
+
+    #[test]
+    fn woven_bricks_run_three_ways_and_every_face_shows_them() {
+        let v = recipe(&format!("{WEAVE}, {FOUR_REDS} }}")).generate().unwrap();
+        let same = |a: [usize; 3], b: [usize; 3]| texel(&v, a[0], a[1], a[2]) == texel(&v, b[0], b[1], b[2]);
+        // The brick through `p` runs `axis` way: 8 long along it, and the next texels across
+        // it stay in it for 4.
+        let runs = |p: [usize; 3], axis: usize| {
+            let base = p.map(|t| t / 8 * 8);
+            let along = (0..8).all(|i| {
+                let mut q = p;
+                q[axis] = base[axis] + i;
+                same(p, q)
+            });
+            let short = (0..3).filter(|&k| k != axis).all(|k| {
+                let mut q = p;
+                q[k] = base[k] + (p[k] % 8 / 4 * 4 + 4) % 8;
+                !same(p, q)
+            });
+            along && short
+        };
+        // Bottom half: along X in the corner cube, upright beside it and above it.
+        assert!(runs([1, 1, 1], 0), "the corner cube runs along X");
+        assert!(runs([9, 1, 1], 2) && runs([1, 9, 1], 2) && runs([1, 1, 9], 2), "its neighbors stand upright");
+        // Top half: along Y.
+        assert!(runs([9, 1, 9], 1) && runs([1, 9, 9], 1), "the top half runs along Y");
+        assert!(runs([9, 9, 1], 0), "and back along X");
+        // Every outer face shows all three ways. The south face: X, upright, upright, Y.
+        let south: Vec<usize> = [[1, 0, 1], [9, 0, 1], [1, 0, 9], [9, 0, 9]]
+            .into_iter()
+            .map(|p| (0..3).find(|&a| runs(p, a)).unwrap())
+            .collect();
+        assert_eq!(south, [0, 2, 2, 1]);
+        // 8 cubes of 4 bricks: touching bricks never match, or they'd be one patch.
+        for seed in 0..20 {
+            let v = recipe(&format!("{WEAVE}, {FOUR_REDS}, seed = {seed} }}")).generate().unwrap();
+            assert_eq!(patches(&v), 32, "seed {seed}");
+        }
+    }
+
+    #[test]
+    fn woven_bricks_need_sizes_that_fit() {
+        let err = |toml: &str| recipe(toml).generate().unwrap_err();
+        assert!(err("bricks = { pattern = \"weave\", length = 16, height = 8, colors = [[1, 1, 1]] }").contains("2, 4 or 8"));
+        assert!(err("bricks = { pattern = \"weave\", length = 8, height = 2, colors = [[1, 1, 1]] }").contains("half"));
     }
 
     #[test]
