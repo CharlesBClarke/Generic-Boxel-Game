@@ -104,9 +104,89 @@ A run of small toy slices. Each one takes a single game-feel feature that doesn'
 
 ### Current toy
 
+None. Pick the next toy from the backlog in a new session.
+
+### Toy backlog
+
+- ~~**Block shapes and placement.**~~ Now the current toy, as Block shapes and shared cells. Suggested order after it: inventory and items, then interaction controls and block interactions, then combat feel.
+- ~~**Inventory and items.**~~ Done (2026-11-01), see Done toys. Added 2026-10-28, from the user's request that led to the block shapes toy. Real items and counts, breaking gives you the block, and the design doc's "inventory discourages variety" gripe: try limiting by weight or volume instead of slots, or carrying a material and choosing its shape when placing. Suggested next after block shapes, before combat feel. *Updated 2026-10-30:* Loose items was split out of this and is done: breaking drops materials by volume and the player collects them into a counter. What's left: placing uses up material, a shared capacity limit (volume first, maybe weight later), picking a material and then a shape, a drop key, and items staying on the ground when you're full. The plan proposed on 2026-10-29 had these; reuse it.
+- **Rethink the inventory.** Added 2026-11-02 at the user's request, during Emergent shapes: "the last toy really was horrible… I was planning on just removing it but got talked out and now every problem with this one is caused by it". The Inventory and items toy's capacity limit and paying for things by volume caused each problem found while playing Emergent shapes: patterns made from parts refused once plain wood ran out, crafting needed room to carry, and dirt couldn't be used. Crafting was made free and an unlimited carry was proposed in that toy. Decide whether a carrying limit or costs belong in the game at all before building on them again. If something like them comes back, it should be because a toy needs it.
+- **Covered blocks.** Added 2026-10-31, deferred from Solid materials. Should blocks be roughly one material, with grass and snow a cover on a block rather than part of it? What should a cut through grass show: honest (a bottom slab is all dirt, since the look spans the boxel) or anchored (the look's top follows each box's top, so a grass slab has grass on top, at the cost of seams between a stair's steps)? Settle it once something needs to cut grass, like world generation or crafted shapes.
+- **Plank board ends.** Added 2026-10-31, from Solid materials. Planks stay lined up with the world, so a wood panel or stair facing east or west shows a grid of board ends instead of boards. The user dislikes it but accepted it as a compromise for now. Options: a pattern that reads as boards along both level axes, letting a material turn only about the up axis, or picking the board direction per block when placed.
+- **Items inside placed blocks.** Added 2026-10-30, from Loose items. A block placed over a resting item hides it inside the block; it can still be picked up. Push items out the shortest way, or refuse the placement, once it gets in the way.
+- **Place on left click, break on right click.** Added 2026-11-01 at the user's request, from Inventory and items: "to keep controls consistent, placing should be left click and breaking should be right", so a block's main use is placing, as a tool's is swinging. Retire the old `break`/`place` names in the controls file (they'd bind the wrong action) and move the user's lines to `use`/`alt_use`. Revises the Skyrim-style controls decision. Fits with Generative crafting or Interaction controls.
+- **Crouch to collect.** Added 2026-11-01 at the user's request: "your a little robot and crouching sucks the items in". Items are only pulled and picked up while crouching; walking over them does nothing. Proposed: an `ItemDropDef` flag the base mod turns on, a somewhat wider pull (about 3 m) and a shorter throw delay (about 0.5 s) since throwing and crouching rarely overlap, and maybe a visible suck-in later. Open: whether flying with the shared Shift key vacuums too.
+- **Interaction controls.** Split out of Block editing (2026-10-25). Fix Minecraft's ambiguous right click once there are things to use, like crystals or devices. Principles: one input, one action (no catch-all "use" button that changes meaning with what you hold or look at), and what you see is what you get (a ghost of the result, red when not allowed).
+  - *Added 2026-10-28:* decide how players reach shared boxels. Placing into an occupied boxel makes placement harder to read (every click has two possible boxels), so it may become a deliberate trick (a key, a tool, or a property of blocks like water) instead of happening on any click. Decide once combat and usable items show how crowded the controls get; the engine keeps full support either way. Also from play: two slabs at right angles make a stair, so a separate stairs block may not be needed.
+- **Block interactions.** Unstable crystals: two block types, a touch trigger, a directional blast, and a way to push blocks so devices are possible.
+- ~~**Emergent shapes from crafting.**~~ Done (2026-11-02), see Done toys.
+- **Crafting follow-ups.** Added 2026-11-02 at the user's request, from closing Emergent shapes: "I think these features kind of need interplay to really pin down". Four changes the user agreed to in discussion, not yet built. Plan them together, since each changes how the others feel:
+  1. **Several materials in one shape, as a bundle** (the user chose this over one block with its own look, which would use a look slot per design). The table stops refusing mixed materials. One material still makes an ordinary part; several make a bundle, one carried item holding one single-material piece per material. Placing checks room with the whole shape, then puts each piece in the boxel as its own block, all turned alike, using the shared boxels from the block shapes toy. Breaking takes off the piece aimed at and drops it as an ordinary part. Menu, preview and hotbar pictures draw each piece in its color. Touches crafting, carrying, placing and drawing.
+  2. **Building on the side of the table.** Clicking the top builds on the top; clicking a side builds on the side (a toggle in the menu switches). On the side, the grid is the wall as you face it, stacks grow out of the wall toward you, and nothing floats is measured from the wall, so overhangs (shelves, brackets, ledges, wall lamps) become possible. The wall becomes the shape's far side, which basic placement already points the way you look, so looking at a wall mounts it upright; basic placement on a wall face should point the far side straight into the wall so it doesn't depend on looking head-on. Known limit: precise modes put the bottom against faces, so wall parts go on sideways there.
+  3. **A third placement mode, "edge", for comparing.** The user: "if you try something new, add it as a option with the middle click so I can compare back and forth". Middle click cycles basic, precise, edge. Edge: the middle square puts the bottom against the face; an edge triangle puts the bottom toward that edge (a slab stands upright in that half of a floor block, a post lies flat pointing that way); the front always comes from where you look. The user's reasoning: the current precise middle square is nearly redundant, and "its more often easyer to posision yourself for placement, then to add another block". Brings back standing a slab upright in half of a floor block, lost to the stacking rule.
+  4. **Drop the upside-down flip on the upper half of a wall** in basic placement; only ceilings flip. The table's flip box covers upside-down shapes now. The user found it annoying when making a stair that rises half a block: aiming high flipped it into something useless. A later idea, not agreed: aiming high could raise a shape that fits in the bottom half into the top half, upright, so half-height stairs can continue from a slab.
+- **Generative crafting.** A few materials, a few property ingredients and a capacity limit.
+  - *Notes for planning* (2026-11-01, from closing Inventory and items): the user expected an inventory with drag and drop and wants it designed in this toy's plan, not as a separate inventory toy. What exists to build on: the player carries amounts of each material in 1/4096ths of a boxel with one shared capacity (`sim::Inventory`, `api::InventoryDef`), placing costs a block's volume of its material, and blocks name their material. Settle in the plan what gets dragged (an amount of material or a finished part) and where to (a pattern, a block). The backlog's place on left click and break on right click item may fit in here.
+- ~~**Combat feel.**~~ Done (2026-10-31), see Done toys.
+- **Combat depth.** Added 2026-10-31, deferred from Combat feel. Ideas for a higher skill ceiling, to try once enemies, tools and movement give combat something to be tuned against: swing direction from the mouse during the wind-up (sweep sideways, slam down, launch up), air combos with growing knockback, a sweet spot at the club's full reach, cancelling the recovery into a jump or dash, a charged heavy swing with a perfect-release window (the robot's spring), and what the guard does once something hits back. Also the Doom loop: close kills restoring health once the player has some.
+- **Liquid rule sets.** The rule sets from the design doc.
+- **Advanced movement revisited.** Added 2026-10-26 at the user's request. Comes after toys that add tools, items and enemies. Rework push-out (block-jumping, and later pistons). The user doesn't like that the body is moved out of the block instantly, like a teleport, or that the launch is mostly upward. Prompted by spam-placing blocks at the dead end of a 1-high tunnel while crouched: the body crawls backward through position shifts while the speed readout stays at 0. Things to settle:
+  - How the body gets out of the block with real motion instead of a shift, and how much of the launch should go up.
+  - What placing a block while crouched should do. The crouched body's center is at or below the block's center, so today it gives a sideways shove off the side of the block that was never designed.
+  - Whether a jump should keep wiping out the push-out kick. Today, placing a moment before jumping loses the kick, which makes block-jumping feel inconsistent.
+  - **Known flaw, deferred to this toy (2026-10-26):** the kick can point opposite to the shift. The kick's direction comes from the body's position before the shift, so in the tunnel case the body is shifted backward but kicked forward, into the block it just left, and the collision zeroes it. That's why the speed readout stays at 0 (the readout itself is correct). Found by reading the code and confirmed by the user's play; not yet covered by a test. The redesign must make the launch go the way the body actually leaves the block.
+  - **Direction proposed by the user (2026-10-30, after the block-jump trainer),** recorded as candidates to try:
+    - *Kick straight up only,* keeping the body's own horizontal speed. Forward speed comes from running, which the player controls. The standing-position tilt is noise players can't learn, and dropping it also removes the opposite-direction flaw above. Pistons can bring their own direction later. Note: the 2026-10-26 entry says the user disliked the launch being *mostly* upward, so settle which one holds when playing it.
+    - *Analog kick, scaled by how far the block has to push the body:* full with the feet at the bottom of the boxel, fading to nothing as they near the top. That turns the cliff between "kick" and "too late" into a smooth slope ("sooner is stronger") and reads like a spring, which fits the robotic player.
+    - *Order-independent jumping:* a jump adds to rising speed instead of resetting it, so placing a tick before the jump no longer loses the kick. The controller's comment says the jump replaces *downward* speed, but the code zeroes upward speed too. Changing it affects all jumps, so it belongs in this toy, not in a fix.
+    - *Later:* push the body out over a few ticks like a spring instead of the instant shift. Collision has to ignore the block while the body is still inside it.
+    - The block-jump trainer is the measuring tool: once this toy is done, same-tick, early and late attempts should land close together.
+
+Ideas that come up while playing get added here.
+
+### Infrastructure (added when a toy needs it)
+
+- Saving and loading, with block names in the save
+- World generation
+- LOD, once world generation exists
+
+### Seam backlog (added when the game is ready for them)
+
+- ~~**Data mods.**~~ Done (2026-10-27), see Done toys.
+- **WebAssembly behavior.** Sandboxed mod code for block behavior, once a toy has behavior worth sandboxing, such as crystals or liquids. Sleeping blocks and read-old, write-new automata. The first step is done: the WebAssembly movement seam (2026-10-26) runs `base`'s movement controller as a component, so block behavior can follow the same pattern (WIT interface in `api`, guest export macro, `wasm_host` wrapper). *To settle (2026-10-27):* keep entity and block state in the engine, not in the mod, before any behavior keeps state in a mod (see the design doc's "Mod memory"). The movement controller still keeps its timers and charge inside the mod and should move to that pattern. Test whether wasmtime lets the engine drop a mod's freed pages (`madvise` on Linux, `DiscardVirtualMemory` on Windows), driven by an allocator in `api`.
+- ~~**Sandbox limits.**~~ Done (2026-10-28), see Done toys.
+- **Seed a modder.** Once a few seam slices are done, have an outside modder build a small toy on the API and fix what blocks them.
+
+### API debt
+
+Shortcuts taken around the API, each with the toy that needed it. Paid down in seam slices.
+
+- **Fixed input actions** (movement toy; break, place and palette slots added by the block editing toy, crouch by the advanced movement toy, placement mode by the block shapes toy, drop and shape by the inventory toy; shape replaced by interact, and turn_part added, by the emergent shapes toy). Move, jump, sprint, crouch, use, second use, drop, shape, the palette slots and the debug keys are a fixed engine set in `sim::PlayerInput` and `client::controls`. Mods can't define their own actions. API version: mods register named actions with default bindings, and controllers read actions by name.
+- **Chase drill in the client** (advanced movement toy, temporary; ghost hits added by the combat feel toy). The ghost and objectives in `client::drill` are game logic living in the client, and it finds landmarks by the `landmark:` prefix on waypoint names. Remove the drill rather than moving it into the API, unless a later toy wants real enemies, which would need entities and a game-rules hook in the API.
+- **Block-jump trainer in the client** (block-jump trainer toy, temporary). `client::trainer` judges attempts from read-only diagnostics, `Player::last_step` and `Simulation::last_place`. Remove it with the chase drill, or once Advanced movement revisited makes block-jumping consistent.
+- **Tool look in the client** (combat feel toy). Every tool is drawn as the same club, posed by `client::combat`; mods can't give a tool its own model or swing poses. API version: a tool names a model and its poses.
+- **Crafting menu in the client** (emergent shapes toy). The table's menu, its strokes and the turn and flip controls live in `client::crafting`; mods can't change how crafting is presented. The rule itself is in `api::crafting`. API version: a client-side mod API for menus, or a data description of the table's grid.
+- **Camera feel in the client** (movement toy; hit-stop, view kick and shake added by the combat feel toy in `client::combat`). FOV widening, head bob, landing dip and step smoothing live in `client::feel`, so mods can't change them. API version: a client-side mod API for camera effects, presumably driven by the same tunables.
+
+### Phase 2 decisions
+
+- **A robotic player** (tentative, 2026-10-25): the user wants movement and camera feel to read as a robot. Landings are a shock absorber: soft landings compress smoothly, damaging ones bottom out hard. Later feel work (combat, damage, crouch charging) should keep to it.
+- **Skyrim-style controls** (2026-10-31, from Combat feel): whatever is held has a main use on left click and a second use on right click. Blocks break and place; a tool swings and guards. Part of the answer to the ambiguous-interactions gripe; the Interaction controls toy builds on it.
+- **Signature feature:** not decided yet. Choose it once the block interaction and crafting toys have been played, and record the choice and why in the design doc.
+
+### Fixes
+
+Bugs found in already-merged code, each fixed on its own `fix-` branch (see the workflow in `CLAUDE.md`). One line each: date, branch, what was wrong.
+
+- 2026-10-28, `fix-step-smoothing`: a step-up moved the body but not its previous position, so the renderer blended the rise between ticks while the camera feel also eased it, making the view dip and snap when climbing. Latent until the block shapes toy gave the player a step height.
+
+### Done toys
+
 #### Emergent shapes from crafting (branch `toy-emergent-shapes`)
 
-**Stage:** Verify (re-planned around a stacking rule and rebuilt, 2026-11-02). Chosen by the user (2026-11-01) ahead of Generative crafting. The drag and drop from Generative crafting's notes is designed here.
+**Stage:** Done (2026-11-02). Chosen by the user (2026-11-01) ahead of Generative crafting. The drag and drop from Generative crafting's notes is designed here.
+
+**Result:** the user played the stacking rule and liked it ("very interesting, I really like it"). The push-through rule it replaced was the toy's main lesson: emergent shapes need a rule that starts from what players want to make, and the shape's frame has to come from how it was built for placing to be predictable. Closed at the user's request before the follow-ups were built, because they "kind of need interplay to really pin down"; they're in the backlog as Crafting follow-ups. The criteria weren't checked one by one in play; the shapes in criterion 1 are covered by tests.
 
 **Goal:** shapes come from crafting instead of each being its own block. A 4×4 grid on a crafting table, filled with materials and parts, makes a part; the face of the table used decides which way it's pushed through; parts go back into the grid, so shapes build on shapes, including non-prisms. Every shape in the base game becomes emergent.
 
@@ -141,7 +221,7 @@ A run of small toy slices. Each one takes a single game-feel feature that doesn'
 
 **Deferred:** paying for crafting (free since 2026-11-02, at the user's request); saving part names (session only); nesting deeper than two levels; mixed materials in one pattern; saving parts between sessions; Generative crafting's properties; swapping left and right click; aiming at odd shapes always placing against the outer block face (deferred to see whether the stacking rule needs it; it would also stop slab-on-slab filling the top half); *a later plan for precise placement* (2026-11-01, at the user's request, since the stacking rule loses standing a slab upright in half of a floor block): "advanced placing mode might shoot past sub blocks, or maybe 1 boxel of sub blocks", meaning precise aiming could pass through partial blocks to what's behind them, or only through thin ones (about 1 boxel).
 
-**API debt to add:** the crafting menu in the client (`client::crafting`): mods can't change the menu.
+**API debt added:** the crafting menu in the client (`client::crafting`): mods can't change the menu. `interact` and `turn_part` join the fixed input actions.
 
 *Implementation notes* (2026-11-02)
 - **Changed from the plan:**
@@ -185,76 +265,6 @@ A run of small toy slices. Each one takes a single game-feel feature that doesn'
   - The base end to end (`sim/tests/crafting.rs`): which face is aimed at, including a turned table; craft, place, break and pick up; reach and shortage refusals; and a part in a cell.
   - Base shapes matching the old ones, the palette and HUD, look volumes for later blocks, the menu's pictures, and the interact key.
   - The game starts with no errors.
-
-### Toy backlog
-
-- ~~**Block shapes and placement.**~~ Now the current toy, as Block shapes and shared cells. Suggested order after it: inventory and items, then interaction controls and block interactions, then combat feel.
-- ~~**Inventory and items.**~~ Done (2026-11-01), see Done toys. Added 2026-10-28, from the user's request that led to the block shapes toy. Real items and counts, breaking gives you the block, and the design doc's "inventory discourages variety" gripe: try limiting by weight or volume instead of slots, or carrying a material and choosing its shape when placing. Suggested next after block shapes, before combat feel. *Updated 2026-10-30:* Loose items was split out of this and is done: breaking drops materials by volume and the player collects them into a counter. What's left: placing uses up material, a shared capacity limit (volume first, maybe weight later), picking a material and then a shape, a drop key, and items staying on the ground when you're full. The plan proposed on 2026-10-29 had these; reuse it.
-- **Rethink the inventory.** Added 2026-11-02 at the user's request, during Emergent shapes: "the last toy really was horrible… I was planning on just removing it but got talked out and now every problem with this one is caused by it". The Inventory and items toy's capacity limit and paying for things by volume caused each problem found while playing Emergent shapes: patterns made from parts refused once plain wood ran out, crafting needed room to carry, and dirt couldn't be used. Crafting was made free and an unlimited carry was proposed in that toy. Decide whether a carrying limit or costs belong in the game at all before building on them again. If something like them comes back, it should be because a toy needs it.
-- **Covered blocks.** Added 2026-10-31, deferred from Solid materials. Should blocks be roughly one material, with grass and snow a cover on a block rather than part of it? What should a cut through grass show: honest (a bottom slab is all dirt, since the look spans the boxel) or anchored (the look's top follows each box's top, so a grass slab has grass on top, at the cost of seams between a stair's steps)? Settle it once something needs to cut grass, like world generation or crafted shapes.
-- **Plank board ends.** Added 2026-10-31, from Solid materials. Planks stay lined up with the world, so a wood panel or stair facing east or west shows a grid of board ends instead of boards. The user dislikes it but accepted it as a compromise for now. Options: a pattern that reads as boards along both level axes, letting a material turn only about the up axis, or picking the board direction per block when placed.
-- **Items inside placed blocks.** Added 2026-10-30, from Loose items. A block placed over a resting item hides it inside the block; it can still be picked up. Push items out the shortest way, or refuse the placement, once it gets in the way.
-- **Place on left click, break on right click.** Added 2026-11-01 at the user's request, from Inventory and items: "to keep controls consistent, placing should be left click and breaking should be right", so a block's main use is placing, as a tool's is swinging. Retire the old `break`/`place` names in the controls file (they'd bind the wrong action) and move the user's lines to `use`/`alt_use`. Revises the Skyrim-style controls decision. Fits with Generative crafting or Interaction controls.
-- **Crouch to collect.** Added 2026-11-01 at the user's request: "your a little robot and crouching sucks the items in". Items are only pulled and picked up while crouching; walking over them does nothing. Proposed: an `ItemDropDef` flag the base mod turns on, a somewhat wider pull (about 3 m) and a shorter throw delay (about 0.5 s) since throwing and crouching rarely overlap, and maybe a visible suck-in later. Open: whether flying with the shared Shift key vacuums too.
-- **Interaction controls.** Split out of Block editing (2026-10-25). Fix Minecraft's ambiguous right click once there are things to use, like crystals or devices. Principles: one input, one action (no catch-all "use" button that changes meaning with what you hold or look at), and what you see is what you get (a ghost of the result, red when not allowed).
-  - *Added 2026-10-28:* decide how players reach shared boxels. Placing into an occupied boxel makes placement harder to read (every click has two possible boxels), so it may become a deliberate trick (a key, a tool, or a property of blocks like water) instead of happening on any click. Decide once combat and usable items show how crowded the controls get; the engine keeps full support either way. Also from play: two slabs at right angles make a stair, so a separate stairs block may not be needed.
-- **Block interactions.** Unstable crystals: two block types, a touch trigger, a directional blast, and a way to push blocks so devices are possible.
-- **Emergent shapes from crafting.** Added 2026-10-28 at the user's request. Shapes come from recipes instead of each being its own block: a crafting pattern filled with one kind of block makes the pattern's shape as a prism, extruded through a full block. A stairs-like pattern gives stairs, as in Minecraft, but the pattern implies the shape, so the same idea gives a three-step stair. The partial blocks made this way can go into new recipes, so shapes build on shapes. The crafting grid could sit on different sides of the crafting table, and the side used sets which way the shape is extruded, so one pattern can make the shape in different orientations. Builds on the shapes and orientations from the block shapes toy; likely belongs with Generative crafting.
-- **Generative crafting.** A few materials, a few property ingredients and a capacity limit.
-  - *Notes for planning* (2026-11-01, from closing Inventory and items): the user expected an inventory with drag and drop and wants it designed in this toy's plan, not as a separate inventory toy. What exists to build on: the player carries amounts of each material in 1/4096ths of a boxel with one shared capacity (`sim::Inventory`, `api::InventoryDef`), placing costs a block's volume of its material, and blocks name their material. Settle in the plan what gets dragged (an amount of material or a finished part) and where to (a pattern, a block). The backlog's place on left click and break on right click item may fit in here.
-- ~~**Combat feel.**~~ Done (2026-10-31), see Done toys.
-- **Combat depth.** Added 2026-10-31, deferred from Combat feel. Ideas for a higher skill ceiling, to try once enemies, tools and movement give combat something to be tuned against: swing direction from the mouse during the wind-up (sweep sideways, slam down, launch up), air combos with growing knockback, a sweet spot at the club's full reach, cancelling the recovery into a jump or dash, a charged heavy swing with a perfect-release window (the robot's spring), and what the guard does once something hits back. Also the Doom loop: close kills restoring health once the player has some.
-- **Liquid rule sets.** The rule sets from the design doc.
-- **Advanced movement revisited.** Added 2026-10-26 at the user's request. Comes after toys that add tools, items and enemies. Rework push-out (block-jumping, and later pistons). The user doesn't like that the body is moved out of the block instantly, like a teleport, or that the launch is mostly upward. Prompted by spam-placing blocks at the dead end of a 1-high tunnel while crouched: the body crawls backward through position shifts while the speed readout stays at 0. Things to settle:
-  - How the body gets out of the block with real motion instead of a shift, and how much of the launch should go up.
-  - What placing a block while crouched should do. The crouched body's center is at or below the block's center, so today it gives a sideways shove off the side of the block that was never designed.
-  - Whether a jump should keep wiping out the push-out kick. Today, placing a moment before jumping loses the kick, which makes block-jumping feel inconsistent.
-  - **Known flaw, deferred to this toy (2026-10-26):** the kick can point opposite to the shift. The kick's direction comes from the body's position before the shift, so in the tunnel case the body is shifted backward but kicked forward, into the block it just left, and the collision zeroes it. That's why the speed readout stays at 0 (the readout itself is correct). Found by reading the code and confirmed by the user's play; not yet covered by a test. The redesign must make the launch go the way the body actually leaves the block.
-  - **Direction proposed by the user (2026-10-30, after the block-jump trainer),** recorded as candidates to try:
-    - *Kick straight up only,* keeping the body's own horizontal speed. Forward speed comes from running, which the player controls. The standing-position tilt is noise players can't learn, and dropping it also removes the opposite-direction flaw above. Pistons can bring their own direction later. Note: the 2026-10-26 entry says the user disliked the launch being *mostly* upward, so settle which one holds when playing it.
-    - *Analog kick, scaled by how far the block has to push the body:* full with the feet at the bottom of the boxel, fading to nothing as they near the top. That turns the cliff between "kick" and "too late" into a smooth slope ("sooner is stronger") and reads like a spring, which fits the robotic player.
-    - *Order-independent jumping:* a jump adds to rising speed instead of resetting it, so placing a tick before the jump no longer loses the kick. The controller's comment says the jump replaces *downward* speed, but the code zeroes upward speed too. Changing it affects all jumps, so it belongs in this toy, not in a fix.
-    - *Later:* push the body out over a few ticks like a spring instead of the instant shift. Collision has to ignore the block while the body is still inside it.
-    - The block-jump trainer is the measuring tool: once this toy is done, same-tick, early and late attempts should land close together.
-
-Ideas that come up while playing get added here.
-
-### Infrastructure (added when a toy needs it)
-
-- Saving and loading, with block names in the save
-- World generation
-- LOD, once world generation exists
-
-### Seam backlog (added when the game is ready for them)
-
-- ~~**Data mods.**~~ Done (2026-10-27), see Done toys.
-- **WebAssembly behavior.** Sandboxed mod code for block behavior, once a toy has behavior worth sandboxing, such as crystals or liquids. Sleeping blocks and read-old, write-new automata. The first step is done: the WebAssembly movement seam (2026-10-26) runs `base`'s movement controller as a component, so block behavior can follow the same pattern (WIT interface in `api`, guest export macro, `wasm_host` wrapper). *To settle (2026-10-27):* keep entity and block state in the engine, not in the mod, before any behavior keeps state in a mod (see the design doc's "Mod memory"). The movement controller still keeps its timers and charge inside the mod and should move to that pattern. Test whether wasmtime lets the engine drop a mod's freed pages (`madvise` on Linux, `DiscardVirtualMemory` on Windows), driven by an allocator in `api`.
-- ~~**Sandbox limits.**~~ Done (2026-10-28), see Done toys.
-- **Seed a modder.** Once a few seam slices are done, have an outside modder build a small toy on the API and fix what blocks them.
-
-### API debt
-
-Shortcuts taken around the API, each with the toy that needed it. Paid down in seam slices.
-
-- **Fixed input actions** (movement toy; break, place and palette slots added by the block editing toy, crouch by the advanced movement toy, placement mode by the block shapes toy, drop and shape by the inventory toy). Move, jump, sprint, crouch, use, second use, drop, shape, the palette slots and the debug keys are a fixed engine set in `sim::PlayerInput` and `client::controls`. Mods can't define their own actions. API version: mods register named actions with default bindings, and controllers read actions by name.
-- **Chase drill in the client** (advanced movement toy, temporary; ghost hits added by the combat feel toy). The ghost and objectives in `client::drill` are game logic living in the client, and it finds landmarks by the `landmark:` prefix on waypoint names. Remove the drill rather than moving it into the API, unless a later toy wants real enemies, which would need entities and a game-rules hook in the API.
-- **Block-jump trainer in the client** (block-jump trainer toy, temporary). `client::trainer` judges attempts from read-only diagnostics, `Player::last_step` and `Simulation::last_place`. Remove it with the chase drill, or once Advanced movement revisited makes block-jumping consistent.
-- **Tool look in the client** (combat feel toy). Every tool is drawn as the same club, posed by `client::combat`; mods can't give a tool its own model or swing poses. API version: a tool names a model and its poses.
-- **Camera feel in the client** (movement toy; hit-stop, view kick and shake added by the combat feel toy in `client::combat`). FOV widening, head bob, landing dip and step smoothing live in `client::feel`, so mods can't change them. API version: a client-side mod API for camera effects, presumably driven by the same tunables.
-
-### Phase 2 decisions
-
-- **A robotic player** (tentative, 2026-10-25): the user wants movement and camera feel to read as a robot. Landings are a shock absorber: soft landings compress smoothly, damaging ones bottom out hard. Later feel work (combat, damage, crouch charging) should keep to it.
-- **Skyrim-style controls** (2026-10-31, from Combat feel): whatever is held has a main use on left click and a second use on right click. Blocks break and place; a tool swings and guards. Part of the answer to the ambiguous-interactions gripe; the Interaction controls toy builds on it.
-- **Signature feature:** not decided yet. Choose it once the block interaction and crafting toys have been played, and record the choice and why in the design doc.
-
-### Fixes
-
-Bugs found in already-merged code, each fixed on its own `fix-` branch (see the workflow in `CLAUDE.md`). One line each: date, branch, what was wrong.
-
-- 2026-10-28, `fix-step-smoothing`: a step-up moved the body but not its previous position, so the renderer blended the rise between ticks while the camera feel also eased it, making the view dip and snap when climbing. Latent until the block shapes toy gave the player a step height.
-
-### Done toys
 
 #### Inventory and items (branch `toy-inventory`)
 
