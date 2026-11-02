@@ -15,6 +15,8 @@ We work one vertical slice at a time. Each slice goes through these stages in or
 4. **Verify.** Check the slice's "Done when" criteria one by one. Run the game when the slice is visual or interactive, and have the user try it. Report each criterion as met or not met.
 5. **Close.** Update `SLICES.md` (mark the slice done, record decisions, anything deferred and any new API debt), update the design doc if a decision changed, and offer to commit.
 
+Planning the next slice always happens in a new session, with a fresh context. After closing a slice, don't start planning the next one: at most, leave notes for it in `SLICES.md` (under its backlog entry) for the next session's planner to pick up, then tell the user to start a new session.
+
 ### The go word: "engage"
 
 Don't start writing code or changing project files until the user says **"engage"**. Only that word counts; a casual "go ahead" in conversation does not. Approving a plan, answering a question or agreeing with an idea is not an engage. After proposing something, stop and wait.
