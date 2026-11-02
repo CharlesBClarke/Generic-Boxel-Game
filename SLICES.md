@@ -104,7 +104,35 @@ A run of small toy slices. Each one takes a single game-feel feature that doesn'
 
 ### Current toy
 
-None. Suggested next: Generative crafting, chosen by the user (2026-11-01), with the drag-and-drop it needs designed in its plan.
+#### Emergent shapes from crafting (branch `toy-emergent-shapes`)
+
+**Stage:** Implement. Chosen by the user (2026-11-01) ahead of Generative crafting. The drag and drop from Generative crafting's notes is designed here.
+
+**Goal:** shapes come from crafting instead of each being its own block. A 4×4 grid on a crafting table, filled with materials and parts, makes a part; the face of the table used decides which way it's pushed through; parts go back into the grid, so shapes build on shapes, including non-prisms. Every shape in the base game becomes emergent.
+
+**Approved plan** (2026-11-01)
+- **Playing:** aim at a face of the crafting table (top, front, back or a side; not the bottom) and press **interact (E)**. A menu opens with the cursor free (E or Escape closes it): a 4×4 grid, your materials and parts with amounts, and a 3D preview of the result as it will sit relative to you. Drag a material onto cells to fill them; drag a part onto a cell to put a quarter-size copy of it there; right-click clears a cell. One material per pattern. A part in a cell is a pattern and isn't used up. **Craft** makes one part, paying its volume of material; shift-click crafts as many as you can afford. Parts are carried next to materials and share the volume capacity. Drag parts onto the palette; placing one uses it, breaking a shaped block gives the part back whole.
+- **The rule:** each cell holds a 3D copy of its content at a quarter size (4×4×4 sixteenths): a material is a full small cube, a part is the part scaled down. Pushing through repeats each cell's copy 4 times along the face's axis. A part keeps its orientation in the table's frame, so a pipe made at the front, used at the side, gives 4 small pipes per cell with holes facing across; used at the front again it gives a finer prism. Parts that contain sixteenth detail (made from parts) are refused in a cell, shown red, so nesting is two levels deep.
+- **Frames:** everything is in the table's frame (the table has a front, like stairs). Each face's grid is the view from that side as you'd see it standing there, so the back mirrors the front and one side mirrors the other. Placing points the table's front the way you look, then basic or precise placement turns it as usual; shaped blocks turn freely.
+- **All shapes emergent:** base drops its slab, stairs, fine stairs, panel, window, fence post and log slab blocks and the `[shapes]` table; it keeps full blocks, one per material, plus the crafting table. The window can't be made (a full-depth push can't make a thin panel with a hole) and goes; the post can be made through a part in a cell. The test area builds its shapes through a new `WorldEdit::add_shaped`, so the world uses the same shapes players make. The shape key (G) is retired. `BlockDef.shape` stays in the engine for other mods; engine tests keep their own test blocks, and tests that named base's shaped blocks move to crafted ones.
+- **Data:** a shape is a 16×16×16 grid of filled sixteenths, merged into boxes for collision and drawing. A shaped block is registered the first time it's needed, copying its look and properties from the material's full block, named from a hash of the shape (`base:wood_s<hash>`). A save will need each name's shape; noted for the saving slice.
+- **API:** `api::crafting`: `CraftingDef { table, grid: 4 }` (from `crafting.toml`), the shape grid, `TableFace`, and the rule as plain functions. `WorldEdit::add_shaped`. A new `interact` action.
+- **`sim`:** `BlockRegistry` registers shaped blocks at runtime; parts in `Inventory`; a `craft` call checking the table is in reach, one material, cells fit, enough to pay and room to carry; breaking a shaped block returns the part.
+- **`client`:** `crafting.rs` (the egui menu, drag and drop, the preview); `Volumes` and the palette pick up blocks registered while playing; palette slots for parts. `interact = KeyE` goes into the user's controls file and `shape` comes out.
+- **Risk:** a two-level shape can break into many boxes, so many faces and collision boxes. Measure a worst-case shape; if it's a problem, stop and say so rather than cutting the feature.
+- **Tests:** a full grid gives a full block; slab, stairs and fine stairs patterns give the right boxes; material-only cells match the plain prism; a pipe on its own axis gives a finer prism and on another face gives 4 holes facing across; nested parts are refused; each face gives its frame and the back mirrors the front; box merging covers every sixteenth exactly once; one shape gives one name and ID, another material another; crafting pays the volume and makes one part, refuses past capacity or when short, and a part in a cell isn't used up; placing uses a part and breaking returns it; `crafting.toml` loads and a bad one reports the file and line; the test area builds from crafted shapes; the client's look volumes cover blocks registered later.
+
+**Done when**
+1. You can open the menu at the table, fill the grid with materials and parts, and see the preview.
+2. Top, front and side give the three layouts, and the placed block matches the preview relative to you.
+3. A pipe made at the front and used at the side gives 4 holes per cell, facing across.
+4. Crafting costs volume, parts take room, placing uses a part, and breaking returns it.
+5. The palette holds no registered shapes, and the test area's shapes are crafted ones.
+6. `cargo test` and `cargo clippy` are clean.
+
+**Deferred:** nesting deeper than two levels; mixed materials in one pattern; saving parts between sessions; Generative crafting's properties; swapping left and right click.
+
+**API debt to add:** the crafting menu in the client (`client::crafting`): mods can't change the menu.
 
 ### Toy backlog
 
