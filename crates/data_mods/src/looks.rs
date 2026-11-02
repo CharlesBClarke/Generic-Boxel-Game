@@ -10,6 +10,7 @@
 
 use api::LookDef;
 use serde::Deserialize;
+use std::collections::{HashMap, HashSet};
 
 const SIZE: usize = LookDef::SIZE;
 
@@ -184,6 +185,58 @@ fn positions() -> impl Iterator<Item = (usize, [usize; 3])> {
     (0..LookDef::VOLUME).map(|i| (i, [i % SIZE, i / SIZE % SIZE, i / (SIZE * SIZE)]))
 }
 
+/// The region id of a texel on a line, like mortar or a seam, that has no neighbors.
+const MORTAR: u32 = u32::MAX;
+
+/// Gives each region of the volume (texels sharing an id in `ids`) one of `choices`, so that no
+/// two regions that touch, across the volume's edges too, get the same one. Which coloring
+/// comes out depends on `seed`. `None` if it can't be done with that many choices.
+fn distinct(ids: &[u32], choices: usize, seed: u32) -> Option<HashMap<u32, usize>> {
+    let mut regions: Vec<u32> = ids.iter().copied().filter(|&id| id != MORTAR).collect();
+    regions.sort_unstable();
+    regions.dedup();
+    // One choice means nothing to keep apart.
+    if choices <= 1 {
+        return Some(regions.into_iter().map(|id| (id, 0)).collect());
+    }
+    let index: HashMap<u32, usize> = regions.iter().enumerate().map(|(i, &id)| (id, i)).collect();
+    let mut touching = vec![HashSet::new(); regions.len()];
+    for (i, p) in positions() {
+        for axis in 0..3 {
+            let mut q = p;
+            q[axis] = (q[axis] + 1) % SIZE;
+            let (a, b) = (ids[i], ids[LookDef::index(q[0], q[1], q[2])]);
+            if a != b && a != MORTAR && b != MORTAR {
+                touching[index[&a]].insert(index[&b]);
+                touching[index[&b]].insert(index[&a]);
+            }
+        }
+    }
+    // Colors the most hemmed-in region next (the most different choices already among its
+    // neighbors), each time taking the first free choice from a seeded starting point. If
+    // that paints itself into a corner, it starts over with the order shuffled differently.
+    let n = regions.len();
+    for attempt in 0..64u32 {
+        let mut chosen: Vec<Option<usize>> = vec![None; n];
+        let tie = |r: usize| hash([regions[r], attempt, 0], seed ^ 0xc01d);
+        let done = (0..n).all(|_| {
+            let used = |r: usize| touching[r].iter().filter_map(|&t| chosen[t]).collect::<HashSet<_>>();
+            let at = (0..n)
+                .filter(|&r| chosen[r].is_none())
+                .max_by_key(|&r| (used(r).len(), touching[r].len(), tie(r)))
+                .unwrap();
+            let used = used(at);
+            let start = tie(at) as usize;
+            chosen[at] = (0..choices).map(|t| (start + t) % choices).find(|c| !used.contains(c));
+            chosen[at].is_some()
+        });
+        if done {
+            return Some(regions.into_iter().zip(chosen.into_iter().flatten()).collect());
+        }
+    }
+    None
+}
+
 fn check_colors(what: &str, colors: &[[u8; 3]]) -> Result<(), String> {
     if colors.is_empty() { Err(format!("{what} needs at least one color")) } else { Ok(()) }
 }
@@ -219,22 +272,33 @@ impl Bricks {
         check_fraction("bricks speckle", self.speckle)?;
         let quarter = self.length - self.length / 4;
         let [ox, oy, oz] = self.offset.unwrap_or([quarter, quarter, self.height / 2]);
+        // Which brick each texel is in, or `MORTAR`.
+        let ids: Vec<u32> = positions()
+            .map(|(_, [x, y, z])| {
+                let z = z + oz;
+                let row = z / self.height;
+                // Every other row shifts half a brick, on both level axes.
+                let shift = if row % 2 == 1 { self.length / 2 } else { 0 };
+                let (bx, by) = ((x + ox + shift) % SIZE, (y + oy + shift) % SIZE);
+                let joint = z % self.height == 0 || bx % self.length == 0 || by % self.length == 0;
+                if joint && self.mortar.is_some() {
+                    MORTAR
+                } else {
+                    let row = row % (SIZE / self.height);
+                    ((row * SIZE + by / self.length) * SIZE + bx / self.length) as u32
+                }
+            })
+            .collect();
+        let pick = distinct(&ids, self.colors.len(), self.seed)
+            .ok_or_else(|| format!("bricks need more than {} colors, so neighbors always differ", self.colors.len()))?;
         for (i, [x, y, z]) in positions() {
-            let z = z + oz;
-            let row = z / self.height;
-            // Every other row shifts half a brick, on both level axes.
-            let shift = if row % 2 == 1 { self.length / 2 } else { 0 };
-            let (bx, by) = ((x + ox + shift) % SIZE, (y + oy + shift) % SIZE);
-            let joint = z % self.height == 0 || bx % self.length == 0 || by % self.length == 0;
-            texels[i] = if let Some(mortar) = self.mortar.filter(|_| joint) {
-                mortar
-            } else {
-                let row = (row % (SIZE / self.height)) as u32;
-                let brick = hash([(bx / self.length) as u32, (by / self.length) as u32, row], self.seed);
-                let color = self.colors[brick as usize % self.colors.len()];
-                // A little speckle, so a brick isn't one flat color.
-                let u = unit(hash([x as u32, y as u32, z as u32], self.seed ^ 0x5bd1));
-                shade(color, 1.0 + self.speckle * (2.0 * u - 1.0))
+            texels[i] = match (ids[i], self.mortar) {
+                (MORTAR, Some(mortar)) => mortar,
+                (id, _) => {
+                    // A little speckle, so a brick isn't one flat color.
+                    let u = unit(hash([x as u32, y as u32, z as u32], self.seed ^ 0x5bd1));
+                    shade(self.colors[pick[&id]], 1.0 + self.speckle * (2.0 * u - 1.0))
+                }
             };
         }
         Ok(())
@@ -259,33 +323,48 @@ impl Planks {
             Field::new(Scale::Axes([8.0, 1.0, 1.0]), self.seed)?,
             Field::new(Scale::Axes([1.0, 8.0, 1.0]), self.seed)?,
         ];
+        // Each texel's board (or `MORTAR` on a seam), which way it runs, and where its grain
+        // starts.
+        let layout: Vec<(u32, usize)> = positions()
+            .map(|(_, [x, y, z])| {
+                // Seams keep half a board in from the block's sides.
+                let az = (z + thickness / 2) % SIZE;
+                let layer = az / thickness;
+                // Which way the board runs: 0 along X, 1 along Y.
+                let along = if self.cross { layer % 2 } else { 0 };
+                let (a, c) = if along == 0 { (x, y) } else { (y, x) };
+                let ac = (c + self.width / 2) % SIZE;
+                let board = ac / self.width;
+                // A joint in the first or second half of the block, never on its ends or at
+                // its middle. Crossed boards run the whole block instead.
+                let (joint, piece) = if self.cross {
+                    (None, 0)
+                } else {
+                    let h = hash([board as u32, layer as u32, 0], self.seed) as usize;
+                    let joint = 1 + h % (SIZE / 2 - 2) + (h >> 8) % 2 * (SIZE / 2);
+                    (Some(joint), usize::from(a >= joint))
+                };
+                let seam = ac.is_multiple_of(self.width) || az.is_multiple_of(thickness) || joint == Some(a);
+                let id = if seam && self.seam.is_some() { MORTAR } else { ((layer * SIZE + board) * 2 + piece) as u32 };
+                (id, along)
+            })
+            .collect();
+        let ids: Vec<u32> = layout.iter().map(|&(id, _)| id).collect();
+        // Four shade steps, from `shade` darker to `shade` lighter, so neighbors always differ
+        // by at least two thirds of it: a board touches the boards beside it and those across
+        // the layers above and below, so three steps aren't always enough.
+        let steps = if self.shade > 0.0 { 4 } else { 1 };
+        let step = distinct(&ids, steps, self.seed).ok_or("planks boards can't be kept apart by shade")?;
         for (i, [x, y, z]) in positions() {
-            // Seams keep half a board in from the block's sides.
-            let az = (z + thickness / 2) % SIZE;
-            let layer = az / thickness;
-            // Which way the board runs: 0 along X, 1 along Y.
-            let along = if self.cross { layer % 2 } else { 0 };
-            let (a, c) = if along == 0 { (x, y) } else { (y, x) };
-            let ac = (c + self.width / 2) % SIZE;
-            let board = [(ac / self.width) as u32, layer as u32];
-            // A joint in the first or second half of the block, never on its ends or at its
-            // middle. Crossed boards run the whole block instead.
-            let (joint, piece) = if self.cross {
-                (None, 0)
-            } else {
-                let h = hash([board[0], board[1], 0], self.seed) as usize;
-                let joint = 1 + h % (SIZE / 2 - 2) + (h >> 8) % 2 * (SIZE / 2);
-                (Some(joint), u32::from(a >= joint))
-            };
-            let seam = ac.is_multiple_of(self.width) || az.is_multiple_of(thickness) || joint == Some(a);
-            texels[i] = match self.seam.filter(|_| seam) {
-                Some(seam) => seam,
-                None => {
+            let (id, along) = layout[i];
+            texels[i] = match (id, self.seam) {
+                (MORTAR, Some(seam)) => seam,
+                (id, _) => {
                     // Each board's grain from its own part of the field, so neighbors differ.
-                    let offset = (hash([board[0], board[1], piece * 4 + 1], self.seed) % SIZE as u32) as usize;
+                    let offset = (hash([id, 0, 1], self.seed) % SIZE as u32) as usize;
                     let p = if along == 0 { [(x + offset) % SIZE, y, z] } else { [x, (y + offset) % SIZE, z] };
-                    let tint = unit(hash([board[0], board[1], piece * 4 + 2], self.seed));
-                    shade(pick(&self.colors, grain[along].at(p)), 1.0 + self.shade * (2.0 * tint - 1.0))
+                    let tint = if steps == 1 { 0.0 } else { step[&id] as f32 / (steps - 1) as f32 * 2.0 - 1.0 };
+                    shade(pick(&self.colors, grain[along].at(p)), 1.0 + self.shade * tint)
                 }
             };
         }
@@ -531,14 +610,59 @@ mod tests {
         }
     }
 
+    /// How many patches of one color the volume has, counting patches that meet across its
+    /// edges as one, as they do between blocks.
+    fn patches(v: &[u8]) -> usize {
+        let mut seen = vec![false; LookDef::VOLUME];
+        let mut count = 0;
+        for (start, _) in positions() {
+            if seen[start] {
+                continue;
+            }
+            count += 1;
+            seen[start] = true;
+            let mut todo = vec![start];
+            while let Some(i) = todo.pop() {
+                let p = [i % SIZE, i / SIZE % SIZE, i / (SIZE * SIZE)];
+                let c = texel(v, p[0], p[1], p[2]);
+                for axis in 0..3 {
+                    for step in [1, SIZE - 1] {
+                        let mut q = p;
+                        q[axis] = (q[axis] + step) % SIZE;
+                        let j = LookDef::index(q[0], q[1], q[2]);
+                        if !seen[j] && texel(v, q[0], q[1], q[2]) == c {
+                            seen[j] = true;
+                            todo.push(j);
+                        }
+                    }
+                }
+            }
+        }
+        count
+    }
+
+    const FOUR_REDS: &str = "colors = [[150, 60, 50], [130, 50, 40], [170, 70, 60], [110, 40, 30]]";
+
     #[test]
-    fn bricks_without_mortar_are_told_apart_by_color() {
-        let v = recipe("bricks = { length = 8, height = 4, colors = [[150, 60, 50], [90, 90, 90]] }").generate().unwrap();
-        let gray = |c: [u8; 3]| c[0] < 120;
-        // A brick is one color all through, apart from its speckle.
-        let first = gray(texel(&v, 3, 3, 3));
-        assert!((3..=5).all(|x| gray(texel(&v, x, 3, 3)) == first));
-        assert!(colors(&v).iter().any(|&c| gray(c)) && colors(&v).iter().any(|&c| !gray(c)), "both colors show");
+    fn neighboring_bricks_never_share_a_color() {
+        let v = recipe(&format!("bricks = {{ length = 8, height = 4, {FOUR_REDS}, speckle = 0 }}")).generate().unwrap();
+        // 2 by 2 bricks in each of 4 rows: if any two that touch matched, they'd be one patch.
+        assert_eq!(patches(&v), 16);
+        for seed in 0..20 {
+            let v = recipe(&format!("bricks = {{ length = 4, height = 2, {FOUR_REDS}, speckle = 0, seed = {seed} }}"))
+                .generate()
+                .unwrap();
+            assert_eq!(patches(&v), 4 * 4 * 8, "seed {seed}");
+        }
+    }
+
+    #[test]
+    fn bricks_without_enough_colors_to_keep_neighbors_apart_are_an_error() {
+        // Each brick touches four in the row above, which touch each other, so it takes four.
+        let err = recipe("bricks = { length = 8, height = 4, colors = [[150, 60, 50], [90, 90, 90], [1, 2, 3]] }")
+            .generate()
+            .unwrap_err();
+        assert!(err.contains("more than 3 colors"), "{err}");
     }
 
     #[test]
@@ -596,8 +720,11 @@ mod tests {
         // Boards 4 wide, each its own shade, with no seams or joints.
         assert_eq!(texel(&v, 0, 2, 0), texel(&v, 0, 5, 0), "one board");
         assert_ne!(texel(&v, 0, 5, 0), texel(&v, 0, 6, 0), "the board beside it");
-        assert!(colors(&v).len() >= 6, "boards differ: {}", colors(&v).len());
-        // Gently: no board strays more than the shade from the grain.
+        // Four shade steps, and no two boards that touch share one: 4 boards in each of 8
+        // layers would merge into fewer patches if any did.
+        assert_eq!(colors(&v).len(), 4);
+        assert_eq!(patches(&v), 32);
+        // No board strays more than the shade from the grain.
         assert!(colors(&v).iter().all(|c| (162..=198).contains(&c[0])), "{:?}", colors(&v));
     }
 

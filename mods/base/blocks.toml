@@ -38,14 +38,15 @@
 #           number, or [x, y, z] to stretch it (default 1).
 #   bricks  { length, height, colors, mortar, offset, speckle, seed }: rows of bricks, each row
 #           shifted half a brick. length and height are in texels, mortar included, and must
-#           divide 16. Without mortar, bricks are told apart by color alone. offset ([x, y, z]
+#           divide 16. Without mortar, bricks are told apart by color alone. Bricks that touch
+#           never share a color, which takes at least 4 colors (1 is allowed: all alike). offset ([x, y, z]
 #           texels) shifts the pattern; by default the mortar keeps off the layers faces show.
 #           speckle is how much each texel's shade varies, 0 to 0.5 either way (default 0.08).
 #   planks  { width, thickness, colors, seam, shade, cross, seed }: boards along X, width
 #           texels across and thickness (default width) up, seam included, with a joint along
 #           each, kept off the layers faces show. Both must divide 16. Without seam, boards are
-#           told apart by shade: how much each board's shade differs, 0 to 0.5 either way
-#           (default 0). cross = true turns each layer of boards a quarter turn from the one
+#           told apart by shade: each board is one of four steps from shade darker to shade
+#           lighter (0 to 0.5, default 0), and boards that touch never share a step. cross = true turns each layer of boards a quarter turn from the one
 #           below, along X then Y, a whole block long with no joints.
 #   rings   { colors, spacing, bark, bark_depth, seed }: rings around the up axis, one color
 #           per ring repeating outward, inside a shell of bark (bark_depth texels, default 1).
@@ -64,13 +65,13 @@ noise = { colors = [[98, 67, 44], [112, 78, 52], [126, 89, 60], [139, 100, 68]],
 top = { colors = [[76, 124, 44], [88, 140, 50], [101, 156, 58]], depth = 2, ragged = 2, scale = 2, seed = 3 }
 
 [looks.brick]
-bricks = { length = 8, height = 4, colors = [[146, 64, 50], [155, 69, 54], [137, 59, 46]], speckle = 0.06, seed = 4 }
+bricks = { length = 8, height = 4, colors = [[150, 66, 52], [188, 94, 72], [112, 46, 36], [158, 104, 80]], speckle = 0.06, seed = 4 }
 
 [looks.ice]
 noise = { colors = [[158, 198, 234], [172, 210, 241], [188, 221, 247]], scale = 4, seed = 5 }
 
 [looks.wood]
-planks = { width = 4, colors = [[165, 127, 79], [174, 134, 84], [183, 141, 89]], thickness = 2, shade = 0.07, cross = true, seed = 6 }
+planks = { width = 4, colors = [[165, 127, 79], [174, 134, 84], [183, 141, 89]], thickness = 2, shade = 0.25, cross = true, seed = 6 }
 
 [looks.log]
 turns = true
