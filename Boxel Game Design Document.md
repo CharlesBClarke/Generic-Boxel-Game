@@ -250,7 +250,7 @@ These are working ideas, not commitments. They should be tested in the play phas
 
 **Abstract systems over realistic simulation (base game).** The base game prefers simple, learnable rules players can understand and exploit over complicated physics simulations. Abstract rules are cheaper to build and run, easier to sync in multiplayer, and predictable enough to support the composition principle. Minecraft's best systems already work this way: redstone and infinite water sources are abstractions players learned to exploit. This is a taste for the base game's content, not a limit on the engine: mods must be able to add advanced simulations, including full physics and realistic fluids.
 
-**A robotic player (tentative).** Movement and camera feel should read as a robot. Landings work like a shock absorber: a safe fall compresses smoothly, while a damaging fall bottoms out hard, so the camera itself tells players when a fall hurt. Crouching is the robot's spring: crouching on the ground charges it and sinks the body, a jump releases it for extra height, and crouching mid-air tucks the feet up to clear higher ledges. Later feel work, such as combat and damage, should keep to this.
+**A robotic player (tentative).** Movement and camera feel should read as a robot. Landings work like a shock absorber: a safe fall compresses smoothly, while a damaging fall bottoms out hard, so the camera itself tells players when a fall hurt. Crouching mid-air tucks the feet up to clear higher ledges. (A charged crouch jump, where crouching on the ground wound up a spring for a higher jump, was tried and removed on 2026-11-02.) Later feel work, such as combat and damage, should keep to this.
 
 ## Features to play with
 
@@ -314,7 +314,7 @@ The two ideas most likely to give the game its identity. Both test the compositi
 - Question: do players invent devices on their own, or use the obvious trick once and stop?
 - Success: testers build something nobody planned, such as a multi-shot or a trap.
 
-**Generative crafting.** Items carry properties that can be applied to any boxel; patterns work on all block types; no crafting table; materials have natural attributes and a capacity limit.
+**Generative crafting.** Items carry properties that can be applied to any boxel; patterns work on all block types; materials have natural attributes and a capacity limit.
 
 - Rules to test: a handful of materials with natural properties, a handful of property ingredients, a capacity limit, and obvious things (sharp on a stick makes a sword) working the first time.
 - Question: do players experiment with combinations, and can they predict the results?
