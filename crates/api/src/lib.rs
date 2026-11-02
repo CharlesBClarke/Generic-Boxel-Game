@@ -6,6 +6,7 @@
 
 pub mod block;
 pub mod combat;
+pub mod crafting;
 pub mod coords;
 pub mod error;
 #[cfg(target_arch = "wasm32")]
@@ -17,10 +18,12 @@ pub mod modding;
 pub mod orientation;
 pub mod movement;
 pub mod player;
+pub mod shape;
 pub mod tuning;
 
 pub use block::{BlockBox, BlockDef, LookDef, Turning};
 pub use combat::{HitBox, TargetDef, ToolDef};
+pub use crafting::{Cell, CraftError, CraftingDef, TableFace, craft_shape};
 pub use coords::{BoxelPos, CHUNK_SIZE, CHUNK_VOLUME, ChunkPos, LocalPos, WorldPos, look_direction};
 pub use error::ApiError;
 pub use interaction::{InteractionDef, PushOutDef};
@@ -31,4 +34,5 @@ pub use modding::{Mod, Registrar, WorldEdit};
 pub use orientation::Orientation;
 pub use movement::{Ground, MoveContext, MoveInput, MoveOutput, MovementController};
 pub use player::PlayerDef;
+pub use shape::ShapeGrid;
 pub use tuning::{Tunable, Tunables};

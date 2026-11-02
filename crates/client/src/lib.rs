@@ -4,6 +4,7 @@
 pub mod combat;
 pub mod controls;
 pub mod coords;
+pub mod crafting;
 pub mod drill;
 pub mod editing;
 pub mod feel;
@@ -60,6 +61,7 @@ pub fn run(sim: Simulation) {
         .init_resource::<FeelState>()
         .init_resource::<TuningPanel>()
         .init_resource::<Palette>()
+        .init_resource::<crafting::CraftingMenu>()
         .init_resource::<items::ItemViews>()
         .init_resource::<DoubleTapSprint>()
         .init_resource::<drill::Drill>()
@@ -87,8 +89,7 @@ pub fn run(sim: Simulation) {
             Update,
             (
                 // Before grab_cursor, so the click that captures the mouse doesn't edit.
-                editing::edit_input,
-                grab_cursor,
+                (editing::edit_input, crafting::crafting_keys, grab_cursor).chain(),
                 mouse_look,
                 debug_keys,
                 double_tap_sprint,
@@ -108,10 +109,11 @@ pub fn run(sim: Simulation) {
                 trainer::draw_trainer,
                 update_hud,
                 editing::update_palette_hud,
+                crafting::update_table_hint,
             )
                 .chain(),
         )
-        .add_systems(EguiPrimaryContextPass, tuning::tuning_panel)
+        .add_systems(EguiPrimaryContextPass, (tuning::tuning_panel, crafting::crafting_menu))
         .add_systems(Last, limit_frame_rate)
         .run();
 }
@@ -183,6 +185,16 @@ fn setup_scene(mut commands: Commands, mut cursor: Single<&mut CursorOptions, Wi
             ..default()
         })
         .with_child((Text::new(""), PaletteHud));
+    // What aiming at a crafting table would do, just under the crosshair.
+    commands
+        .spawn(Node {
+            position_type: PositionType::Absolute,
+            width: percent(100),
+            top: percent(53),
+            justify_content: JustifyContent::Center,
+            ..default()
+        })
+        .with_child((Text::new(""), crafting::TableHint));
     set_grab(&mut cursor, true);
 }
 
@@ -267,6 +279,7 @@ fn tick_simulation(
     cursor: Single<&CursorOptions, With<PrimaryWindow>>,
     mut toggles: ResMut<PendingToggles>,
     mut trainer: ResMut<trainer::Trainer>,
+    mut menu: ResMut<crafting::CraftingMenu>,
     stop: Res<combat::HitStop>,
 ) {
     // Held presses wait for the hit-stop to end.
@@ -295,8 +308,12 @@ fn tick_simulation(
         drop_pressed: std::mem::take(&mut toggles.drop_pressed),
         drop_held: playing && keys.pressed(controls.drop),
         drop_material: palette.material(&sim.0),
+        craft: menu.pending.take(),
     };
     sim.0.step(&input);
+    if input.craft.is_some() {
+        menu.result = sim.0.last_craft();
+    }
     trainer::observe_tick(&sim.0, &input, &mut trainer);
 }
 
@@ -306,22 +323,25 @@ fn grab_cursor(
     keys: Res<ButtonInput<KeyCode>>,
     controls: Res<Controls>,
     mut panel: ResMut<TuningPanel>,
+    mut menu: ResMut<crafting::CraftingMenu>,
 ) {
     if keys.just_pressed(controls.tuning) {
         panel.open = !panel.open;
-        set_grab(&mut cursor, !panel.open);
+        set_grab(&mut cursor, !panel.open && menu.open.is_none());
     }
-    // While the panel is open, clicks belong to it.
-    if mouse.just_pressed(MouseButton::Left) && !panel.open {
+    // While the panel or the crafting menu is open, clicks belong to it.
+    if mouse.just_pressed(MouseButton::Left) && !panel.open && menu.open.is_none() {
         set_grab(&mut cursor, true);
     }
     if keys.just_pressed(KeyCode::Escape) {
+        // Escape closes the crafting menu and goes back to playing; otherwise it lets the mouse go.
+        let crafting = menu.open.take().is_some();
         panel.open = false;
-        set_grab(&mut cursor, false);
+        set_grab(&mut cursor, crafting);
     }
 }
 
-fn set_grab(cursor: &mut CursorOptions, grab: bool) {
+pub(crate) fn set_grab(cursor: &mut CursorOptions, grab: bool) {
     cursor.grab_mode = if grab { CursorGrabMode::Locked } else { CursorGrabMode::None };
     cursor.visible = !grab;
 }
@@ -461,7 +481,7 @@ fn update_hud(
     let precise = pos.cell().as_dvec3() + pos.offset().as_dvec3();
     let fps = 1.0 / time.delta_secs().max(1e-6);
     text.0 = format!(
-        "pos {:.2}, {:.2}, {:.2}  speed {:.1} m/s  last landing {:.1} m/s ({})\norigin {}, {}, {}\n{} | {:.0} fps | cap {} ({})\n{}{}{}{} move, {} jump, {} sprint (or double-tap forward), {} crouch, {} down, {} fly, {} teleport, {} tuning, Esc release mouse\n{} use (break, swing), {} second use (place, guard), 1-9 or scroll pick, {} respawn targets",
+        "pos {:.2}, {:.2}, {:.2}  speed {:.1} m/s  last landing {:.1} m/s ({})\norigin {}, {}, {}\n{} | {:.0} fps | cap {} ({})\n{}{}{}{} move, {} jump, {} sprint (or double-tap forward), {} crouch, {} down, {} fly, {} teleport, {} tuning, Esc release mouse\n{} use (break, swing), {} second use (place, guard), 1-9 or scroll pick, {} craft at a table, {} respawn targets",
         precise.x,
         precise.y,
         precise.z,
@@ -488,6 +508,7 @@ fn update_hud(
         label(controls.tuning),
         controls.use_main.label(),
         controls.use_alt.label(),
+        label(controls.interact),
         label(controls.respawn_targets),
     );
 }

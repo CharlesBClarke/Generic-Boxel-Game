@@ -32,6 +32,8 @@ pub enum ApiError {
     DuplicateItemDropDef,
     /// An inventory definition is already registered.
     DuplicateInventoryDef,
+    /// A crafting definition is already registered.
+    DuplicateCraftingDef,
     /// A definition has values that make no sense.
     InvalidDef(String),
     /// A block can't share the boxel with what's already there.
@@ -55,6 +57,7 @@ impl fmt::Display for ApiError {
             ApiError::DuplicatePushOutDef => write!(f, "a push-out definition is already registered"),
             ApiError::DuplicateItemDropDef => write!(f, "an item drop definition is already registered"),
             ApiError::DuplicateInventoryDef => write!(f, "an inventory definition is already registered"),
+            ApiError::DuplicateCraftingDef => write!(f, "a crafting definition is already registered"),
             ApiError::InvalidDef(why) => write!(f, "invalid definition: {why}"),
             ApiError::CannotShare(why) => write!(f, "can't add the block: {why}"),
         }

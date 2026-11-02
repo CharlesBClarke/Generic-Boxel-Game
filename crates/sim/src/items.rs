@@ -152,6 +152,7 @@ impl Items {
     /// `collector`, as far as its room allows, pulls what's in range while it has room, moves
     /// the rest under gravity, then merges items of the same material that ended up close
     /// together. An item too big for the room left is picked up in part, and the rest stays.
+    /// Parts are only picked up and pulled whole (see [`BlockRegistry::unit`]).
     /// Returns what was picked up.
     pub fn step(
         &mut self,
@@ -164,22 +165,23 @@ impl Items {
         let mut picked = Vec::new();
         let mut collector = collector;
         self.list.retain_mut(|item| {
-            let Some(c) = collector.as_mut().filter(|c| c.room > 0 && item.wait <= 0.0) else {
+            let unit = blocks.unit(item.drop.material);
+            let Some(c) = collector.as_mut().filter(|c| c.room >= unit && item.wait <= 0.0) else {
                 return true;
             };
             if c.reach(item.pos).0 > def.pickup_radius {
                 return true;
             }
-            let amount = item.drop.amount.min(c.room);
+            let amount = item.drop.amount.min(c.room / unit * unit);
             c.room -= amount;
             picked.push(Drop { amount, ..item.drop });
             item.drop.amount -= amount;
             item.drop.amount > 0
         });
-        let collector = collector.filter(|c| c.room > 0);
         for item in &mut self.list {
             item.wait = (item.wait - dt).max(0.0);
-            step_item(item, def, dt, terrain, collector);
+            let unit = blocks.unit(item.drop.material);
+            step_item(item, def, dt, terrain, collector.filter(|c| c.room >= unit.max(1)));
         }
         self.merge(def, blocks);
         picked

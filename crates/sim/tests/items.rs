@@ -121,14 +121,19 @@ fn without_an_item_drop_definition_breaking_drops_nothing() {
 }
 
 #[test]
-fn the_base_game_drops_dirt_from_grass_and_stone_from_its_slab() {
+fn the_base_game_drops_dirt_from_grass_and_a_part_from_its_slab() {
     let data = data_mods::load(std::path::Path::new(base::DATA_DIR)).unwrap();
     let mods: [&dyn Mod; 3] = [&data, &base::BaseMod, &base_movement::BaseMovementMod];
     let sim = Simulation::with_mods(&mods).unwrap();
     let blocks = sim.blocks();
     let drop = |name: &str| blocks.drop(blocks.id(name).unwrap()).map(|d| (blocks.material_name(d.material), d.amount));
     assert_eq!(drop(base::GRASS), Some(("base:dirt", FULL_VOLUME)));
-    assert_eq!(drop(base::STONE_SLAB), Some(("base:stone", FULL_VOLUME / 2)));
-    assert_eq!(drop(base::STONE_STAIRS), Some(("base:stone", FULL_VOLUME * 3 / 4)));
+    // A crafted shape breaks back into its part, made of stone.
+    let stone = blocks.material(base::STONE).unwrap();
+    for (shape, volume) in [(base::shapes::slab(), FULL_VOLUME / 2), (base::shapes::stairs(), FULL_VOLUME * 3 / 4)] {
+        let drop = blocks.drop(blocks.find_shaped(stone, &shape).unwrap()).unwrap();
+        assert_eq!((blocks.part_of(drop.material), drop.amount), (Some(stone), volume));
+        assert_eq!(blocks.unit(drop.material), volume, "carried whole");
+    }
     assert!(sim.item_drop_def().is_some());
 }

@@ -21,42 +21,44 @@ use crate::{ChunkMesh, Look, PendingToggles, RenderOrigin, Sim, coords, mesher};
 const PIXELS_PER_SLOT: f32 = 40.0;
 
 /// What's in hand, and how blocks get placed. Every tool is on offer, then every material with
-/// a placeable block, whether any is carried or not: a slot holds a material, and the shape key
-/// picks which of its placeable blocks goes down. See [`entries`].
+/// a placeable full block, whether any is carried or not, then every part carried. A material
+/// places its full block; shapes come from crafting, as parts. See [`entries`].
 #[derive(Resource, Default)]
 pub struct Palette {
     pub slot: usize,
     scrolled: f32,
     /// Precise placement instead of basic placement.
     pub precise: bool,
-    /// The shape picked for each material, as an index into its blocks.
-    shapes: HashMap<MaterialId, usize>,
 }
 
 /// What a palette slot offers.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Entry {
     Tool(ToolId),
-    /// A material and its placeable blocks, its shapes, in registration order.
-    Material(MaterialId, Vec<BlockId>),
-    /// A placeable block made of no material, so it costs nothing.
+    /// A material and its full block.
+    Material(MaterialId, BlockId),
+    /// A crafted part and its block.
+    Part(MaterialId, BlockId),
+    /// Any other placeable block, such as a mod's fixed shape or one made of no material.
     Block(BlockId),
 }
 
-/// The palette's slots: every tool, then each material with a placeable block, in the order
-/// materials were first named, then placeable blocks with no material.
+/// The palette's slots: every tool, then each material with a placeable full block, in the
+/// order materials were first named, then each part carried, in the order they were first
+/// made, then any other placeable block.
 pub fn entries(sim: &Simulation) -> Vec<Entry> {
     let blocks = sim.blocks();
     let mut out: Vec<Entry> = sim.tool_ids().map(Entry::Tool).collect();
-    let placeable = placeable_blocks(blocks);
-    for m in (0..blocks.material_count()).filter_map(|i| blocks.material_by_index(i)) {
-        let shapes: Vec<BlockId> =
-            placeable.iter().copied().filter(|&b| blocks.drop(b).is_some_and(|d| d.material == m)).collect();
-        if !shapes.is_empty() {
-            out.push(Entry::Material(m, shapes));
-        }
-    }
-    out.extend(placeable.into_iter().filter(|&b| blocks.drop(b).is_none()).map(Entry::Block));
+    let all = (0..blocks.material_count()).filter_map(|i| blocks.material_by_index(i));
+    let (materials, parts): (Vec<_>, Vec<_>) = all.partition(|&m| blocks.part_of(m).is_none());
+    let placeable = |b: BlockId| blocks.get(b).is_some_and(|def| def.placeable && def.is_full());
+    let main: Vec<(MaterialId, BlockId)> =
+        materials.into_iter().map(|m| (m, blocks.material_block(m))).filter(|&(_, b)| placeable(b)).collect();
+    out.extend(main.iter().map(|&(m, b)| Entry::Material(m, b)));
+    let carried: Vec<_> = parts.into_iter().filter(|&p| sim.inventory().amount(p) >= blocks.unit(p)).collect();
+    out.extend(carried.iter().map(|&p| Entry::Part(p, blocks.material_block(p))));
+    let listed = |b: BlockId| main.iter().any(|&(_, m)| m == b) || blocks.drop(b).is_some_and(|d| blocks.part_of(d.material).is_some());
+    out.extend(placeable_blocks(blocks).into_iter().filter(|&b| !listed(b)).map(Entry::Block));
     out
 }
 
@@ -69,34 +71,27 @@ pub enum Held {
 }
 
 impl Palette {
-    /// What's in the selected slot: for a material, the block of its picked shape.
+    /// What's in the selected slot.
     pub fn held(&self, sim: &Simulation) -> Held {
         match entries(sim).get(self.slot) {
             Some(Entry::Tool(tool)) => Held::Tool(*tool),
-            Some(Entry::Material(m, shapes)) => Held::Block(shapes[self.shape(*m) % shapes.len()]),
-            Some(Entry::Block(block)) => Held::Block(*block),
+            Some(Entry::Material(_, block) | Entry::Part(_, block) | Entry::Block(block)) => Held::Block(*block),
             None => Held::Nothing,
         }
     }
 
-    /// The material in the selected slot, if it holds one.
+    /// The material or part in the selected slot, if it holds one: what the drop key throws.
     pub fn material(&self, sim: &Simulation) -> Option<MaterialId> {
         match entries(sim).get(self.slot) {
-            Some(Entry::Material(m, _)) => Some(*m),
+            Some(Entry::Material(m, _) | Entry::Part(m, _)) => Some(*m),
             _ => None,
         }
     }
 
-    /// The shape picked for `material`, as an index into its blocks; wrap it by their count.
-    fn shape(&self, material: MaterialId) -> usize {
-        self.shapes.get(&material).copied().unwrap_or(0)
-    }
-
-    /// Picks the held material's next shape, or with `step` -1 its previous one, wrapping.
-    pub fn next_shape(&mut self, sim: &Simulation, step: i64) {
-        if let Some(Entry::Material(m, shapes)) = entries(sim).get(self.slot) {
-            let picked = (self.shape(*m) % shapes.len()) as i64;
-            self.shapes.insert(*m, (picked + step).rem_euclid(shapes.len() as i64) as usize);
+    /// Selects the slot holding part `part`, if it's carried.
+    pub fn select_part(&mut self, sim: &Simulation, part: MaterialId) {
+        if let Some(i) = entries(sim).iter().position(|e| matches!(e, Entry::Part(p, _) if *p == part)) {
+            self.slot = i;
         }
     }
 
@@ -142,8 +137,7 @@ pub(crate) fn playing(cursor: &CursorOptions) -> bool {
     cursor.grab_mode != CursorGrabMode::None
 }
 
-/// Latches use and drop presses for the next tick, and picks the palette slot and shape. While
-/// the shape key is held, scrolling picks the shape instead of the slot.
+/// Latches use and drop presses for the next tick, and picks the palette slot.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn edit_input(
     keys: Res<ButtonInput<KeyCode>>,
@@ -170,9 +164,6 @@ pub(crate) fn edit_input(
     if controls.placement_mode.just_pressed(&keys, &mouse) {
         palette.precise = !palette.precise;
     }
-    if keys.just_pressed(controls.shape) {
-        palette.next_shape(&sim.0, 1);
-    }
 
     let count = slot_count(&sim.0);
     if count == 0 {
@@ -188,11 +179,7 @@ pub(crate) fn edit_input(
     };
     let steps = palette.scrolled.trunc();
     palette.scrolled -= steps;
-    if keys.pressed(controls.shape) {
-        palette.next_shape(&sim.0, -steps as i64);
-    } else {
-        palette.slot = (palette.slot as i64 - steps as i64).rem_euclid(count as i64) as usize;
-    }
+    palette.slot = (palette.slot as i64 - steps as i64).rem_euclid(count as i64) as usize;
 }
 
 /// Outlines the boxes of the occupant that breaking would remove, unless a tool is in hand.
@@ -342,6 +329,8 @@ pub(crate) fn remesh_changed_chunks(
     mut chunk_meshes: ResMut<ChunkMeshes>,
     mut handles: Query<&mut Mesh3d, With<ChunkMesh>>,
 ) {
+    // Crafting registers blocks while playing; their looks must be known before they're drawn.
+    chunk_meshes.volumes.sync(sim.0.blocks());
     let changed = sim.0.take_changed_chunks();
     let grid = sim.0.universe().main();
     for pos in changed {
@@ -392,6 +381,7 @@ pub(crate) fn palette_text(sim: &Simulation, palette: &Palette, controls: &Contr
         .map(|entry| match entry {
             Entry::Tool(tool) => short(&sim.tool(*tool).name).to_owned(),
             Entry::Material(m, _) => format!("{} {}", short(blocks.material_name(*m)), amount(inventory.amount(*m))),
+            Entry::Part(p, _) => format!("{} ×{}", part_name(blocks, *p), inventory.amount(*p) / blocks.unit(*p)),
             Entry::Block(block) => block_name(*block),
         })
         .enumerate()
@@ -414,14 +404,17 @@ pub(crate) fn palette_text(sim: &Simulation, palette: &Palette, controls: &Contr
     };
     let mode = format!("{mode} ({} switches)", controls.placement_mode.label());
     let held = match (palette.material(sim), palette.held(sim)) {
-        (Some(m), Held::Block(block)) => {
-            let shape = shape_name(blocks.material_name(m), &block_name(block));
+        (Some(m), Held::Block(_)) => {
+            let what = match blocks.part_of(m) {
+                Some(_) => format!("{}, a crafted shape", part_name(blocks, m)),
+                None => format!("{} block, shapes are crafted at a table", short(blocks.material_name(m))),
+            };
             let throw = if sim.inventory_def().is_some() {
                 format!(", {} throws", crate::controls::label(controls.drop))
             } else {
                 String::new()
             };
-            format!("{shape} ({} next shape, hold and scroll{throw})  ·  {mode}", crate::controls::label(controls.shape))
+            format!("{what}{throw}  ·  {mode}")
         }
         (_, Held::Block(_)) => mode,
         _ => String::new(),
@@ -430,18 +423,35 @@ pub(crate) fn palette_text(sim: &Simulation, palette: &Palette, controls: &Contr
 }
 
 /// A name without its namespace.
-fn short(name: &str) -> &str {
+pub(crate) fn short(name: &str) -> &str {
     name.split_once(':').map_or(name, |(_, path)| path)
 }
 
-/// What a block of `material` is called as a shape of it: `brick_slab` is a slab of brick, and
-/// `brick` itself is the full block.
-fn shape_name(material: &str, block: &str) -> String {
-    let material = short(material);
-    match block.strip_prefix(material) {
-        Some("") => "block".to_owned(),
-        Some(rest) => rest.trim_start_matches('_').replace('_', " "),
-        None => block.replace('_', " "),
+/// A part's name for people: its material, how much of a block it fills, and the first four
+/// digits of its shape's hash to tell parts of one size apart, like `wood ½ #3fa2`.
+pub(crate) fn part_name(blocks: &BlockRegistry, part: MaterialId) -> String {
+    let material = blocks.part_of(part).map_or("?", |m| short(blocks.material_name(m)));
+    let tag = blocks.material_name(part).rsplit_once("_s").map_or("", |(_, hash)| &hash[..hash.len().min(4)]);
+    format!("{material} {} #{tag}", fraction(blocks.unit(part)))
+}
+
+/// A volume as a fraction of a boxel, in the simplest sixteenths, sixty-fourths and so on it
+/// makes: `½`, `¾`, `3/16`.
+pub(crate) fn fraction(volume: u32) -> String {
+    let full = sim::FULL_VOLUME;
+    let gcd = |mut a: u32, mut b: u32| {
+        while b != 0 {
+            (a, b) = (b, a % b);
+        }
+        a
+    };
+    let g = gcd(volume, full).max(1);
+    match (volume / g, full / g) {
+        (1, 2) => "½".to_owned(),
+        (1, 4) => "¼".to_owned(),
+        (3, 4) => "¾".to_owned(),
+        (n, 1) => n.to_string(),
+        (n, d) => format!("{n}/{d}"),
     }
 }
 
@@ -469,62 +479,64 @@ mod tests {
     }
 
     #[test]
-    fn the_palette_holds_the_tools_then_the_materials() {
-        let sim = base_sim();
-        let blocks = sim.blocks();
+    fn the_palette_holds_the_tools_then_the_materials_then_parts_carried() {
+        let mut sim = base_sim();
         let club = sim.tool_ids().next().expect("base registers a tool");
         assert_eq!(sim.tool(club).name, base::CLUB);
-        let (brick, wood) = (blocks.material("base:brick").unwrap(), blocks.material("base:wood").unwrap());
-        let names = |ids: &[BlockId]| ids.iter().map(|&b| blocks.get(b).unwrap().name.clone()).collect::<Vec<_>>();
-        let slots = entries(&sim);
-        let [Entry::Tool(tool), Entry::Material(m1, bricks), Entry::Material(m2, woods)] = &slots[..] else {
-            panic!("a club and two materials: {slots:?}");
-        };
-        assert_eq!((*tool, *m1, *m2), (club, brick, wood));
-        let brick_shapes = [base::BRICK, base::BRICK_SLAB, base::BRICK_STAIRS, base::BRICK_PANEL, base::BRICK_WINDOW];
-        assert_eq!(names(bricks), brick_shapes);
-        assert_eq!(names(woods), [base::WOOD, base::WOOD_SLAB, base::WOOD_STAIRS, base::WOOD_FINE_STAIRS, base::WOOD_PANEL]);
+        let blocks = sim.blocks();
+        let (brick, wood) = (blocks.material(base::BRICK).unwrap(), blocks.material(base::WOOD).unwrap());
+        let (brick_block, wood_block, table) =
+            (blocks.id(base::BRICK).unwrap(), blocks.id(base::WOOD).unwrap(), blocks.id(base::CRAFTING_TABLE).unwrap());
+        let table_material = blocks.material(base::CRAFTING_TABLE).unwrap();
+        // The test area's crafted shapes aren't carried, so they aren't on offer.
+        assert_eq!(
+            entries(&sim),
+            [
+                Entry::Tool(club),
+                Entry::Material(brick, brick_block),
+                Entry::Material(wood, wood_block),
+                Entry::Material(table_material, table),
+            ]
+        );
 
         let at = |slot| Palette { slot, ..Default::default() };
         assert_eq!(at(0).held(&sim), Held::Tool(club));
         assert_eq!((at(0).tool(&sim), at(0).selected(&sim)), (Some(club), BlockId::EMPTY), "a tool places nothing");
         assert_eq!(at(0).material(&sim), None, "nor throws");
-        assert_eq!((at(1).tool(&sim), at(1).selected(&sim), at(1).material(&sim)), (None, bricks[0], Some(brick)));
+        assert_eq!((at(1).tool(&sim), at(1).selected(&sim), at(1).material(&sim)), (None, brick_block, Some(brick)));
         assert_eq!(at(slot_count(&sim)).held(&sim), Held::Nothing);
+
+        // A part shows up once one is carried, after the materials.
+        let slab = sim.shaped_block(wood, &base::shapes::slab()).unwrap();
+        let part = sim.blocks().drop(slab).unwrap().material;
+        sim.spawn_player().unwrap();
+        sim.spawn_item(part, sim::FULL_VOLUME / 2, sim.player().unwrap().pos());
+        for _ in 0..5 {
+            sim.step(&PlayerInput::default());
+        }
+        assert_eq!(sim.inventory().amount(part), sim::FULL_VOLUME / 2, "picked up");
+        assert_eq!(entries(&sim).last(), Some(&Entry::Part(part, slab)));
+        let mut palette = at(0);
+        palette.select_part(&sim, part);
+        assert_eq!((palette.slot, palette.selected(&sim), palette.material(&sim)), (4, slab, Some(part)));
     }
 
     #[test]
-    fn each_material_remembers_its_shape() {
+    fn the_hud_shows_amounts_the_fill_and_what_is_held() {
         let sim = base_sim();
-        let slots = entries(&sim);
-        let (Entry::Material(_, bricks), Entry::Material(_, woods)) = (&slots[1], &slots[2]) else { panic!() };
-        let mut palette = Palette { slot: 1, ..Default::default() };
-        palette.next_shape(&sim, 1);
-        palette.next_shape(&sim, 1);
-        assert_eq!(palette.selected(&sim), bricks[2], "brick stairs");
-        palette.slot = 2;
-        assert_eq!(palette.selected(&sim), woods[0], "wood keeps its own shape");
-        palette.next_shape(&sim, -1);
-        assert_eq!(palette.selected(&sim), woods[woods.len() - 1], "going back wraps");
-        palette.slot = 1;
-        assert_eq!(palette.selected(&sim), bricks[2]);
-        palette.slot = 0;
-        palette.next_shape(&sim, 1);
-        assert_eq!(palette.held(&sim), Held::Tool(sim.tool_ids().next().unwrap()), "a tool has no shapes");
-    }
-
-    #[test]
-    fn the_hud_shows_amounts_the_fill_and_the_shape() {
-        let sim = base_sim();
-        let mut palette = Palette { slot: 1, ..Default::default() };
-        palette.next_shape(&sim, 1);
+        let palette = Palette { slot: 1, ..Default::default() };
         let text = palette_text(&sim, &palette, &Controls::default());
         let lines: Vec<&str> = text.lines().collect();
         assert_eq!(lines[0], "carrying 32 / 64");
         assert!(lines[1].contains("[2 brick 16]") && lines[1].contains("3 wood 16"), "{}", lines[1]);
-        assert!(lines[2].starts_with("slab (G next shape"), "{}", lines[2]);
-        assert_eq!(shape_name("base:wood", "wood_fine_stairs"), "fine stairs");
-        assert_eq!(shape_name("base:wood", "wood"), "block");
+        assert!(lines[2].starts_with("brick block, shapes are crafted at a table, Q throws"), "{}", lines[2]);
+        let blocks = sim.blocks();
+        let stone = blocks.material(base::STONE).unwrap();
+        let stairs = blocks.find_shaped(stone, &base::shapes::stairs()).unwrap();
+        let name = part_name(blocks, blocks.drop(stairs).unwrap().material);
+        assert!(name.starts_with("stone ¾ #") && name.len() == "stone ¾ #".len() + 4, "{name}");
+        assert_eq!((fraction(sim::FULL_VOLUME / 2), fraction(sim::FULL_VOLUME * 3 / 16)), ("½".into(), "3/16".into()));
+        assert_eq!(fraction(sim::FULL_VOLUME * 2), "2");
     }
 
     #[test]
@@ -563,7 +575,9 @@ mod tests {
         let mut sim = Simulation::with_mods(&[&data, &base::BaseMod, &base_movement::BaseMovementMod]).unwrap();
         sim.spawn_player().unwrap();
         // Stand east of a slab with a fence post through it and aim down at the post's top.
-        let (fence, slab) = (sim.blocks().id(base::WOOD_FENCE).unwrap(), sim.blocks().id(base::BRICK_SLAB).unwrap());
+        let blocks = sim.blocks();
+        let shaped = |m: &str, shape| blocks.find_shaped(blocks.material(m).unwrap(), &shape).unwrap();
+        let (fence, slab) = (shaped(base::WOOD, base::shapes::post()), shaped(base::BRICK, base::shapes::slab()));
         let cell = api::BoxelPos::new(-9, -4, 0);
         assert_eq!(sim.universe().main().cell(cell).len(), 2);
         sim.teleport_player(WorldPos::new(I64Vec3::new(-8, -4, 0), ZVec3::new(0.5, 0.5, 0.0)));

@@ -73,6 +73,8 @@ pub struct PlayerInput {
     /// Precise placement, where the part of the face aimed at picks how a block sits, instead
     /// of basic placement.
     pub place_precise: bool,
+    /// Crafts at a table this tick.
+    pub craft: Option<crate::crafting::Craft>,
 }
 
 /// How a body gets out of a block that appeared inside it.

@@ -106,7 +106,7 @@ A run of small toy slices. Each one takes a single game-feel feature that doesn'
 
 #### Emergent shapes from crafting (branch `toy-emergent-shapes`)
 
-**Stage:** Implement. Chosen by the user (2026-11-01) ahead of Generative crafting. The drag and drop from Generative crafting's notes is designed here.
+**Stage:** Verify. Chosen by the user (2026-11-01) ahead of Generative crafting. The drag and drop from Generative crafting's notes is designed here.
 
 **Goal:** shapes come from crafting instead of each being its own block. A 4×4 grid on a crafting table, filled with materials and parts, makes a part; the face of the table used decides which way it's pushed through; parts go back into the grid, so shapes build on shapes, including non-prisms. Every shape in the base game becomes emergent.
 
@@ -133,6 +133,40 @@ A run of small toy slices. Each one takes a single game-feel feature that doesn'
 **Deferred:** nesting deeper than two levels; mixed materials in one pattern; saving parts between sessions; Generative crafting's properties; swapping left and right click.
 
 **API debt to add:** the crafting menu in the client (`client::crafting`): mods can't change the menu.
+
+*Implementation notes* (2026-11-02)
+- **Changed from the plan:**
+  - `CraftingDef` only names the table; the grid is fixed at 4 by the engine, since a 4×4 grid of quarters shrinks exactly into sixteenths.
+  - Parts aren't dragged onto the palette: every part carried gets a slot after the materials, as materials do. The menu has a "hold" button per part, and crafting puts the new part in hand.
+  - The preview is a picture in the menu, seen from in front of the table's front, a little to the left and above. It isn't a 3D view in the world.
+  - The table has no visible front. The hint under the crosshair names the face aimed at ("crafting table, left side: E to craft").
+  - The crafted fence post turns freely like every shaped block, where the old one only turned its axis; it fills the same space.
+- **API (`api`):**
+  - `shape::ShapeGrid`: 16×16×16 bits, with `from_boxes`, greedy `to_boxes`, `turned`, `quarters` (`None` when there's detail finer than quarters) and `hash64`.
+  - `crafting`: `TableFace` (from a normal in the table's frame, plus the grid's right and up for each face), `Cell` (`Empty`, `Solid`, `Shape`), `craft_shape`, `CraftError` (`Empty`, `TooFine`), `CraftingDef`, and a `pattern` helper for text rows.
+  - `Registrar::register_crafting`, `WorldEdit::add_shaped`, and `ApiError::DuplicateCraftingDef`.
+- **Engine (`sim`):**
+  - `BlockRegistry::shaped(material, shape)` registers a shaped block the first time it's needed. It copies the material's full block, takes `Turning::Any`, and is named `<material>_s<16 hex>`. `find_shaped` looks one up without registering.
+  - A shaped block names itself as its material, so breaking it drops one part. A part is a carried kind in the same ID space as materials (`MaterialId`): `part_of` gives what it's made of, and `unit` is its volume, so it's carried, picked up, pulled and thrown only whole.
+  - The two shapes of one grid turned differently, such as stairs crafted at the front and at the side, are different parts, because they place differently relative to you.
+  - `sim::crafting`: `Craft`, `plan` (one material, cells fit, pays the volume, as many as affordable) and `make`. `Simulation::table_face`, `craft_plan` (adds the table and reach checks), `last_craft` and `shaped_block`.
+  - Crafting is sent with the tick (`PlayerInput::craft`) so it stays deterministic like the other inputs. Crafting turns material into the same volume of parts, so it never needs more room.
+- **Data:** `mods/base/crafting.toml` (`table`), read by `data_mods::crafting` with errors pointing at the file and line. `blocks.toml` keeps only full blocks plus the crafting table (a planks look with a light top, `turning = "any"`). The `[shapes]` support stays for other mods.
+- **Base:** `base::shapes` crafts the slab, stairs and post with the players' rule; the post takes two crafts, four corner parts shrunk into the middle cells. The test area builds them through `add_shaped`, and the table stands at `TABLE_SPOT` (-2, 3), its front facing south toward spawn.
+- **Client:**
+  - `client::crafting`: E at a table face opens the menu, and E, Escape, or walking out of reach closes it. Drag carried things onto cells; dragging across cells fills each, and right-click empties one. "Craft", shift-click or "Craft N" make parts.
+  - The palette lists tools, then materials (their full block), then parts carried. The HUD shows parts as `wood ½ #3fa2 ×2`.
+  - `Volumes::sync` picks up blocks registered while playing. The shape key is gone, `interact` (E) is new, and the user's controls file was updated to match.
+- **Measured risk:** typical crafted shapes come to 2 to 32 boxes. The worst found, checkerboard parts in a checkerboard of cells, is 256 boxes and 1,536 faces for one block, against 6 for a cube. That's fine at toy scale. If walls of them get heavy, the fix is meshing only exposed faces from the shape grid.
+- **Tests:** 342 pass across the workspace and clippy is clean.
+  - Shapes: box round trips, merged boxes covering every sixteenth once, turning matching turned boxes, quarters, and hashes.
+  - The crafting rule: a full grid, slab and stairs at every face, fine stairs, a pipe, material-only cells matching the plain prism, a pipe on its own axis and across (4 holes), too-fine parts refused, and the face frames.
+  - The registry: one block per shape and material, parts made of their material, and only materials with a full block taking shapes.
+  - Crafting costs, counts, mixed materials, and a part in a cell not being used up.
+  - `crafting.toml` and its errors.
+  - The base end to end (`sim/tests/crafting.rs`): which face is aimed at, including a turned table; craft, place, break and pick up; reach and shortage refusals; and a part in a cell.
+  - Base shapes matching the old ones, the palette and HUD, look volumes for later blocks, the menu's pictures, and the interact key.
+  - The game starts with no errors.
 
 ### Toy backlog
 

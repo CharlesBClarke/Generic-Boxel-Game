@@ -14,6 +14,8 @@ pub struct Volumes {
     /// Which volume each block uses and whether its look turns with it, by block ID; `None`
     /// for blocks without a look.
     of_block: Vec<Option<(u32, bool)>>,
+    /// Each look's volume and whether it turns, by name, for blocks registered later.
+    by_look: std::collections::HashMap<String, (u32, bool)>,
 }
 
 impl Volumes {
@@ -23,18 +25,25 @@ impl Volumes {
     pub fn build(looks: &LookRegistry, blocks: &BlockRegistry) -> Self {
         // A look's texels run X, then Y, then Z, so stacking along Z is just one after another.
         let mut rgba = vec![255; LookDef::VOLUME * 4];
-        let mut index = std::collections::HashMap::new();
+        let mut by_look = std::collections::HashMap::new();
         for (i, look) in looks.iter().enumerate() {
             rgba.extend_from_slice(&look.rgba);
-            index.insert(look.name.as_str(), (i as u32 + 1, look.turns));
+            by_look.insert(look.name.clone(), (i as u32 + 1, look.turns));
         }
-        let mut of_block = vec![None; blocks.len() + 1];
-        for (id, def) in blocks.iter() {
+        let mut volumes = Volumes { count: looks.iter().count() as u32 + 1, rgba, of_block: vec![None], by_look };
+        volumes.sync(blocks);
+        volumes
+    }
+
+    /// Catches up with blocks registered since: crafting registers shaped blocks while the
+    /// game runs. Looks are fixed at startup, so this only looks new blocks' up.
+    pub fn sync(&mut self, blocks: &BlockRegistry) {
+        for (id, def) in blocks.iter().skip(self.of_block.len() - 1) {
+            debug_assert_eq!(id.index(), self.of_block.len());
             // The simulation has checked every name exists; a missing one would draw white.
-            of_block[id.index()] =
-                def.look.as_ref().map(|l| index.get(l.as_str()).copied().unwrap_or((Self::WHITE, false)));
+            let volume = def.look.as_ref().map(|l| self.by_look.get(l).copied().unwrap_or((Self::WHITE, false)));
+            self.of_block.push(volume);
         }
-        Volumes { count: looks.iter().count() as u32 + 1, rgba, of_block }
     }
 
     /// The volume a block is drawn from, or `None` if it has no look.
@@ -73,6 +82,13 @@ mod tests {
         assert_eq!((volumes.of(plain), volumes.of(BlockId::EMPTY)), (None, None));
         assert!(volumes.turns(grass) && volumes.turns(slab), "every shape follows its look's rule");
         assert!(!volumes.turns(plain));
+
+        // A block registered later, as crafting does, finds its look once synced.
+        let mut volumes = volumes;
+        let later = blocks.register(BlockDef::new("test:later", true, [0; 3]).with_look("test:red")).unwrap();
+        assert_eq!(volumes.of(later), None);
+        volumes.sync(&blocks);
+        assert_eq!((volumes.of(later), volumes.of(grass)), (Some(1), Some(2)));
 
         // Texel (x, y, z) of volume v is at z + v * SIZE in the stack.
         let texel = |v: usize, x: usize, y: usize, z: usize| {

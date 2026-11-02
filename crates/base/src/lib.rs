@@ -6,6 +6,8 @@ use api::{
     WorldEdit, WorldPos,
 };
 
+pub mod shapes;
+
 /// The base game's data half, in the source tree. Both halves share the `base` namespace.
 pub const DATA_DIR: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../../mods/base");
 
@@ -16,21 +18,10 @@ pub const GRASS: &str = "base:grass";
 pub const BRICK: &str = "base:brick";
 pub const MARKER: &str = "base:marker";
 pub const ICE: &str = "base:ice";
-pub const STONE_SLAB: &str = "base:stone_slab";
-pub const STONE_STAIRS: &str = "base:stone_stairs";
-pub const BRICK_SLAB: &str = "base:brick_slab";
-pub const BRICK_STAIRS: &str = "base:brick_stairs";
-pub const BRICK_PANEL: &str = "base:brick_panel";
-pub const BRICK_WINDOW: &str = "base:brick_window";
 pub const WOOD: &str = "base:wood";
-pub const WOOD_SLAB: &str = "base:wood_slab";
-pub const WOOD_STAIRS: &str = "base:wood_stairs";
-pub const WOOD_FINE_STAIRS: &str = "base:wood_fine_stairs";
-pub const WOOD_PANEL: &str = "base:wood_panel";
-pub const WOOD_FENCE: &str = "base:wood_fence";
 pub const LOG: &str = "base:log";
-pub const LOG_SLAB: &str = "base:log_slab";
 pub const GRAVEL: &str = "base:gravel";
+pub const CRAFTING_TABLE: &str = "base:crafting_table";
 
 /// The cow-shaped training dummy, defined in `mods/base/targets.toml`.
 pub const COW: &str = "base:cow";
@@ -46,6 +37,10 @@ pub const COW_PEN_SPOT: (i64, i64, i64) = (-6, 14, 0);
 /// Where the shapes corner of the test area starts, relative to its origin: where the feet stand
 /// at the foot of the staircase.
 pub const SHAPES_SPOT: (i64, i64, i64) = (-5, 0, 0);
+
+/// Where the crafting table stands, relative to the test area's origin: north-west of spawn,
+/// its front facing south toward it.
+pub const TABLE_SPOT: (i64, i64, i64) = (-2, 3, 0);
 
 /// Where the far copy of the test area sits, for checking that play is the same in the millions.
 pub const FAR_ORIGIN: BoxelPos = BoxelPos::new(3_000_000, -2_000_000, 1_000);
@@ -193,11 +188,13 @@ pub fn build_test_area(w: &mut dyn WorldEdit, o: BoxelPos) -> Result<(), ApiErro
 }
 
 /// Blocks that aren't full cubes, west of spawn: a staircase rising west, a slab path with
-/// fence posts sharing its boxels, a lone post, a double slab and logs.
+/// fence posts sharing its boxels, a lone post, a double slab, logs and the crafting table.
+/// Every shape is crafted, the same way a player would make it (see [`shapes`]).
 fn build_shapes_corner(w: &mut dyn WorldEdit, o: BoxelPos) -> Result<(), ApiError> {
     let at = |x: i64, y: i64, z: i64| o.offset(I64Vec3::new(x, y, z));
     let west = Orientation::quarter_turns(2, 1);
     let top = Orientation::quarter_turns(0, 2);
+    let (stairs, slab, post) = (shapes::stairs(), shapes::slab(), shapes::post());
 
     // Stairs up to a platform 3 high, 3 wide. Unturned stairs rise to the north; a quarter
     // turn makes them rise to the west.
@@ -207,29 +204,33 @@ fn build_shapes_corner(w: &mut dyn WorldEdit, o: BoxelPos) -> Result<(), ApiErro
             if step > 0 {
                 w.fill(at(x, y, 0), at(x, y, step - 1), STONE)?;
             }
-            w.add_block(at(x, y, step), STONE_STAIRS, west)?;
+            w.add_shaped(at(x, y, step), STONE, &stairs, west)?;
         }
         w.fill(at(-12, y, 0), at(-10, y, 2), STONE)?;
     }
 
     // A path of bottom slabs, with fence posts poking through two of them.
     for x in -12..=-7 {
-        w.add_block(at(x, -4, 0), BRICK_SLAB, Orientation::IDENTITY)?;
+        w.add_shaped(at(x, -4, 0), BRICK, &slab, Orientation::IDENTITY)?;
     }
     for x in [-12, -9] {
-        w.add_block(at(x, -4, 0), WOOD_FENCE, Orientation::IDENTITY)?;
+        w.add_shaped(at(x, -4, 0), WOOD, &post, Orientation::IDENTITY)?;
     }
     // And a post standing on its own.
-    w.add_block(at(-9, -7, 0), WOOD_FENCE, Orientation::IDENTITY)?;
+    w.add_shaped(at(-9, -7, 0), WOOD, &post, Orientation::IDENTITY)?;
     // A double slab: a bottom and a top slab in one boxel.
-    w.add_block(at(-6, -4, 0), STONE_SLAB, Orientation::IDENTITY)?;
-    w.add_block(at(-6, -4, 0), STONE_SLAB, top)?;
+    w.add_shaped(at(-6, -4, 0), STONE, &slab, Orientation::IDENTITY)?;
+    w.add_shaped(at(-6, -4, 0), STONE, &slab, top)?;
 
     // A log lying east to west, and one standing.
     for x in -12..=-10 {
         w.add_block(at(x, 3, 0), LOG, Orientation::z_along(0))?;
     }
-    w.fill(at(-7, 3, 0), at(-7, 3, 1), LOG)
+    w.fill(at(-7, 3, 0), at(-7, 3, 1), LOG)?;
+
+    // The crafting table, unturned: its front faces south.
+    let (x, y, z) = TABLE_SPOT;
+    w.add_block(at(x, y, z), CRAFTING_TABLE, Orientation::IDENTITY)
 }
 
 /// Things to move around on: jump gaps, a pillar line, a sprint straight, an ice patch and

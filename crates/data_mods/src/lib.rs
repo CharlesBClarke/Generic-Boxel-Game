@@ -7,11 +7,13 @@
 //!   `[[target]]` entries drawn and heard through them (see [`targets`]).
 //! - `inventory.toml`: what a player carries: a shared capacity, throwing, and what a player
 //!   starts with (see [`inventory`]).
+//! - `crafting.toml`: which block is the crafting table (see [`crafting`]).
 //!
 //! [`load`] reads a folder into a [`DataMod`], an ordinary [`Mod`] that registers its content
 //! through the same API as code. Mistakes are reported with the file and line, and unknown
 //! fields are errors, so a typo is never silently ignored.
 
+mod crafting;
 mod inventory;
 mod looks;
 mod targets;
@@ -22,7 +24,9 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use api::block::is_valid_name;
-use api::{ApiError, BlockBox, BlockDef, InventoryDef, LookDef, Mod, ModelDef, Registrar, SoundDef, TargetDef, Turning};
+use api::{
+    ApiError, BlockBox, BlockDef, CraftingDef, InventoryDef, LookDef, Mod, ModelDef, Registrar, SoundDef, TargetDef, Turning,
+};
 use serde::Deserialize;
 use toml::Spanned;
 
@@ -38,6 +42,7 @@ pub struct DataMod {
     sounds: Vec<SoundDef>,
     targets: Vec<TargetDef>,
     inventory: Option<InventoryDef>,
+    crafting: Option<CraftingDef>,
 }
 
 impl DataMod {
@@ -77,6 +82,10 @@ impl DataMod {
     pub fn inventory(&self) -> Option<&InventoryDef> {
         self.inventory.as_ref()
     }
+
+    pub fn crafting(&self) -> Option<&CraftingDef> {
+        self.crafting.as_ref()
+    }
 }
 
 impl Mod for DataMod {
@@ -102,6 +111,9 @@ impl Mod for DataMod {
         }
         if let Some(inventory) = &self.inventory {
             r.register_inventory(inventory.clone())?;
+        }
+        if let Some(crafting) = &self.crafting {
+            r.register_crafting(crafting.clone())?;
         }
         Ok(())
     }
@@ -273,6 +285,7 @@ pub fn load(dir: &Path) -> Result<DataMod, LoadError> {
 
     let (models, sounds, targets) = targets::load(dir, &namespace)?;
     let inventory = inventory::load(dir, &namespace, &blocks)?;
+    let crafting = crafting::load(dir, &namespace, &blocks)?;
     Ok(DataMod {
         name: namespace,
         version: manifest.version,
@@ -283,6 +296,7 @@ pub fn load(dir: &Path) -> Result<DataMod, LoadError> {
         sounds,
         targets,
         inventory,
+        crafting,
     })
 }
 
@@ -762,6 +776,39 @@ mod tests {
         assert_eq!(line, Some(7));
         assert!(message.contains("at least 0"), "{message}");
         let (_, message) = error("i_field", "pickup_delay = 1", "pickup_delay = 1\n        weight = 3");
+        assert!(message.contains("unknown field"), "{message}");
+    }
+
+    fn crafting_folder(test: &str, crafting: &str) -> Folder {
+        let folder = Folder::new(test);
+        let blocks = format!("{STONE_LOOK}[[block]]\nname = \"table\"\nlook = \"stone\"\n");
+        folder.write("mod.toml", MANIFEST).write("blocks.toml", blocks).write("crafting.toml", crafting);
+        folder
+    }
+
+    #[test]
+    fn reads_the_crafting_table() {
+        let m = crafting_folder("crafting", "table = \"table\"\n").load().unwrap();
+        assert_eq!(m.crafting(), Some(&CraftingDef { table: "test:table".into() }));
+        let other = crafting_folder("crafting_other", "table = \"other:bench\"\n").load().unwrap();
+        assert_eq!(other.crafting().unwrap().table, "other:bench", "another mod's block is left for the engine");
+        assert!(Folder::new("no_crafting").write("mod.toml", MANIFEST).load().unwrap().crafting().is_none());
+    }
+
+    #[test]
+    fn crafting_mistakes_name_the_file_and_line() {
+        let error = |test: &str, text: &str| {
+            let e = crafting_folder(test, text).load().unwrap_err();
+            assert!(e.path.ends_with("crafting.toml"), "{e}");
+            (e.line, e.message)
+        };
+        let (line, message) = error("c_unknown", "\ntable = \"bench\"\n");
+        assert_eq!(line, Some(2));
+        assert!(message.contains("\"bench\"") && message.contains("no block"), "{message}");
+        let (_, message) = error("c_name", "table = \"Bench\"\n");
+        assert!(message.contains("lowercase"), "{message}");
+        let (line, message) = error("c_field", "table = \"table\"\ngrid = 4\n");
+        assert_eq!(line, Some(2));
         assert!(message.contains("unknown field"), "{message}");
     }
 }
