@@ -78,6 +78,11 @@ enum BrickPattern {
     /// different ways: upright cubes checkered with cubes along X in the bottom half of the
     /// block, and with cubes along Y in the top half, so every face shows all three.
     Weave,
+    /// Like the weave, but its two layers of cubes are laid like a running bond: the top layer
+    /// shifts half a cube along X and Y, so seams never stack, and by default the whole
+    /// pattern is shifted so the block's edges cut through bricks. The bottom layer checkers
+    /// cubes along X with cubes along Y, the top layer upright cubes with cubes along X.
+    Staggered,
 }
 
 /// Boards running along X, with a joint somewhere along each. Seams run half a board in from
@@ -291,7 +296,8 @@ impl Bricks {
         let ids = match self.pattern {
             BrickPattern::Running => self.running(),
             BrickPattern::Herringbone => self.herringbone()?,
-            BrickPattern::Weave => self.weave()?,
+            BrickPattern::Weave => self.weave(false)?,
+            BrickPattern::Staggered => self.weave(true)?,
         };
         let pick = distinct(&ids, self.colors.len(), self.seed)
             .ok_or_else(|| format!("bricks need more than {} colors, so neighbors always differ", self.colors.len()))?;
@@ -330,9 +336,9 @@ impl Bricks {
             .collect()
     }
 
-    /// Which brick each texel is in, for the weave. Bricks are `length` by half that by half
-    /// that, four to a cube `length` across.
-    fn weave(&self) -> Result<Vec<u32>, String> {
+    /// Which brick each texel is in, for the weave, or with `staggered` its running bond of
+    /// cubes. Bricks are `length` by half that by half that, four to a cube `length` across.
+    fn weave(&self, staggered: bool) -> Result<Vec<u32>, String> {
         if self.mortar.is_some() {
             return Err("woven bricks don't have mortar yet".into());
         }
@@ -345,13 +351,24 @@ impl Bricks {
         }
         let (side, half) = (self.length, self.height);
         let cubes = SIZE / side;
-        let [ox, oy, oz] = self.offset.unwrap_or([0, 0, 0]);
+        // Staggered, the block's edges cut through bricks a quarter of a cube in.
+        let quarter = side / 4;
+        let [ox, oy, oz] = self.offset.unwrap_or(if staggered { [quarter; 3] } else { [0; 3] });
         Ok(positions()
             .map(|(_, [x, y, z])| {
-                let p = [(x + ox) % SIZE, (y + oy) % SIZE, (z + oz) % SIZE];
+                let layer = (z + oz) % SIZE / side;
+                // Staggered, every other layer of cubes shifts half a cube along X and Y.
+                let shift = if staggered && layer % 2 == 1 { half } else { 0 };
+                let p = [(x + ox + shift) % SIZE, (y + oy + shift) % SIZE, (z + oz) % SIZE];
                 let c = p.map(|t| t / side);
                 // Which way the cube's bricks run: 0 along X, 1 along Y, 2 upright.
-                let along = if (c[0] + c[1] + c[2]) % 2 == 1 { 2 } else if c[2] % 2 == 0 { 0 } else { 1 };
+                let checker = (c[0] + c[1]) % 2;
+                let along = match (staggered, layer % 2, checker) {
+                    (true, 0, k) => k,
+                    (true, _, k) => 2 * (1 - k),
+                    (false, _, _) if (checker + c[2]) % 2 == 1 => 2,
+                    (false, l, _) => l,
+                };
                 // Which of the four bricks, by the halves of the cube across them.
                 let [a, b] = match along {
                     0 => [1, 2],
@@ -811,6 +828,64 @@ mod tests {
         // 8 cubes of 4 bricks: touching bricks never match, or they'd be one patch.
         for seed in 0..20 {
             let v = recipe(&format!("{WEAVE}, {FOUR_REDS}, seed = {seed} }}")).generate().unwrap();
+            assert_eq!(patches(&v), 32, "seed {seed}");
+        }
+    }
+
+    /// How long the run of one color through `p` is along `axis`, wrapping: with flat colors,
+    /// how far the brick there reaches that way.
+    fn extent(v: &[u8], p: [usize; 3], axis: usize) -> usize {
+        let c = texel(v, p[0], p[1], p[2]);
+        let at = |t: usize| {
+            let mut q = p;
+            q[axis] = t % SIZE;
+            texel(v, q[0], q[1], q[2])
+        };
+        let forward = (1..SIZE).take_while(|&t| at(p[axis] + t) == c).count();
+        let back = (1..SIZE).take_while(|&t| at(p[axis] + SIZE - t) == c).count();
+        (1 + forward + back).min(SIZE)
+    }
+
+    /// Which way the brick through `p` runs: the axis it's long along.
+    fn running(v: &[u8], p: [usize; 3]) -> usize {
+        let e = [0, 1, 2].map(|a| extent(v, p, a));
+        assert_eq!(e.iter().filter(|&&n| n == 8).count(), 1, "8 by 4 by 4 at {p:?}: {e:?}");
+        assert_eq!(e.iter().filter(|&&n| n == 4).count(), 2, "8 by 4 by 4 at {p:?}: {e:?}");
+        (0..3).find(|&a| e[a] == 8).unwrap()
+    }
+
+    const STAGGERED: &str = "bricks = { pattern = \"staggered\", length = 8, height = 4, speckle = 0";
+
+    #[test]
+    fn staggered_cubes_shift_between_layers_and_the_edges_cut_bricks() {
+        let v = recipe(&format!("{STAGGERED}, {FOUR_REDS} }}")).generate().unwrap();
+        // Shifted a quarter cube: one layer of cubes is z 14 to 5, across the block's bottom
+        // edge, with cubes from x and y 14 and 6. They run along X and Y, checkered.
+        assert_eq!(running(&v, [3, 3, 1]), 0);
+        assert_eq!(running(&v, [11, 3, 1]), 1);
+        assert_eq!(running(&v, [3, 11, 1]), 1);
+        assert_eq!(running(&v, [11, 11, 1]), 0);
+        // The other, z 6 to 13, shifted half a cube more: cubes from 10 and 2. Upright
+        // checkered with along X.
+        assert_eq!(running(&v, [7, 7, 9]), 2);
+        assert_eq!(running(&v, [15, 7, 9]), 0);
+        assert_eq!(running(&v, [7, 15, 9]), 0);
+        assert_eq!(running(&v, [15, 15, 9]), 2);
+        // Every pair of opposite faces has bricks running through, cut by the block's edge.
+        for axis in 0..3 {
+            let crossing = (0..SIZE * SIZE).any(|i| {
+                let (a, b) = (i % SIZE, i / SIZE);
+                let mut p = [a, b, 0];
+                p.rotate_right(2 - axis);
+                let mut q = p;
+                q[axis] = SIZE - 1;
+                texel(&v, p[0], p[1], p[2]) == texel(&v, q[0], q[1], q[2])
+            });
+            assert!(crossing, "a brick crosses the edge on axis {axis}");
+        }
+        // 8 cubes of 4 bricks: touching bricks never match, or they'd be one patch.
+        for seed in 0..20 {
+            let v = recipe(&format!("{STAGGERED}, {FOUR_REDS}, seed = {seed} }}")).generate().unwrap();
             assert_eq!(patches(&v), 32, "seed {seed}");
         }
     }

@@ -45,7 +45,11 @@
 #           there's no mortar. pattern = "weave" cuts the block into cubes length across,
 #           each holding four bricks (length by half by half) that all run one way: upright
 #           cubes checkered with cubes along X in the bottom half and along Y in the top, so
-#           every face shows all three. length must be 2, 4 or 8, height half of it, no mortar. offset ([x, y, z]
+#           every face shows all three. length must be 2, 4 or 8, height half of it, no mortar.
+#           pattern = "staggered" is the weave with its two layers of cubes in a running bond,
+#           the top one shifted half a cube along X and Y, and (by default offset) the whole
+#           pattern shifted a quarter cube so the block's edges cut through bricks. One layer
+#           checkers cubes along X and Y, the other upright cubes and cubes along X. offset ([x, y, z]
 #           texels) shifts the pattern; by default the mortar keeps off the layers faces show.
 #           speckle is how much each texel's shade varies, 0 to 0.5 either way (default 0.08).
 #   planks  { width, thickness, colors, seam, shade, cross, seed }: boards along X, width
@@ -71,7 +75,7 @@ noise = { colors = [[98, 67, 44], [112, 78, 52], [126, 89, 60], [139, 100, 68]],
 top = { colors = [[76, 124, 44], [88, 140, 50], [101, 156, 58]], depth = 2, ragged = 2, scale = 2, seed = 3 }
 
 [looks.brick]
-bricks = { pattern = "weave", length = 8, height = 4, colors = [[150, 66, 52], [188, 94, 72], [112, 46, 36], [158, 104, 80]], speckle = 0.06, seed = 4 }
+bricks = { pattern = "staggered", length = 8, height = 4, colors = [[150, 66, 52], [188, 94, 72], [112, 46, 36], [158, 104, 80]], speckle = 0.06, seed = 4 }
 
 [looks.ice]
 noise = { colors = [[158, 198, 234], [172, 210, 241], [188, 221, 247]], scale = 4, seed = 5 }
