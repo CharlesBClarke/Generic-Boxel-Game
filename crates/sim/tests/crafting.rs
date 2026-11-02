@@ -136,7 +136,7 @@ fn crafting_makes_parts_that_are_placed_broken_and_picked_up_again() {
 }
 
 #[test]
-fn crafting_needs_the_table_in_reach_and_room_to_carry() {
+fn crafting_needs_the_table_in_reach_and_nothing_else() {
     let mut sim = base_sim();
     let t = table();
     let brick = material(&sim, base::BRICK);
@@ -149,11 +149,10 @@ fn crafting_needs_the_table_in_reach_and_room_to_carry() {
     let stone = material(&sim, base::STONE);
     craft(&mut sim, TableFace::Front, cells(SLAB, stone), 1);
     assert!(matches!(sim.last_craft(), Some(Ok((_, 1)))), "{:?}", sim.last_craft());
-    // But they take room: 32 of 64 is carried and a half slab went in, so 63 more fit.
+    // The base game carries without limit, so asking for many makes them all. (A limit, and
+    // running out of room under it, is tested in `sim::crafting`.)
     craft(&mut sim, TableFace::Front, cells(SLAB, stone), 1000);
-    assert!(matches!(sim.last_craft(), Some(Ok((_, 63)))), "{:?}", sim.last_craft());
-    craft(&mut sim, TableFace::Front, cells(SLAB, stone), 1);
-    assert_eq!(sim.last_craft(), Some(Err(CraftRefusal::Full)));
+    assert!(matches!(sim.last_craft(), Some(Ok((_, 1000)))), "{:?}", sim.last_craft());
     let elsewhere =
         Craft { table: BoxelPos::new(t.0.x + 1, t.0.y, t.0.z), face: TableFace::Front, cells: cells(SLAB, brick), count: 1 };
     sim.step(&PlayerInput { craft: Some(elsewhere), ..Default::default() });

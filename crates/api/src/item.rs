@@ -91,13 +91,14 @@ impl Tunables for ItemDropDef {
 /// stay well inside 32 bits.
 pub const MAX_CAPACITY: f32 = 100_000.0;
 
-/// What a player carries: an amount of each material, all sharing one capacity by volume, so
-/// carrying many kinds costs no more than carrying one. Placing a block uses up its volume of
-/// its material. Without one registered, there's no inventory and placing is free.
+/// What a player carries: an amount of each material, all sharing one capacity by volume, if
+/// there is one, so carrying many kinds costs no more than carrying one. Placing a block uses up
+/// its volume of its material. Without one registered, there's no inventory and placing is free.
 #[derive(Clone, Debug, PartialEq)]
 pub struct InventoryDef {
     /// How much a player can carry, in boxels' worth of material, every material together.
-    pub capacity: f32,
+    /// `None` is no limit.
+    pub capacity: Option<f32>,
     /// Speed a thrown item leaves the player at, meters per second, along the look.
     pub throw_speed: f32,
     /// Seconds before the player who threw an item can pick it up again.
@@ -110,8 +111,10 @@ pub struct InventoryDef {
 impl InventoryDef {
     /// Checks the values make sense.
     pub fn validate(&self) -> Result<(), String> {
-        if !(self.capacity.is_finite() && (0.0..=MAX_CAPACITY).contains(&self.capacity)) {
-            return Err(format!("capacity must be from 0 to {MAX_CAPACITY}, got {}", self.capacity));
+        if let Some(capacity) = self.capacity
+            && !(capacity.is_finite() && (0.0..=MAX_CAPACITY).contains(&capacity))
+        {
+            return Err(format!("capacity must be from 0 to {MAX_CAPACITY}, got {capacity}"));
         }
         let fields = [("throw_speed", self.throw_speed), ("pickup_delay", self.pickup_delay)];
         if let Some((name, value)) = fields.iter().find(|(_, v)| !(v.is_finite() && *v >= 0.0)) {
@@ -126,8 +129,10 @@ impl InventoryDef {
             }
         }
         let total: f32 = self.start.iter().map(|(_, amount)| amount).sum();
-        if total > self.capacity {
-            return Err(format!("start holds {total} boxels, more than the capacity of {}", self.capacity));
+        if let Some(capacity) = self.capacity
+            && total > capacity
+        {
+            return Err(format!("start holds {total} boxels, more than the capacity of {capacity}"));
         }
         Ok(())
     }
@@ -135,16 +140,23 @@ impl InventoryDef {
 
 impl Tunables for InventoryDef {
     fn tunables(&self) -> Vec<Tunable> {
-        vec![
-            Tunable::new("capacity", self.capacity, 0.0, 256.0),
-            Tunable::new("throw_speed", self.throw_speed, 0.0, 20.0),
-            Tunable::new("pickup_delay", self.pickup_delay, 0.0, 5.0),
-        ]
+        // No limit has nothing to tune.
+        let capacity = self.capacity.map(|c| Tunable::new("capacity", c, 0.0, 256.0));
+        capacity
+            .into_iter()
+            .chain([
+                Tunable::new("throw_speed", self.throw_speed, 0.0, 20.0),
+                Tunable::new("pickup_delay", self.pickup_delay, 0.0, 5.0),
+            ])
+            .collect()
     }
 
     fn set_tunable(&mut self, name: &str, value: f32) -> bool {
         let field = match name {
-            "capacity" => &mut self.capacity,
+            "capacity" => match &mut self.capacity {
+                Some(capacity) => capacity,
+                None => return false,
+            },
             "throw_speed" => &mut self.throw_speed,
             "pickup_delay" => &mut self.pickup_delay,
             _ => return false,
@@ -192,7 +204,7 @@ mod tests {
 
     fn inventory() -> InventoryDef {
         InventoryDef {
-            capacity: 64.0,
+            capacity: Some(64.0),
             throw_speed: 6.0,
             pickup_delay: 1.0,
             start: vec![("test:stone".into(), 16.0), ("test:wood".into(), 16.0)],
@@ -202,10 +214,11 @@ mod tests {
     #[test]
     fn an_inventory_checks_its_values() {
         assert_eq!(inventory().validate(), Ok(()));
-        assert!(InventoryDef { capacity: -1.0, ..inventory() }.validate().is_err());
-        assert!(InventoryDef { capacity: f32::INFINITY, ..inventory() }.validate().is_err());
+        assert!(InventoryDef { capacity: Some(-1.0), ..inventory() }.validate().is_err());
+        assert!(InventoryDef { capacity: Some(f32::INFINITY), ..inventory() }.validate().is_err());
+        assert_eq!(InventoryDef { capacity: None, ..inventory() }.validate(), Ok(()), "no limit");
         assert!(InventoryDef { pickup_delay: f32::NAN, ..inventory() }.validate().is_err());
-        assert!(InventoryDef { capacity: 20.0, ..inventory() }.validate().is_err(), "starts with more than fits");
+        assert!(InventoryDef { capacity: Some(20.0), ..inventory() }.validate().is_err(), "starts with more than fits");
         assert!(InventoryDef { start: vec![("stone".into(), 1.0)], ..inventory() }.validate().is_err(), "a bad name");
         assert!(InventoryDef { start: vec![("test:stone".into(), -1.0)], ..inventory() }.validate().is_err());
     }
@@ -217,5 +230,8 @@ mod tests {
             assert!(d.set_tunable(&t.name, t.min), "{} sets", t.name);
         }
         assert!(!d.set_tunable("start", 1.0));
+        let mut unlimited = InventoryDef { capacity: None, ..inventory() };
+        assert!(unlimited.tunables().iter().all(|t| t.name != "capacity"));
+        assert!(!unlimited.set_tunable("capacity", 10.0), "no limit stays no limit");
     }
 }

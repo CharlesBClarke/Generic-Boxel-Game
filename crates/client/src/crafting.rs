@@ -105,6 +105,8 @@ const CELL: f32 = 48.0;
 const PREVIEW: f32 = 170.0;
 /// The size of a part's picture in the list.
 const ICON: f32 = 28.0;
+/// How many "craft many" makes when there's no carrying limit.
+const MANY: u32 = 64;
 
 /// Draws the menu while it's open.
 pub(crate) fn crafting_menu(
@@ -249,7 +251,9 @@ fn carried(ui: &mut egui::Ui, sim: &Simulation, palette: &mut Palette, brush: &m
 /// The picture of what the pattern makes, what it costs, and the craft buttons.
 fn result(ui: &mut egui::Ui, sim: &Simulation, menu: &mut CraftingMenu, palette: &mut Palette, shift: bool) {
     let blocks = sim.blocks();
-    let plan = menu.request(u32::MAX).map(|craft| sim.craft_plan(&craft));
+    // With no limit, "as many as fit" would be billions: make a stack at a time instead.
+    let most = if sim.capacity().is_some() { u32::MAX } else { MANY };
+    let plan = menu.request(most).map(|craft| sim.craft_plan(&craft));
     let (rect, _) = ui.allocate_exact_size(egui::vec2(PREVIEW, PREVIEW), egui::Sense::hover());
     ui.painter().rect_filled(rect, 4.0, egui::Color32::from_gray(25));
     match &plan {
@@ -258,12 +262,12 @@ fn result(ui: &mut egui::Ui, sim: &Simulation, menu: &mut CraftingMenu, palette:
             paint_shape(ui.painter(), rect.shrink(12.0), &plan.shape, color);
             let material = short(blocks.material_name(plan.material));
             ui.label(format!(
-                "{} of a block of {material} each, free to make; room for {}",
+                "{} of a block of {material} each, free to make; {} at once",
                 crate::editing::fraction(plan.volume),
                 plan.count
             ));
             ui.horizontal(|ui| {
-                let one = ui.button("Craft").on_hover_text("shift-click crafts as many as fit");
+                let one = ui.button("Craft").on_hover_text("shift-click crafts as many at once");
                 let all = ui.button(format!("Craft {}", plan.count));
                 let count = if all.clicked() || (one.clicked() && shift) {
                     Some(plan.count)

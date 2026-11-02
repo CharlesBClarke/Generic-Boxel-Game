@@ -614,9 +614,9 @@ impl Simulation {
     }
 
     /// How much the player can carry, every material together, in [`crate::FULL_VOLUME`] units,
-    /// or `None` for no limit without an inventory definition.
+    /// or `None` for no limit: without an inventory definition, or one with no capacity.
     pub fn capacity(&self) -> Option<u32> {
-        self.inventory_def.as_ref().map(|def| capacity_units(def.capacity))
+        self.inventory_def.as_ref().and_then(|def| def.capacity).map(capacity_units)
     }
 
     pub fn inventory_def(&self) -> Option<&InventoryDef> {

@@ -60,7 +60,7 @@ impl Mod for Yard {
 
 /// Room for `capacity` boxels, starting with `stone` boxels of stone.
 fn inventory(capacity: f32, stone: f32) -> InventoryDef {
-    InventoryDef { capacity, throw_speed: 6.0, pickup_delay: 1.0, start: vec![("test:stone".into(), stone)] }
+    InventoryDef { capacity: Some(capacity), throw_speed: 6.0, pickup_delay: 1.0, start: vec![("test:stone".into(), stone)] }
 }
 
 fn yard(inventory: Option<InventoryDef>) -> Simulation {
@@ -244,7 +244,7 @@ fn the_base_game_starts_with_brick_and_wood_and_shapes_need_parts() {
     let (brick, wood) = (blocks.material("base:brick").unwrap(), blocks.material("base:wood").unwrap());
     assert_eq!(sim.inventory().amount(brick), 16 * FULL_VOLUME);
     assert_eq!(sim.inventory().amount(wood), 16 * FULL_VOLUME);
-    assert_eq!(sim.capacity(), Some(64 * FULL_VOLUME));
+    assert_eq!(sim.capacity(), None, "the base game carries without limit");
 
     // A full brick costs a brick. A brick slab is a part: without one carried, it can't be
     // placed, and brick doesn't pay for it.

@@ -753,7 +753,9 @@ mod tests {
     fn reads_the_inventory() {
         let m = inventory_folder("inventory", INVENTORY).load().unwrap();
         let def = m.inventory().expect("an inventory");
-        assert_eq!((def.capacity, def.throw_speed, def.pickup_delay), (10.0, 5.0, 1.0));
+        assert_eq!((def.capacity, def.throw_speed, def.pickup_delay), (Some(10.0), 5.0, 1.0));
+        let unlimited = inventory_folder("inventory_unlimited", &INVENTORY.replacen("capacity = 10\n", "", 1));
+        assert_eq!(unlimited.load().unwrap().inventory().unwrap().capacity, None, "no capacity, no limit");
         let start = [("other:clay".to_owned(), 1.0), ("test:stone".to_owned(), 2.0)];
         assert_eq!(def.start, start, "another mod's material is left for the engine to check");
         assert!(Folder::new("no_inventory").write("mod.toml", MANIFEST).load().unwrap().inventory().is_none());

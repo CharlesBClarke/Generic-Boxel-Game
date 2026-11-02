@@ -394,7 +394,7 @@ pub(crate) fn palette_text(sim: &Simulation, palette: &Palette, controls: &Contr
             let full = if inventory.room(Some(capacity)) == 0 { "  FULL" } else { "" };
             format!("carrying {} / {}{full}", amount(inventory.total()), amount(capacity))
         }
-        None => "carrying, no limit".to_owned(),
+        None => format!("carrying {}, no limit", amount(inventory.total())),
     };
 
     let mode = if palette.precise {
@@ -531,7 +531,7 @@ mod tests {
         let palette = Palette { slot: 3, ..Default::default() };
         let text = palette_text(&sim, &palette, &Controls::default());
         let lines: Vec<&str> = text.lines().collect();
-        assert_eq!(lines[0], "carrying 32 / 64");
+        assert_eq!(lines[0], "carrying 32, no limit");
         assert!(lines[1].contains("[4 brick 16]") && lines[1].contains("6 wood 16"), "{}", lines[1]);
         assert!(lines[1].contains("3 dirt 0"), "materials not carried are listed too: {}", lines[1]);
         assert!(lines[2].starts_with("brick block, shapes are crafted at a table, Q throws"), "{}", lines[2]);
