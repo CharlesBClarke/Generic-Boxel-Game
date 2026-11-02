@@ -111,9 +111,11 @@ A run of small toy slices. Each one takes a single game-feel feature that doesn'
 - **Bricks:** 16 long by 8 tall (two rows a block), no mortar, colors closer together (141 to 151 red, was 134 to 158), and the new `speckle` setting turned down from 0.08 to 0.04.
 - **Planks:** `seam` is now optional, with new `thickness`, `shade` (each board's own slight tint) and `weave` (a checkerboard of cubes, boards along X in one and Y in the next, no joints). Wood and the crafting table use a weave of 8 with 4-wide boards, no seam, shade 0.03, and tighter grain colors.
 - **Plan change during the build:** the plan said 8-wide boards, but in an 8-texel weave cube they fill the cube and read as square tiles. The user picked 4-wide parquet instead. A look repeats every block, so a woven board is at most 8 long.
-- Tests: `woven_boards_run_both_ways_and_are_told_apart_by_shade`, `brick_speckle_can_be_turned_down`, and new bad-recipe errors. The game's broken-recipe test now edits the new brick length.
+- **First tuning (2026-11-02):** the user couldn't see the contrast at all ("maybe a little more"). Board shade 0.03 to 0.07, grain and brick colors spread about twice as far (bricks 137 to 155 red), brick speckle 0.04 to 0.06.
+- **Second round (2026-11-02):** "bricks arnt working, maybe smaller gorutless, and maybe wood can be block long x, 1/4 block y, and 2 texles z, and evey layer they switch dir". Bricks back to 8 by 4, still with no mortar. The planks' checkerboard `weave` is replaced by `cross`: boards a whole block long, 4 wide and 2 thick, each layer a quarter turn from the one below. Wood and the crafting table use it.
+- Tests: `crossed_boards_turn_every_layer_and_are_told_apart_by_shade` (replacing the weave test), `brick_speckle_can_be_turned_down`, and new bad-recipe errors. The game's broken-recipe test now edits the new brick length.
 
-*Done when:* (1) bricks are bigger with no mortar lines; (2) wood shows boards in both directions with no outlines, told apart by slight shade; (3) contrast is lower on both; all checked by the user in play.
+*Done when:* (1) bricks are bigger with no mortar lines; (2) wood shows boards a block long, crossing each layer, with no outlines, told apart by slight shade; (3) contrast is lower on both; all checked by the user in play.
 
 **Waiting for a play check** (remind the user at the start of every session, and at good moments during one, until they confirm; then delete the line): none.
 

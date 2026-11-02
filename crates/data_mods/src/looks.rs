@@ -62,9 +62,9 @@ struct Bricks {
 }
 
 /// Boards running along X, with a joint somewhere along each. Seams run half a board in from
-/// the block's sides, and joints keep off its ends and middle. With `weave`, the volume is cut
-/// into cubes in a checkerboard instead, boards running along X in one and along Y in the next,
-/// lined up with the cubes and with no joints.
+/// the block's sides, and joints keep off its ends and middle. With `cross`, each layer of
+/// boards turns a quarter turn from the one below, along X then Y, a whole block long with no
+/// joints.
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Planks {
@@ -79,8 +79,8 @@ struct Planks {
     /// How much each board's shade differs from the next, as a fraction either way.
     #[serde(default)]
     shade: f32,
-    /// Texels across each cube of the checkerboard.
-    weave: Option<usize>,
+    #[serde(default)]
+    cross: bool,
     #[serde(default)]
     seed: u32,
 }
@@ -245,15 +245,13 @@ impl Planks {
     fn fill(&self, texels: &mut [[u8; 3]]) -> Result<(), String> {
         check_colors("planks", &self.colors)?;
         let thickness = self.thickness.unwrap_or(self.width);
-        let span = self.weave.unwrap_or(SIZE);
-        check_divides("planks weave", span)?;
-        for (what, n) in [("planks width", self.width), ("planks thickness", thickness)] {
-            if n == 0 || !span.is_multiple_of(n) {
-                return Err(format!("{what} must divide {span} evenly, not {n}"));
-            }
-        }
+        check_divides("planks width", self.width)?;
+        check_divides("planks thickness", thickness)?;
         if self.seam.is_some() && (self.width < 2 || thickness < 2) {
             return Err("planks need a width and thickness of at least 2, to fit the seam".into());
+        }
+        if self.cross && !(SIZE / thickness).is_multiple_of(2) {
+            return Err("crossed planks need an even number of layers, so they repeat".into());
         }
         check_fraction("planks shade", self.shade)?;
         // Grain runs along the boards: long blobs along them, thin ones across.
@@ -262,37 +260,31 @@ impl Planks {
             Field::new(Scale::Axes([1.0, 8.0, 1.0]), self.seed)?,
         ];
         for (i, [x, y, z]) in positions() {
-            // Which cube of the checkerboard, and which way its boards run: 0 along X, 1 along Y.
-            let cube = [x / span, y / span, z / span];
-            let along = if self.weave.is_some() { (cube[0] + cube[1] + cube[2]) % 2 } else { 0 };
+            // Seams keep half a board in from the block's sides.
+            let az = (z + thickness / 2) % SIZE;
+            let layer = az / thickness;
+            // Which way the board runs: 0 along X, 1 along Y.
+            let along = if self.cross { layer % 2 } else { 0 };
             let (a, c) = if along == 0 { (x, y) } else { (y, x) };
-            // Across and up the board, within its cube. Without a weave, seams keep half a board
-            // in from the block's sides.
-            let (ac, az) = if self.weave.is_some() {
-                (c % span, z % span)
-            } else {
-                ((c + self.width / 2) % SIZE, (z + thickness / 2) % SIZE)
-            };
-            let cube_id = (cube[0] + cube[1] * 4 + cube[2] * 16) as u32;
-            let board = [(ac / self.width) as u32, (az / thickness) as u32, cube_id];
+            let ac = (c + self.width / 2) % SIZE;
+            let board = [(ac / self.width) as u32, layer as u32];
             // A joint in the first or second half of the block, never on its ends or at its
-            // middle. A woven board ends with its cube instead.
-            let (joint, piece) = if self.weave.is_some() {
+            // middle. Crossed boards run the whole block instead.
+            let (joint, piece) = if self.cross {
                 (None, 0)
             } else {
                 let h = hash([board[0], board[1], 0], self.seed) as usize;
                 let joint = 1 + h % (SIZE / 2 - 2) + (h >> 8) % 2 * (SIZE / 2);
                 (Some(joint), u32::from(a >= joint))
             };
-            let seam = ac % self.width == 0 || az % thickness == 0 || joint == Some(a);
+            let seam = ac.is_multiple_of(self.width) || az.is_multiple_of(thickness) || joint == Some(a);
             texels[i] = match self.seam.filter(|_| seam) {
                 Some(seam) => seam,
                 None => {
                     // Each board's grain from its own part of the field, so neighbors differ.
-                    let id = [board[0], board[1], board[2] * 2 + piece];
-                    let offset = (hash([id[0], id[1], id[2] * 4 + 1], self.seed) % SIZE as u32) as usize;
+                    let offset = (hash([board[0], board[1], piece * 4 + 1], self.seed) % SIZE as u32) as usize;
                     let p = if along == 0 { [(x + offset) % SIZE, y, z] } else { [x, (y + offset) % SIZE, z] };
-                    let tint = unit(hash([id[0], id[1], id[2] * 4 + 2], self.seed));
+                    let tint = unit(hash([board[0], board[1], piece * 4 + 2], self.seed));
                     shade(pick(&self.colors, grain[along].at(p)), 1.0 + self.shade * (2.0 * tint - 1.0))
                 }
             };
@@ -589,22 +581,21 @@ mod tests {
         }
     }
 
-    const WOVEN: &str = "planks = { width = 4, thickness = 4, colors = [[180, 140, 90]], shade = 0.1, weave = 8 }";
+    const CROSSED: &str = "planks = { width = 4, thickness = 2, colors = [[180, 140, 90]], shade = 0.1, cross = true }";
 
     #[test]
-    fn woven_boards_run_both_ways_and_are_told_apart_by_shade() {
-        let v = recipe(WOVEN).generate().unwrap();
+    fn crossed_boards_turn_every_layer_and_are_told_apart_by_shade() {
+        let v = recipe(CROSSED).generate().unwrap();
         // With one grain color, a board is one shade all through.
-        let along_x = |x0: usize, y: usize, z: usize| (x0..x0 + 8).all(|x| texel(&v, x, y, z) == texel(&v, x0, y, z));
-        let along_y = |x: usize, y0: usize, z: usize| (y0..y0 + 8).all(|y| texel(&v, x, y, z) == texel(&v, x, y0, z));
-        // The first cube's boards run along X, its neighbors' along Y, and back above it.
-        assert!(along_x(0, 3, 1) && !along_y(3, 0, 1), "the first cube runs along X");
-        assert!(along_y(11, 0, 1) && !along_x(8, 3, 1), "the next cube over runs along Y");
-        assert!(along_y(3, 8, 1), "and the next cube north");
-        assert!(along_y(3, 0, 9), "and the next cube up");
-        // Boards 4 wide and 4 thick, each its own shade.
-        assert_eq!(texel(&v, 0, 0, 0), texel(&v, 7, 3, 3), "one board");
-        assert_ne!(texel(&v, 0, 0, 0), texel(&v, 0, 0, 4), "the board above");
+        let along_x = |y: usize, z: usize| (0..SIZE).all(|x| texel(&v, x, y, z) == texel(&v, 0, y, z));
+        let along_y = |x: usize, z: usize| (0..SIZE).all(|y| texel(&v, x, y, z) == texel(&v, x, 0, z));
+        // Layers two texels thick, half a layer up: z 15 and 0 share one, then 1 and 2, and so on.
+        assert!(along_x(5, 0) && along_x(5, 15) && !along_y(5, 0), "the bottom layer runs along X");
+        assert!(along_y(5, 1) && along_y(5, 2) && !along_x(5, 1), "the next one along Y");
+        assert!(along_x(5, 3) && along_x(5, 4), "and back along X");
+        // Boards 4 wide, each its own shade, with no seams or joints.
+        assert_eq!(texel(&v, 0, 2, 0), texel(&v, 0, 5, 0), "one board");
+        assert_ne!(texel(&v, 0, 5, 0), texel(&v, 0, 6, 0), "the board beside it");
         assert!(colors(&v).len() >= 6, "boards differ: {}", colors(&v).len());
         // Gently: no board strays more than the shade from the grain.
         assert!(colors(&v).iter().all(|c| (162..=198).contains(&c[0])), "{:?}", colors(&v));
@@ -627,7 +618,7 @@ mod tests {
         assert!(err("noise = { colors = [] }").contains("at least one color"));
         assert!(err("noise = { colors = [[1, 1, 1]], scale = 0.5 }").contains("scale"));
         assert!(err("bricks = { length = 5, height = 4, colors = [[1, 1, 1]], mortar = [0, 0, 0] }").contains("divide"));
-        assert!(err("planks = { width = 8, colors = [[1, 1, 1]], weave = 4 }").contains("divide 4"));
+        assert!(err("planks = { width = 4, thickness = 16, colors = [[1, 1, 1]], cross = true }").contains("even"));
         assert!(err("planks = { width = 4, colors = [[1, 1, 1]], shade = 2 }").contains("shade"));
         assert!(err("noise = { colors = [[1, 1, 1]] }\ntop = { colors = [[1, 1, 1]], depth = 0 }").contains("depth"));
         assert!(toml::from_str::<Recipe>("noise = { colours = [[1, 1, 1]] }").is_err(), "unknown fields are errors");
