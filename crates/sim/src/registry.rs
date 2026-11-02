@@ -19,6 +19,10 @@ impl MaterialId {
     pub fn index(self) -> usize {
         self.0 as usize
     }
+
+    pub(crate) fn from_index(index: usize) -> Self {
+        MaterialId(index as u16)
+    }
 }
 
 /// What breaking a block drops.

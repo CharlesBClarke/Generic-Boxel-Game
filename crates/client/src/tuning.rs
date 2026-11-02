@@ -1,5 +1,5 @@
 //! The live tuning panel: sliders for every value the player's movement controller, the
-//! interaction, push-out and item drop definitions, tools, targets, the camera feel and the combat
+//! interaction, push-out, item drop and inventory definitions, tools, targets, the camera feel and the combat
 //! feel expose, whichever mod they come from.
 
 use api::{Tunable, Tunables};
@@ -22,6 +22,8 @@ pub struct TuningPanel {
     push_out_defaults: Option<Vec<Tunable>>,
     /// The item drop definition when the game started, for reset.
     item_drop_defaults: Option<Vec<Tunable>>,
+    /// The inventory definition when the game started, for reset.
+    inventory_defaults: Option<Vec<Tunable>>,
     /// Each tool's and each target's values when the game started, for reset.
     tool_defaults: Option<Vec<Vec<Tunable>>>,
     target_defaults: Option<Vec<Vec<Tunable>>>,
@@ -49,6 +51,10 @@ pub fn tuning_panel(
     let mut item_drops = sim.0.item_drop_def().cloned();
     if panel.item_drop_defaults.is_none() {
         panel.item_drop_defaults = item_drops.as_ref().map(|d| d.tunables());
+    }
+    let mut inventory = sim.0.inventory_def().cloned();
+    if panel.inventory_defaults.is_none() {
+        panel.inventory_defaults = inventory.as_ref().map(|d| d.tunables());
     }
     let mut tools = sim.0.tools().to_vec();
     if panel.tool_defaults.is_none() {
@@ -89,6 +95,11 @@ pub fn tuning_panel(
                 ui.separator();
                 ui.heading("Item drops");
                 sliders(ui, "item_drops", item_drops);
+            }
+            if let Some(inventory) = &mut inventory {
+                ui.separator();
+                ui.heading("Inventory");
+                sliders(ui, "inventory", inventory);
             }
             for tool in &mut tools {
                 ui.separator();
@@ -142,6 +153,11 @@ pub fn tuning_panel(
                         item_drops.set_tunable(&t.name, t.value);
                     }
                 }
+                if let Some(inventory) = &mut inventory {
+                    for t in panel.inventory_defaults.iter().flatten() {
+                        inventory.set_tunable(&t.name, t.value);
+                    }
+                }
                 for (tool, defaults) in tools.iter_mut().zip(panel.tool_defaults.iter().flatten()) {
                     for t in defaults {
                         tool.set_tunable(&t.name, t.value);
@@ -180,6 +196,10 @@ pub fn tuning_panel(
             out += "// item drops\n";
             out += &printout(&item_drops.tunables());
         }
+        if let Some(inventory) = &inventory {
+            out += "// inventory\n";
+            out += &printout(&inventory.tunables());
+        }
         for tool in &tools {
             out += &format!("// tool {}\n", tool.name);
             out += &printout(&tool.tunables());
@@ -208,6 +228,11 @@ pub fn tuning_panel(
         *def = edited;
     }
     if let (Some(edited), Some(def)) = (item_drops, sim.0.item_drop_def_mut())
+        && edited != *def
+    {
+        *def = edited;
+    }
+    if let (Some(edited), Some(def)) = (inventory, sim.0.inventory_def_mut())
         && edited != *def
     {
         *def = edited;

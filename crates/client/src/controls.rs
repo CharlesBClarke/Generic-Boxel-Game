@@ -47,6 +47,11 @@ pub struct Controls {
     pub trainer: KeyCode,
     /// Puts every target back at its spot, whole.
     pub respawn_targets: KeyCode,
+    /// Throws a block's worth of the held material. Held, it keeps throwing.
+    pub drop: KeyCode,
+    /// Picks the held material's next shape. Held, the scroll wheel picks shapes instead of
+    /// slots.
+    pub shape: KeyCode,
     /// Tapping forward twice within this many seconds sprints until forward is released.
     /// 0 turns it off. The sprint key works either way.
     pub double_tap_window: f32,
@@ -56,7 +61,7 @@ pub struct Controls {
     pub use_alt: Binding,
     /// Switches between basic placement and precise placement.
     pub placement_mode: Binding,
-    /// Picks a block from the palette, first to ninth. The scroll wheel also cycles it.
+    /// Picks a tool or material from the palette, first to ninth. The scroll wheel also cycles it.
     pub slots: [KeyCode; 9],
 }
 
@@ -112,6 +117,8 @@ impl Default for Controls {
             drill: KeyCode::F4,
             trainer: KeyCode::F5,
             respawn_targets: KeyCode::F6,
+            drop: KeyCode::KeyQ,
+            shape: KeyCode::KeyG,
             double_tap_window: 0.3,
             use_main: Binding::Mouse(MouseButton::Left),
             use_alt: Binding::Mouse(MouseButton::Right),
@@ -213,6 +220,8 @@ impl Controls {
                 "drill" => &mut self.drill,
                 "trainer" => &mut self.trainer,
                 "respawn_targets" => &mut self.respawn_targets,
+                "drop" => &mut self.drop,
+                "shape" => &mut self.shape,
                 _ => {
                     problems.push(format!("line {}: unknown action {action:?}", number + 1));
                     continue;

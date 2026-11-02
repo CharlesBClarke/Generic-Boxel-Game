@@ -1,7 +1,7 @@
 //! Loose items: an amount of a material lying in the world, dropped by a broken block. Each is
 //! a small copy of the block it came from, colliding as the box around that shape: it falls,
 //! bounces and slides to a stop against the boxes of solid blocks, and drifts toward a body
-//! that comes close enough to pick it up.
+//! that comes close enough to pick it up, if the body has room for it.
 //!
 //! Like the player, each item does its collision math relative to its own cell, so it behaves
 //! the same at any distance from zero.
@@ -43,6 +43,8 @@ pub struct Item {
     pub on_ground: bool,
     /// Being pulled toward a body this tick.
     pub pulled: bool,
+    /// Seconds until it can be pulled or picked up, for a thrown item.
+    pub wait: f32,
 }
 
 impl Item {
@@ -73,12 +75,15 @@ fn shape_of(block: BlockId, blocks: &BlockRegistry) -> (CellBox, u32) {
     (CellBox::bounds(&boxes).unwrap_or(CellBox::FULL), crate::volume(shape).max(1))
 }
 
-/// A body that picks up items: a box from its feet, `width` across and `height` tall.
+/// A body that picks up items: a box from its feet, `width` across and `height` tall, with
+/// `room` for this much more material, in [`crate::FULL_VOLUME`] units, every material
+/// together. With no room, it doesn't pull items either.
 #[derive(Clone, Copy, Debug)]
 pub struct Collector {
     pub feet: WorldPos,
     pub width: f32,
     pub height: f32,
+    pub room: u32,
 }
 
 impl Collector {
@@ -101,6 +106,19 @@ pub struct Items {
 impl Items {
     /// Drops `drop`, looking like `block`, with its center at `pos`, moving at `velocity`.
     pub fn spawn(&mut self, drop: Drop, block: BlockId, blocks: &BlockRegistry, pos: WorldPos, velocity: Vec3) {
+        self.spawn_waiting(drop, block, blocks, pos, velocity, 0.0);
+    }
+
+    /// Like [`Items::spawn`], but it can't be pulled or picked up for `wait` seconds.
+    pub fn spawn_waiting(
+        &mut self,
+        drop: Drop,
+        block: BlockId,
+        blocks: &BlockRegistry,
+        pos: WorldPos,
+        velocity: Vec3,
+        wait: f32,
+    ) {
         let (bounds, block_volume) = shape_of(block, blocks);
         self.list.push(Item {
             id: self.next_id,
@@ -113,6 +131,7 @@ impl Items {
             velocity,
             on_ground: false,
             pulled: false,
+            wait,
         });
         self.next_id += 1;
     }
@@ -130,8 +149,10 @@ impl Items {
     }
 
     /// Advances every item one tick of `dt` seconds: picks up what's close enough to
-    /// `collector`, pulls what's in range, moves the rest under gravity, then merges items of
-    /// the same material that ended up close together. Returns what was picked up.
+    /// `collector`, as far as its room allows, pulls what's in range while it has room, moves
+    /// the rest under gravity, then merges items of the same material that ended up close
+    /// together. An item too big for the room left is picked up in part, and the rest stays.
+    /// Returns what was picked up.
     pub fn step(
         &mut self,
         def: &ItemDropDef,
@@ -141,14 +162,23 @@ impl Items {
         collector: Option<Collector>,
     ) -> Vec<Drop> {
         let mut picked = Vec::new();
-        self.list.retain(|item| {
-            let close = collector.is_some_and(|c| c.reach(item.pos).0 <= def.pickup_radius);
-            if close {
-                picked.push(item.drop);
+        let mut collector = collector;
+        self.list.retain_mut(|item| {
+            let Some(c) = collector.as_mut().filter(|c| c.room > 0 && item.wait <= 0.0) else {
+                return true;
+            };
+            if c.reach(item.pos).0 > def.pickup_radius {
+                return true;
             }
-            !close
+            let amount = item.drop.amount.min(c.room);
+            c.room -= amount;
+            picked.push(Drop { amount, ..item.drop });
+            item.drop.amount -= amount;
+            item.drop.amount > 0
         });
+        let collector = collector.filter(|c| c.room > 0);
         for item in &mut self.list {
+            item.wait = (item.wait - dt).max(0.0);
             step_item(item, def, dt, terrain, collector);
         }
         self.merge(def, blocks);
@@ -172,10 +202,11 @@ impl Items {
                     continue;
                 }
                 let (keep, lose) = if b.drop.amount > a.drop.amount { (j, i) } else { (i, j) };
-                let amount = self.list[lose].drop.amount;
+                let (amount, wait) = (self.list[lose].drop.amount, self.list[lose].wait);
                 let kept = &mut self.list[keep];
                 let half_before = kept.extent(def).z * 0.5;
                 kept.drop.amount = kept.drop.amount.saturating_add(amount);
+                kept.wait = kept.wait.max(wait);
                 kept.block = blocks.material_block(kept.drop.material);
                 (kept.bounds, kept.block_volume) = shape_of(kept.block, blocks);
                 let grow = kept.extent(def).z * 0.5 - half_before;
@@ -194,7 +225,10 @@ impl Items {
 
 fn step_item(item: &mut Item, def: &ItemDropDef, dt: f32, terrain: &impl Terrain, collector: Option<Collector>) {
     item.prev_pos = item.pos;
-    let pull = collector.map(|c| c.reach(item.pos)).filter(|&(distance, _)| distance <= def.pull_radius);
+    let pull = collector
+        .filter(|_| item.wait <= 0.0)
+        .map(|c| c.reach(item.pos))
+        .filter(|&(distance, _)| distance <= def.pull_radius);
     item.pulled = pull.is_some();
     if let Some((_, toward)) = pull {
         let want = toward * def.pull_speed;
@@ -387,7 +421,7 @@ mod tests {
         let mut items = Items::default();
         f.spawn(&mut items, f.stone, f.stone_block, at(origin, 1.8, 0.5, 0.125), Vec3::ZERO);
         let floor = Floor { origin };
-        let body = Collector { feet: at(origin, 0.0, 0.5, 0.0), width: 0.6, height: 1.8 };
+        let body = Collector { feet: at(origin, 0.0, 0.5, 0.0), width: 0.6, height: 1.8, room: u32::MAX };
         let mut picked = Vec::new();
         for _ in 0..120 {
             picked.extend(f.step(&mut items, &floor, Some(body)));
@@ -401,6 +435,57 @@ mod tests {
             assert!(f.step(&mut items, &floor, Some(body)).is_empty());
         }
         assert!(!items.iter().next().unwrap().pulled);
+    }
+
+    #[test]
+    fn with_little_room_a_body_takes_what_fits_and_leaves_the_rest() {
+        let origin = I64Vec3::ZERO;
+        let f = fixture();
+        let mut items = Items::default();
+        // Right at the body's feet, so it's picked up on the first tick.
+        f.spawn(&mut items, f.stone, f.stone_block, at(origin, 0.5, 0.5, 0.125), Vec3::ZERO);
+        let floor = Floor { origin };
+        let quarter = crate::FULL_VOLUME / 4;
+        let body = Collector { feet: at(origin, 0.5, 0.5, 0.0), width: 0.6, height: 1.8, room: quarter };
+        let picked = f.step(&mut items, &floor, Some(body));
+        assert_eq!(picked, [Drop { amount: quarter, ..f.stone }]);
+        let item = items.iter().next().expect("the rest stays");
+        assert_eq!(item.drop.amount, crate::FULL_VOLUME - quarter);
+    }
+
+    #[test]
+    fn a_body_with_no_room_neither_pulls_nor_picks_up() {
+        let origin = I64Vec3::ZERO;
+        let f = fixture();
+        let mut items = Items::default();
+        let start = at(origin, 1.5, 0.5, 0.125);
+        f.spawn(&mut items, f.stone, f.stone_block, start, Vec3::ZERO);
+        let floor = Floor { origin };
+        let body = Collector { feet: at(origin, 0.5, 0.5, 0.0), width: 0.6, height: 1.8, room: 0 };
+        for _ in 0..120 {
+            assert!(f.step(&mut items, &floor, Some(body)).is_empty());
+        }
+        let item = items.iter().next().unwrap();
+        assert!(!item.pulled);
+        assert!(item.pos.delta_to(start).length() < 1e-3, "it stays where it lay");
+    }
+
+    #[test]
+    fn a_waiting_item_is_left_alone_until_its_wait_is_over() {
+        let origin = I64Vec3::ZERO;
+        let f = fixture();
+        let mut items = Items::default();
+        items.spawn_waiting(f.stone, f.stone_block, &f.blocks, at(origin, 0.5, 0.5, 0.125), Vec3::ZERO, 0.5);
+        let floor = Floor { origin };
+        let body = Collector { feet: at(origin, 0.5, 0.5, 0.0), width: 0.6, height: 1.8, room: u32::MAX };
+        let mut ticks = 0;
+        while f.step(&mut items, &floor, Some(body)).is_empty() {
+            ticks += 1;
+            assert!(ticks < 60, "picked up once the wait is over");
+            let item = items.iter().next().unwrap();
+            assert!(!item.pulled || item.wait == 0.0, "not pulled while waiting");
+        }
+        assert!((30..=31).contains(&ticks), "about half a second of ticks, took {ticks}");
     }
 
     #[test]
@@ -511,7 +596,7 @@ mod tests {
         let run = |origin: I64Vec3| {
             let mut items = Items::default();
             f.spawn(&mut items, f.stone, f.slab_block, at(origin, 0.3, 0.6, 2.0), Vec3::new(1.5, -0.7, 2.0));
-            let body = Collector { feet: at(origin, 2.5, 0.5, 0.0), width: 0.6, height: 1.8 };
+            let body = Collector { feet: at(origin, 2.5, 0.5, 0.0), width: 0.6, height: 1.8, room: u32::MAX };
             let floor = Floor { origin };
             let mut path = Vec::new();
             for _ in 0..240 {

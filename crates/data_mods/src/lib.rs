@@ -5,11 +5,14 @@
 //!   `[looks.<name>]` recipes for how blocks look, generated into solid volumes (see [`looks`]).
 //! - `targets.toml`: `[models.<name>]` and `[sounds.<name>]` read from files in the folder, and
 //!   `[[target]]` entries drawn and heard through them (see [`targets`]).
+//! - `inventory.toml`: what a player carries: a shared capacity, throwing, and what a player
+//!   starts with (see [`inventory`]).
 //!
 //! [`load`] reads a folder into a [`DataMod`], an ordinary [`Mod`] that registers its content
 //! through the same API as code. Mistakes are reported with the file and line, and unknown
 //! fields are errors, so a typo is never silently ignored.
 
+mod inventory;
 mod looks;
 mod targets;
 
@@ -19,7 +22,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use api::block::is_valid_name;
-use api::{ApiError, BlockBox, BlockDef, LookDef, Mod, ModelDef, Registrar, SoundDef, TargetDef, Turning};
+use api::{ApiError, BlockBox, BlockDef, InventoryDef, LookDef, Mod, ModelDef, Registrar, SoundDef, TargetDef, Turning};
 use serde::Deserialize;
 use toml::Spanned;
 
@@ -34,6 +37,7 @@ pub struct DataMod {
     models: Vec<ModelDef>,
     sounds: Vec<SoundDef>,
     targets: Vec<TargetDef>,
+    inventory: Option<InventoryDef>,
 }
 
 impl DataMod {
@@ -69,6 +73,10 @@ impl DataMod {
     pub fn targets(&self) -> &[TargetDef] {
         &self.targets
     }
+
+    pub fn inventory(&self) -> Option<&InventoryDef> {
+        self.inventory.as_ref()
+    }
 }
 
 impl Mod for DataMod {
@@ -91,6 +99,9 @@ impl Mod for DataMod {
         }
         for target in &self.targets {
             r.register_target(target.clone())?;
+        }
+        if let Some(inventory) = &self.inventory {
+            r.register_inventory(inventory.clone())?;
         }
         Ok(())
     }
@@ -261,6 +272,7 @@ pub fn load(dir: &Path) -> Result<DataMod, LoadError> {
     };
 
     let (models, sounds, targets) = targets::load(dir, &namespace)?;
+    let inventory = inventory::load(dir, &namespace, &blocks)?;
     Ok(DataMod {
         name: namespace,
         version: manifest.version,
@@ -270,6 +282,7 @@ pub fn load(dir: &Path) -> Result<DataMod, LoadError> {
         models,
         sounds,
         targets,
+        inventory,
     })
 }
 
@@ -703,5 +716,52 @@ mod tests {
     fn another_mods_model_is_left_for_the_engine_to_check() {
         let m = target_folder("t_other", &TARGETS.replacen("model = \"box\"", "model = \"other:box\"", 1)).load().unwrap();
         assert_eq!(m.targets()[0].model, "other:box");
+    }
+
+    const INVENTORY: &str = r#"
+        capacity = 10
+        throw_speed = 5
+        pickup_delay = 1
+
+        [start]
+        stone = 2
+        "other:clay" = 1
+    "#;
+
+    fn inventory_folder(test: &str, inventory: &str) -> Folder {
+        let folder = Folder::new(test);
+        let blocks = format!("{STONE_LOOK}[[block]]\nname = \"stone\"\nsolid = true\nlook = \"stone\"\n");
+        folder.write("mod.toml", MANIFEST).write("blocks.toml", blocks).write("inventory.toml", inventory);
+        folder
+    }
+
+    #[test]
+    fn reads_the_inventory() {
+        let m = inventory_folder("inventory", INVENTORY).load().unwrap();
+        let def = m.inventory().expect("an inventory");
+        assert_eq!((def.capacity, def.throw_speed, def.pickup_delay), (10.0, 5.0, 1.0));
+        let start = [("other:clay".to_owned(), 1.0), ("test:stone".to_owned(), 2.0)];
+        assert_eq!(def.start, start, "another mod's material is left for the engine to check");
+        assert!(Folder::new("no_inventory").write("mod.toml", MANIFEST).load().unwrap().inventory().is_none());
+    }
+
+    #[test]
+    fn inventory_mistakes_name_the_file_and_line() {
+        let error = |test: &str, from: &str, to: &str| {
+            let e = inventory_folder(test, &INVENTORY.replacen(from, to, 1)).load().unwrap_err();
+            assert!(e.path.ends_with("inventory.toml"), "{e}");
+            (e.line, e.message)
+        };
+        let (line, message) = error("i_material", "stone = 2", "sand = 2");
+        assert_eq!(line, Some(7));
+        assert!(message.contains("\"sand\"") && message.contains("no block"), "{message}");
+        let (line, message) = error("i_over", "capacity = 10", "capacity = 2");
+        assert_eq!(line, Some(2));
+        assert!(message.contains("more than the capacity"), "{message}");
+        let (line, message) = error("i_amount", "stone = 2", "stone = -2");
+        assert_eq!(line, Some(7));
+        assert!(message.contains("at least 0"), "{message}");
+        let (_, message) = error("i_field", "pickup_delay = 1", "pickup_delay = 1\n        weight = 3");
+        assert!(message.contains("unknown field"), "{message}");
     }
 }

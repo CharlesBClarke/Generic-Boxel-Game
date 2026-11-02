@@ -24,7 +24,7 @@ pub use combat::{HitBox, TargetDef, ToolDef};
 pub use coords::{BoxelPos, CHUNK_SIZE, CHUNK_VOLUME, ChunkPos, LocalPos, WorldPos, look_direction};
 pub use error::ApiError;
 pub use interaction::{InteractionDef, PushOutDef};
-pub use item::ItemDropDef;
+pub use item::{InventoryDef, ItemDropDef};
 pub use media::{ModelDef, SoundDef, Texture};
 pub use glam::{I64Vec3, Vec2, Vec3};
 pub use modding::{Mod, Registrar, WorldEdit};

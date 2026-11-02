@@ -5,13 +5,14 @@ use std::fmt;
 
 use api::block::is_valid_name;
 use api::{
-    ApiError, BlockDef, BoxelPos, ChunkPos, I64Vec3, InteractionDef, ItemDropDef, LookDef, ModelDef, Mod, MovementController,
-    Orientation, PlayerDef, PushOutDef, Registrar, SoundDef, TargetDef, ToolDef, Turning, Vec3, WorldEdit, WorldPos,
-    look_direction,
+    ApiError, BlockDef, BoxelPos, ChunkPos, I64Vec3, InteractionDef, InventoryDef, ItemDropDef, LookDef, ModelDef, Mod,
+    MovementController, Orientation, PlayerDef, PushOutDef, Registrar, SoundDef, TargetDef, ToolDef, Turning, Vec3,
+    WorldEdit, WorldPos, look_direction,
 };
 
 use crate::combat::{Strike, Swing, SwingStage, TargetKind, Targets, ToolId};
 use crate::edit::{ChangedChunks, Repeater};
+use crate::inventory::{Inventory, capacity_units};
 use crate::items::{Collector, Items, pop_velocity};
 use crate::player::{PushOut, Terrain};
 use crate::{
@@ -21,6 +22,8 @@ use crate::{
 
 /// How far in front of an aimed-at face the point that picks the boxel for a placed block is.
 const IN_FRONT: f32 = 1e-3;
+/// How far below the eye a thrown item starts, in meters, so it leaves from about the chest.
+const THROW_DROP: f32 = 0.3;
 
 #[derive(Debug, PartialEq)]
 pub enum SimError {
@@ -89,10 +92,12 @@ pub struct Simulation {
     player: Option<Player>,
     breaking: Repeater,
     placing: Repeater,
+    dropping: Repeater,
     changed: ChangedChunks,
     items: Items,
-    /// How much of each material the player has picked up, by material index.
-    collected: Vec<u32>,
+    inventory_def: Option<InventoryDef>,
+    /// What the player carries.
+    inventory: Inventory,
     targets: Targets,
     swing: Option<Swing>,
     guarding: bool,
@@ -125,6 +130,7 @@ impl Simulation {
                 interaction: &mut sim.interaction_def,
                 push_out: &mut sim.push_out_def,
                 item_drops: &mut sim.item_drop_def,
+                inventory: &mut sim.inventory_def,
                 models: &mut sim.models,
                 sounds: &mut sim.sounds,
                 targets: &mut sim.target_defs,
@@ -132,6 +138,12 @@ impl Simulation {
             })?;
         }
         sim.looks.check_blocks(&sim.blocks)?;
+        if let Some(def) = &sim.inventory_def {
+            for (name, boxels) in &def.start {
+                let material = sim.blocks.material(name).ok_or_else(|| ApiError::UnknownMaterial(name.clone()))?;
+                sim.inventory.add(material, capacity_units(*boxels), None);
+            }
+        }
         for def in &sim.target_defs {
             if !sim.models.iter().any(|m| m.name == def.model) {
                 return Err(ApiError::UnknownModel(def.model.clone()).into());
@@ -181,20 +193,20 @@ impl Simulation {
     pub fn step(&mut self, input: &PlayerInput) {
         self.edit_blocks(input);
         self.use_tool(input);
-        let Self { blocks, universe, player, items, item_drop_def, collected, targets, target_defs, .. } = self;
+        self.throw(input);
+        let capacity = self.capacity();
+        let Self { blocks, universe, player, items, item_drop_def, inventory, targets, target_defs, .. } = self;
         let terrain = GridTerrain { grid: universe.main(), blocks };
         if let Some(player) = player {
             player.step(input, Self::TICK_SECONDS, &terrain);
         }
         targets.step(target_defs, Self::TICK_SECONDS, &terrain);
         if let Some(def) = item_drop_def {
-            let collector = player.as_ref().map(|p| Collector { feet: p.pos(), width: p.shape().width, height: p.height() });
+            let room = inventory.room(capacity);
+            let collector =
+                player.as_ref().map(|p| Collector { feet: p.pos(), width: p.shape().width, height: p.height(), room });
             for drop in items.step(def, blocks, Self::TICK_SECONDS, &terrain, collector) {
-                if collected.len() <= drop.material.index() {
-                    collected.resize(drop.material.index() + 1, 0);
-                }
-                let total = &mut collected[drop.material.index()];
-                *total = total.saturating_add(drop.amount);
+                inventory.add(drop.material, drop.amount, capacity);
             }
         }
         self.tick += 1;
@@ -250,11 +262,21 @@ impl Simulation {
             };
             let occupant = Occupant::turned(block, orient(def.turning, &aim));
             if can_share(grid.cell(pos), occupant, &self.blocks).is_ok() {
-                return Some(PlaceTarget { pos, occupant, allowed: self.body_allows(pos, occupant) });
+                let allowed = self.can_pay(block) && self.body_allows(pos, occupant);
+                return Some(PlaceTarget { pos, occupant, allowed });
             }
             first.get_or_insert(PlaceTarget { pos, occupant, allowed: false });
         }
         first
+    }
+
+    /// Whether the player carries enough to place `block`: its volume of its material. Always,
+    /// without an inventory definition or for a block made of no material.
+    fn can_pay(&self, block: BlockId) -> bool {
+        match (&self.inventory_def, self.blocks.drop(block)) {
+            (Some(_), Some(cost)) => self.inventory.amount(cost.material) >= cost.amount,
+            _ => true,
+        }
     }
 
     /// Whether the bodies in the world leave room for `occupant` at `pos`: it isn't solid, or
@@ -314,10 +336,48 @@ impl Simulation {
         }
         let target = hit.and_then(|hit| self.placement(&hit, input.place_block, input.yaw, input.pitch, input.place_precise));
         let push_out = match target {
-            Some(place) if place.allowed => self.add_occupant(place.pos, place.occupant),
+            Some(place) if place.allowed => {
+                if let (Some(_), Some(cost)) = (&self.inventory_def, self.blocks.drop(place.occupant.block)) {
+                    self.inventory.take(cost.material, cost.amount);
+                }
+                self.add_occupant(place.pos, place.occupant)
+            }
             _ => None,
         };
         self.last_place = Some(PlaceReport { tick: self.tick, target, push_out });
+    }
+
+    /// Throws a full block's worth of the material the input names, or what's left of it if less,
+    /// on the drop button's press and then repeating while it's held, at the interaction
+    /// definition's rate. The item leaves from just below the eye along the look, carrying the
+    /// player's own speed, and can't be picked up until the inventory's pickup delay has passed.
+    /// Needs an inventory, item drops and an interaction definition.
+    fn throw(&mut self, input: &PlayerInput) {
+        let (Some(inventory), Some(interaction), Some(_)) = (&self.inventory_def, &self.interaction_def, &self.item_drop_def)
+        else {
+            return;
+        };
+        let interval = 1.0 / interaction.repeat_rate;
+        if !self.dropping.update(input.drop_pressed, input.drop_held, interval, Self::TICK_SECONDS) {
+            return;
+        }
+        let (Some(player), Some(material)) = (&self.player, input.drop_material) else {
+            return;
+        };
+        if material.index() >= self.blocks.material_count() {
+            return;
+        }
+        let amount = self.inventory.amount(material).min(crate::FULL_VOLUME);
+        if amount == 0 {
+            return;
+        }
+        let look = look_direction(input.yaw, input.pitch);
+        let at = player.eye().translate(Vec3::NEG_Z * THROW_DROP);
+        let velocity = look * inventory.throw_speed + player.velocity();
+        let wait = inventory.pickup_delay;
+        self.inventory.take(material, amount);
+        let block = self.blocks.material_block(material);
+        self.items.spawn_waiting(crate::Drop { material, amount }, block, &self.blocks, at, velocity, wait);
     }
 
     /// Works the tool in hand: the main use starts a swing when none is under way, held or
@@ -479,13 +539,24 @@ impl Simulation {
         self.items.spawn(crate::Drop { material, amount }, block, &self.blocks, pos, Vec3::ZERO);
     }
 
-    /// How much of each material the player has picked up, in [`crate::FULL_VOLUME`] units,
-    /// for every material picked up so far.
-    pub fn collected(&self) -> impl Iterator<Item = (MaterialId, u32)> + '_ {
-        (0..self.blocks.material_count())
-            .filter_map(|i| self.blocks.material_by_index(i))
-            .map(|m| (m, self.collected.get(m.index()).copied().unwrap_or(0)))
-            .filter(|&(_, amount)| amount > 0)
+    /// What the player carries.
+    pub fn inventory(&self) -> &Inventory {
+        &self.inventory
+    }
+
+    /// How much the player can carry, every material together, in [`crate::FULL_VOLUME`] units,
+    /// or `None` for no limit without an inventory definition.
+    pub fn capacity(&self) -> Option<u32> {
+        self.inventory_def.as_ref().map(|def| capacity_units(def.capacity))
+    }
+
+    pub fn inventory_def(&self) -> Option<&InventoryDef> {
+        self.inventory_def.as_ref()
+    }
+
+    /// For engine tools such as the tuning panel.
+    pub fn inventory_def_mut(&mut self) -> Option<&mut InventoryDef> {
+        self.inventory_def.as_mut()
     }
 
     /// Every registered model, in registration order.
@@ -738,6 +809,7 @@ struct ContentRegistrar<'a> {
     interaction: &'a mut Option<InteractionDef>,
     push_out: &'a mut Option<PushOutDef>,
     item_drops: &'a mut Option<ItemDropDef>,
+    inventory: &'a mut Option<InventoryDef>,
     models: &'a mut Vec<ModelDef>,
     sounds: &'a mut Vec<SoundDef>,
     targets: &'a mut Vec<TargetDef>,
@@ -805,6 +877,15 @@ impl Registrar for ContentRegistrar<'_> {
         }
         def.validate().map_err(ApiError::InvalidDef)?;
         *self.item_drops = Some(def);
+        Ok(())
+    }
+
+    fn register_inventory(&mut self, def: InventoryDef) -> Result<(), ApiError> {
+        if self.inventory.is_some() {
+            return Err(ApiError::DuplicateInventoryDef);
+        }
+        def.validate().map_err(ApiError::InvalidDef)?;
+        *self.inventory = Some(def);
         Ok(())
     }
 
