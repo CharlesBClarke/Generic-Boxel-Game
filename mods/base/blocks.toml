@@ -36,12 +36,17 @@
 # (default 0) picks a different but repeatable variation.
 #   noise   speckle: { colors, scale, seed }. scale is texels across a blob, 1 to 16: one
 #           number, or [x, y, z] to stretch it (default 1).
-#   bricks  { length, height, colors, mortar, offset, seed }: rows of bricks, each row shifted
-#           half a brick. length and height are in texels, mortar included, and must divide 16.
-#           Without mortar, bricks are told apart by color alone. offset ([x, y, z] texels)
-#           shifts the pattern; by default the mortar keeps off the layers faces show.
-#   planks  { width, colors, seam, seed }: square boards along X, with seams between them
-#           and a joint along each, kept off the layers faces show. width must divide 16.
+#   bricks  { length, height, colors, mortar, offset, speckle, seed }: rows of bricks, each row
+#           shifted half a brick. length and height are in texels, mortar included, and must
+#           divide 16. Without mortar, bricks are told apart by color alone. offset ([x, y, z]
+#           texels) shifts the pattern; by default the mortar keeps off the layers faces show.
+#           speckle is how much each texel's shade varies, 0 to 0.5 either way (default 0.08).
+#   planks  { width, thickness, colors, seam, shade, weave, seed }: boards along X, width
+#           texels across and thickness (default width) up, seam included, with a joint along
+#           each, kept off the layers faces show. Without seam, boards are told apart by shade:
+#           how much each board's shade differs, 0 to 0.5 either way (default 0). weave cuts the
+#           block into cubes that many texels across, checkered, boards along X in one and Y
+#           in the next, with no joints. weave must divide 16, width and thickness the weave.
 #   rings   { colors, spacing, bark, bark_depth, seed }: rings around the up axis, one color
 #           per ring repeating outward, inside a shell of bark (bark_depth texels, default 1).
 #   top     { colors, depth, ragged, scale, seed }: a cover over the top, depth texels deep
@@ -59,13 +64,13 @@ noise = { colors = [[98, 67, 44], [112, 78, 52], [126, 89, 60], [139, 100, 68]],
 top = { colors = [[76, 124, 44], [88, 140, 50], [101, 156, 58]], depth = 2, ragged = 2, scale = 2, seed = 3 }
 
 [looks.brick]
-bricks = { length = 8, height = 4, colors = [[146, 64, 50], [158, 73, 57], [134, 58, 46]], mortar = [184, 178, 168], seed = 4 }
+bricks = { length = 16, height = 8, colors = [[146, 64, 50], [151, 67, 53], [141, 61, 48]], speckle = 0.04, seed = 4 }
 
 [looks.ice]
 noise = { colors = [[158, 198, 234], [172, 210, 241], [188, 221, 247]], scale = 4, seed = 5 }
 
 [looks.wood]
-planks = { width = 4, colors = [[174, 134, 84], [161, 123, 77], [187, 147, 95]], seam = [108, 78, 48], seed = 6 }
+planks = { width = 4, colors = [[168, 129, 80], [174, 134, 84], [180, 139, 88]], shade = 0.03, weave = 8, seed = 6 }
 
 [looks.log]
 turns = true
@@ -76,8 +81,8 @@ noise = { colors = [[78, 76, 74], [98, 94, 91], [120, 116, 111], [142, 136, 129]
 
 # Dark boards under a light top, so the table reads as a work surface.
 [looks.crafting_table]
-planks = { width = 4, colors = [[120, 84, 50], [108, 76, 45], [131, 93, 56]], seam = [70, 48, 28], seed = 9 }
-top = { colors = [[204, 170, 120], [192, 158, 110]], depth = 2, ragged = 0, scale = 2, seed = 10 }
+planks = { width = 4, colors = [[116, 81, 48], [120, 84, 50], [124, 87, 52]], shade = 0.03, weave = 8, seed = 9 }
+top = { colors = [[200, 166, 117], [196, 162, 113]], depth = 2, ragged = 0, scale = 2, seed = 10 }
 
 [[block]]
 name = "stone"

@@ -54,20 +54,33 @@ struct Bricks {
     /// in from the block's sides and half a row up from its bottom, clear of the layers faces
     /// usually show.
     offset: Option<[usize; 3]>,
+    /// How much each texel's shade varies, as a fraction either way.
+    #[serde(default = "brick_speckle")]
+    speckle: f32,
     #[serde(default)]
     seed: u32,
 }
 
-/// Square boards running along X, with seams between them and a joint somewhere along each.
-/// Seams run half a board in from the block's sides, and joints keep off its ends and middle.
+/// Boards running along X, with a joint somewhere along each. Seams run half a board in from
+/// the block's sides, and joints keep off its ends and middle. With `weave`, the volume is cut
+/// into cubes in a checkerboard instead, boards running along X in one and along Y in the next,
+/// lined up with the cubes and with no joints.
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Planks {
-    /// Texels across a board, seam included.
+    /// Texels across a board, level, seam included.
     width: usize,
+    /// Texels up a board, seam included. By default the same as `width`.
+    thickness: Option<usize>,
     /// The grain.
     colors: Vec<[u8; 3]>,
-    seam: [u8; 3],
+    /// Without it, boards are told apart by `shade` alone.
+    seam: Option<[u8; 3]>,
+    /// How much each board's shade differs from the next, as a fraction either way.
+    #[serde(default)]
+    shade: f32,
+    /// Texels across each cube of the checkerboard.
+    weave: Option<usize>,
     #[serde(default)]
     seed: u32,
 }
@@ -128,6 +141,15 @@ impl Scale {
 
 fn one() -> usize {
     1
+}
+
+fn brick_speckle() -> f32 {
+    0.08
+}
+
+/// A shade fraction from a recipe, checked.
+fn check_fraction(what: &str, f: f32) -> Result<(), String> {
+    if (0.0..=0.5).contains(&f) { Ok(()) } else { Err(format!("{what} must be from 0 to 0.5, not {f}")) }
 }
 
 impl Recipe {
@@ -194,6 +216,7 @@ impl Bricks {
         if self.length < 2 || self.height < 2 {
             return Err("bricks need a length and height of at least 2, to fit the mortar".into());
         }
+        check_fraction("bricks speckle", self.speckle)?;
         let quarter = self.length - self.length / 4;
         let [ox, oy, oz] = self.offset.unwrap_or([quarter, quarter, self.height / 2]);
         for (i, [x, y, z]) in positions() {
@@ -210,7 +233,8 @@ impl Bricks {
                 let brick = hash([(bx / self.length) as u32, (by / self.length) as u32, row], self.seed);
                 let color = self.colors[brick as usize % self.colors.len()];
                 // A little speckle, so a brick isn't one flat color.
-                shade(color, 0.92 + 0.16 * unit(hash([x as u32, y as u32, z as u32], self.seed ^ 0x5bd1)))
+                let u = unit(hash([x as u32, y as u32, z as u32], self.seed ^ 0x5bd1));
+                shade(color, 1.0 + self.speckle * (2.0 * u - 1.0))
             };
         }
         Ok(())
@@ -220,26 +244,57 @@ impl Bricks {
 impl Planks {
     fn fill(&self, texels: &mut [[u8; 3]]) -> Result<(), String> {
         check_colors("planks", &self.colors)?;
-        check_divides("planks width", self.width)?;
-        if self.width < 2 {
-            return Err("planks need a width of at least 2, to fit the seam".into());
+        let thickness = self.thickness.unwrap_or(self.width);
+        let span = self.weave.unwrap_or(SIZE);
+        check_divides("planks weave", span)?;
+        for (what, n) in [("planks width", self.width), ("planks thickness", thickness)] {
+            if n == 0 || !span.is_multiple_of(n) {
+                return Err(format!("{what} must divide {span} evenly, not {n}"));
+            }
         }
-        // Grain runs along the boards: long blobs in X, thin ones across.
-        let grain = Field::new(Scale::Axes([8.0, 1.0, 1.0]), self.seed)?;
-        let half = self.width / 2;
+        if self.seam.is_some() && (self.width < 2 || thickness < 2) {
+            return Err("planks need a width and thickness of at least 2, to fit the seam".into());
+        }
+        check_fraction("planks shade", self.shade)?;
+        // Grain runs along the boards: long blobs along them, thin ones across.
+        let grain = [
+            Field::new(Scale::Axes([8.0, 1.0, 1.0]), self.seed)?,
+            Field::new(Scale::Axes([1.0, 8.0, 1.0]), self.seed)?,
+        ];
         for (i, [x, y, z]) in positions() {
-            let (y, z) = ((y + half) % SIZE, (z + half) % SIZE);
-            let board = [(y / self.width) as u32, (z / self.width) as u32];
-            // In the first or second half of the block, never on its ends or at its middle.
-            let h = hash([board[0], board[1], 0], self.seed) as usize;
-            let joint = 1 + h % (SIZE / 2 - 2) + (h >> 8) % 2 * (SIZE / 2);
-            let seam = y % self.width == 0 || z % self.width == 0 || x == joint;
-            texels[i] = if seam {
-                self.seam
+            // Which cube of the checkerboard, and which way its boards run: 0 along X, 1 along Y.
+            let cube = [x / span, y / span, z / span];
+            let along = if self.weave.is_some() { (cube[0] + cube[1] + cube[2]) % 2 } else { 0 };
+            let (a, c) = if along == 0 { (x, y) } else { (y, x) };
+            // Across and up the board, within its cube. Without a weave, seams keep half a board
+            // in from the block's sides.
+            let (ac, az) = if self.weave.is_some() {
+                (c % span, z % span)
             } else {
-                // Each board's grain from its own part of the field, so neighbors differ.
-                let offset = (hash([board[0], board[1], 1], self.seed) % SIZE as u32) as usize;
-                pick(&self.colors, grain.at([(x + offset) % SIZE, y, z]))
+                ((c + self.width / 2) % SIZE, (z + thickness / 2) % SIZE)
+            };
+            let cube_id = (cube[0] + cube[1] * 4 + cube[2] * 16) as u32;
+            let board = [(ac / self.width) as u32, (az / thickness) as u32, cube_id];
+            // A joint in the first or second half of the block, never on its ends or at its
+            // middle. A woven board ends with its cube instead.
+            let (joint, piece) = if self.weave.is_some() {
+                (None, 0)
+            } else {
+                let h = hash([board[0], board[1], 0], self.seed) as usize;
+                let joint = 1 + h % (SIZE / 2 - 2) + (h >> 8) % 2 * (SIZE / 2);
+                (Some(joint), u32::from(a >= joint))
+            };
+            let seam = ac % self.width == 0 || az % thickness == 0 || joint == Some(a);
+            texels[i] = match self.seam.filter(|_| seam) {
+                Some(seam) => seam,
+                None => {
+                    // Each board's grain from its own part of the field, so neighbors differ.
+                    let id = [board[0], board[1], board[2] * 2 + piece];
+                    let offset = (hash([id[0], id[1], id[2] * 4 + 1], self.seed) % SIZE as u32) as usize;
+                    let p = if along == 0 { [(x + offset) % SIZE, y, z] } else { [x, (y + offset) % SIZE, z] };
+                    let tint = unit(hash([id[0], id[1], id[2] * 4 + 2], self.seed));
+                    shade(pick(&self.colors, grain[along].at(p)), 1.0 + self.shade * (2.0 * tint - 1.0))
+                }
             };
         }
         Ok(())
@@ -534,6 +589,35 @@ mod tests {
         }
     }
 
+    const WOVEN: &str = "planks = { width = 4, thickness = 4, colors = [[180, 140, 90]], shade = 0.1, weave = 8 }";
+
+    #[test]
+    fn woven_boards_run_both_ways_and_are_told_apart_by_shade() {
+        let v = recipe(WOVEN).generate().unwrap();
+        // With one grain color, a board is one shade all through.
+        let along_x = |x0: usize, y: usize, z: usize| (x0..x0 + 8).all(|x| texel(&v, x, y, z) == texel(&v, x0, y, z));
+        let along_y = |x: usize, y0: usize, z: usize| (y0..y0 + 8).all(|y| texel(&v, x, y, z) == texel(&v, x, y0, z));
+        // The first cube's boards run along X, its neighbors' along Y, and back above it.
+        assert!(along_x(0, 3, 1) && !along_y(3, 0, 1), "the first cube runs along X");
+        assert!(along_y(11, 0, 1) && !along_x(8, 3, 1), "the next cube over runs along Y");
+        assert!(along_y(3, 8, 1), "and the next cube north");
+        assert!(along_y(3, 0, 9), "and the next cube up");
+        // Boards 4 wide and 4 thick, each its own shade.
+        assert_eq!(texel(&v, 0, 0, 0), texel(&v, 7, 3, 3), "one board");
+        assert_ne!(texel(&v, 0, 0, 0), texel(&v, 0, 0, 4), "the board above");
+        assert!(colors(&v).len() >= 6, "boards differ: {}", colors(&v).len());
+        // Gently: no board strays more than the shade from the grain.
+        assert!(colors(&v).iter().all(|c| (162..=198).contains(&c[0])), "{:?}", colors(&v));
+    }
+
+    #[test]
+    fn brick_speckle_can_be_turned_down() {
+        let v = recipe("bricks = { length = 16, height = 8, colors = [[150, 60, 50]], speckle = 0.02 }")
+            .generate()
+            .unwrap();
+        assert!(colors(&v).iter().all(|c| (147..=153).contains(&c[0])), "{:?}", colors(&v));
+    }
+
     #[test]
     fn bad_recipes_say_what_is_wrong() {
         let err = |toml: &str| recipe(toml).generate().unwrap_err();
@@ -543,6 +627,8 @@ mod tests {
         assert!(err("noise = { colors = [] }").contains("at least one color"));
         assert!(err("noise = { colors = [[1, 1, 1]], scale = 0.5 }").contains("scale"));
         assert!(err("bricks = { length = 5, height = 4, colors = [[1, 1, 1]], mortar = [0, 0, 0] }").contains("divide"));
+        assert!(err("planks = { width = 8, colors = [[1, 1, 1]], weave = 4 }").contains("divide 4"));
+        assert!(err("planks = { width = 4, colors = [[1, 1, 1]], shade = 2 }").contains("shade"));
         assert!(err("noise = { colors = [[1, 1, 1]] }\ntop = { colors = [[1, 1, 1]], depth = 0 }").contains("depth"));
         assert!(toml::from_str::<Recipe>("noise = { colours = [[1, 1, 1]] }").is_err(), "unknown fields are errors");
     }
