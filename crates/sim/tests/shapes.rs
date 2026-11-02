@@ -178,35 +178,29 @@ fn basic_slabs_take_the_top_or_bottom_like_minecraft() {
 }
 
 #[test]
-fn precise_slabs_go_where_the_face_is_aimed() {
+fn precise_slabs_lie_flat_against_the_face_aimed_at() {
     let sim = base_sim();
     let slab = common::stone_slab(&sim);
-    let above = BoxelPos::new(-14, 0, 0);
-    // The floor: the middle lays it flat; each triangle stands it against that side.
-    for (x, y, expected) in [
-        (0.5, 0.5, BOTTOM_SLAB),
-        (0.6, 0.95, BlockBox::new([0, 8, 0], [16, 16, 16])),
-        (0.5, 0.05, BlockBox::new([0, 0, 0], [16, 8, 16])),
-        (0.9, 0.6, BlockBox::new([8, 0, 0], [16, 16, 16])),
-        (0.1, 0.3, BlockBox::new([0, 0, 0], [8, 16, 16])),
-    ] {
+    // The floor: anywhere on it, the slab's bottom goes down.
+    for (x, y) in [(0.5, 0.5), (0.6, 0.95), (0.5, 0.05), (0.9, 0.6), (0.1, 0.3)] {
         let place = sim.placement(&floor_at(x, y), slab, EAST, -0.5, PRECISE).unwrap();
-        assert_eq!(place.pos, above);
-        assert_eq!(space(&sim, place.occupant), [expected], "aimed at {x}, {y}");
+        assert_eq!(place.pos, BoxelPos::new(-14, 0, 0));
+        assert_eq!(space(&sim, place.occupant), [BOTTOM_SLAB], "aimed at {x}, {y}");
     }
-    // A wall: the middle stands it against the wall, the top and bottom triangles make level
-    // slabs, the side triangles stand it against that side.
-    let into = BoxelPos::new(-10, 2, 2);
-    for (x, z, expected) in [
-        (0.5, 0.5, BlockBox::new([0, 0, 0], [16, 8, 16])),
-        (0.5, 0.9, TOP_SLAB),
-        (0.5, 0.1, BOTTOM_SLAB),
-        (0.95, 0.5, BlockBox::new([8, 0, 0], [16, 16, 16])),
-    ] {
+    // A wall facing north: anywhere on it, the slab stands flat against the wall's side.
+    for (x, z) in [(0.5, 0.5), (0.5, 0.9), (0.5, 0.1), (0.95, 0.5)] {
         let place = sim.placement(&wall_at(x, z), slab, -1.6, LEVEL, PRECISE).unwrap();
-        assert_eq!(place.pos, into);
-        assert_eq!(space(&sim, place.occupant), [expected], "aimed at {x}, {z}");
+        assert_eq!(place.pos, BoxelPos::new(-10, 2, 2));
+        assert_eq!(space(&sim, place.occupant), [BlockBox::new([0, 0, 0], [16, 8, 16])], "aimed at {x}, {z}");
     }
+}
+
+#[test]
+fn a_precise_post_sticks_out_of_a_wall() {
+    let sim = base_sim();
+    let post = common::wood_post(&sim);
+    let place = sim.placement(&wall_at(0.5, 0.5), post, -1.6, LEVEL, PRECISE).unwrap();
+    assert_eq!(space(&sim, place.occupant), [BlockBox::new([6, 0, 6], [10, 16, 10])]);
 }
 
 #[test]
@@ -262,15 +256,15 @@ fn basic_stairs_rise_the_way_the_player_looks() {
 }
 
 #[test]
-fn precise_stairs_lie_against_the_middle_or_stand_back_to_the_face() {
+fn precise_stairs_lie_bottom_to_the_face_turned_by_the_part_aimed_at() {
     let sim = base_sim();
     let stairs = common::stone_stairs(&sim);
     // The wall's middle, looking up along it: bottom against the wall, rising upward.
     let o = sim.placement(&wall_at(0.5, 0.5), stairs, -1.6, 0.8, PRECISE).unwrap().occupant.orientation;
     assert_eq!((o.apply([0, 1, 0]), o.apply([0, 0, 1])), ([0, 0, 1], [0, 1, 0]));
-    // The wall's bottom triangle: upright, tall back against the wall to the south.
+    // The wall's bottom triangle: still bottom against the wall, rising toward the bottom edge.
     let o = sim.placement(&wall_at(0.5, 0.1), stairs, -1.6, LEVEL, PRECISE).unwrap().occupant.orientation;
-    assert_eq!((o.apply([0, 1, 0]), o.apply([0, 0, 1])), ([0, -1, 0], [0, 0, 1]));
+    assert_eq!((o.apply([0, 1, 0]), o.apply([0, 0, 1])), ([0, 0, -1], [0, 1, 0]));
 }
 
 #[test]

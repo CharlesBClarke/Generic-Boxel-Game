@@ -6,7 +6,7 @@ use std::fmt;
 use api::block::is_valid_name;
 use api::{
     ApiError, BlockDef, BoxelPos, ChunkPos, CraftingDef, I64Vec3, InteractionDef, InventoryDef, ItemDropDef, LookDef,
-    ModelDef, Mod, MovementController, Orientation, PlayerDef, PushOutDef, Registrar, ShapeGrid, SoundDef, TableFace,
+    ModelDef, Mod, MovementController, Orientation, PlayerDef, PushOutDef, Registrar, ShapeGrid, SoundDef,
     TargetDef, ToolDef, Turning, Vec3, WorldEdit, WorldPos, look_direction,
 };
 
@@ -494,16 +494,12 @@ impl Simulation {
         push
     }
 
-    /// The crafting table face `hit` is on, in the table's frame: `None` if it isn't a
-    /// crafting table, there's no crafting, or it's the bottom.
-    pub fn table_face(&self, hit: &Hit) -> Option<TableFace> {
-        let table = self.blocks.id(&self.crafting_def.as_ref()?.table)?;
-        let occupant = *self.universe.main().cell(hit.pos).get(hit.occupant)?;
-        if occupant.block != table {
-            return None;
-        }
-        let normal = occupant.orientation.inverse().apply(hit.normal.to_array().map(|c| c as i32));
-        TableFace::from_normal(normal)
+    /// Whether `hit` is on a crafting table. Every face of it opens the same table.
+    pub fn is_table(&self, hit: &Hit) -> bool {
+        let Some(table) = self.crafting_def.as_ref().and_then(|def| self.blocks.id(&def.table)) else {
+            return false;
+        };
+        self.universe.main().cell(hit.pos).get(hit.occupant).is_some_and(|o| o.block == table)
     }
 
     /// What crafting `craft` would make, without making it: the same checks a craft makes.
@@ -521,7 +517,7 @@ impl Simulation {
         if player.eye().delta_to(center).length() > reach + 0.5 {
             return Err(CraftRefusal::TooFar);
         }
-        crate::crafting::plan(&self.blocks, &self.inventory, self.capacity(), craft.face, &craft.cells, craft.count)
+        crate::crafting::plan(&self.blocks, &self.inventory, self.capacity(), &craft.cells, craft.flip, craft.count)
     }
 
     /// Crafts: makes the parts `craft` asks for, if it can.
@@ -816,11 +812,11 @@ struct Aim {
 /// the player looks, and upside down against a ceiling or when aimed at the upper half of a
 /// wall; a block that only turns its axis lines up with the face.
 ///
-/// Precise placement looks at the part of the face aimed at. In the middle square the block's
-/// bottom goes against the face, its front the way the player looks along the face. In one of
-/// the four triangles it stands in the half of the boxel toward that edge, with its back
-/// against the face: on a wall the top triangle makes a top slab, a side triangle a slab
-/// standing against that side.
+/// Precise placement puts the block's bottom against the face aimed at, and looks at the part
+/// of the face aimed at to turn it about the face: in the middle square its front points the
+/// way the player looks along the face, in one of the four triangles toward that edge. A slab
+/// lies flat against a wall, a post sticks out of it. A block that only turns its axis lines
+/// up with the face in the middle, and lies toward the edge in a triangle.
 fn orient(turning: Turning, aim: &Aim) -> Orientation {
     let normal = aim.face.to_array().map(|c| c as i32);
     let axis = aim.face.abs().max_position();
@@ -849,7 +845,9 @@ fn orient(turning: Turning, aim: &Aim) -> Orientation {
             }
         }
         Some(None) => (normal, look_except(axis)),
-        Some(Some(edge)) => (edge.map(|c| -c), normal.map(|c| -c)),
+        // A block that only turns its axis lies along the triangle's edge, like a log on its side.
+        Some(Some(edge)) if turning == Turning::Axis => (edge.map(|c| -c), normal.map(|c| -c)),
+        Some(Some(edge)) => (normal, edge),
     };
     match turning {
         Turning::None => Orientation::IDENTITY,

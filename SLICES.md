@@ -106,7 +106,7 @@ A run of small toy slices. Each one takes a single game-feel feature that doesn'
 
 #### Emergent shapes from crafting (branch `toy-emergent-shapes`)
 
-**Stage:** Verify. Chosen by the user (2026-11-01) ahead of Generative crafting. The drag and drop from Generative crafting's notes is designed here.
+**Stage:** Verify (re-planned around a stacking rule and rebuilt, 2026-11-02). Chosen by the user (2026-11-01) ahead of Generative crafting. The drag and drop from Generative crafting's notes is designed here.
 
 **Goal:** shapes come from crafting instead of each being its own block. A 4×4 grid on a crafting table, filled with materials and parts, makes a part; the face of the table used decides which way it's pushed through; parts go back into the grid, so shapes build on shapes, including non-prisms. Every shape in the base game becomes emergent.
 
@@ -122,15 +122,24 @@ A run of small toy slices. Each one takes a single game-feel feature that doesn'
 - **Risk:** a two-level shape can break into many boxes, so many faces and collision boxes. Measure a worst-case shape; if it's a problem, stop and say so rather than cutting the feature.
 - **Tests:** a full grid gives a full block; slab, stairs and fine stairs patterns give the right boxes; material-only cells match the plain prism; a pipe on its own axis gives a finer prism and on another face gives 4 holes facing across; nested parts are refused; each face gives its frame and the back mirrors the front; box merging covers every sixteenth exactly once; one shape gives one name and ID, another material another; crafting pays the volume and makes one part, refuses past capacity or when short, and a part in a cell isn't used up; placing uses a part and breaking returns it; `crafting.toml` loads and a bad one reports the file and line; the test area builds from crafted shapes; the client's look volumes cover blocks registered later.
 
-**Done when**
-1. You can open the menu at the table, fill the grid with materials and parts, and see the preview.
-2. Top, front and side give the three layouts, and the placed block matches the preview relative to you.
-3. A pipe made at the front and used at the side gives 4 holes per cell, facing across.
-4. Crafting costs volume, parts take room, placing uses a part, and breaking returns it.
-5. The palette holds no registered shapes, and the test area's shapes are crafted ones.
-6. `cargo test` and `cargo clippy` are clean.
+**Re-plan: the stacking rule** (approved 2026-11-01, replacing the push-through rule above; a deviation from the approved plan at the user's request)
+- **Why:** in play, the push-through rule made many shapes nobody wanted and couldn't make ordinary ones. Every cell copied its content 4 times front to back, so nothing could change shape front to back at the block's scale: no thin stairs (a stair only part of the way through), no corner stairs, no block with one corner cut. Placing was unpredictable too, because a shape's frame came from where it was painted on the table: the same thin panel landed flat at the top of the block, on a side or at the front depending on the row and face used. The user: "it seems very good at making useless shapes, I strugle making anything normal".
+- **Playing:** every face of the table opens the same menu, the table's top seen from its front (the per-face rule and `TableFace` are gone). Each cell holds a stack up to 4 layers high. Pick a brush (a material or a made part) and click a cell to add a layer on top; holding and dragging adds a layer only to cells as high as the first, so a sweep levels a row; the right button takes the top layer off the same way. The **turn** key (`turn_part`, default R) or button turns a part brush a quarter turn. A **flip** box turns the result upside down, for things easier built top first. Crafting stays free, one material per craft.
+- **The rule:** a layer is a quarter of the block each way: a material is solid, a part is shrunk to a quarter, turned as painted. Every vertical line of sixteenths must be filled from the bottom with no gaps; anything floating is refused and its cell marked. Parts with detail finer than quarters are still refused, so two levels.
+- **As built** (changed during implementation, with the user's agreement): the planned turn so the tallest side points away was dropped, since it guessed wrong on off-center shapes (a thin stair would face sideways). A shape keeps the frame it was built in: the table side is its bottom, and its far side points the way the player looks when placed. The same shape built turned is a separate part.
+- **Placing:** basic placement is unchanged. Precise placement puts the block's bottom against the face aimed at: the middle square points its front along the look, a triangle toward that edge. So a slab lies flat against a wall and a post sticks out of it. Blocks that only turn their axis, like logs, keep the old triangle rule (lying toward the edge). Standing a slab upright in half of a floor block is lost (see the deferred note).
+- **Base:** slab and stairs are heights; the post is a corner column made first, then stacked four high in the middle cells, turned so the four meet.
+- **Tests:** one craft each makes a slab, a quarter slab, stairs, a thin stair, outer and inner corner stairs, a bucket and a vertical pipe; a gap floats and is refused at its cell; a part layer shrinks, must rest on what's below, and too-fine parts are refused; flipping keeps the far side far; a turned part goes in turned; the base post is the old post; precise slabs lie flat against floors and walls and a precise post sticks out of a wall; every face of the table is the table; the menu's strokes add and take off layers level with where they started; the turn key loads from the controls file.
 
-**Deferred:** paying for crafting (free since 2026-11-02, at the user's request); saving part names (session only); nesting deeper than two levels; mixed materials in one pattern; saving parts between sessions; Generative crafting's properties; swapping left and right click.
+- **Built** (2026-11-02): `api::crafting` now has `Layer`, `Stack`, `Stacks`, `stack_shape`, `floating`, `flipped`, `craft_shape(stacks, flip)` and a `heights` helper; `CraftError` is `Empty`, `TooFine { row, col, layer }` or `Floating { row, col }`. `sim::Craft` has `cells: Cells` (stacks of `Piece { thing, turns }`) and `flip` in place of `face`; `Simulation::is_table` replaces `table_face`. The client menu draws stacks with their heights and top layer, marks the refused cell red, and shows the brush and its turn. `turn_part = KeyR` was added to the user's controls file. 349 tests pass, clippy is clean, and the game starts with no errors. The implementation notes below describe the first rule, kept for the record.
+
+**Done when** (re-planned)
+1. Slab, stairs, thin stairs, a corner stair and a bucket can each be built in the menu, and the preview shows them.
+2. A part placed faces the way it was built: its far side the way you look.
+3. Placing feels predictable: in precise mode slabs and panels lie flat against what you click and posts stick out of it; stairs face you.
+4. `cargo test` and `cargo clippy` are clean.
+
+**Deferred:** paying for crafting (free since 2026-11-02, at the user's request); saving part names (session only); nesting deeper than two levels; mixed materials in one pattern; saving parts between sessions; Generative crafting's properties; swapping left and right click; aiming at odd shapes always placing against the outer block face (deferred to see whether the stacking rule needs it; it would also stop slab-on-slab filling the top half); *a later plan for precise placement* (2026-11-01, at the user's request, since the stacking rule loses standing a slab upright in half of a floor block): "advanced placing mode might shoot past sub blocks, or maybe 1 boxel of sub blocks", meaning precise aiming could pass through partial blocks to what's behind them, or only through thin ones (about 1 boxel).
 
 **API debt to add:** the crafting menu in the client (`client::crafting`): mods can't change the menu.
 

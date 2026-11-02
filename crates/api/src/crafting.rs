@@ -1,26 +1,26 @@
-//! Crafting shapes: the rule that turns a 4×4 pattern on one face of a crafting table into a
-//! shape. Plain functions over plain data, so any side of a boundary can run them.
+//! Crafting shapes: the rule that turns stacks built on a crafting table into a shape. Plain
+//! functions over plain data, so any side of a boundary can run them.
 //!
-//! **The table's frame.** A crafting table has a front, like any turned block: its frame is
-//! the block's own, unturned frame, +X right, +Y away from someone standing at the front, +Z
-//! up. Shapes are made in that frame, and a made shape is placed as if by someone standing at
-//! the table's front: its +Y the way the player looks.
+//! **Building up.** Shapes are built on the table's top, seen from its front: the grid's right
+//! is +X, up the grid (away from you) is +Y, and stacks rise along +Z. Each of the 4×4 cells
+//! holds a stack of up to 4 layers, bottom first; a layer is a quarter of the boxel each way.
+//! A material layer is a solid quarter cube. A shape layer is that shape shrunk to a quarter,
+//! turned as it is given, so a shape with detail finer than quarters can't go in a layer.
 //!
-//! **Faces.** Each usable face shows its grid as seen standing there, looking in: the front and
-//! back look along Y, the sides along X, the top down Z. So the back is the front mirrored, and
-//! one side is the other mirrored. The bottom can't be used.
+//! **Nothing floats.** Every vertical line of sixteenths in the result must be filled from the
+//! bottom with no gaps: what's on the table rests on the table, and each layer on what's below.
+//! So every shape grows out of one flat side, its bottom, which is what placing puts against a
+//! face.
 //!
-//! **The rule.** Each cell of the 4×4 grid is a quarter of the face, and holds a 3D copy of what
-//! was put there at a quarter of its size (4×4×4 sixteenths): a material is a solid little
-//! cube, a shape is that shape shrunk, kept turned as it is in the table's frame. The copy is
-//! repeated 4 times along the face's axis to fill the boxel's depth. So a pipe made at the
-//! front, used at a side, gives 4 small pipes per cell with their holes running across. A shape
-//! with detail finer than quarters can't be shrunk into a cell.
+//! **As built.** The shape keeps the frame it was built in: placed, its far side (+Y) points the
+//! way the player looks, as it pointed away from someone at the table's front. Flipping turns it
+//! upside down about the Y axis, for things easier built top first.
 
 use crate::shape::ShapeGrid;
+use crate::Orientation;
 
-/// Cells along each side of the crafting grid. Four, so a cell of a shape shrunk to a cell
-/// lands exactly on sixteenths.
+/// Cells along each side of the crafting grid, and layers a stack can hold. Four, so a shape
+/// shrunk to a cell lands exactly on sixteenths.
 pub const GRID: usize = 4;
 
 /// What makes a crafting table, registered by a mod.
@@ -30,136 +30,71 @@ pub struct CraftingDef {
     pub table: String,
 }
 
-/// A usable face of a crafting table, in the table's frame.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub enum TableFace {
-    Top,
-    /// Facing -Y: standing here, the table's +Y runs away from you.
-    Front,
-    Back,
-    /// Facing -X.
-    Left,
-    /// Facing +X.
-    Right,
-}
-
-impl TableFace {
-    pub const ALL: [TableFace; 5] = [TableFace::Top, TableFace::Front, TableFace::Back, TableFace::Left, TableFace::Right];
-
-    /// The face whose outward normal, in the table's frame, is `normal`. `None` for the bottom
-    /// or anything that isn't a unit axis.
-    pub fn from_normal(normal: [i32; 3]) -> Option<TableFace> {
-        match normal {
-            [0, 0, 1] => Some(TableFace::Top),
-            [0, -1, 0] => Some(TableFace::Front),
-            [0, 1, 0] => Some(TableFace::Back),
-            [-1, 0, 0] => Some(TableFace::Left),
-            [1, 0, 0] => Some(TableFace::Right),
-            _ => None,
-        }
-    }
-
-    /// The outward normal, in the table's frame.
-    pub fn normal(self) -> [i32; 3] {
-        match self {
-            TableFace::Top => [0, 0, 1],
-            TableFace::Front => [0, -1, 0],
-            TableFace::Back => [0, 1, 0],
-            TableFace::Left => [-1, 0, 0],
-            TableFace::Right => [1, 0, 0],
-        }
-    }
-
-    /// The grid's right and up as seen standing at this face, in the table's frame. On the
-    /// top, you stand at the front looking down, so up on the grid is away from you.
-    pub fn right_up(self) -> ([i32; 3], [i32; 3]) {
-        match self {
-            TableFace::Top => ([1, 0, 0], [0, 1, 0]),
-            TableFace::Front => ([1, 0, 0], [0, 0, 1]),
-            TableFace::Back => ([-1, 0, 0], [0, 0, 1]),
-            TableFace::Left => ([0, -1, 0], [0, 0, 1]),
-            TableFace::Right => ([0, 1, 0], [0, 0, 1]),
-        }
-    }
-
-    pub fn label(self) -> &'static str {
-        match self {
-            TableFace::Top => "top",
-            TableFace::Front => "front",
-            TableFace::Back => "back",
-            TableFace::Left => "left side",
-            TableFace::Right => "right side",
-        }
-    }
-
-    /// Which way the made shape runs through, in words.
-    pub fn pushes(self) -> &'static str {
-        match self {
-            TableFace::Top => "up and down",
-            TableFace::Front | TableFace::Back => "away from the front",
-            TableFace::Left | TableFace::Right => "side to side",
-        }
-    }
-}
-
-/// What one cell of the grid holds.
-#[derive(Clone, Debug, Default, PartialEq)]
-pub enum Cell {
-    #[default]
-    Empty,
-    /// A material: a solid little cube.
+/// One layer of a stack.
+#[derive(Clone, Debug, PartialEq)]
+pub enum Layer {
+    /// A material: a solid quarter cube.
     Solid,
-    /// A shape, shrunk to the cell.
+    /// A shape, shrunk to a quarter.
     Shape(Box<ShapeGrid>),
 }
 
-/// Why a pattern makes nothing.
+/// One cell's stack, bottom first. An empty layer under a full one leaves the one above
+/// floating.
+pub type Stack = [Option<Layer>; GRID];
+
+/// The grid's stacks, by row from the far side (the top of the grid as drawn) and column from
+/// the left.
+pub type Stacks = [[Stack; GRID]; GRID];
+
+/// Why stacks make nothing. Rows count from the far side, columns from the left, layers from
+/// the bottom, all from 0.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum CraftError {
-    /// Nothing in the grid.
+    /// Nothing on the table.
     Empty,
-    /// The cell at this row (from the top) and column (from the left) holds a shape with
-    /// detail finer than quarters, which can't shrink into a cell.
-    TooFine { row: usize, col: usize },
+    /// The layer holds a shape with detail finer than quarters, which can't shrink into it.
+    TooFine { row: usize, col: usize, layer: usize },
+    /// Something in this cell's stack rests on nothing.
+    Floating { row: usize, col: usize },
 }
 
 impl std::fmt::Display for CraftError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            CraftError::Empty => write!(f, "the grid is empty"),
-            CraftError::TooFine { row, col } => {
-                write!(f, "the shape in row {}, column {} is too detailed to shrink into a cell", row + 1, col + 1)
+            CraftError::Empty => write!(f, "the table is empty"),
+            CraftError::TooFine { row, col, layer } => write!(
+                f,
+                "the shape in row {}, column {}, layer {} is too detailed to shrink into a layer",
+                row + 1,
+                col + 1,
+                layer + 1
+            ),
+            CraftError::Floating { row, col } => {
+                write!(f, "something in row {}, column {} rests on nothing", row + 1, col + 1)
             }
         }
     }
 }
 
-/// The shape a pattern makes on `face`. `cells[row][col]`, rows from the top of the grid as seen
-/// at that face, columns from the left.
-pub fn craft_shape(face: TableFace, cells: &[[Cell; GRID]; GRID]) -> Result<ShapeGrid, CraftError> {
-    let (right, up) = face.right_up();
-    let into = face.normal().map(|c| -c);
-    let axis = |v: [i32; 3]| v.iter().position(|&c| c != 0).expect("a unit axis");
-    // A position along a direction, 0 to 3 counted along it, as a quarter index along its axis.
-    let along = |v: [i32; 3], i: usize| if v[axis(v)] > 0 { i } else { GRID - 1 - i };
+/// The shape `stacks` build, as built: before any flip.
+pub fn stack_shape(stacks: &Stacks) -> Result<ShapeGrid, CraftError> {
     let mut out = ShapeGrid::EMPTY;
     let mut any = false;
-    for (row, line) in cells.iter().enumerate() {
-        for (col, cell) in line.iter().enumerate() {
-            let quarters = match cell {
-                Cell::Empty => continue,
-                Cell::Solid => u64::MAX,
-                Cell::Shape(shape) => shape.quarters().ok_or(CraftError::TooFine { row, col })?,
-            };
-            any = true;
-            for depth in 0..GRID {
-                let mut q = [0usize; 3];
-                q[axis(right)] = along(right, col);
-                q[axis(up)] = along(up, GRID - 1 - row);
-                q[axis(into)] = along(into, depth);
+    for (row, line) in stacks.iter().enumerate() {
+        for (col, stack) in line.iter().enumerate() {
+            // Row 0 is the far side, +Y.
+            let (qx, qy) = (col, GRID - 1 - row);
+            for (layer, content) in stack.iter().enumerate() {
+                let quarters = match content {
+                    None => continue,
+                    Some(Layer::Solid) => u64::MAX,
+                    Some(Layer::Shape(shape)) => shape.quarters().ok_or(CraftError::TooFine { row, col, layer })?,
+                };
+                any = true;
                 for bit in (0..64).filter(|b| quarters & (1 << b) != 0) {
                     let s = [bit % 4, bit / 4 % 4, bit / 16];
-                    out.set(4 * q[0] + s[0], 4 * q[1] + s[1], 4 * q[2] + s[2], true);
+                    out.set(4 * qx + s[0], 4 * qy + s[1], 4 * layer + s[2], true);
                 }
             }
         }
@@ -167,22 +102,57 @@ pub fn craft_shape(face: TableFace, cells: &[[Cell; GRID]; GRID]) -> Result<Shap
     if !any {
         return Err(CraftError::Empty);
     }
+    if let Some((x, y)) = floating(&out) {
+        return Err(CraftError::Floating { row: GRID - 1 - y / 4, col: x / 4 });
+    }
     Ok(out)
 }
 
-/// A pattern from text rows, top first: `#` a material, `.` empty. For tests and world
-/// building; panics on other characters or the wrong size.
-pub fn pattern(rows: [&str; GRID]) -> [[Cell; GRID]; GRID] {
+/// The first vertical line of sixteenths with a gap under something filled, as `(x, y)`.
+pub fn floating(shape: &ShapeGrid) -> Option<(usize, usize)> {
+    let n = 16;
+    for y in 0..n {
+        for x in 0..n {
+            let mut gap = false;
+            for z in 0..n {
+                match shape.get(x, y, z) {
+                    false => gap = true,
+                    true if gap => return Some((x, y)),
+                    true => {}
+                }
+            }
+        }
+    }
+    None
+}
+
+/// The shape upside down, turned half a turn about the Y axis so its far side stays far.
+pub fn flipped(shape: &ShapeGrid) -> ShapeGrid {
+    shape.turned(Orientation::quarter_turns(1, 2))
+}
+
+/// The shape `stacks` build, flipped if `flip`.
+pub fn craft_shape(stacks: &Stacks, flip: bool) -> Result<ShapeGrid, CraftError> {
+    let shape = stack_shape(stacks)?;
+    Ok(if flip { flipped(&shape) } else { shape })
+}
+
+/// Stacks from text rows, far side first: each character is a cell's height, `0` to `4`, in
+/// material layers (`.` for 0). For tests and world building; panics on anything else.
+pub fn heights(rows: [&str; GRID]) -> Stacks {
     rows.map(|row| {
-        let cells: Vec<Cell> = row
+        let cells: Vec<Stack> = row
             .chars()
-            .map(|c| match c {
-                '#' => Cell::Solid,
-                '.' => Cell::Empty,
-                _ => panic!("pattern cells are # or ., got {c:?}"),
+            .map(|c| {
+                let h = match c {
+                    '.' => 0,
+                    '0'..='4' => c as usize - '0' as usize,
+                    _ => panic!("heights are 0 to 4 or ., got {c:?}"),
+                };
+                std::array::from_fn(|layer| (layer < h).then_some(Layer::Solid))
             })
             .collect();
-        cells.try_into().unwrap_or_else(|_| panic!("pattern rows are {GRID} cells wide"))
+        cells.try_into().unwrap_or_else(|_| panic!("rows are {GRID} cells wide"))
     })
 }
 
@@ -195,138 +165,109 @@ mod tests {
         ShapeGrid::from_boxes(&boxes.iter().map(|&(a, b)| BlockBox::new(a, b)).collect::<Vec<_>>())
     }
 
-    const SIDE_STAIRS: [&str; 4] = ["..##", "..##", "####", "####"];
-
-    #[test]
-    fn a_full_grid_is_a_full_block() {
-        for face in TableFace::ALL {
-            assert_eq!(craft_shape(face, &pattern(["####"; 4])), Ok(ShapeGrid::FULL));
-        }
-        assert_eq!(craft_shape(TableFace::Top, &pattern(["...."; 4])), Err(CraftError::Empty));
+    fn craft(rows: [&str; 4]) -> Result<ShapeGrid, CraftError> {
+        craft_shape(&heights(rows), false)
     }
 
     #[test]
-    fn the_bottom_half_is_a_slab() {
-        let slab = shape(&[([0, 0, 0], [16, 16, 8])]);
-        let bottom = pattern(["....", "....", "####", "####"]);
-        for face in [TableFace::Front, TableFace::Back, TableFace::Left, TableFace::Right] {
-            assert_eq!(craft_shape(face, &bottom), Ok(slab.clone()), "{face:?}");
-        }
-        // On the top, the bottom rows are the near half: a slab standing at the front.
-        assert_eq!(craft_shape(TableFace::Top, &bottom), Ok(shape(&[([0, 0, 0], [16, 8, 16])])));
+    fn full_stacks_are_a_full_block() {
+        assert_eq!(craft(["4444"; 4]), Ok(ShapeGrid::FULL));
+        assert_eq!(craft(["...."; 4]), Err(CraftError::Empty));
     }
 
     #[test]
-    fn stairs_drawn_at_each_face() {
-        let cells = pattern(SIDE_STAIRS);
-        // Seen from the right side, the grid's right is +Y: stairs rising away from the front,
-        // which is how the old registered stairs stood.
+    fn half_height_everywhere_is_a_slab() {
+        assert_eq!(craft(["2222"; 4]), Ok(shape(&[([0, 0, 0], [16, 16, 8])])));
+        assert_eq!(craft(["1111"; 4]), Ok(shape(&[([0, 0, 0], [16, 16, 4])])), "a quarter slab");
+    }
+
+    #[test]
+    fn taller_far_rows_are_stairs_rising_away() {
         let stairs = shape(&[([0, 0, 0], [16, 16, 8]), ([0, 8, 8], [16, 16, 16])]);
-        assert_eq!(craft_shape(TableFace::Right, &cells), Ok(stairs));
-        // From the left side it's mirrored: rising toward the front.
-        let toward = shape(&[([0, 0, 0], [16, 16, 8]), ([0, 0, 8], [16, 8, 16])]);
-        assert_eq!(craft_shape(TableFace::Left, &cells), Ok(toward));
-        // From the front the high step is on the right, running front to back.
-        let right = shape(&[([0, 0, 0], [16, 16, 8]), ([8, 0, 8], [16, 16, 16])]);
-        assert_eq!(craft_shape(TableFace::Front, &cells), Ok(right));
-        // From the back, the right as seen there is the table's left.
-        let left = shape(&[([0, 0, 0], [16, 16, 8]), ([0, 0, 8], [8, 16, 16])]);
-        assert_eq!(craft_shape(TableFace::Back, &cells), Ok(left));
+        assert_eq!(craft(["4444", "4444", "2222", "2222"]), Ok(stairs));
     }
 
     #[test]
-    fn fine_stairs_rise_by_quarters() {
-        let cells = pattern(["...#", "..##", ".###", "####"]);
-        let fine = shape(&[
-            ([0, 0, 0], [16, 16, 4]),
-            ([0, 4, 4], [16, 16, 8]),
-            ([0, 8, 8], [16, 16, 12]),
-            ([0, 12, 12], [16, 16, 16]),
+    fn a_thin_stair_fills_only_some_rows() {
+        // Rising left to right, in the far half only.
+        let thin = craft(["1234", "1234", "....", "...."]).unwrap();
+        let expected = shape(&[
+            ([0, 8, 0], [16, 16, 4]),
+            ([4, 8, 4], [16, 16, 8]),
+            ([8, 8, 8], [16, 16, 12]),
+            ([12, 8, 12], [16, 16, 16]),
         ]);
-        assert_eq!(craft_shape(TableFace::Right, &cells), Ok(fine));
-    }
-
-    /// A pipe made at the front: a square ring, its hole running front to back.
-    fn pipe() -> ShapeGrid {
-        craft_shape(TableFace::Front, &pattern(["####", "#..#", "#..#", "####"])).unwrap()
+        assert_eq!(thin, expected);
     }
 
     #[test]
-    fn a_pipe_is_a_ring_pushed_through() {
-        let pipe = pipe();
-        assert_eq!(pipe.volume(), 4096 * 12 / 16);
-        for y in 0..16 {
-            assert!(!pipe.get(8, y, 8), "the hole runs all the way through");
-            assert!(pipe.get(0, y, 0));
-        }
+    fn corner_stairs_and_buckets_take_one_craft() {
+        let outer = craft(["2244", "2244", "2222", "2222"]).unwrap();
+        assert_eq!(outer, shape(&[([0, 0, 0], [16, 16, 8]), ([8, 8, 8], [16, 16, 16])]));
+        let inner = craft(["4444", "4444", "2244", "2244"]).unwrap();
+        assert_eq!(inner.volume(), 4096 * 7 / 8);
+        let bucket = craft(["4444", "4114", "4114", "4444"]).unwrap();
+        assert_eq!(bucket.volume(), 4096 * 12 / 16 + 4 * 64, "12 full columns and 4 one layer high");
+        assert!(!bucket.get(8, 8, 15) && bucket.get(8, 8, 0), "open at the top, with a floor");
+        let pipe = craft(["4444", "4..4", "4..4", "4444"]).unwrap();
+        assert!((0..16).all(|z| !pipe.get(8, 8, z)), "a hole all the way up");
     }
 
     #[test]
-    fn materials_alone_make_the_plain_prism() {
-        // A shape that's all one quarter cube per cell is the same as a material there.
-        let mut cells = pattern(SIDE_STAIRS);
-        cells[0][3] = Cell::Shape(Box::new(ShapeGrid::FULL));
-        assert_eq!(craft_shape(TableFace::Right, &cells), craft_shape(TableFace::Right, &pattern(SIDE_STAIRS)));
+    fn a_gap_in_a_stack_floats() {
+        let mut stacks = heights(["....", "....", "....", "...."]);
+        stacks[1][2][1] = Some(Layer::Solid);
+        assert_eq!(craft_shape(&stacks, false), Err(CraftError::Floating { row: 1, col: 2 }));
+        stacks[1][2][0] = Some(Layer::Solid);
+        assert!(craft_shape(&stacks, false).is_ok(), "resting on the one below");
+    }
+
+    /// A quarter slab made of materials, shrunk: one sixteenth thick in a layer.
+    fn quarter_slab() -> ShapeGrid {
+        craft(["1111"; 4]).unwrap()
     }
 
     #[test]
-    fn a_pipe_on_its_own_axis_makes_a_finer_prism() {
-        let mut cells = pattern(["....", "....", "....", "...."]);
-        cells[3][0] = Cell::Shape(Box::new(pipe()));
-        let made = craft_shape(TableFace::Front, &cells).unwrap();
-        // The cell at the bottom left is the quarter column x 0..4, z 0..4, all along Y: a
-        // small ring, pushed through, so a small hole runs front to back.
-        assert_eq!(made.volume(), 16 * 12);
-        for y in 0..16 {
-            assert!(made.get(0, y, 0) && made.get(3, y, 3));
-            assert!(!made.get(1, y, 1) && !made.get(2, y, 2), "the little hole runs through");
-        }
+    fn a_shape_layer_shrinks_into_its_quarter() {
+        let mut stacks = heights(["....", "....", "....", "4..."]);
+        stacks[3][1][0] = Some(Layer::Shape(Box::new(quarter_slab())));
+        let made = craft_shape(&stacks, false).unwrap();
+        // A full column at the near left, and one sixteenth of floor in the cell beside it.
+        assert_eq!(made.volume(), 4 * 4 * 16 + 4 * 4);
+        assert!(made.get(4, 0, 0) && !made.get(4, 0, 1));
         assert!(made.quarters().is_none(), "finer than quarters now");
     }
 
     #[test]
-    fn a_pipe_on_another_face_gives_four_holes_across() {
-        let mut cells = pattern(["....", "....", "....", "...."]);
-        cells[3][0] = Cell::Shape(Box::new(pipe()));
-        let made = craft_shape(TableFace::Right, &cells).unwrap();
-        // From the right side the grid's left is the front (low Y) and the push runs along X.
-        // The cell holds a small pipe whose hole still runs along Y, copied 4 times along X:
-        // four holes, each through the 4 sixteenths at y 0..4.
-        assert_eq!(made.volume(), 4 * 4 * 4 * 12 / 16 * 4);
-        for copy in 0..4 {
-            let x = 4 * copy + 1;
-            for y in 0..4 {
-                assert!(!made.get(x, y, 1) && !made.get(x + 1, y, 2), "hole {copy} runs along Y");
-            }
-            assert!(made.get(x - 1, 0, 0) && made.get(x + 2, 3, 3), "the ring around hole {copy}");
-        }
-        // Nothing outside that quarter column.
-        assert!(!made.get(0, 4, 0) && !made.get(0, 0, 4));
+    fn a_shape_layer_must_rest_on_what_is_below() {
+        // A thin floor in a layer, with a solid layer on it: the solid one sits on the floor's
+        // top quarter... which isn't filled, so it floats.
+        let mut stacks = heights(["....", "....", "....", "...."]);
+        stacks[0][0][0] = Some(Layer::Shape(Box::new(quarter_slab())));
+        stacks[0][0][1] = Some(Layer::Solid);
+        assert_eq!(craft_shape(&stacks, false), Err(CraftError::Floating { row: 0, col: 0 }));
+        // A post standing on full layers is fine: four stacked quarter posts.
+        let post = craft(["....", ".4..", "....", "...."]).unwrap();
+        let mut stacks = heights(["....", "....", "....", "...."]);
+        stacks[0][0] = std::array::from_fn(|_| Some(Layer::Shape(Box::new(post.clone()))));
+        assert!(craft_shape(&stacks, false).is_ok());
     }
 
     #[test]
-    fn shapes_too_fine_for_a_cell_are_refused() {
-        let mut cells = pattern(["....", "....", "....", "...."]);
-        cells[3][0] = Cell::Shape(Box::new(pipe()));
-        let finer = craft_shape(TableFace::Front, &cells).unwrap();
-        let mut again = pattern(["....", "....", "....", "...."]);
-        again[1][2] = Cell::Shape(Box::new(finer));
-        assert_eq!(craft_shape(TableFace::Front, &again), Err(CraftError::TooFine { row: 1, col: 2 }));
+    fn shapes_too_fine_for_a_layer_are_refused() {
+        let mut stacks = heights(["....", "....", "....", "...."]);
+        stacks[3][0][0] = Some(Layer::Shape(Box::new(quarter_slab())));
+        let finer = craft_shape(&stacks, false).unwrap();
+        let mut again = heights(["....", "....", "....", "...."]);
+        again[1][2][0] = Some(Layer::Shape(Box::new(finer)));
+        assert_eq!(craft_shape(&again, false), Err(CraftError::TooFine { row: 1, col: 2, layer: 0 }));
     }
 
     #[test]
-    fn faces_come_from_normals() {
-        for face in TableFace::ALL {
-            assert_eq!(TableFace::from_normal(face.normal()), Some(face));
-            let (right, up) = face.right_up();
-            // Right, up and looking in make a right-handed view: right × up points out at you.
-            let out = [
-                right[1] * up[2] - right[2] * up[1],
-                right[2] * up[0] - right[0] * up[2],
-                right[0] * up[1] - right[1] * up[0],
-            ];
-            assert_eq!(out, face.normal(), "{face:?}");
-        }
-        assert_eq!(TableFace::from_normal([0, 0, -1]), None);
+    fn flipping_turns_it_upside_down_keeping_the_far_side_far() {
+        let stairs = craft_shape(&heights(["4444", "4444", "2222", "2222"]), true).unwrap();
+        assert_eq!(stairs, shape(&[([0, 0, 8], [16, 16, 16]), ([0, 8, 0], [16, 16, 8])]));
+        // A flipped shape may hang: only the stacks have to rest.
+        assert!(floating(&stairs).is_some());
     }
 }

@@ -1,31 +1,34 @@
-//! The crafting menu: opened at a face of a crafting table with the interact key, it shows the
-//! face's 4×4 grid, what the player carries, and a picture of what the pattern makes. Pressing
-//! something carried picks it as the brush, and holding the button on the way to the grid fills
-//! every cell passed over, so picking and dragging are one gesture. Clicking or sweeping cells
-//! fills them with the brush; the right button empties them, and right-clicking the list drops
-//! the brush. The craft button sends the craft with the next tick. The simulation decides
-//! what's made; this only asks and shows.
+//! The crafting menu: opened at a crafting table with the interact key, it shows the table's
+//! top as a 4×4 grid of stacks, what the player carries, and a picture of what the stacks make.
+//! Pressing something carried picks it as the brush, and holding the button on the way to the
+//! grid paints, so picking and painting are one gesture. Clicking a cell adds a layer of the
+//! brush on top of its stack; dragging on adds a layer to every cell as high as the first one,
+//! so a sweep levels a row. The right button takes the top layer off the same way. The turn key
+//! turns a part brush a quarter turn. The craft button sends the craft with the next tick. The
+//! simulation decides what's made; this only asks and shows.
 
 use api::crafting::GRID;
-use api::{BoxelPos, ShapeGrid, TableFace, Vec3 as ZVec3};
+use api::{BoxelPos, CraftError, Orientation, ShapeGrid, Vec3 as ZVec3};
 use bevy::prelude::*;
 use bevy::window::{CursorOptions, PrimaryWindow};
 use bevy_egui::{EguiContexts, egui};
-use sim::{BlockRegistry, Craft, CraftRefusal, MaterialId, Simulation};
+use sim::{BlockRegistry, Cells, Craft, CraftRefusal, MaterialId, Piece, Simulation};
 
 use crate::controls::{Controls, label};
 use crate::editing::{Palette, PartNames, short};
 use crate::{Look, Sim};
 
-/// The menu's state. Its cells stay filled between openings, so a pattern can be made again.
+/// The menu's state. Its stacks stay between openings, so a shape can be made again.
 #[derive(Resource, Default)]
 pub struct CraftingMenu {
-    /// The table and face it's open at, if it's open.
-    pub open: Option<(BoxelPos, TableFace)>,
-    /// A material or part in each cell, by row from the top and column from the left.
-    pub cells: [[Option<MaterialId>; GRID]; GRID],
-    /// What clicking a cell puts there.
-    pub brush: Option<MaterialId>,
+    /// The table it's open at, if it's open.
+    pub open: Option<BoxelPos>,
+    /// Each cell's stack, bottom first, by row from the far side and column from the left.
+    pub cells: Cells,
+    /// What clicking a cell adds: a material, or a part turned some quarter turns.
+    pub brush: Option<Piece>,
+    /// Turn the made shape upside down.
+    pub flip: bool,
     /// The stroke under way, if a button went down on the list or the grid and is still down.
     stroke: Option<Stroke>,
     /// A craft to send with the next tick.
@@ -39,16 +42,16 @@ pub struct CraftingMenu {
 }
 
 impl CraftingMenu {
-    /// The craft the cells make at the open table, as many as asked for.
+    /// The craft the stacks make at the open table, as many as asked for.
     fn request(&self, count: u32) -> Option<Craft> {
-        let (table, face) = self.open?;
-        Some(Craft { table, face, cells: self.cells, count })
+        let table = self.open?;
+        Some(Craft { table, cells: self.cells, flip: self.flip, count })
     }
 }
 
-/// Opens the menu at the table face aimed at with the interact key, and closes it with the
-/// interact key again, or once the table is gone or out of reach. Escape closes it too (see
-/// `grab_cursor`).
+/// Opens the menu at the table aimed at with the interact key, and closes it with the interact
+/// key again, or once the table is gone or out of reach. Escape closes it too (see
+/// `grab_cursor`). While it's open, the turn key turns the brush.
 pub(crate) fn crafting_keys(
     keys: Res<ButtonInput<KeyCode>>,
     controls: Res<Controls>,
@@ -61,9 +64,12 @@ pub(crate) fn crafting_keys(
         let gone = menu.request(1).map(|craft| sim.0.craft_plan(&craft));
         let unreachable =
             matches!(gone, Some(Err(CraftRefusal::TooFar | CraftRefusal::NoTable | CraftRefusal::NoCrafting)));
-        // While a name is typed, the interact key is just a letter.
-        let closing = keys.just_pressed(controls.interact) && menu.renaming.is_none();
-        if closing || unreachable {
+        // While a name is typed, keys are just letters.
+        let typing = menu.renaming.is_some();
+        if keys.just_pressed(controls.turn_part) && !typing && let Some(brush) = &mut menu.brush {
+            brush.turns = (brush.turns + 1) % 4;
+        }
+        if (keys.just_pressed(controls.interact) && !typing) || unreachable {
             menu.renaming = None;
             menu.open = None;
             crate::set_grab(&mut cursor, true);
@@ -73,21 +79,21 @@ pub(crate) fn crafting_keys(
     if !keys.just_pressed(controls.interact) || !crate::editing::playing(&cursor) {
         return;
     }
-    let Some((pos, face)) = aimed_face(&sim.0, &look) else {
+    let Some(pos) = aimed_table(&sim.0, &look) else {
         return;
     };
-    menu.open = Some((pos, face));
+    menu.open = Some(pos);
     menu.result = None;
     crate::set_grab(&mut cursor, false);
 }
 
-/// The crafting table and face the player looks at, if any.
-fn aimed_face(sim: &Simulation, look: &Look) -> Option<(BoxelPos, TableFace)> {
+/// The crafting table the player looks at, if any.
+fn aimed_table(sim: &Simulation, look: &Look) -> Option<BoxelPos> {
     let hit = sim.target(look.yaw, look.pitch)?;
-    sim.table_face(&hit).map(|face| (hit.pos, face))
+    sim.is_table(&hit).then_some(hit.pos)
 }
 
-/// A hint by the crosshair when it's on a usable table face.
+/// A hint by the crosshair when it's on a table.
 pub(crate) fn update_table_hint(
     sim: Res<Sim>,
     look: Res<Look>,
@@ -95,10 +101,8 @@ pub(crate) fn update_table_hint(
     controls: Res<Controls>,
     mut text: Single<&mut Text, With<TableHint>>,
 ) {
-    let line = match aimed_face(&sim.0, &look) {
-        Some((_, face)) if menu.open.is_none() => {
-            format!("crafting table, {}: {} to craft", face.label(), label(controls.interact))
-        }
+    let line = match aimed_table(&sim.0, &look) {
+        Some(_) if menu.open.is_none() => format!("crafting table: {} to craft", label(controls.interact)),
         _ => String::new(),
     };
     if text.0 != line {
@@ -110,7 +114,7 @@ pub(crate) fn update_table_hint(
 pub(crate) struct TableHint;
 
 /// Cell size in the grid, in points.
-const CELL: f32 = 48.0;
+const CELL: f32 = 52.0;
 /// The size of the picture of the result.
 const PREVIEW: f32 = 170.0;
 /// The size of a part's picture in the list.
@@ -122,35 +126,54 @@ const MANY: u32 = 64;
 pub(crate) fn crafting_menu(
     mut contexts: EguiContexts,
     sim: Res<Sim>,
+    controls: Res<Controls>,
     mut menu: ResMut<CraftingMenu>,
     mut palette: ResMut<Palette>,
     mut names: ResMut<PartNames>,
 ) -> Result {
-    let Some((_, face)) = menu.open else {
+    if menu.open.is_none() {
         return Ok(());
-    };
+    }
     let ctx = contexts.ctx_mut()?;
     let sim = &sim.0;
     let blocks = sim.blocks();
     let shift = ctx.input(|i| i.modifiers.shift);
+    let most = if sim.capacity().is_some() { u32::MAX } else { MANY };
+    let plan = menu.request(most).map(|craft| sim.craft_plan(&craft));
+    // The cell to mark, if the stacks are refused because of one.
+    let bad = match &plan {
+        Some(Err(CraftRefusal::Pattern(CraftError::Floating { row, col } | CraftError::TooFine { row, col, .. }))) => {
+            Some((*row, *col))
+        }
+        _ => None,
+    };
     egui::Window::new("Crafting")
         .collapsible(false)
         .resizable(false)
         .anchor(egui::Align2::CENTER_CENTER, [0.0, -40.0])
         .show(ctx, |ui| {
-            ui.label(format!(
-                "{} of the table: shapes run through {}. A part is placed as if you stood at the table's front.",
-                face.label(),
-                face.pushes()
-            ));
+            ui.label(
+                "Build on the table top, seen from its front. Stacks rise from the table, and nothing may float. \
+                 Placed, the far side points the way you look.",
+            );
             ui.horizontal_top(|ui| {
                 ui.vertical(|ui| {
-                    ui.label("Pattern: click or hold to fill, right button empties");
+                    ui.label("Click to add a layer, hold to level a row; right button takes one off");
                     let CraftingMenu { cells, brush, stroke, .. } = &mut *menu;
-                    grid(ui, blocks, &names, cells, *brush, stroke);
-                    if ui.button("Clear").clicked() {
-                        menu.cells = Default::default();
-                    }
+                    grid(ui, blocks, &names, cells, *brush, stroke, bad);
+                    ui.horizontal(|ui| {
+                        if ui.button("Clear").clicked() {
+                            menu.cells = Default::default();
+                        }
+                        let turn = format!("Turn brush ({})", label(controls.turn_part));
+                        let can_turn = menu.brush.is_some_and(|b| blocks.part_of(b.thing).is_some());
+                        if ui.add_enabled(can_turn, egui::Button::new(turn)).clicked()
+                            && let Some(brush) = &mut menu.brush
+                        {
+                            brush.turns = (brush.turns + 1) % 4;
+                        }
+                    });
+                    brush_line(ui, blocks, &names, menu.brush);
                 });
                 ui.separator();
                 ui.vertical(|ui| {
@@ -158,63 +181,113 @@ pub(crate) fn crafting_menu(
                     carried(ui, sim, &mut palette, &mut names, &mut menu);
                 });
                 ui.separator();
-                ui.vertical(|ui| result(ui, sim, &mut menu, &mut palette, &names, shift));
+                ui.vertical(|ui| result(ui, sim, &mut menu, &mut palette, &names, plan, shift));
             });
         });
     Ok(())
 }
 
-/// A press that paints or empties the cells it passes over, until the button comes up.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum Stroke {
-    /// The left button, from the list or a cell: fills with the brush.
-    Fill,
-    /// The right button, from a cell: empties.
-    Empty,
+/// What the brush is, and how it's turned.
+fn brush_line(ui: &mut egui::Ui, blocks: &BlockRegistry, names: &PartNames, brush: Option<Piece>) {
+    let Some(brush) = brush else {
+        ui.label("brush: none (press something carried)");
+        return;
+    };
+    ui.horizontal(|ui| {
+        ui.label("brush:");
+        let (rect, _) = ui.allocate_exact_size(egui::vec2(ICON, ICON), egui::Sense::hover());
+        paint_piece(ui.painter(), rect, blocks, brush);
+        let turned = match brush.turns {
+            0 => String::new(),
+            n => format!(", turned {} left", ["", "a quarter", "half", "three quarters"][n as usize]),
+        };
+        ui.label(format!("{}{turned}", names.label(blocks, brush.thing)));
+    });
 }
 
-/// What a stroke does to a cell under the pointer: `Some(new contents)`, or `None` to leave it.
-fn paint(stroke: Option<Stroke>, brush: Option<MaterialId>) -> Option<Option<MaterialId>> {
-    match stroke? {
-        Stroke::Fill => brush.map(Some),
-        Stroke::Empty => Some(None),
+/// A press that adds or takes off layers in the cells it passes over, until the button comes up.
+/// Each holds the height of the cells it changes: the first cell's, before the change, so a
+/// sweep only touches cells as high as where it started, and each of those once.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Stroke {
+    /// The left button, from the list or a cell: adds a layer of the brush. From the list, the
+    /// height comes from the first cell reached.
+    Add(Option<usize>),
+    /// The right button, from a cell: takes the top layer off.
+    Remove(usize),
+}
+
+/// How many layers a stack has.
+fn height(stack: &[Option<Piece>; GRID]) -> usize {
+    stack.iter().take_while(|l| l.is_some()).count()
+}
+
+/// What a stroke does to the stack under the pointer.
+fn paint(stroke: &mut Option<Stroke>, brush: Option<Piece>, stack: &mut [Option<Piece>; GRID]) {
+    let h = height(stack);
+    match stroke {
+        Some(Stroke::Add(level)) => {
+            let Some(brush) = brush else {
+                return;
+            };
+            if *level.get_or_insert(h) == h && h < GRID {
+                stack[h] = Some(brush);
+            }
+        }
+        Some(Stroke::Remove(level)) if *level == h && h > 0 => stack[h - 1] = None,
+        Some(Stroke::Remove(_)) | None => {}
     }
 }
 
-/// The 4×4 grid, painted by strokes.
+/// The 4×4 grid of stacks, painted by strokes. `bad` is a cell to mark as the reason nothing
+/// can be made.
 fn grid(
     ui: &mut egui::Ui,
     blocks: &BlockRegistry,
     names: &PartNames,
-    cells: &mut [[Option<MaterialId>; GRID]; GRID],
-    brush: Option<MaterialId>,
+    cells: &mut Cells,
+    brush: Option<Piece>,
     stroke: &mut Option<Stroke>,
+    bad: Option<(usize, usize)>,
 ) {
     let (primary, secondary) = ui.ctx().input(|i| (i.pointer.primary_down(), i.pointer.secondary_down()));
     if !primary && !secondary {
         *stroke = None;
     }
     egui::Grid::new("crafting_grid").spacing([2.0, 2.0]).show(ui, |ui| {
-        for row in cells.iter_mut() {
-            for cell in row.iter_mut() {
+        for (r, row) in cells.iter_mut().enumerate() {
+            for (c, stack) in row.iter_mut().enumerate() {
                 let (rect, response) = ui.allocate_exact_size(egui::vec2(CELL, CELL), egui::Sense::click_and_drag());
                 // A press on a cell starts a stroke there.
                 if response.is_pointer_button_down_on() && stroke.is_none() {
-                    *stroke = if secondary { Some(Stroke::Empty) } else { Some(Stroke::Fill) };
+                    let h = height(stack);
+                    *stroke = Some(if secondary { Stroke::Remove(h) } else { Stroke::Add(Some(h)) });
                 }
                 let over = response.contains_pointer();
-                if over && let Some(new) = paint(*stroke, brush) {
-                    *cell = new;
+                if over {
+                    paint(stroke, brush, stack);
                 }
+                let h = height(stack);
                 let painter = ui.painter_at(rect);
-                let outline = egui::Stroke::new(if over { 2.0_f32 } else { 1.0 }, egui::Color32::from_gray(150));
-                painter.rect_filled(rect, 2.0, egui::Color32::from_gray(30));
-                if let Some(id) = *cell {
-                    paint_thing(&painter, rect.shrink(3.0), blocks, id);
+                // Taller stacks are lighter, so heights read at a glance.
+                painter.rect_filled(rect, 2.0, egui::Color32::from_gray(30 + 18 * h as u8));
+                if let Some(top) = h.checked_sub(1).and_then(|i| stack[i]) {
+                    paint_piece(&painter, rect.shrink(8.0), blocks, top);
                 }
-                painter.rect_stroke(rect, 2.0, outline, egui::StrokeKind::Inside);
-                if let Some(id) = *cell {
-                    response.on_hover_text(names.label(blocks, id));
+                if h > 0 {
+                    let at = rect.right_bottom() - egui::vec2(4.0, 2.0);
+                    painter.text(at, egui::Align2::RIGHT_BOTTOM, h.to_string(), egui::FontId::monospace(13.0), egui::Color32::WHITE);
+                }
+                let (width, color) = match () {
+                    _ if bad == Some((r, c)) => (2.5_f32, egui::Color32::from_rgb(230, 90, 80)),
+                    _ if over => (2.0, egui::Color32::from_gray(200)),
+                    _ => (1.0, egui::Color32::from_gray(150)),
+                };
+                painter.rect_stroke(rect, 2.0, egui::Stroke::new(width, color), egui::StrokeKind::Inside);
+                if h > 0 {
+                    let layers: Vec<String> =
+                        stack.iter().flatten().rev().map(|p| names.label(blocks, p.thing)).collect();
+                    response.on_hover_text(format!("top to bottom:\n{}", layers.join("\n")));
                 }
             }
             ui.end_row();
@@ -238,14 +311,17 @@ fn carried(ui: &mut egui::Ui, sim: &Simulation, palette: &mut Palette, names: &m
                     Some(_) => format!("×{}", amount / blocks.unit(id)),
                     None => crate::items::amount_label(amount),
                 };
-                let picked = menu.brush == Some(id);
+                let picked = menu.brush.is_some_and(|b| b.thing == id);
                 let text = egui::WidgetText::from(format!("{} {amount}", names.label(blocks, id)));
                 let galley = text.into_galley(ui, None, f32::INFINITY, egui::TextStyle::Button);
                 let size = egui::vec2(ICON + 6.0 + galley.size().x + 8.0, ICON.max(galley.size().y) + 4.0);
                 let (rect, response) = ui.allocate_exact_size(size, egui::Sense::click_and_drag());
                 if response.is_pointer_button_down_on() && ui.ctx().input(|i| i.pointer.primary_down()) {
-                    menu.brush = Some(id);
-                    menu.stroke = Some(Stroke::Fill);
+                    // Picking the same thing again keeps its turn.
+                    if !picked {
+                        menu.brush = Some(Piece::new(id));
+                    }
+                    menu.stroke = Some(Stroke::Add(None));
                 }
                 if response.secondary_clicked() {
                     menu.brush = None;
@@ -281,7 +357,7 @@ fn carried(ui: &mut egui::Ui, sim: &Simulation, palette: &mut Palette, names: &m
                 }
                 if ui.small_button("discard").on_hover_text("throw all of them away").clicked() {
                     menu.discard = Some(id);
-                    if menu.brush == Some(id) {
+                    if picked {
                         menu.brush = None;
                     }
                 }
@@ -290,21 +366,20 @@ fn carried(ui: &mut egui::Ui, sim: &Simulation, palette: &mut Palette, names: &m
     });
 }
 
-/// The picture of what the pattern makes, what it costs, and the craft buttons.
+/// The picture of what the stacks make, the flip switch, and the craft buttons.
 fn result(
     ui: &mut egui::Ui,
     sim: &Simulation,
     menu: &mut CraftingMenu,
     palette: &mut Palette,
     names: &PartNames,
+    plan: Option<Result<sim::CraftPlan, CraftRefusal>>,
     shift: bool,
 ) {
     let blocks = sim.blocks();
-    // With no limit, "as many as fit" would be billions: make a stack at a time instead.
-    let most = if sim.capacity().is_some() { u32::MAX } else { MANY };
-    let plan = menu.request(most).map(|craft| sim.craft_plan(&craft));
     let (rect, _) = ui.allocate_exact_size(egui::vec2(PREVIEW, PREVIEW), egui::Sense::hover());
     ui.painter().rect_filled(rect, 4.0, egui::Color32::from_gray(25));
+    ui.checkbox(&mut menu.flip, "Flip upside down").on_hover_text("for things easier built top first, like a table");
     match &plan {
         Some(Ok(plan)) => {
             let color = blocks.get(blocks.material_block(plan.material)).map_or([200; 3], |d| d.color);
@@ -348,6 +423,19 @@ fn result(
             ui.colored_label(egui::Color32::from_rgb(230, 120, 100), why.to_string());
         }
         None => {}
+    }
+}
+
+/// A layer as the grid shows it: a material's color, or a part's shape turned as it goes in.
+fn paint_piece(painter: &egui::Painter, rect: egui::Rect, blocks: &BlockRegistry, piece: Piece) {
+    let block = blocks.material_block(piece.thing);
+    match blocks.part_of(piece.thing) {
+        Some(_) => {
+            let color = blocks.get(block).map_or([200; 3], |d| d.color);
+            let shape = blocks.shape(block).turned(Orientation::quarter_turns(2, piece.turns as i32));
+            paint_shape(painter, rect, &shape, color);
+        }
+        None => paint_thing(painter, rect, blocks, piece.thing),
     }
 }
 
@@ -450,25 +538,45 @@ mod tests {
     }
 
     #[test]
-    fn strokes_fill_with_the_brush_and_the_right_button_empties() {
+    fn strokes_add_and_take_off_layers_level_with_where_they_started() {
         let mut blocks = BlockRegistry::default();
         blocks.register(api::BlockDef::new("test:stone", true, [0; 3]).with_material("test:stone")).unwrap();
-        let stone = blocks.material("test:stone").unwrap();
-        // No stroke under way: nothing changes, brush or not.
-        assert_eq!(paint(None, Some(stone)), None);
-        // A left-button stroke, from the list or a cell, fills with the brush.
-        assert_eq!(paint(Some(Stroke::Fill), Some(stone)), Some(Some(stone)));
-        assert_eq!(paint(Some(Stroke::Fill), None), None, "no brush, nothing to paint");
-        // A right-button stroke empties.
-        assert_eq!(paint(Some(Stroke::Empty), Some(stone)), Some(None));
+        let stone = Piece::new(blocks.material("test:stone").unwrap());
+        let (mut low, mut high) = ([None; GRID], [None; GRID]);
+        high[0] = Some(stone);
+        // No stroke under way: nothing changes.
+        paint(&mut None, Some(stone), &mut low);
+        assert_eq!(height(&low), 0);
+        // A stroke from the list takes its height from the first cell: here, empty.
+        let mut stroke = Some(Stroke::Add(None));
+        paint(&mut stroke, Some(stone), &mut low);
+        assert_eq!((height(&low), stroke), (1, Some(Stroke::Add(Some(0)))));
+        // Passing over the same cell again, or a taller one, adds nothing.
+        paint(&mut stroke, Some(stone), &mut low);
+        paint(&mut stroke, Some(stone), &mut high);
+        assert_eq!((height(&low), height(&high)), (1, 1));
+        // No brush, nothing to add.
+        let mut empty = [None; GRID];
+        paint(&mut Some(Stroke::Add(Some(0))), None, &mut empty);
+        assert_eq!(height(&empty), 0);
+        // The right button takes the top layer off cells as high as where it started.
+        let mut stroke = Some(Stroke::Remove(1));
+        paint(&mut stroke, None, &mut low);
+        paint(&mut stroke, None, &mut empty);
+        assert_eq!((height(&low), height(&empty)), (0, 0));
+        // A full stack takes no more.
+        let mut full = [Some(stone); GRID];
+        paint(&mut Some(Stroke::Add(Some(GRID))), Some(stone), &mut full);
+        assert_eq!(height(&full), GRID);
     }
 
     #[test]
     fn the_request_needs_an_open_table() {
         let mut menu = CraftingMenu::default();
         assert_eq!(menu.request(1), None);
-        menu.open = Some((BoxelPos::new(1, 2, 3), TableFace::Top));
+        menu.open = Some(BoxelPos::new(1, 2, 3));
+        menu.flip = true;
         let craft = menu.request(5).unwrap();
-        assert_eq!((craft.table, craft.face, craft.count), (BoxelPos::new(1, 2, 3), TableFace::Top, 5));
+        assert_eq!((craft.table, craft.flip, craft.count), (BoxelPos::new(1, 2, 3), true, 5));
     }
 }

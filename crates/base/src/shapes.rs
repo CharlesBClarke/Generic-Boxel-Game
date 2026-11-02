@@ -1,41 +1,39 @@
-//! The base game's shapes, crafted with the same rule players use at a crafting table (see
+//! The base game's shapes, built with the same rule players use at a crafting table (see
 //! `api::crafting`), so the test area is built from shapes players can make.
 
-use api::crafting::{GRID, pattern};
-use api::{Cell, ShapeGrid, TableFace, craft_shape};
+use api::crafting::heights;
+use api::{Layer, Orientation, ShapeGrid, Stacks, craft_shape};
 
-fn craft(face: TableFace, cells: &[[Cell; GRID]; GRID]) -> ShapeGrid {
-    craft_shape(face, cells).expect("the base game's patterns make shapes")
+fn craft(stacks: &Stacks) -> ShapeGrid {
+    craft_shape(stacks, false).expect("the base game's stacks make shapes")
 }
 
-/// A bottom slab: the lower half, drawn at the front.
+/// A bottom slab: every cell two layers high.
 pub fn slab() -> ShapeGrid {
-    craft(TableFace::Front, &pattern(["....", "....", "####", "####"]))
+    craft(&heights(["2222"; 4]))
 }
 
-/// Stairs rising away from the front, drawn at the right side.
+/// Stairs rising away from you: the far half four high, the near half two.
 pub fn stairs() -> ShapeGrid {
-    craft(TableFace::Right, &pattern(["..##", "..##", "####", "####"]))
+    craft(&heights(["4444", "4444", "2222", "2222"]))
 }
 
 /// A post a quarter of a boxel across (4 sixteenths), standing in the middle. It straddles
-/// the middle cells rather than filling one, so it takes two crafts: four parts, each a quarter of the grid in one
-/// corner, drawn on top, then those parts shrunk into the four middle cells so their corners
-/// meet in the middle.
+/// the middle cells rather than filling one, so it takes two crafts: a column in one corner of
+/// the table, then that column shrunk and stacked four high in each middle cell, turned so the
+/// four meet in the middle.
 pub fn post() -> ShapeGrid {
-    let corner = |rows| Cell::Shape(Box::new(craft(TableFace::Top, &pattern(rows))));
-    // Seen from the top, standing at the front: up the grid is +Y, right is +X.
-    let north_east = corner(["..##", "..##", "....", "...."]);
-    let north_west = corner(["##..", "##..", "....", "...."]);
-    let south_east = corner(["....", "....", "..##", "..##"]);
-    let south_west = corner(["....", "....", "##..", "##.."]);
-    let mut cells: [[Cell; GRID]; GRID] = Default::default();
-    // Each middle cell keeps the corner of its part nearest the middle of the grid.
-    cells[1][1] = south_east;
-    cells[1][2] = south_west;
-    cells[2][1] = north_east;
-    cells[2][2] = north_west;
-    craft(TableFace::Top, &cells)
+    // The column stands at the far right, in the quarter of the table nearest +X and +Y.
+    let column = craft(&heights(["..44", "..44", "....", "...."]));
+    let mut stacks = heights(["...."; 4]);
+    // Quarter turns counterclockwise from above that bring the far right corner to each
+    // middle cell's corner nearest the middle.
+    let turns = [((1, 1), 3), ((1, 2), 2), ((2, 1), 0), ((2, 2), 1)];
+    for ((row, col), quarters) in turns {
+        let piece = column.turned(Orientation::quarter_turns(2, quarters));
+        stacks[row][col] = std::array::from_fn(|_| Some(Layer::Shape(Box::new(piece.clone()))));
+    }
+    craft(&stacks)
 }
 
 #[cfg(test)]
