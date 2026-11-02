@@ -75,6 +75,8 @@ pub struct PlayerInput {
     pub place_precise: bool,
     /// Crafts at a table this tick.
     pub craft: Option<crate::crafting::Craft>,
+    /// Throws away everything carried of this material or part, without dropping it.
+    pub discard: Option<crate::MaterialId>,
 }
 
 /// How a body gets out of a block that appeared inside it.

@@ -204,6 +204,9 @@ impl Simulation {
         if let Some(craft) = &input.craft {
             self.last_craft = Some(self.craft(craft));
         }
+        if let Some(m) = input.discard {
+            self.inventory.take(m, self.inventory.amount(m));
+        }
         self.edit_blocks(input);
         self.use_tool(input);
         self.throw(input);

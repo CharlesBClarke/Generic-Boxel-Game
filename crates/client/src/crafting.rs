@@ -14,7 +14,7 @@ use bevy_egui::{EguiContexts, egui};
 use sim::{BlockRegistry, Craft, CraftRefusal, MaterialId, Simulation};
 
 use crate::controls::{Controls, label};
-use crate::editing::{Palette, part_name, short};
+use crate::editing::{Palette, PartNames, short};
 use crate::{Look, Sim};
 
 /// The menu's state. Its cells stay filled between openings, so a pattern can be made again.
@@ -32,6 +32,10 @@ pub struct CraftingMenu {
     pub pending: Option<Craft>,
     /// What the last craft sent did.
     pub result: Option<Result<(MaterialId, u32), CraftRefusal>>,
+    /// A part to throw away with the next tick.
+    pub discard: Option<MaterialId>,
+    /// The part being renamed, and the name typed so far.
+    renaming: Option<(MaterialId, String)>,
 }
 
 impl CraftingMenu {
@@ -57,7 +61,10 @@ pub(crate) fn crafting_keys(
         let gone = menu.request(1).map(|craft| sim.0.craft_plan(&craft));
         let unreachable =
             matches!(gone, Some(Err(CraftRefusal::TooFar | CraftRefusal::NoTable | CraftRefusal::NoCrafting)));
-        if keys.just_pressed(controls.interact) || unreachable {
+        // While a name is typed, the interact key is just a letter.
+        let closing = keys.just_pressed(controls.interact) && menu.renaming.is_none();
+        if closing || unreachable {
+            menu.renaming = None;
             menu.open = None;
             crate::set_grab(&mut cursor, true);
         }
@@ -117,6 +124,7 @@ pub(crate) fn crafting_menu(
     sim: Res<Sim>,
     mut menu: ResMut<CraftingMenu>,
     mut palette: ResMut<Palette>,
+    mut names: ResMut<PartNames>,
 ) -> Result {
     let Some((_, face)) = menu.open else {
         return Ok(());
@@ -139,7 +147,7 @@ pub(crate) fn crafting_menu(
                 ui.vertical(|ui| {
                     ui.label("Pattern: click or hold to fill, right button empties");
                     let CraftingMenu { cells, brush, stroke, .. } = &mut *menu;
-                    grid(ui, blocks, cells, *brush, stroke);
+                    grid(ui, blocks, &names, cells, *brush, stroke);
                     if ui.button("Clear").clicked() {
                         menu.cells = Default::default();
                     }
@@ -147,11 +155,10 @@ pub(crate) fn crafting_menu(
                 ui.separator();
                 ui.vertical(|ui| {
                     ui.label("Carried: press to pick, hold to paint");
-                    let CraftingMenu { brush, stroke, .. } = &mut *menu;
-                    carried(ui, sim, &mut palette, brush, stroke);
+                    carried(ui, sim, &mut palette, &mut names, &mut menu);
                 });
                 ui.separator();
-                ui.vertical(|ui| result(ui, sim, &mut menu, &mut palette, shift));
+                ui.vertical(|ui| result(ui, sim, &mut menu, &mut palette, &names, shift));
             });
         });
     Ok(())
@@ -178,6 +185,7 @@ fn paint(stroke: Option<Stroke>, brush: Option<MaterialId>) -> Option<Option<Mat
 fn grid(
     ui: &mut egui::Ui,
     blocks: &BlockRegistry,
+    names: &PartNames,
     cells: &mut [[Option<MaterialId>; GRID]; GRID],
     brush: Option<MaterialId>,
     stroke: &mut Option<Stroke>,
@@ -206,7 +214,7 @@ fn grid(
                 }
                 painter.rect_stroke(rect, 2.0, outline, egui::StrokeKind::Inside);
                 if let Some(id) = *cell {
-                    response.on_hover_text(thing_name(blocks, id));
+                    response.on_hover_text(names.label(blocks, id));
                 }
             }
             ui.end_row();
@@ -215,15 +223,9 @@ fn grid(
 }
 
 /// Everything carried. Pressing one picks it as the brush and starts a stroke, so holding on
-/// the way to the grid paints; right-clicking drops the brush. A part also has a button to hold
-/// it.
-fn carried(
-    ui: &mut egui::Ui,
-    sim: &Simulation,
-    palette: &mut Palette,
-    brush: &mut Option<MaterialId>,
-    stroke: &mut Option<Stroke>,
-) {
+/// the way to the grid paints; right-clicking drops the brush. A part also has buttons to hold
+/// it, rename it and throw all of it away.
+fn carried(ui: &mut egui::Ui, sim: &Simulation, palette: &mut Palette, names: &mut PartNames, menu: &mut CraftingMenu) {
     let blocks = sim.blocks();
     let things: Vec<(MaterialId, u32)> = sim.inventory().iter().collect();
     if things.is_empty() {
@@ -236,17 +238,17 @@ fn carried(
                     Some(_) => format!("×{}", amount / blocks.unit(id)),
                     None => crate::items::amount_label(amount),
                 };
-                let picked = *brush == Some(id);
-                let text = egui::WidgetText::from(format!("{} {amount}", thing_name(blocks, id)));
+                let picked = menu.brush == Some(id);
+                let text = egui::WidgetText::from(format!("{} {amount}", names.label(blocks, id)));
                 let galley = text.into_galley(ui, None, f32::INFINITY, egui::TextStyle::Button);
                 let size = egui::vec2(ICON + 6.0 + galley.size().x + 8.0, ICON.max(galley.size().y) + 4.0);
                 let (rect, response) = ui.allocate_exact_size(size, egui::Sense::click_and_drag());
                 if response.is_pointer_button_down_on() && ui.ctx().input(|i| i.pointer.primary_down()) {
-                    *brush = Some(id);
-                    *stroke = Some(Stroke::Fill);
+                    menu.brush = Some(id);
+                    menu.stroke = Some(Stroke::Fill);
                 }
                 if response.secondary_clicked() {
-                    *brush = None;
+                    menu.brush = None;
                 }
                 let visuals = ui.style().interact_selectable(&response, picked);
                 ui.painter().rect_filled(rect, 3.0, visuals.weak_bg_fill);
@@ -255,8 +257,33 @@ fn carried(
                 let at = egui::pos2(icon.max.x + 6.0, rect.center().y - galley.size().y / 2.0);
                 ui.painter().galley(at, galley, visuals.text_color());
                 response.on_hover_text("press to paint with it, hold to paint on the grid; right-click to put it down");
-                if blocks.part_of(id).is_some() && ui.small_button("hold").on_hover_text("put it in hand").clicked() {
+                if blocks.part_of(id).is_none() {
+                    return;
+                }
+                if ui.small_button("hold").on_hover_text("put it in hand").clicked() {
                     palette.select_part(sim, id);
+                }
+                match &mut menu.renaming {
+                    Some((part, typed)) if *part == id => {
+                        let field = ui.add(egui::TextEdit::singleline(typed).desired_width(110.0).hint_text("a name"));
+                        field.request_focus();
+                        let done = ui.small_button("ok").clicked() || ui.input(|i| i.key_pressed(egui::Key::Enter));
+                        if done {
+                            names.set(blocks, id, typed);
+                            menu.renaming = None;
+                        }
+                    }
+                    _ => {
+                        if ui.small_button("rename").clicked() {
+                            menu.renaming = Some((id, names.given(blocks, id).unwrap_or_default().to_owned()));
+                        }
+                    }
+                }
+                if ui.small_button("discard").on_hover_text("throw all of them away").clicked() {
+                    menu.discard = Some(id);
+                    if menu.brush == Some(id) {
+                        menu.brush = None;
+                    }
                 }
             });
         }
@@ -264,7 +291,14 @@ fn carried(
 }
 
 /// The picture of what the pattern makes, what it costs, and the craft buttons.
-fn result(ui: &mut egui::Ui, sim: &Simulation, menu: &mut CraftingMenu, palette: &mut Palette, shift: bool) {
+fn result(
+    ui: &mut egui::Ui,
+    sim: &Simulation,
+    menu: &mut CraftingMenu,
+    palette: &mut Palette,
+    names: &PartNames,
+    shift: bool,
+) {
     let blocks = sim.blocks();
     // With no limit, "as many as fit" would be billions: make a stack at a time instead.
     let most = if sim.capacity().is_some() { u32::MAX } else { MANY };
@@ -308,7 +342,7 @@ fn result(ui: &mut egui::Ui, sim: &Simulation, menu: &mut CraftingMenu, palette:
     }
     match &menu.result {
         Some(Ok((part, count))) => {
-            ui.label(format!("made {count}: {} (in hand)", part_name(blocks, *part)));
+            ui.label(format!("made {count}: {} (in hand)", names.label(blocks, *part)));
         }
         Some(Err(why)) => {
             ui.colored_label(egui::Color32::from_rgb(230, 120, 100), why.to_string());
@@ -317,16 +351,8 @@ fn result(ui: &mut egui::Ui, sim: &Simulation, menu: &mut CraftingMenu, palette:
     }
 }
 
-/// What a material or part is called in the menu.
-fn thing_name(blocks: &BlockRegistry, id: MaterialId) -> String {
-    match blocks.part_of(id) {
-        Some(_) => part_name(blocks, id),
-        None => short(blocks.material_name(id)).to_owned(),
-    }
-}
-
 /// A material as a solid square of its color, or a part as a picture of its shape.
-fn paint_thing(painter: &egui::Painter, rect: egui::Rect, blocks: &BlockRegistry, id: MaterialId) {
+pub(crate) fn paint_thing(painter: &egui::Painter, rect: egui::Rect, blocks: &BlockRegistry, id: MaterialId) {
     let block = blocks.material_block(id);
     let color = blocks.get(block).map_or([200; 3], |d| d.color);
     match blocks.part_of(id) {

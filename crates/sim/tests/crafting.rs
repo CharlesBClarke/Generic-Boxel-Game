@@ -185,3 +185,17 @@ fn a_part_in_a_cell_makes_a_finer_part_and_stays() {
     let craft = Craft { table: t, face: TableFace::Front, cells: again, count: 1 };
     assert!(matches!(sim.craft_plan(&craft), Err(CraftRefusal::Pattern(api::CraftError::TooFine { row: 0, col: 0 }))));
 }
+
+#[test]
+fn discarding_throws_away_everything_of_one_part() {
+    let mut sim = base_sim();
+    let t = table();
+    stand(&mut sim, t.0.x, t.0.y - 2);
+    let wood = material(&sim, base::WOOD);
+    craft(&mut sim, TableFace::Front, cells(SLAB, wood), 5);
+    let Some(Ok((slab, 5))) = sim.last_craft() else { panic!("{:?}", sim.last_craft()) };
+    sim.step(&PlayerInput { discard: Some(slab), ..Default::default() });
+    assert_eq!(sim.inventory().amount(slab), 0, "all five gone");
+    assert!(sim.items().is_empty(), "thrown away, not dropped");
+    assert_eq!(sim.inventory().amount(wood), 16 * FULL_VOLUME, "nothing else touched");
+}

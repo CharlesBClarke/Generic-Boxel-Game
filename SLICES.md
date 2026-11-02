@@ -130,7 +130,7 @@ A run of small toy slices. Each one takes a single game-feel feature that doesn'
 5. The palette holds no registered shapes, and the test area's shapes are crafted ones.
 6. `cargo test` and `cargo clippy` are clean.
 
-**Deferred:** paying for crafting (free since 2026-11-02, at the user's request); nesting deeper than two levels; mixed materials in one pattern; saving parts between sessions; Generative crafting's properties; swapping left and right click.
+**Deferred:** paying for crafting (free since 2026-11-02, at the user's request); saving part names (session only); nesting deeper than two levels; mixed materials in one pattern; saving parts between sessions; Generative crafting's properties; swapping left and right click.
 
 **API debt to add:** the crafting menu in the client (`client::crafting`): mods can't change the menu.
 
@@ -145,6 +145,11 @@ A run of small toy slices. Each one takes a single game-feel feature that doesn'
   - *From play (2026-11-02):* paying with material blocked patterns made from parts once the plain wood ran out. The user chose to make crafting **free**, with payment deferred. A craft takes no material; parts still take their volume of the capacity, so "Craft N" makes as many as fit, and with no room it's refused ("no room to carry it"). Placing a part still uses it, and breaking gives it back.
   - *From play (2026-11-02):* picked-up dirt couldn't be used. Every material's full block is now placeable (stone, dirt, ice, log and gravel join brick, wood and the table); grass, which breaks into dirt, and the marker stay unplaceable. The palette lists every material, carried or not, so brick is now slot 4 and wood slot 6, and parts come after slot 9.
   - *Deviation (2026-11-02, at the user's request):* **infinite carry.** `InventoryDef.capacity` is now optional (`Option<f32>`), and leaving `capacity` out of `inventory.toml` means no limit. The base game leaves it out. Placing still uses up material and parts, and the drop key still throws. The HUD says "carrying 32, no limit", the capacity slider leaves the tuning panel, and "Craft N" makes 64 at a time. This changes the Inventory and items toy's code as a design change, not a fix. The limit stays in the engine for mods, or for when a toy needs it again (see "Rethink the inventory" in the backlog).
+  - *From play (2026-11-02):* parts you'd made couldn't be got rid of or told apart, and the hotbar gave slots to materials not carried.
+    - Each part in the menu's Carried list now has **rename** and **discard** buttons. Discard throws all of that part away (`PlayerInput::discard`) and drops nothing. Names live in the client for the session (`editing::PartNames`, keyed by the part's block name); a blank name goes back to the automatic `wood ½ #3fa2`.
+    - The hotbar lists tools, then only the materials and parts carried. If the slot in hand runs out, the hand stays on the last slot there is.
+    - The hotbar is drawn with egui (`editing::hotbar`), with a picture for each slot (the material's color or the part's shape), its number, name and amount, and the selected slot outlined. It replaces the text line.
+    - While the crafting menu is open, movement and debug keys are ignored, so typing a name doesn't walk or teleport, and the interact key doesn't close the menu while a name is typed.
 - **API (`api`):**
   - `shape::ShapeGrid`: 16×16×16 bits, with `from_boxes`, greedy `to_boxes`, `turned`, `quarters` (`None` when there's detail finer than quarters) and `hash64`.
   - `crafting`: `TableFace` (from a normal in the table's frame, plus the grid's right and up for each face), `Cell` (`Empty`, `Solid`, `Shape`), `craft_shape`, `CraftError` (`Empty`, `TooFine`), `CraftingDef`, and a `pattern` helper for text rows.
