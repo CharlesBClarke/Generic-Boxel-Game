@@ -61,7 +61,6 @@ pub const LANDMARKS: &[(&str, i64, i64, i64)] = &[
     ("end of the sprint straight", 60, 41, 0),
     ("ice patch", -45, 53, 0),
     ("2-high ledge", 27, -28, 2),
-    ("3-high ledge", 27, -34, 3),
 ];
 
 pub struct BaseMod;
@@ -234,7 +233,7 @@ fn build_shapes_corner(w: &mut dyn WorldEdit, o: BoxelPos) -> Result<(), ApiErro
 }
 
 /// Things to move around on: jump gaps, a pillar line, a sprint straight, an ice patch and
-/// crouch-jump ledges.
+/// a crouch-jump ledge.
 /// The tower in the test area doubles as a drop tower: fly up, turn fly off, fall.
 fn build_movement_course(w: &mut dyn WorldEdit, o: BoxelPos) -> Result<(), ApiError> {
     let at = |x: i64, y: i64, z: i64| o.offset(I64Vec3::new(x, y, z));
@@ -267,11 +266,8 @@ fn build_movement_course(w: &mut dyn WorldEdit, o: BoxelPos) -> Result<(), ApiEr
     // An ice patch set into the floor.
     w.fill(at(-60, 46, -1), at(-30, 60, -1), ICE)?;
 
-    // Crouch-jump ledges facing west: 2 high clears with a tuck, 3 high with a charged jump
-    // and a tuck. Neither clears with a plain jump.
+    // A crouch-jump ledge facing west, 2 high: a tuck clears it, a plain jump doesn't.
     w.fill(at(26, -30, 0), at(29, -27, 1), BRICK)?;
     w.fill(at(26, -30, 1), at(29, -27, 1), MARKER)?;
-    w.fill(at(26, -36, 0), at(29, -33, 2), BRICK)?;
-    w.fill(at(26, -36, 2), at(29, -33, 2), MARKER)?;
     Ok(())
 }

@@ -59,7 +59,7 @@ fn wasm_quake() -> WasmController {
     controller
 }
 
-/// Scripted held keys that change now and then, like a player's: hopping, charging, crouching,
+/// Scripted held keys that change now and then, like a player's: hopping, crouching,
 /// strafing and turning, on grass, ice and in the air.
 struct Script {
     rng: Rng,
@@ -198,15 +198,14 @@ fn spawned_controllers_keep_their_own_state() {
         input,
         ground: Some(Ground { friction: 1.0 }),
     };
-    // `a` charges a crouch jump; `b` just stands. Then both jump.
-    let crouch = MoveInput { crouch: true, ..Default::default() };
-    for _ in 0..60 {
-        a.step(&grounded(crouch.clone()));
-        b.step(&grounded(MoveInput::default()));
-    }
-    let jump = MoveInput { jump_pressed: true, jump_held: true, ..Default::default() };
-    let (ja, jb) = (a.step(&grounded(jump.clone())).impulse.z, b.step(&grounded(jump)).impulse.z);
-    assert!(ja > jb + 1.0, "charged {ja}, plain {jb}");
+    // `a` presses jump just before landing, so its buffer holds the press; `b` doesn't. On
+    // landing, only `a` jumps.
+    let airborne = |input| MoveContext { ground: None, ..grounded(input) };
+    let jump = MoveInput { jump_pressed: true, jump_held: false, ..Default::default() };
+    a.step(&airborne(jump));
+    b.step(&airborne(MoveInput::default()));
+    let (ja, jb) = (a.step(&grounded(MoveInput::default())).impulse.z, b.step(&grounded(MoveInput::default())).impulse.z);
+    assert!(ja > 1.0 && jb == 0.0, "buffered {ja}, none {jb}");
 
     // Settings are copied at spawn, then each controller's own.
     assert!(a.set_tunable("walk_speed", 9.0));

@@ -199,9 +199,9 @@ fn holding_jump_climbs_the_steps() {
 }
 
 /// Runs up for `run_up` ticks facing east from `start`, jumps, then keeps going for 90 ticks.
-/// `crouch_run_up` crouches during the run-up (charging the jump); `tuck` crouches after the
-/// jump. Returns whether the player ever stood on top of the ledge `ledge_height` high.
-fn ledge_attempt(start: WorldPos, run_up: usize, crouch_run_up: bool, tuck: bool, ledge_height: i64) -> bool {
+/// `tuck` crouches after the jump. Returns whether the player ever stood on top of the
+/// 2-high ledge.
+fn ledge_attempt(start: WorldPos, run_up: usize, tuck: bool) -> bool {
     let mut sim = base_sim();
     sim.teleport_player(start);
     for _ in 0..30 {
@@ -209,38 +209,29 @@ fn ledge_attempt(start: WorldPos, run_up: usize, crouch_run_up: bool, tuck: bool
     }
     let forward = |crouch: bool| PlayerInput { movement: Vec2::Y, crouch, ..Default::default() };
     for _ in 0..run_up {
-        sim.step(&forward(crouch_run_up));
+        sim.step(&forward(false));
     }
-    sim.step(&PlayerInput { jump_pressed: true, jump_held: true, ..forward(crouch_run_up) });
+    sim.step(&PlayerInput { jump_pressed: true, jump_held: true, ..forward(false) });
     (0..90).any(|_| {
         sim.step(&forward(tuck));
         let player = sim.player().unwrap();
         let cell = player.pos().cell();
-        player.on_ground() && cell.z == ledge_height && (26..=29).contains(&cell.x)
+        player.on_ground() && cell.z == 2 && (26..=29).contains(&cell.x)
     })
 }
 
 /// Which run-up lengths, every `step` ticks up to `max`, get the player onto the ledge.
-fn clearing_run_ups(start: WorldPos, max: usize, crouch_run_up: bool, tuck: bool, ledge_height: i64) -> Vec<usize> {
-    (0..=max).step_by(3).filter(|&n| ledge_attempt(start, n, crouch_run_up, tuck, ledge_height)).collect()
+fn clearing_run_ups(start: WorldPos, max: usize, tuck: bool) -> Vec<usize> {
+    (0..=max).step_by(3).filter(|&n| ledge_attempt(start, n, tuck)).collect()
 }
 
 #[test]
 fn a_tuck_clears_a_ledge_a_plain_jump_cannot() {
     let start = WorldPos::new(api::I64Vec3::new(20, -29, 0), Vec3::new(0.5, 0.5, 0.0));
-    let plain = clearing_run_ups(start, 75, false, false, 2);
+    let plain = clearing_run_ups(start, 75, false);
     assert!(plain.is_empty(), "a plain jump made it with run-ups {plain:?}");
-    let tucked = clearing_run_ups(start, 75, false, true, 2);
+    let tucked = clearing_run_ups(start, 75, true);
     assert!(!tucked.is_empty(), "no run-up let a tuck clear the 2-high ledge");
-}
-
-#[test]
-fn a_charged_tuck_clears_a_higher_ledge() {
-    let start = WorldPos::new(api::I64Vec3::new(22, -35, 0), Vec3::new(0.5, 0.5, 0.0));
-    let tuck_only = clearing_run_ups(start, 150, false, true, 3);
-    assert!(tuck_only.is_empty(), "an uncharged tuck made it with run-ups {tuck_only:?}");
-    let charged = clearing_run_ups(start, 150, true, true, 3);
-    assert!(!charged.is_empty(), "no charged run-up cleared the 3-high ledge");
 }
 
 #[test]

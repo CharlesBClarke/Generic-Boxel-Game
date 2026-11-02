@@ -1,13 +1,9 @@
 //! The base game's movement: Quake-style. Speed you build up is kept, air strafing can add
 //! to it, and jumping on the landing tick skips friction, so bunny hopping works.
 //!
-//! Crouching is a robot's spring. Crouching mid-air tucks the feet up (the engine keeps the
-//! head put), so jump-then-crouch clears higher ledges. Crouching on the ground compresses
-//! the spring: the charge builds over `charge_time`, sinking the body a little, and a jump
-//! from a full charge reaches `charged_jump_height`. The charge survives letting go of crouch
-//! for `charge_grace`, so sliding a thumb from crouch to jump still gets it. The body springs
-//! to standing height as it jumps, so keeping crouch held tucks again in the air and the two
-//! stack.
+//! Crouching mid-air tucks the feet up (the engine keeps the head put), so jump-then-crouch
+//! clears higher ledges. The body stands up as it jumps, so keeping crouch held through a
+//! jump tucks again in the air.
 //!
 //! The game runs this crate compiled to WebAssembly, as a component exporting the controller.
 //! It also builds natively, for its tests and the `--native-movement` flag.
@@ -66,24 +62,12 @@ pub struct QuakeController {
     pub crouch_height: f32,
     /// Ground speed while crouched, as a fraction of walk speed.
     pub crouch_speed: f32,
-    /// Seconds crouched on the ground to fully charge a jump.
-    pub charge_time: f32,
-    /// How high a fully charged jump lifts the feet, in meters.
-    pub charged_jump_height: f32,
-    /// How much lower the body sinks at full charge, meters.
-    pub charge_sink: f32,
-    /// Seconds after letting go of crouch that a jump still gets the charge.
-    pub charge_grace: f32,
     /// While crouched on the ground, the biggest drop the body may walk off, meters. Below 1
     /// stops at every boxel edge.
     pub edge_guard_drop: f32,
 
     since_ground: f32,
     since_jump_press: f32,
-    /// How charged the crouch jump is, 0 to 1.
-    charge: f32,
-    /// Seconds since crouch was let go on the ground.
-    since_crouch_release: f32,
 }
 
 impl Default for QuakeController {
@@ -108,17 +92,10 @@ impl Default for QuakeController {
             // A crouch-jump tucks the feet 0.8 higher, enough to clear a 2-boxel ledge.
             crouch_height: 1.0,
             crouch_speed: 0.4,
-            charge_time: 0.6,
-            charged_jump_height: 2.5,
-            charge_sink: 0.15,
-            // Covers a thumb sliding from crouch to jump.
-            charge_grace: 0.2,
             // Minecraft's value: stops at every boxel edge.
             edge_guard_drop: 0.6,
             since_ground: f32::INFINITY,
             since_jump_press: f32::INFINITY,
-            charge: 0.0,
-            since_crouch_release: 0.0,
         }
     }
 }
@@ -136,10 +113,9 @@ fn accelerate(velocity: Vec3, dir: Vec3, wish_speed: f32, cap: f32, accel: f32, 
 }
 
 impl QuakeController {
-    /// Takeoff speed for a jump with the current charge.
+    /// Takeoff speed for a jump.
     fn jump_speed(&self) -> f32 {
-        let height = self.jump_height + (self.charged_jump_height - self.jump_height).max(0.0) * self.charge;
-        (2.0 * self.gravity * height).sqrt()
+        (2.0 * self.gravity * self.jump_height).sqrt()
     }
 
     fn apply_friction(&self, velocity: Vec3, surface: f32, dt: f32) -> Vec3 {
@@ -158,8 +134,6 @@ impl MovementController for QuakeController {
         Box::new(Self {
             since_ground: f32::INFINITY,
             since_jump_press: f32::INFINITY,
-            charge: 0.0,
-            since_crouch_release: 0.0,
             ..self.clone()
         })
     }
@@ -173,23 +147,6 @@ impl MovementController for QuakeController {
         let wants_jump = self.since_jump_press <= self.jump_buffer || (input.jump_held && self.hold_to_hop >= 0.5);
         let can_jump = self.since_ground <= self.coyote_time;
         let jumping = wants_jump && can_jump;
-
-        // The spring only charges while crouched on the ground. Letting go of crouch keeps the
-        // charge for the grace period, so a jump just after still gets it; leaving the ground
-        // without jumping lets it go.
-        if input.crouch && ctx.ground.is_some() {
-            if !jumping {
-                self.charge = (self.charge + dt / self.charge_time.max(1e-3)).min(1.0);
-            }
-            self.since_crouch_release = 0.0;
-        } else if ctx.ground.is_some() {
-            self.since_crouch_release += dt;
-            if self.since_crouch_release > self.charge_grace + 1e-5 {
-                self.charge = 0.0;
-            }
-        } else {
-            self.charge = 0.0;
-        }
 
         let crouched = ctx.height < ctx.standing_height - 1e-3;
         let wish = input.wish_direction();
@@ -228,10 +185,9 @@ impl MovementController for QuakeController {
             impulse.z = self.jump_speed();
             self.since_jump_press = f32::INFINITY;
             self.since_ground = f32::INFINITY;
-            self.charge = 0.0;
         }
-        // Springing up on the jump tick, then tucking again next tick if crouch is still held.
-        let height = (input.crouch && !jumping).then_some(self.crouch_height - self.charge * self.charge_sink);
+        // Standing up on the jump tick, then tucking again next tick if crouch is still held.
+        let height = (input.crouch && !jumping).then_some(self.crouch_height);
         // Like Minecraft's sneaking: crouched on the ground, the body won't walk off edges.
         let guarded = input.crouch && ctx.ground.is_some() && !jumping;
         MoveOutput { velocity, impulse, height, edge_guard: guarded.then_some(self.edge_guard_drop) }
@@ -257,10 +213,6 @@ impl Tunables for QuakeController {
             Tunable::new("hold_to_hop", self.hold_to_hop, 0.0, 1.0),
             Tunable::new("crouch_height", self.crouch_height, 0.3, 1.8),
             Tunable::new("crouch_speed", self.crouch_speed, 0.05, 1.0),
-            Tunable::new("charge_time", self.charge_time, 0.05, 3.0),
-            Tunable::new("charged_jump_height", self.charged_jump_height, 0.1, 8.0),
-            Tunable::new("charge_sink", self.charge_sink, 0.0, 0.5),
-            Tunable::new("charge_grace", self.charge_grace, 0.0, 1.0),
             Tunable::new("edge_guard_drop", self.edge_guard_drop, 0.0, 5.0),
         ]
     }
@@ -283,10 +235,6 @@ impl Tunables for QuakeController {
             "hold_to_hop" => &mut self.hold_to_hop,
             "crouch_height" => &mut self.crouch_height,
             "crouch_speed" => &mut self.crouch_speed,
-            "charge_time" => &mut self.charge_time,
-            "charged_jump_height" => &mut self.charged_jump_height,
-            "charge_sink" => &mut self.charge_sink,
-            "charge_grace" => &mut self.charge_grace,
             "edge_guard_drop" => &mut self.edge_guard_drop,
             _ => return false,
         };
@@ -514,86 +462,20 @@ mod tests {
         let mut c = QuakeController::default();
         assert_eq!(c.step(&ctx(Vec3::ZERO, MoveInput::default(), Some(1.0))).height, None);
         let out = c.step(&ctx(Vec3::ZERO, MoveInput { crouch: true, ..Default::default() }, None));
-        assert_eq!(out.height, Some(c.crouch_height), "a mid-air tuck, no charge");
-    }
-
-    /// The jump impulse after crouching on the ground for `ticks`, with crouch still held.
-    fn jump_after_crouching(c: &mut QuakeController, ticks: usize) -> MoveOutput {
-        let crouch = MoveInput { crouch: true, ..Default::default() };
-        for _ in 0..ticks {
-            c.step(&crouched_ctx(Vec3::ZERO, crouch.clone(), Some(1.0)));
-        }
-        c.step(&crouched_ctx(Vec3::ZERO, MoveInput { jump_pressed: true, jump_held: true, ..crouch }, Some(1.0)))
-    }
-
-    fn rise(c: &QuakeController, impulse: f32) -> f32 {
-        impulse * impulse / (2.0 * c.gravity)
+        assert_eq!(out.height, Some(c.crouch_height), "a mid-air tuck");
     }
 
     #[test]
-    fn charging_raises_the_jump_up_to_the_charged_height() {
-        let mut c = QuakeController::default();
-        let instant = jump_after_crouching(&mut c, 0);
-        assert!((rise(&c, instant.impulse.z) - c.jump_height).abs() < 0.02, "no charge, normal jump");
-
-        let half = (c.charge_time / DT / 2.0).round() as usize;
-        let impulse = jump_after_crouching(&mut c, half).impulse.z;
-        let mid = rise(&c, impulse);
-        let midway = (c.jump_height + c.charged_jump_height) / 2.0;
-        assert!((mid - midway).abs() < 0.1, "half charge rose {mid}, expected about {midway}");
-
-        let full = jump_after_crouching(&mut c, 120);
-        assert!((rise(&c, full.impulse.z) - c.charged_jump_height).abs() < 0.02);
-        assert_eq!(full.height, None, "the body springs up on the jump tick");
-    }
-
-    #[test]
-    fn the_charge_sinks_the_body() {
-        let mut c = QuakeController::default();
-        let crouch = MoveInput { crouch: true, ..Default::default() };
-        let mut out = MoveOutput::default();
-        for _ in 0..120 {
-            out = c.step(&crouched_ctx(Vec3::ZERO, crouch.clone(), Some(1.0)));
-        }
-        let sunk = out.height.unwrap();
-        assert!((sunk - (c.crouch_height - c.charge_sink)).abs() < 1e-5, "at {sunk}");
-    }
-
-    /// The jump impulse after a full charge, letting go of crouch, then waiting `gap` ticks.
-    /// A gap of 0 lets go of crouch on the jump tick itself.
-    fn jump_after_release(c: &mut QuakeController, gap: usize) -> f32 {
-        let crouch = MoveInput { crouch: true, ..Default::default() };
-        for _ in 0..120 {
-            c.step(&crouched_ctx(Vec3::ZERO, crouch.clone(), Some(1.0)));
-        }
-        for _ in 0..gap {
-            c.step(&ctx(Vec3::ZERO, MoveInput::default(), Some(1.0)));
-        }
-        let jump = MoveInput { jump_pressed: true, jump_held: true, ..Default::default() };
-        let out = c.step(&ctx(Vec3::ZERO, jump, Some(1.0)));
-        rise(c, out.impulse.z)
-    }
-
-    #[test]
-    fn letting_go_of_crouch_keeps_the_charge_briefly() {
-        let mut c = QuakeController::default();
-        assert!((jump_after_release(&mut c, 0) - c.charged_jump_height).abs() < 0.02, "same tick");
-        let grace = (c.charge_grace / DT).round() as usize;
-        assert!((jump_after_release(&mut c, grace - 1) - c.charged_jump_height).abs() < 0.02, "inside the grace");
-        assert!((jump_after_release(&mut c, grace + 1) - c.jump_height).abs() < 0.02, "after the grace");
-    }
-
-    #[test]
-    fn standing_up_loses_the_charge() {
+    fn crouching_does_not_change_the_jump() {
         let mut c = QuakeController::default();
         let crouch = MoveInput { crouch: true, ..Default::default() };
         for _ in 0..120 {
-            c.step(&crouched_ctx(Vec3::ZERO, crouch.clone(), Some(1.0)));
+            assert_eq!(c.step(&crouched_ctx(Vec3::ZERO, crouch.clone(), Some(1.0))).height, Some(c.crouch_height));
         }
-        for _ in 0..30 {
-            c.step(&ctx(Vec3::ZERO, MoveInput::default(), Some(1.0)));
-        }
-        let out = jump_after_crouching(&mut c, 0);
-        assert!((rise(&c, out.impulse.z) - c.jump_height).abs() < 0.02);
+        let jump = MoveInput { jump_pressed: true, jump_held: true, ..crouch };
+        let out = c.step(&crouched_ctx(Vec3::ZERO, jump, Some(1.0)));
+        let rise = out.impulse.z * out.impulse.z / (2.0 * c.gravity);
+        assert!((rise - c.jump_height).abs() < 0.02, "rose {rise}");
+        assert_eq!(out.height, None, "the body stands up on the jump tick");
     }
 }
