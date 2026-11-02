@@ -41,9 +41,12 @@ struct Noise {
 }
 
 /// Rows of bricks, each row shifted half a brick, with mortar between them if it has a color.
+/// Or, as `herringbone`, bricks half as wide as they are long, zigzagging in each course.
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Bricks {
+    #[serde(default)]
+    pattern: BrickPattern,
     /// Texels along a brick, mortar included, on both level axes.
     length: usize,
     /// Texels up a row, mortar included.
@@ -60,6 +63,17 @@ struct Bricks {
     speckle: f32,
     #[serde(default)]
     seed: u32,
+}
+
+#[derive(Deserialize, Default, Clone, Copy, PartialEq)]
+#[serde(rename_all = "lowercase")]
+enum BrickPattern {
+    /// Rows of bricks square from above, each row shifted half a brick.
+    #[default]
+    Running,
+    /// In each course, bricks lying along X and along Y meet at right angles in a zigzag.
+    /// Each course shifts a brick's width along X from the one below.
+    Herringbone,
 }
 
 /// Boards running along X, with a joint somewhere along each. Seams run half a board in from
@@ -270,10 +284,30 @@ impl Bricks {
             return Err("bricks need a length and height of at least 2, to fit the mortar".into());
         }
         check_fraction("bricks speckle", self.speckle)?;
+        let ids = match self.pattern {
+            BrickPattern::Running => self.running(),
+            BrickPattern::Herringbone => self.herringbone()?,
+        };
+        let pick = distinct(&ids, self.colors.len(), self.seed)
+            .ok_or_else(|| format!("bricks need more than {} colors, so neighbors always differ", self.colors.len()))?;
+        for (i, [x, y, z]) in positions() {
+            texels[i] = match (ids[i], self.mortar) {
+                (MORTAR, Some(mortar)) => mortar,
+                (id, _) => {
+                    // A little speckle, so a brick isn't one flat color.
+                    let u = unit(hash([x as u32, y as u32, z as u32], self.seed ^ 0x5bd1));
+                    shade(self.colors[pick[&id]], 1.0 + self.speckle * (2.0 * u - 1.0))
+                }
+            };
+        }
+        Ok(())
+    }
+
+    /// Which brick each texel is in, or `MORTAR`, for running bond.
+    fn running(&self) -> Vec<u32> {
         let quarter = self.length - self.length / 4;
         let [ox, oy, oz] = self.offset.unwrap_or([quarter, quarter, self.height / 2]);
-        // Which brick each texel is in, or `MORTAR`.
-        let ids: Vec<u32> = positions()
+        positions()
             .map(|(_, [x, y, z])| {
                 let z = z + oz;
                 let row = z / self.height;
@@ -288,20 +322,40 @@ impl Bricks {
                     ((row * SIZE + by / self.length) * SIZE + bx / self.length) as u32
                 }
             })
-            .collect();
-        let pick = distinct(&ids, self.colors.len(), self.seed)
-            .ok_or_else(|| format!("bricks need more than {} colors, so neighbors always differ", self.colors.len()))?;
-        for (i, [x, y, z]) in positions() {
-            texels[i] = match (ids[i], self.mortar) {
-                (MORTAR, Some(mortar)) => mortar,
-                (id, _) => {
-                    // A little speckle, so a brick isn't one flat color.
-                    let u = unit(hash([x as u32, y as u32, z as u32], self.seed ^ 0x5bd1));
-                    shade(self.colors[pick[&id]], 1.0 + self.speckle * (2.0 * u - 1.0))
-                }
-            };
+            .collect()
+    }
+
+    /// Which brick each texel is in, for herringbone. Bricks are `length` by half that by
+    /// `height`. Within a course, in cells a brick's width across, the pattern repeats every
+    /// four cells along X, along Y and diagonally: by `(cx - cy) % 4`, a cell is the west half
+    /// of a brick along X (0) or its east half (1), the north half of a brick along Y (2) or
+    /// its south half (3).
+    fn herringbone(&self) -> Result<Vec<u32>, String> {
+        let unit = self.length / 2;
+        if self.mortar.is_some() {
+            return Err("herringbone bricks don't have mortar yet".into());
         }
-        Ok(())
+        if unit == 0 || self.length % 2 == 1 || !(SIZE / unit).is_multiple_of(4) {
+            return Err(format!("herringbone bricks need a length of 2, 4 or 8, not {}", self.length));
+        }
+        let cells = SIZE / unit;
+        let courses = SIZE / self.height;
+        let [ox, oy, oz] = self.offset.unwrap_or([0, 0, self.height / 2]);
+        Ok(positions()
+            .map(|(_, [x, y, z])| {
+                let course = (z + oz) / self.height % courses;
+                let cx = (x + ox) / unit + course;
+                let cy = (y + oy) / unit;
+                let (kind, sx, sy) = match (cx + 4 * cells - cy % cells) % 4 {
+                    0 => (0, cx, cy),
+                    1 => (0, cx + cells - 1, cy),
+                    2 => (1, cx, cy + cells - 1),
+                    _ => (1, cx, cy),
+                };
+                let (sx, sy) = (sx % cells, sy % cells);
+                (((course * cells + sy) * cells + sx) * 2 + kind) as u32
+            })
+            .collect())
     }
 }
 
@@ -654,6 +708,40 @@ mod tests {
                 .unwrap();
             assert_eq!(patches(&v), 4 * 4 * 8, "seed {seed}");
         }
+    }
+
+    const HERRINGBONE: &str = "bricks = { pattern = \"herringbone\", length = 8, height = 4, speckle = 0";
+
+    #[test]
+    fn herringbone_bricks_zigzag_both_ways_in_a_course() {
+        let v = recipe(&format!("{HERRINGBONE}, {FOUR_REDS} }}")).generate().unwrap();
+        // In the bottom course, a brick lying along X: 8 along X by 4 along Y, then the next.
+        let same = |a: [usize; 3], b: [usize; 3]| texel(&v, a[0], a[1], a[2]) == texel(&v, b[0], b[1], b[2]);
+        assert!((0..8).all(|x| same([x, 0, 0], [0, 3, 0])), "a brick along X");
+        assert!(!same([0, 0, 0], [8, 0, 0]) && !same([0, 0, 0], [0, 4, 0]));
+        // Beside it, one lying along Y: 4 along X by 8 along Y.
+        assert!((0..8).all(|y| same([12, y, 0], [15, 7, 0])), "a brick along Y");
+        assert!(!same([12, 0, 0], [12, 8, 0]) && !same([12, 0, 0], [11, 0, 0]));
+        // Courses 4 tall, half a course up, each shifted a brick's width along X.
+        assert!(same([0, 0, 0], [0, 0, 1]) && !same([0, 0, 1], [0, 0, 2]));
+        // In the course above, the brick along X starts a brick's width west, across the edge.
+        assert!(!same([0, 0, 3], [7, 0, 3]), "not where the one below is");
+        assert!((0..8).all(|x| same([(12 + x) % SIZE, 0, 3], [12, 3, 3])), "shifted along X");
+        // 8 bricks a course, 4 courses: touching bricks never match, or they'd be one patch.
+        assert_eq!(patches(&v), 32);
+        for seed in 0..20 {
+            let v = recipe(&format!("{HERRINGBONE}, {FOUR_REDS}, seed = {seed} }}")).generate().unwrap();
+            assert_eq!(patches(&v), 32, "seed {seed}");
+        }
+    }
+
+    #[test]
+    fn herringbone_needs_a_length_that_repeats() {
+        let err = |toml: &str| recipe(toml).generate().unwrap_err();
+        assert!(err("bricks = { pattern = \"herringbone\", length = 16, height = 4, colors = [[1, 1, 1]] }")
+            .contains("length of 2, 4 or 8"));
+        assert!(err("bricks = { pattern = \"herringbone\", length = 8, height = 4, colors = [[1, 1, 1]], mortar = [0, 0, 0] }")
+            .contains("mortar"));
     }
 
     #[test]

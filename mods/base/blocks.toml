@@ -36,10 +36,13 @@
 # (default 0) picks a different but repeatable variation.
 #   noise   speckle: { colors, scale, seed }. scale is texels across a blob, 1 to 16: one
 #           number, or [x, y, z] to stretch it (default 1).
-#   bricks  { length, height, colors, mortar, offset, speckle, seed }: rows of bricks, each row
+#   bricks  { pattern, length, height, colors, mortar, offset, speckle, seed }: rows of bricks, each row
 #           shifted half a brick. length and height are in texels, mortar included, and must
 #           divide 16. Without mortar, bricks are told apart by color alone. Bricks that touch
-#           never share a color, which takes at least 4 colors (1 is allowed: all alike). offset ([x, y, z]
+#           never share a color, which takes at least 4 colors (1 is allowed: all alike).
+#           pattern = "herringbone" lays bricks length by half that, zigzagging along X and
+#           Y in each course, each course shifted along X; length must be 2, 4 or 8, and
+#           there's no mortar. offset ([x, y, z]
 #           texels) shifts the pattern; by default the mortar keeps off the layers faces show.
 #           speckle is how much each texel's shade varies, 0 to 0.5 either way (default 0.08).
 #   planks  { width, thickness, colors, seam, shade, cross, seed }: boards along X, width
@@ -65,7 +68,7 @@ noise = { colors = [[98, 67, 44], [112, 78, 52], [126, 89, 60], [139, 100, 68]],
 top = { colors = [[76, 124, 44], [88, 140, 50], [101, 156, 58]], depth = 2, ragged = 2, scale = 2, seed = 3 }
 
 [looks.brick]
-bricks = { length = 8, height = 4, colors = [[150, 66, 52], [188, 94, 72], [112, 46, 36], [158, 104, 80]], speckle = 0.06, seed = 4 }
+bricks = { pattern = "herringbone", length = 8, height = 4, colors = [[150, 66, 52], [188, 94, 72], [112, 46, 36], [158, 104, 80]], speckle = 0.06, seed = 4 }
 
 [looks.ice]
 noise = { colors = [[158, 198, 234], [172, 210, 241], [188, 221, 247]], scale = 4, seed = 5 }
