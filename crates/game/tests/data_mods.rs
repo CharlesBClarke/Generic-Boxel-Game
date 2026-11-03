@@ -82,7 +82,7 @@ fn editing_a_recipe_changes_the_look() {
 #[test]
 fn a_broken_recipe_names_its_line() {
     let copy = Copy::new("broken_recipe");
-    copy.edit("blocks.toml", "bricks = { length = 8,", "bricks = { length = 5,");
+    copy.edit("blocks.toml", "length = 8, height = 4, colors = [[150", "length = 5, height = 4, colors = [[150");
     let err = game::load_from(&copy.0, Movement::Native).err().expect("loading fails").to_string();
     let text = fs::read_to_string(copy.0.join("blocks.toml")).unwrap();
     let line = text.lines().position(|l| l == "[looks.brick]").unwrap() + 1;
