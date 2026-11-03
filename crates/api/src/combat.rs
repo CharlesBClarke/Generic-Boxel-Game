@@ -15,9 +15,9 @@ pub struct HitBox {
     pub damage: f32,
 }
 
-/// Something that can be hit, knocked around and broken: a body with health and no will of its
-/// own. Placed in the world with [`crate::WorldEdit::add_target`], and back at its spot a while
-/// after breaking.
+/// Something that can be hit, knocked around and broken: a body with health, and a will of its
+/// own if it names a brain. Placed in the world with [`crate::WorldEdit::add_target`], and back
+/// at its spot a while after breaking.
 #[derive(Clone, Debug, PartialEq)]
 pub struct TargetDef {
     /// Namespaced, such as `"base:cow"`.
@@ -26,10 +26,15 @@ pub struct TargetDef {
     pub model: String,
     /// A registered sound it makes when hit, if any.
     pub hit_sound: Option<String>,
+    /// The registered [`crate::Brain`] that decides where it walks and what it plays. `None`
+    /// is a dummy that only moves when hit.
+    pub brain: Option<String>,
     /// Width and depth of its collision box, in meters.
     pub width: f32,
     /// Height of its collision box, from the feet.
     pub height: f32,
+    /// How high a ledge it walks up without jumping, in meters.
+    pub step_height: f32,
     /// The parts strikes can hit. Empty uses the collision box, at full damage. Terrain only
     /// ever meets the collision box.
     pub hit_boxes: Vec<HitBox>,
@@ -40,6 +45,7 @@ pub struct TargetDef {
     /// Downward acceleration, meters per second squared.
     pub gravity: f32,
     /// How fast it slows down sliding along the ground, per second, on ground of friction 1.
+    /// A creature walking eases toward the speed its brain wants at the same rate.
     pub drag: f32,
     /// How fast it slows down in the air, per second, so a hit sends it off fast and it stops
     /// short instead of sailing.
@@ -72,6 +78,9 @@ impl TargetDef {
         if let Some((name, value)) = at_least_zero.iter().find(|(_, v)| !(v.is_finite() && *v >= 0.0)) {
             return Err(format!("{name} must be at least 0, got {value}"));
         }
+        if !(self.step_height >= 0.0 && self.step_height < self.height) {
+            return Err(format!("step_height must be at least 0 and below the height, got {}", self.step_height));
+        }
         if !(0.0..=1.0).contains(&self.bounce) {
             return Err(format!("bounce must be from 0 to 1, got {}", self.bounce));
         }
@@ -92,6 +101,7 @@ impl Tunables for TargetDef {
     fn tunables(&self) -> Vec<Tunable> {
         vec![
             Tunable::new("health", self.health, 1.0, 200.0),
+            Tunable::new("step_height", self.step_height, 0.0, 1.2),
             Tunable::new("weight", self.weight, 0.1, 20.0),
             Tunable::new("gravity", self.gravity, 0.0, 60.0),
             Tunable::new("drag", self.drag, 0.0, 30.0),
@@ -106,6 +116,7 @@ impl Tunables for TargetDef {
     fn set_tunable(&mut self, name: &str, value: f32) -> bool {
         let field = match name {
             "health" => &mut self.health,
+            "step_height" => &mut self.step_height,
             "weight" => &mut self.weight,
             "gravity" => &mut self.gravity,
             "drag" => &mut self.drag,
@@ -215,8 +226,10 @@ mod tests {
             name: "test:dummy".into(),
             model: "test:dummy".into(),
             hit_sound: None,
+            brain: None,
             width: 0.9,
             height: 1.3,
+            step_height: 0.5,
             hit_boxes: vec![HitBox { name: "head".into(), min: [-0.2, 0.4, 1.0], max: [0.2, 0.8, 1.4], damage: 2.0 }],
             health: 20.0,
             weight: 3.0,
@@ -251,6 +264,7 @@ mod tests {
         assert!(TargetDef { health: 0.0, ..target() }.validate().is_err());
         assert!(TargetDef { weight: f32::NAN, ..target() }.validate().is_err());
         assert!(TargetDef { bounce: 2.0, ..target() }.validate().is_err());
+        assert!(TargetDef { step_height: 1.3, ..target() }.validate().is_err(), "as high as itself");
         let flat = HitBox { name: "flat".into(), min: [0.0; 3], max: [1.0, 1.0, 0.0], damage: 1.0 };
         assert!(TargetDef { hit_boxes: vec![flat], ..target() }.validate().is_err());
         assert_eq!(tool().validate(), Ok(()));

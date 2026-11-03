@@ -1,7 +1,7 @@
 //! The traits a mod implements and the engine services it is handed.
 
 use crate::{
-    ApiError, BlockDef, BoxelPos, CraftingDef, InteractionDef, InventoryDef, ItemDropDef, LookDef, ModelDef,
+    ApiError, BlockDef, Brain, BoxelPos, CraftingDef, InteractionDef, InventoryDef, ItemDropDef, LookDef, ModelDef,
     MovementController, Orientation, PlayerDef, PushOutDef, ShapeGrid, SoundDef, TargetDef, ToolDef, WorldPos,
 };
 
@@ -10,7 +10,7 @@ pub trait Mod {
     /// The mod's namespace, such as `"base"`.
     fn name(&self) -> &str;
 
-    /// Registers content: looks, blocks, movement controllers, the player, interaction, push-out
+    /// Registers content: looks, blocks, movement controllers, brains, the player, interaction, push-out
     /// item drop, inventory and crafting definitions, models, sounds, targets and tools.
     fn register(&self, registrar: &mut dyn Registrar) -> Result<(), ApiError>;
 
@@ -34,6 +34,9 @@ pub trait Registrar {
         name: &str,
         controller: Box<dyn MovementController>,
     ) -> Result<(), ApiError>;
+    /// Registers a brain under a namespaced name, for target definitions to refer to. Checked
+    /// once all mods have registered, so a target may name a brain another mod registers.
+    fn register_brain(&mut self, name: &str, brain: Box<dyn Brain>) -> Result<(), ApiError>;
     fn register_player(&mut self, def: PlayerDef) -> Result<(), ApiError>;
     fn register_interaction(&mut self, def: InteractionDef) -> Result<(), ApiError>;
     fn register_push_out(&mut self, def: PushOutDef) -> Result<(), ApiError>;

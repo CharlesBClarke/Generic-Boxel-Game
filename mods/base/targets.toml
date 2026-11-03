@@ -13,17 +13,22 @@ play_once = ["eat", "punch", "die"]
 [sounds.moo]
 file = "sounds/moo.ogg"
 
-# A training dummy shaped like a cow. Its collision box covers the middle of the body; strikes
-# hit its hit boxes, which follow the model.
+# A cow. It wanders, grazes, watches the player and runs off when hit; its brain is code, in
+# the base crate's cow module. Its collision box covers the middle of the body; strikes hit its
+# hit boxes, which follow the model.
 [[target]]
 name = "cow"
 model = "cow"
 hit_sound = "moo"
+brain = "cow"
 width = 0.9
 height = 1.3
+# Up slabs, not full blocks.
+step_height = 0.6
 health = 20
 weight = 2.5
-# Heavy and draggy, so a hit sends it off fast and it stops short instead of floating.
+# Heavy and draggy, so a hit sends it off fast and it stops short instead of floating. Drag
+# is also how quickly it gets up to walking speed.
 gravity = 40
 drag = 9
 air_drag = 3

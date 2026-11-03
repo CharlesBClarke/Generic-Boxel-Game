@@ -102,6 +102,8 @@ fn the_cow_is_data_and_its_numbers_can_be_edited() {
         assert!(skin.clip(clip).is_some(), "and its {clip} clip");
     }
     assert!(cow.hit_sound.as_ref().is_some_and(|s| sim.sounds().iter().any(|d| &d.name == s)), "and its moo");
+    assert_eq!(cow.brain.as_deref(), Some(base::cow::COW_BRAIN), "and the base crate's brain");
+    assert_eq!(cow.step_height, 0.6);
 
     let copy = Copy::new("cow");
     copy.edit("targets.toml", "health = 20", "health = 55");
@@ -112,4 +114,12 @@ fn the_cow_is_data_and_its_numbers_can_be_edited() {
     copy.edit("targets.toml", "mesh = \"models/cow.glb\"", "mesh = \"models/bull.glb\"");
     let error = game::load_from(&copy.0, Movement::Native).err().unwrap().to_string();
     assert!(error.contains("targets.toml:") && error.contains("bull.glb"), "{error}");
+}
+
+#[test]
+fn a_cow_naming_a_brain_no_mod_has_is_an_error() {
+    let copy = Copy::new("cow_brainless");
+    copy.edit("targets.toml", "brain = \"cow\"", "brain = \"sheep\"");
+    let error = game::load_from(&copy.0, Movement::Native).err().unwrap().to_string();
+    assert!(error.contains("base:sheep"), "{error}");
 }

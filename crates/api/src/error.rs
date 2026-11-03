@@ -14,6 +14,8 @@ pub enum ApiError {
     UnknownLook(String),
     /// No movement controller is registered under this name.
     UnknownController(String),
+    /// No brain is registered under this name.
+    UnknownBrain(String),
     /// No model is registered under this name.
     UnknownModel(String),
     /// No sound is registered under this name.
@@ -48,6 +50,7 @@ impl fmt::Display for ApiError {
             ApiError::UnknownBlock(name) => write!(f, "no block named {name:?}"),
             ApiError::UnknownLook(name) => write!(f, "no look named {name:?}"),
             ApiError::UnknownController(name) => write!(f, "no movement controller named {name:?}"),
+            ApiError::UnknownBrain(name) => write!(f, "no brain named {name:?}"),
             ApiError::UnknownModel(name) => write!(f, "no model named {name:?}"),
             ApiError::UnknownSound(name) => write!(f, "no sound named {name:?}"),
             ApiError::UnknownTarget(name) => write!(f, "no target named {name:?}"),

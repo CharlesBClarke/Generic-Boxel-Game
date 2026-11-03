@@ -5,6 +5,7 @@
 //! plain data: no references into engine or mod memory, no closures, no generic traits.
 
 pub mod block;
+pub mod brain;
 pub mod combat;
 pub mod crafting;
 pub mod coords;
@@ -22,6 +23,7 @@ pub mod shape;
 pub mod tuning;
 
 pub use block::{BlockBox, BlockDef, LookDef, Turning};
+pub use brain::{Brain, BrainContext, BrainOutput, Hurt, Seen};
 pub use combat::{HitBox, TargetDef, ToolDef};
 pub use crafting::{CraftError, CraftingDef, Layer, Stack, Stacks, craft_shape};
 pub use coords::{BoxelPos, CHUNK_SIZE, CHUNK_VOLUME, ChunkPos, LocalPos, WorldPos, look_direction};

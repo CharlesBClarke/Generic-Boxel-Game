@@ -1,15 +1,11 @@
 //! Playing a model's clips on its skeleton.
 //!
-//! Which clip plays is decided here for now: a creature loops `stand` and now and then plays
-//! `eat`. That's game logic in the client (API debt, "Clip choice in the client"), until a
-//! creature's behavior can say which clip it wants.
+//! Which clip plays is the creature's brain's choice, read from the simulation; a creature
+//! without one plays its model's first looping clip. The tuning panel can make every creature
+//! play one clip instead, for previewing.
 
 use api::{BonePose, Skin, Tunable, Tunables};
 use bevy::prelude::*;
-
-/// The clip a creature idles in, and the one it grazes with now and then.
-const IDLE: &str = "stand";
-const GRAZE: &str = "eat";
 
 #[derive(Resource, Clone, Debug, PartialEq)]
 pub struct AnimationTuning {
@@ -17,33 +13,23 @@ pub struct AnimationTuning {
     pub speed: f32,
     /// Seconds a change of clip blends over.
     pub blend: f32,
-    /// Seconds between grazes: at least `graze_min`, at most `graze_min + graze_spread`.
-    pub graze_min: f32,
-    pub graze_spread: f32,
 }
 
 impl Default for AnimationTuning {
     fn default() -> Self {
-        Self { speed: 1.0, blend: 0.25, graze_min: 6.0, graze_spread: 10.0 }
+        Self { speed: 1.0, blend: 0.25 }
     }
 }
 
 impl Tunables for AnimationTuning {
     fn tunables(&self) -> Vec<Tunable> {
-        vec![
-            Tunable::new("speed", self.speed, 0.0, 3.0),
-            Tunable::new("blend", self.blend, 0.0, 1.0),
-            Tunable::new("graze_min", self.graze_min, 0.5, 30.0),
-            Tunable::new("graze_spread", self.graze_spread, 0.0, 30.0),
-        ]
+        vec![Tunable::new("speed", self.speed, 0.0, 3.0), Tunable::new("blend", self.blend, 0.0, 1.0)]
     }
 
     fn set_tunable(&mut self, name: &str, value: f32) -> bool {
         match name {
             "speed" => self.speed = value,
             "blend" => self.blend = value,
-            "graze_min" => self.graze_min = value,
-            "graze_spread" => self.graze_spread = value,
             _ => return false,
         }
         true
@@ -68,29 +54,23 @@ pub struct Animator {
     /// The clip and time being blended away from, and seconds of blending done.
     from: Option<(usize, f32)>,
     faded: f32,
-    /// Seconds until the next graze.
-    graze_in: f32,
-    /// For this creature's random timings.
-    seed: u64,
+}
+
+/// The clip a creature plays when nothing chooses one: its model's first looping clip.
+fn fallback(skin: &Skin) -> usize {
+    skin.clips.iter().position(|c| c.looping).unwrap_or(0)
 }
 
 impl Animator {
-    /// Starts idling at a point set by `seed`, so creatures aren't in step.
-    pub fn new(skin: &Skin, seed: u64, tuning: &AnimationTuning) -> Self {
-        let clip = skin.clip(IDLE).unwrap_or(0);
+    /// Starts the fallback clip at a point set by `seed`, so creatures aren't in step.
+    pub fn new(skin: &Skin, seed: u64) -> Self {
+        let clip = fallback(skin);
         let length = skin.clips.get(clip).map_or(0.0, |c| c.length);
-        let mut animator = Animator { clip, time: random(seed) * length, from: None, faded: 0.0, graze_in: 0.0, seed };
-        animator.graze_in = animator.next_graze(tuning);
-        animator
+        Animator { clip, time: random(seed) * length, from: None, faded: 0.0 }
     }
 
     pub fn clip(&self) -> usize {
         self.clip
-    }
-
-    fn next_graze(&mut self, tuning: &AnimationTuning) -> f32 {
-        self.seed = self.seed.wrapping_add(0x9e37_79b9_7f4a_7c15);
-        tuning.graze_min + random(self.seed) * tuning.graze_spread
     }
 
     fn play(&mut self, clip: usize) {
@@ -100,11 +80,11 @@ impl Animator {
         self.time = 0.0;
     }
 
-    /// Moves on `dt` seconds and picks what plays next: `preview`'s clip if set, otherwise
-    /// idling with a graze now and then.
-    pub fn update(&mut self, skin: &Skin, tuning: &AnimationTuning, preview: Option<&str>, dt: f32) {
+    /// Moves on `dt` seconds and plays what's wanted: `preview`'s clip if set, otherwise the
+    /// clip named `wanted` at `wanted_speed`, or the fallback when that's empty or unknown. A
+    /// clip that doesn't loop plays once when it's first wanted, then holds its end.
+    pub fn update(&mut self, skin: &Skin, tuning: &AnimationTuning, preview: Option<&str>, wanted: (&str, f32), dt: f32) {
         let dt = dt * tuning.speed;
-        self.time += dt;
         self.faded += dt;
         if let Some((clip, time)) = &mut self.from {
             *time += dt;
@@ -112,32 +92,23 @@ impl Animator {
                 self.from = None;
             }
         }
-        let Some(current) = skin.clips.get(self.clip) else {
-            return;
-        };
-        if let Some(wanted) = preview.and_then(|name| skin.clip(name)) {
-            if wanted != self.clip {
-                self.play(wanted);
-            } else if current.finished(self.time - PREVIEW_HOLD) {
+        if let Some(previewed) = preview.and_then(|name| skin.clip(name)) {
+            self.time += dt;
+            if previewed != self.clip {
+                self.play(previewed);
+            } else if skin.clips.get(self.clip).is_some_and(|c| c.finished(self.time - PREVIEW_HOLD)) {
                 self.from = None;
                 self.time = 0.0;
             }
             return;
         }
-        let idle = skin.clip(IDLE).unwrap_or(0);
-        if self.clip != idle {
-            if current.looping || current.finished(self.time) {
-                self.play(idle);
-            }
-            return;
+        let (name, speed) = wanted;
+        let chosen = skin.clip(name).unwrap_or_else(|| fallback(skin));
+        if chosen != self.clip {
+            self.play(chosen);
         }
-        self.graze_in -= dt;
-        if self.graze_in <= 0.0 {
-            self.graze_in = self.next_graze(tuning);
-            if let Some(graze) = skin.clip(GRAZE) {
-                self.play(graze);
-            }
-        }
+        let speed = if speed.is_finite() { speed.max(0.0) } else { 1.0 };
+        self.time += dt * speed;
     }
 
     /// Every bone's pose now, relative to its parent.
@@ -197,70 +168,93 @@ mod tests {
     }
 
     fn still() -> AnimationTuning {
-        AnimationTuning { blend: 0.0, graze_min: 3.0, graze_spread: 0.0, ..default() }
+        AnimationTuning { blend: 0.0, ..default() }
     }
 
+    const STAND: (&str, f32) = ("stand", 1.0);
+    const EAT: (&str, f32) = ("eat", 1.0);
+
     #[test]
-    fn creatures_start_idling_out_of_step() {
+    fn creatures_start_on_the_first_looping_clip_out_of_step() {
         let s = skin();
-        let a = Animator::new(&s, 1, &still());
-        let b = Animator::new(&s, 2, &still());
-        assert_eq!(a.clip(), 1, "stand");
+        let (a, b) = (Animator::new(&s, 1), Animator::new(&s, 2));
+        assert_eq!(a.clip(), 1, "stand, the first that loops");
         assert_ne!(a.time, b.time);
         assert!((0.0..2.0).contains(&a.time));
     }
 
     #[test]
-    fn an_idling_creature_grazes_then_goes_back_to_idling() {
+    fn it_plays_the_wanted_clip_and_holds_the_end_of_one_that_does_not_loop() {
         let s = skin();
         let tuning = still();
-        let mut a = Animator::new(&s, 7, &tuning);
-        a.update(&s, &tuning, None, 2.9);
-        assert_eq!(a.clip(), 1, "not yet");
-        a.update(&s, &tuning, None, 0.2);
-        assert_eq!(a.clip(), 0, "grazing after graze_min");
-        a.update(&s, &tuning, None, 0.5);
+        let mut a = Animator::new(&s, 7);
+        a.update(&s, &tuning, None, STAND, 0.1);
+        assert_eq!(a.clip(), 1);
+        a.update(&s, &tuning, None, EAT, 0.0);
+        assert_eq!(a.clip(), 0, "eat, as soon as it's wanted");
+        a.update(&s, &tuning, None, EAT, 0.5);
         assert!((a.pose(&s, &tuning)[0].translation[0] - 0.5).abs() < 1e-4, "halfway through eat");
-        a.update(&s, &tuning, None, 0.6);
-        assert_eq!(a.clip(), 1, "back to stand once eat ends");
+        a.update(&s, &tuning, None, EAT, 2.0);
+        assert_eq!(a.clip(), 0, "still eat while wanted");
+        assert!((a.pose(&s, &tuning)[0].translation[0] - 1.0).abs() < 1e-4, "holding its end");
+        a.update(&s, &tuning, None, STAND, 0.1);
+        a.update(&s, &tuning, None, EAT, 0.25);
+        assert!((a.pose(&s, &tuning)[0].translation[0] - 0.25).abs() < 1e-4, "wanted again, it starts over");
     }
 
     #[test]
-    fn speed_scales_time() {
+    fn an_empty_or_unknown_clip_plays_the_fallback() {
+        let s = skin();
+        let mut a = Animator::new(&s, 7);
+        a.update(&s, &still(), None, EAT, 0.1);
+        a.update(&s, &still(), None, ("", 1.0), 0.1);
+        assert_eq!(a.clip(), 1);
+        a.update(&s, &still(), None, EAT, 0.1);
+        a.update(&s, &still(), None, ("moo", 1.0), 0.1);
+        assert_eq!(a.clip(), 1);
+    }
+
+    #[test]
+    fn speed_and_the_wanted_speed_scale_time() {
         let s = skin();
         let tuning = AnimationTuning { speed: 2.0, ..still() };
-        let mut a = Animator::new(&s, 7, &tuning);
-        a.update(&s, &tuning, Some("eat"), 0.0);
-        a.update(&s, &tuning, Some("eat"), 0.25);
+        let mut a = Animator::new(&s, 7);
+        a.update(&s, &tuning, None, EAT, 0.0);
+        a.update(&s, &tuning, None, EAT, 0.25);
         assert!((a.pose(&s, &tuning)[0].translation[0] - 0.5).abs() < 1e-4);
+        let mut a = Animator::new(&s, 7);
+        a.update(&s, &still(), None, ("eat", 0.5), 0.0);
+        a.update(&s, &still(), None, ("eat", 0.5), 0.5);
+        assert!((a.pose(&s, &still())[0].translation[0] - 0.25).abs() < 1e-4, "half speed");
+        a.update(&s, &still(), None, ("eat", 0.0), 0.5);
+        assert!((a.pose(&s, &still())[0].translation[0] - 0.25).abs() < 1e-4, "stopped");
     }
 
     #[test]
-    fn a_preview_plays_its_clip_and_repeats_one_that_ends() {
+    fn a_preview_overrides_the_wanted_clip_and_repeats_one_that_ends() {
         let s = skin();
         let tuning = still();
-        let mut a = Animator::new(&s, 7, &tuning);
-        a.update(&s, &tuning, Some("eat"), 0.1);
+        let mut a = Animator::new(&s, 7);
+        a.update(&s, &tuning, Some("eat"), STAND, 0.1);
         assert_eq!(a.clip(), 0);
-        a.update(&s, &tuning, Some("eat"), 1.2);
-        assert_eq!(a.clip(), 0, "a preview doesn't go back to idling");
+        a.update(&s, &tuning, Some("eat"), STAND, 1.2);
+        assert_eq!(a.clip(), 0, "a preview beats what's wanted");
         assert!((a.pose(&s, &tuning)[0].translation[0] - 1.0).abs() < 1e-4, "holding the end");
-        a.update(&s, &tuning, Some("eat"), PREVIEW_HOLD);
+        a.update(&s, &tuning, Some("eat"), STAND, PREVIEW_HOLD);
         assert!(a.time < 0.1, "and starting over");
-        a.update(&s, &tuning, Some("nothing"), 0.1);
-        a.update(&s, &tuning, None, 5.0);
-        assert_eq!(a.clip(), 1, "an unknown clip or no preview goes back to choosing");
+        a.update(&s, &tuning, Some("nothing"), STAND, 0.1);
+        assert_eq!(a.clip(), 1, "an unknown preview goes back to what's wanted");
     }
 
     #[test]
     fn a_change_of_clip_blends_from_the_last_pose() {
         let s = skin();
         let tuning = AnimationTuning { blend: 0.2, ..still() };
-        let mut a = Animator::new(&s, 7, &tuning);
+        let mut a = Animator::new(&s, 7);
         let before = a.pose(&s, &tuning)[0].translation;
-        a.update(&s, &tuning, Some("eat"), 0.0);
+        a.update(&s, &tuning, None, EAT, 0.0);
         assert!((a.pose(&s, &tuning)[0].translation[2] - before[2]).abs() < 1e-4, "starts where stand was");
-        a.update(&s, &tuning, Some("eat"), 0.3);
+        a.update(&s, &tuning, None, EAT, 0.3);
         assert!((a.pose(&s, &tuning)[0].translation[2]).abs() < 1e-4, "all eat once the blend is done");
     }
 
