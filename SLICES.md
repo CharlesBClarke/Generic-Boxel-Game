@@ -104,6 +104,25 @@ A run of small toy slices. Each one takes a single game-feel feature that doesn'
 
 ### Current toy
 
+#### Ambient occlusion (branch `toy-ambient-occlusion`)
+
+**Stage:** Verify (built 2026-11-02, waiting for the user to play it). From the backlog entry of the same name.
+
+*Built*
+- As planned. The four cubes are measured together as one box (`occlusion` in `mesher.rs`); a boxel's 27 neighbors are only gathered once one of its faces is drawn. Defaults: strength 0.6, reach 16.
+- The diagonal rule, made exact: each quad splits along the diagonal whose two ends are lit most alike, so a lone dark or lit corner stays in its own triangle.
+- **Remesh time** (release, all 59 chunks of the test area, 82,114 quads, best of 5; the ignored test `time_a_full_remesh`): 85 ms before, 197 ms with AO, so about 1.4 to 3.3 ms a chunk. An edit remeshes a chunk or a few; dragging an AO slider remeshes all 59 each change, so expect a hitch while dragging.
+- Tests: `a_lone_block_and_open_floor_are_not_darkened`, `a_floor_corner_darkens_by_how_many_walls_meet_there`, `a_slab_beside_a_wall_darkens_less_than_a_full_block`, `quads_split_along_the_diagonal_that_keeps_a_lone_dark_corner_to_itself`, `darkening_reads_across_chunk_borders`, `reach_narrows_how_far_darkening_spreads`.
+
+*Plan*
+- **How it works.** For every corner of every quad, the mesher measures the space in front of the face as four boxes meeting at that corner (over the face, past each of the two edges that meet there, and past the corner), each `reach` sixteenths on a side. The corner darkens by how much of that space block shapes fill, measured in sixteenths, so slabs, stairs and crafted shapes count by their real volume. For full blocks this matches Minecraft's smooth lighting: a floor corner against one wall gets half the darkening, a corner where two walls meet three quarters, open floor none.
+- **Where it goes.** Multiplied into the vertex color beside the fake face shading; the shader doesn't change and it costs nothing per frame. Each quad's diagonal flips toward its brighter corners so the blend has no crease. Previews (ghost, hotbar pictures, items) have no neighbors and get none.
+- **Code.** Client only: `client/src/mesher.rs` gets the neighborhood lookup; `mesh_occupant` takes a closure answering "how much of this box is filled". An `AoTuning` resource (`strength`, 0 is off; `reach` in sixteenths, starting at a full block) gets sliders in the tuning panel like `CameraFeel`, and changing it remeshes the loaded chunks. No new key, so `controls.txt` doesn't change. Nothing goes around the API.
+- **Tests** in `mesher.rs`: a lone block on open ground isn't darkened; a floor corner against one wall gets half, against two three quarters; a slab beside a wall darkens less than a full block; the diagonal flips toward the brighter corners; strength 0 gives today's output; darkening reads across chunk borders. Time a full remesh of the test area before and after.
+- **Open questions, taken at their defaults** (the user said engage without answering): reach starts at a full block; darkening is worked out only at quad corners, so a small shape against the middle of a big face's edge smears across the face. Revisit in play.
+
+*Done when:* (1) inside corners and edges are visibly darker (wall bases, steps, the house's windows); (2) slabs and stairs darken by how much they fill; (3) no crease along quad diagonals; (4) strength and reach tune live, 0 turns it off; (5) remesh time is measured and still acceptable; checked by the user in play.
+
 **Waiting for a play check** (remind the user at the start of every session, and at good moments during one, until they confirm; then delete the line): none.
 
 ### Toy backlog

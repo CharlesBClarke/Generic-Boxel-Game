@@ -6,9 +6,15 @@
 //! block's look volume, so each face shows the part of the look it cuts through; flat-colored
 //! blocks point at the white volume and carry their color in the vertices. Looks stay lined up
 //! with the world unless the look turns with its blocks, like a log's.
+//!
+//! Ambient occlusion is baked into the vertex colors: each corner of a face darkens by how much
+//! of the space in front of it, around the corner, block shapes fill (see [`AoTuning`]).
 
-use api::{BlockBox, CHUNK_SIZE, CHUNK_VOLUME, ChunkPos, I64Vec3, LocalPos, LookDef, Orientation};
-use sim::{BlockRegistry, CellId, Grid, Occupant};
+use std::cell::OnceCell;
+
+use api::{BlockBox, CHUNK_SIZE, CHUNK_VOLUME, ChunkPos, I64Vec3, LocalPos, LookDef, Orientation, Tunable, Tunables};
+use bevy::prelude::Resource;
+use sim::{BlockRegistry, CellId, Chunk, Grid, Occupant};
 
 use crate::volumes::Volumes;
 
@@ -67,9 +73,105 @@ fn srgb_to_linear(c: u8) -> f32 {
     if c <= 0.04045 { c / 12.92 } else { ((c + 0.055) / 1.055).powf(2.4) }
 }
 
+/// Ambient occlusion: how dark inside corners and edges get. Live-tunable; changing it remeshes
+/// every chunk.
+#[derive(Resource, Clone, Copy, Debug, PartialEq)]
+pub struct AoTuning {
+    /// How much a corner darkens with all the space around it in front of the face filled: 0
+    /// turns ambient occlusion off, 1 makes such a corner black. A floor corner against one
+    /// full wall is half filled; where two walls meet, three quarters.
+    pub strength: f32,
+    /// How far from a corner shapes count, in sixteenths, rounded; 16 is a whole block.
+    pub reach: f32,
+}
+
+impl AoTuning {
+    pub const OFF: AoTuning = AoTuning { strength: 0.0, reach: 16.0 };
+
+    fn reach(&self) -> i32 {
+        (self.reach.round() as i32).clamp(1, BlockBox::SIZE as i32)
+    }
+}
+
+impl Default for AoTuning {
+    fn default() -> Self {
+        Self { strength: 0.6, reach: 16.0 }
+    }
+}
+
+impl Tunables for AoTuning {
+    fn tunables(&self) -> Vec<Tunable> {
+        vec![Tunable::new("strength", self.strength, 0.0, 1.0), Tunable::new("reach", self.reach, 1.0, 16.0)]
+    }
+
+    fn set_tunable(&mut self, name: &str, value: f32) -> bool {
+        match name {
+            "strength" => self.strength = value,
+            "reach" => self.reach = value,
+            _ => return false,
+        }
+        true
+    }
+}
+
+/// A box in sixteenths, relative to some boxel's minimum corner: min and max.
+type Sixteenths = ([i32; 3], [i32; 3]);
+
+/// The boxes filled by everything in the 27 boxels around (and including) the boxel at `at`,
+/// in sixteenths relative to that boxel, turned as they stand in the world.
+fn neighborhood<'a>(at: I64Vec3, occupants_at: impl Fn(I64Vec3) -> &'a [Occupant], blocks: &BlockRegistry) -> Vec<Sixteenths> {
+    let size = BlockBox::SIZE as i32;
+    let mut boxes = Vec::new();
+    for d in (0..27).map(|i| [i % 3 - 1, i / 3 % 3 - 1, i / 9 - 1]) {
+        for occupant in occupants_at(at + I64Vec3::new(d[0] as i64, d[1] as i64, d[2] as i64)) {
+            let Some(def) = blocks.get(occupant.block) else {
+                continue;
+            };
+            for &b in &def.shape {
+                let b = occupant.orientation.apply_box(b);
+                let shift = |p: [u8; 3]| [0, 1, 2].map(|i| p[i] as i32 + d[i] * size);
+                boxes.push((shift(b.min), shift(b.max)));
+            }
+        }
+    }
+    boxes
+}
+
+/// How much of the space in front of a face around its corner `corner` is filled, from 0 to 1.
+/// The space is four cubes `reach` on a side, all in front of the face (the way `normal`
+/// points) and meeting at the corner: over the face, past each of the corner's two edges, and
+/// past the corner. `boxes` and `corner` are in sixteenths relative to the same boxel.
+fn occlusion(boxes: &[Sixteenths], corner: [i32; 3], normal: [i32; 3], reach: i32) -> f32 {
+    let axis = normal.iter().position(|&n| n != 0).expect("a unit normal");
+    // The cubes together: in front along the normal, either side along the other two axes.
+    let (mut lo, mut hi) = (corner.map(|c| c - reach), corner.map(|c| c + reach));
+    if normal[axis] > 0 { lo[axis] = corner[axis] } else { hi[axis] = corner[axis] }
+    let mut filled = 0;
+    for (min, max) in boxes {
+        let (cut_min, cut_max) = ([0, 1, 2].map(|i| min[i].max(lo[i])), [0, 1, 2].map(|i| max[i].min(hi[i])));
+        if (0..3).any(|i| cut_min[i] >= cut_max[i]) {
+            continue;
+        }
+        filled += (0..3).map(|i| cut_max[i] - cut_min[i]).product::<i32>();
+    }
+    // Boxes of one boxel's occupants never overlap, but clamp in case.
+    (filled as f32 / (4 * reach * reach * reach) as f32).min(1.0)
+}
+
+/// The occupants of the boxel at `local` in `chunk` at `pos`, read from the next chunk past
+/// its edges.
+fn occupants_at<'a>(grid: &'a Grid, chunk: &'a Chunk, pos: ChunkPos, local: I64Vec3) -> &'a [Occupant] {
+    let inside = local.cmpge(I64Vec3::ZERO).all() && local.cmplt(I64Vec3::splat(CHUNK_SIZE)).all();
+    if inside {
+        grid.occupants(chunk.cells.get(LocalPos::new(local.x as u8, local.y as u8, local.z as u8)))
+    } else {
+        grid.cell(pos.origin().offset(local))
+    }
+}
+
 /// Meshes the chunk at `pos`. Neighbors are read through `grid`, so faces on chunk borders
-/// are culled against the next chunk. Unloaded neighbors count as empty.
-pub fn mesh_chunk(grid: &Grid, pos: ChunkPos, blocks: &BlockRegistry, volumes: &Volumes) -> MeshData {
+/// are culled and occluded against the next chunk. Unloaded neighbors count as empty.
+pub fn mesh_chunk(grid: &Grid, pos: ChunkPos, blocks: &BlockRegistry, volumes: &Volumes, ao: &AoTuning) -> MeshData {
     let mut mesh = MeshData::default();
     let Some(chunk) = grid.chunk(pos) else {
         return mesh;
@@ -78,16 +180,9 @@ pub fn mesh_chunk(grid: &Grid, pos: ChunkPos, blocks: &BlockRegistry, volumes: &
         return mesh;
     }
 
-    let size = CHUNK_SIZE;
-    let full = |local: I64Vec3| -> bool {
-        let inside = local.cmpge(I64Vec3::ZERO).all() && local.cmplt(I64Vec3::splat(size)).all();
-        let cell = if inside {
-            grid.occupants(chunk.cells.get(LocalPos::new(local.x as u8, local.y as u8, local.z as u8)))
-        } else {
-            grid.cell(pos.origin().offset(local))
-        };
-        cell.iter().any(|o| blocks.get(o.block).is_some_and(|def| def.is_full()))
-    };
+    let near = |local: I64Vec3| occupants_at(grid, chunk, pos, local);
+    let full = |local: I64Vec3| near(local).iter().any(|o| blocks.get(o.block).is_some_and(|def| def.is_full()));
+    let reach = ao.reach();
 
     for index in 0..CHUNK_VOLUME {
         let local = LocalPos::from_index(index);
@@ -97,9 +192,18 @@ pub fn mesh_chunk(grid: &Grid, pos: ChunkPos, blocks: &BlockRegistry, volumes: &
         }
         let at = local.to_ivec();
         let mut drawn = Vec::new();
+        // Only gathered once a face of this boxel is drawn; most boxels are buried.
+        let boxes = OnceCell::new();
+        let light = |corner: [i32; 3], normal: [i32; 3]| -> f32 {
+            if ao.strength <= 0.0 {
+                return 1.0;
+            }
+            let boxes = boxes.get_or_init(|| neighborhood(at, near, blocks));
+            1.0 - ao.strength * occlusion(boxes, corner, normal, reach)
+        };
         for &occupant in grid.occupants(id) {
             let hidden = |n: [i32; 3]| full(at + I64Vec3::new(n[0] as i64, n[1] as i64, n[2] as i64));
-            mesh_occupant(&mut mesh, occupant, at.as_vec3().to_array(), blocks, volumes, hidden, &mut drawn);
+            mesh_occupant(&mut mesh, occupant, at.as_vec3().to_array(), blocks, volumes, hidden, &light, &mut drawn);
         }
     }
     mesh
@@ -141,7 +245,10 @@ fn subtract((min, max): ([u8; 2], [u8; 2]), cut: &DrawnFace) -> Vec<([u8; 2], [u
 /// Adds the faces of one occupant whose boxel's minimum corner is at `at`. A face on the
 /// boxel's side facing direction `n` is left out if `hidden(n)`. Parts of faces that lie on
 /// faces in `drawn`, from older occupants of the same boxel, are left out too, and this
-/// occupant's faces are added to `drawn`.
+/// occupant's faces are added to `drawn`. Each corner's color is multiplied by
+/// `light(corner, normal)`, the corner in sixteenths of the boxel as it stands in the world;
+/// pass [`unlit`] where there are no neighbors.
+#[allow(clippy::too_many_arguments)]
 pub fn mesh_occupant(
     mesh: &mut MeshData,
     occupant: Occupant,
@@ -149,6 +256,7 @@ pub fn mesh_occupant(
     blocks: &BlockRegistry,
     volumes: &Volumes,
     hidden: impl Fn([i32; 3]) -> bool,
+    light: &impl Fn([i32; 3], [i32; 3]) -> f32,
     drawn: &mut Vec<DrawnFace>,
 ) {
     let Some(def) = blocks.get(occupant.block) else {
@@ -166,8 +274,8 @@ pub fn mesh_occupant(
         (Orientation::IDENTITY, def.shape.iter().map(|&b| occupant.orientation.apply_box(b)).collect())
     };
     let half = BlockBox::SIZE as i32 / 2;
-    // A point in sixteenths, unturned, to boxel space turned about the center.
-    let place = |p: [i32; 3]| turn.apply(p.map(|c| c - half)).map(|c| (c + half) as f32 / BlockBox::SIZE as f32);
+    // A point in sixteenths, unturned, to sixteenths of the boxel turned about the center.
+    let place = |p: [i32; 3]| turn.apply(p.map(|c| c - half)).map(|c| c + half);
 
     let mine_from = drawn.len();
     for b in &shape {
@@ -191,14 +299,19 @@ pub fn mesh_occupant(
                 // The piece as a box, turned back to how the block stands unturned.
                 let mut piece = turned;
                 (piece.min[a], piece.min[c], piece.max[a], piece.max[c]) = (min[0], min[1], max[0], max[1]);
-                quad(mesh, face, &turn.inverse().apply_box(piece), normal, at, base, volume, &place);
+                quad(mesh, face, &turn.inverse().apply_box(piece), normal, at, base, volume, &place, light);
             }
         }
     }
 }
 
+/// No ambient occlusion, for meshes drawn away from the world: the ghost, items, pictures.
+pub fn unlit(_corner: [i32; 3], _normal: [i32; 3]) -> f32 {
+    1.0
+}
+
 /// Adds one face of box `b` (in sixteenths, before turning) as a quad facing `normal` once
-/// turned by `place`, drawn from look `volume`.
+/// turned by `place`, drawn from look `volume`, each corner lit by `light`.
 #[allow(clippy::too_many_arguments)]
 fn quad(
     mesh: &mut MeshData,
@@ -208,24 +321,33 @@ fn quad(
     at: [f32; 3],
     base: [f32; 3],
     volume: u32,
-    place: &impl Fn([i32; 3]) -> [f32; 3],
+    place: &impl Fn([i32; 3]) -> [i32; 3],
+    light: &impl Fn([i32; 3], [i32; 3]) -> f32,
 ) {
     let first = mesh.positions.len() as u32;
     let s = shade(normal);
-    let color = [base[0] * s, base[1] * s, base[2] * s, 1.0];
     let texels = LookDef::SIZE as f32 / BlockBox::SIZE as f32;
-    for c in face.corners {
+    let mut lit = [0.0; 4];
+    for (k, c) in face.corners.into_iter().enumerate() {
         // The corner of this box, in sixteenths, before turning.
         let p = [0, 1, 2].map(|i| if c[i] == 0 { b.min[i] as i32 } else { b.max[i] as i32 });
         // In the look, half a texel back from the face, into the block.
         let [x, y, z] = [0, 1, 2].map(|i| p[i] as f32 * texels - face.normal[i] as f32 * 0.5);
         let q = place(p);
-        mesh.positions.push([at[0] + q[0], at[1] + q[1], at[2] + q[2]]);
+        lit[k] = light(q, normal);
+        let l = s * lit[k];
+        mesh.positions.push([0, 1, 2].map(|i| at[i] + q[i] as f32 / BlockBox::SIZE as f32));
         mesh.normals.push(normal.map(|n| n as f32));
-        mesh.colors.push(color);
+        mesh.colors.push([base[0] * l, base[1] * l, base[2] * l, 1.0]);
         mesh.solid.push([x, y, z, volume as f32]);
     }
-    mesh.indices.extend([first, first + 1, first + 2, first, first + 2, first + 3]);
+    // Split along the diagonal whose ends are lit most alike. Splitting along the other one
+    // would drag a lone dark (or lit) corner's color across the whole quad in a streak.
+    if (lit[0] - lit[2]).abs() <= (lit[1] - lit[3]).abs() {
+        mesh.indices.extend([first, first + 1, first + 2, first, first + 2, first + 3]);
+    } else {
+        mesh.indices.extend([first, first + 1, first + 3, first + 1, first + 2, first + 3]);
+    }
 }
 
 #[cfg(test)]
@@ -260,8 +382,9 @@ mod tests {
         looks_turning(names, &[])
     }
 
+    /// Meshed without ambient occlusion, so colors are just the face shading.
     fn mesh_chunk(grid: &Grid, pos: ChunkPos, blocks: &BlockRegistry) -> MeshData {
-        super::mesh_chunk(grid, pos, blocks, &flat(blocks))
+        super::mesh_chunk(grid, pos, blocks, &flat(blocks), &AoTuning::OFF)
     }
 
     #[test]
@@ -341,7 +464,7 @@ mod tests {
         let mut grid = Grid::default();
         grid.set_block(BoxelPos::new(0, 0, 0), stone);
         grid.set_block(BoxelPos::new(5, 0, 0), plain);
-        let mesh = super::mesh_chunk(&grid, ChunkPos::new(0, 0, 0), &blocks, &volumes);
+        let mesh = super::mesh_chunk(&grid, ChunkPos::new(0, 0, 0), &blocks, &volumes, &AoTuning::OFF);
         assert_eq!(mesh.solid.len(), mesh.positions.len());
         for i in 0..mesh.positions.len() {
             let n = mesh.normals[i];
@@ -412,7 +535,7 @@ mod tests {
         let volumes = Volumes::build(&looks(&["test:a"]), &blocks);
         let mut grid = Grid::default();
         grid.set_block(BoxelPos::new(0, 0, 0), slab);
-        let mesh = super::mesh_chunk(&grid, ChunkPos::new(0, 0, 0), &blocks, &volumes);
+        let mesh = super::mesh_chunk(&grid, ChunkPos::new(0, 0, 0), &blocks, &volumes, &AoTuning::OFF);
         for i in 0..mesh.positions.len() {
             let z = mesh.solid[i][2];
             match mesh.normals[i][2] {
@@ -432,7 +555,7 @@ mod tests {
         let mut grid = Grid::default();
         let top = Occupant::turned(slab, Orientation::quarter_turns(0, 2));
         grid.set_cell(BoxelPos::new(0, 0, 0), &[Occupant::new(slab), top]);
-        let mesh = super::mesh_chunk(&grid, ChunkPos::new(0, 0, 0), &blocks, &volumes);
+        let mesh = super::mesh_chunk(&grid, ChunkPos::new(0, 0, 0), &blocks, &volumes, &AoTuning::OFF);
         // On the east side, the two halves read one look: the same layer, heights running on.
         let mut east: Vec<_> =
             (0..mesh.positions.len()).filter(|&i| mesh.normals[i][0] == 1.0).map(|i| (mesh.solid[i][0], mesh.solid[i][2])).collect();
@@ -455,7 +578,7 @@ mod tests {
         // Lying along X; and a slab standing against the west side of its boxel.
         grid.set_cell(BoxelPos::new(0, 0, 0), &[Occupant::turned(log, Orientation::z_along(0))]);
         grid.set_cell(BoxelPos::new(4, 0, 0), &[Occupant::turned(slab, Orientation::z_along(0))]);
-        let mesh = super::mesh_chunk(&grid, ChunkPos::new(0, 0, 0), &blocks, &volumes);
+        let mesh = super::mesh_chunk(&grid, ChunkPos::new(0, 0, 0), &blocks, &volumes, &AoTuning::OFF);
         for i in 0..mesh.positions.len() {
             let n = mesh.normals[i];
             if mesh.positions[i][0] < 2.0 {
@@ -511,7 +634,7 @@ mod tests {
         for cell in [[Occupant::new(b), east(a)], [east(a), Occupant::new(b)]] {
             let mut grid = Grid::default();
             grid.set_cell(BoxelPos::new(3, 3, 3), &cell);
-            let quads = quads(&super::mesh_chunk(&grid, ChunkPos::new(0, 0, 0), &blocks, &volumes));
+            let quads = quads(&super::mesh_chunk(&grid, ChunkPos::new(0, 0, 0), &blocks, &volumes, &AoTuning::OFF));
             for (i, (n1, min1, max1)) in quads.iter().enumerate() {
                 for (n2, min2, max2) in &quads[i + 1..] {
                     let axis = n1.iter().position(|&c| c != 0.0).unwrap();
@@ -534,7 +657,7 @@ mod tests {
         let east_side = |cell: &[Occupant]| {
             let mut grid = Grid::default();
             grid.set_cell(BoxelPos::new(3, 3, 3), cell);
-            let mesh = super::mesh_chunk(&grid, ChunkPos::new(0, 0, 0), &blocks, &volumes);
+            let mesh = super::mesh_chunk(&grid, ChunkPos::new(0, 0, 0), &blocks, &volumes, &AoTuning::OFF);
             let mut sides: Vec<_> = quads(&mesh)
                 .into_iter()
                 .enumerate()
@@ -562,5 +685,133 @@ mod tests {
         grid.set_cell(BoxelPos::new(1, 1, 1), &[Occupant::new(slab), Occupant::new(fence)]);
         // The post's bottom lies on the older slab's bottom, so only the slab's is drawn.
         assert_eq!(mesh_chunk(&grid, ChunkPos::new(0, 0, 0), &blocks).quad_count(), 6 + 5);
+    }
+
+    /// White full blocks and white bottom slabs, so a top face's color is just its light.
+    fn white() -> (Grid, BlockRegistry, BlockId, BlockId) {
+        let mut blocks = BlockRegistry::default();
+        let cube = blocks.register(BlockDef::new("test:white", true, [255; 3])).unwrap();
+        let slab = blocks.register(BlockDef::new("test:white_slab", true, [255; 3]).with_shape(vec![SLAB])).unwrap();
+        (Grid::default(), blocks, cube, slab)
+    }
+
+    /// A 4 by 4 floor at z = 0, from (0, 0) to (3, 3).
+    fn floor(grid: &mut Grid, block: BlockId) {
+        for (x, y) in (0..4).flat_map(|x| (0..4).map(move |y| (x, y))) {
+            grid.set_block(BoxelPos::new(x, y, 0), block);
+        }
+    }
+
+    fn lit(grid: &Grid, blocks: &BlockRegistry, chunk: ChunkPos) -> MeshData {
+        super::mesh_chunk(grid, chunk, blocks, &flat(blocks), &AoTuning::default())
+    }
+
+    /// The light of every upward-facing vertex at `at`, chunk-local; they must all agree.
+    fn light_up(mesh: &MeshData, at: [f32; 3]) -> f32 {
+        let found: Vec<f32> = (0..mesh.positions.len())
+            .filter(|&i| mesh.positions[i] == at && mesh.normals[i] == [0.0, 0.0, 1.0])
+            .map(|i| mesh.colors[i][0])
+            .collect();
+        assert!(!found.is_empty(), "no upward vertex at {at:?}");
+        assert!(found.iter().all(|&l| (l - found[0]).abs() < 1e-6), "vertices at {at:?} disagree: {found:?}");
+        found[0]
+    }
+
+    fn close(a: f32, b: f32) -> bool {
+        (a - b).abs() < 1e-5
+    }
+
+    #[test]
+    fn a_lone_block_and_open_floor_are_not_darkened() {
+        let (mut grid, blocks, cube, _) = white();
+        grid.set_block(BoxelPos::new(5, 5, 5), cube);
+        let chunk = ChunkPos::new(0, 0, 0);
+        let off = super::mesh_chunk(&grid, chunk, &blocks, &flat(&blocks), &AoTuning::OFF);
+        assert_eq!(lit(&grid, &blocks, chunk).colors, off.colors);
+        let mut grid = Grid::default();
+        floor(&mut grid, cube);
+        assert!(close(light_up(&lit(&grid, &blocks, chunk), [2.0, 2.0, 1.0]), 1.0));
+    }
+
+    #[test]
+    fn a_floor_corner_darkens_by_how_many_walls_meet_there() {
+        let (mut grid, blocks, cube, _) = white();
+        floor(&mut grid, cube);
+        // A wall along x = 3 on the floor.
+        for y in 0..4 {
+            grid.set_block(BoxelPos::new(3, y, 1), cube);
+        }
+        let strength = AoTuning::default().strength;
+        let mesh = lit(&grid, &blocks, ChunkPos::new(0, 0, 0));
+        assert!(close(light_up(&mesh, [3.0, 1.0, 1.0]), 1.0 - strength * 0.5), "against one wall");
+        assert!(close(light_up(&mesh, [2.0, 1.0, 1.0]), 1.0), "a block away from it");
+        // A second wall along y = 3 makes an inside corner.
+        for x in 0..3 {
+            grid.set_block(BoxelPos::new(x, 3, 1), cube);
+        }
+        let mesh = lit(&grid, &blocks, ChunkPos::new(0, 0, 0));
+        assert!(close(light_up(&mesh, [3.0, 3.0, 1.0]), 1.0 - strength * 0.75), "where two walls meet");
+    }
+
+    #[test]
+    fn a_slab_beside_a_wall_darkens_less_than_a_full_block() {
+        let (mut grid, blocks, cube, slab) = white();
+        floor(&mut grid, cube);
+        for y in 0..4 {
+            grid.set_block(BoxelPos::new(3, y, 1), slab);
+        }
+        let strength = AoTuning::default().strength;
+        let mesh = lit(&grid, &blocks, ChunkPos::new(0, 0, 0));
+        // Half as tall, so half the space a full wall fills.
+        assert!(close(light_up(&mesh, [3.0, 1.0, 1.0]), 1.0 - strength * 0.25));
+        // The slabs' own tops, at half height, have nothing over them.
+        assert!(close(light_up(&mesh, [4.0, 1.0, 1.5]), 1.0));
+    }
+
+    #[test]
+    fn quads_split_along_the_diagonal_that_keeps_a_lone_dark_corner_to_itself() {
+        let (mut grid, blocks, cube, _) = white();
+        floor(&mut grid, cube);
+        // A pillar touching the top of (1, 1, 0) only at its corner (2, 2).
+        grid.set_block(BoxelPos::new(2, 2, 1), cube);
+        let mesh = lit(&grid, &blocks, ChunkPos::new(0, 0, 0));
+        let corners = [[1.0, 1.0, 1.0], [2.0, 1.0, 1.0], [2.0, 2.0, 1.0], [1.0, 2.0, 1.0]];
+        let q = (0..mesh.quad_count())
+            .find(|&q| corners.iter().all(|c| mesh.positions[q * 4..q * 4 + 4].contains(c)))
+            .expect("the floor tile's top");
+        let dark = (q * 4..q * 4 + 4).find(|&i| mesh.positions[i] == [2.0, 2.0, 1.0]).unwrap() as u32;
+        assert!(mesh.colors[dark as usize][0] < 1.0);
+        let triangles = &mesh.indices[q * 6..q * 6 + 6];
+        assert_eq!(triangles.chunks(3).filter(|t| t.contains(&dark)).count(), 1);
+    }
+
+    #[test]
+    fn darkening_reads_across_chunk_borders() {
+        let (mut grid, blocks, cube, _) = white();
+        // Floor at the east edge of chunk 0, wall in chunk 1.
+        for y in 0..4 {
+            grid.set_block(BoxelPos::new(31, y, 0), cube);
+            grid.set_block(BoxelPos::new(32, y, 1), cube);
+        }
+        let mesh = lit(&grid, &blocks, ChunkPos::new(0, 0, 0));
+        assert!(close(light_up(&mesh, [32.0, 1.0, 1.0]), 1.0 - AoTuning::default().strength * 0.5));
+    }
+
+    #[test]
+    fn reach_narrows_how_far_darkening_spreads() {
+        let (mut grid, blocks, cube, _) = white();
+        floor(&mut grid, cube);
+        for y in 0..4 {
+            grid.set_block(BoxelPos::new(3, y, 1), cube);
+        }
+        // A half-block reach still sees the wall fill half the space at its base.
+        let ao = AoTuning { reach: 8.0, ..AoTuning::default() };
+        let mesh = super::mesh_chunk(&grid, ChunkPos::new(0, 0, 0), &blocks, &flat(&blocks), &ao);
+        assert!(close(light_up(&mesh, [3.0, 1.0, 1.0]), 1.0 - ao.strength * 0.5));
+        // Turning strength to 0 is exactly the unoccluded mesh.
+        let off = AoTuning { strength: 0.0, reach: 8.0 };
+        let mesh = super::mesh_chunk(&grid, ChunkPos::new(0, 0, 0), &blocks, &flat(&blocks), &off);
+        let none = mesh_chunk(&grid, ChunkPos::new(0, 0, 0), &blocks);
+        assert_eq!((mesh.colors, mesh.indices), (none.colors, none.indices));
     }
 }

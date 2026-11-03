@@ -10,6 +10,7 @@ use crate::Sim;
 use crate::combat::CombatFeel;
 use crate::drill::{Drill, DrillTuning};
 use crate::feel::CameraFeel;
+use crate::mesher::AoTuning;
 
 #[derive(Resource, Default)]
 pub struct TuningPanel {
@@ -36,6 +37,7 @@ pub fn tuning_panel(
     mut panel: ResMut<TuningPanel>,
     mut sim: ResMut<Sim>,
     mut feel: ResMut<CameraFeel>,
+    mut ao: ResMut<AoTuning>,
     mut combat: ResMut<CombatFeel>,
     mut drill: ResMut<Drill>,
 ) -> Result {
@@ -129,6 +131,14 @@ pub fn tuning_panel(
                 *feel = camera;
             }
             ui.separator();
+            ui.heading("Ambient occlusion");
+            // Through a copy too: a change remeshes every chunk.
+            let mut shading = *ao;
+            sliders(ui, "ao", &mut shading);
+            if shading != *ao {
+                *ao = shading;
+            }
+            ui.separator();
             ui.heading("Chase drill");
             sliders(ui, "drill", &mut drill.tuning);
         });
@@ -169,6 +179,7 @@ pub fn tuning_panel(
                     }
                 }
                 *feel = CameraFeel::default();
+                ao.set_if_neq(AoTuning::default());
                 *combat = CombatFeel::default();
                 drill.tuning = DrillTuning::default();
             }
@@ -212,6 +223,8 @@ pub fn tuning_panel(
         out += &printout(&combat.tunables());
         out += "// camera\n";
         out += &printout(&feel.tunables());
+        out += "// ambient occlusion\n";
+        out += &printout(&ao.tunables());
         out += "// chase drill\n";
         out += &printout(&drill.tuning.tunables());
         info!("tuned values:\n{out}");
