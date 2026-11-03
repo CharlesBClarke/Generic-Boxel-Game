@@ -48,8 +48,16 @@ fn swing_at(sim: &mut Simulation, pos: WorldPos) -> Strike {
     panic!("no strike within a second");
 }
 
+/// Whether `pos` is inside the pasture's fence, at floor level or just above.
+fn in_pasture(pos: WorldPos) -> bool {
+    let ((x0, y0), (x1, _)) = base::PASTURE;
+    let rel = WorldPos::at_boxel(BoxelPos::new(x0 + 1, y0 + 1, 0)).delta_to(pos);
+    let size = (x1 - x0 - 1) as f32;
+    rel.x > 0.0 && rel.y > 0.0 && rel.x < size && rel.y < size && rel.z > -0.01 && rel.z < 0.5
+}
+
 #[test]
-fn base_places_its_cows_in_the_pen_where_they_settle() {
+fn base_places_its_cows_in_the_pasture_where_they_settle() {
     let mut sim = dummy_sim();
     let cows: Vec<_> = sim.targets().iter().filter(|t| sim.target_def(t.kind).name == base::COW).collect();
     assert_eq!(cows.len(), base::COWS.len(), "one cow per spot, in the near test area only");
@@ -58,8 +66,7 @@ fn base_places_its_cows_in_the_pen_where_they_settle() {
     idle(&mut sim, 120);
     for cow in sim.targets().iter() {
         assert!(cow.on_ground && cow.velocity == Vec3::ZERO, "settled");
-        let pen = BoxelPos::new(-14, 14, 0);
-        assert!(WorldPos::at_boxel(pen).delta_to(cow.pos).truncate().length() < 8.0, "in the pen");
+        assert!(in_pasture(cow.pos), "in the pasture: {:?}", cow.pos);
     }
 }
 
@@ -180,28 +187,157 @@ fn cow_spots(sim: &Simulation) -> Vec<(u64, WorldPos)> {
     sim.targets().iter().map(|t| (t.id, t.pos)).collect()
 }
 
+/// The middle of the cows, and the furthest any is from it, level.
+fn herd_spread(sim: &Simulation) -> (WorldPos, f32) {
+    let cows: Vec<WorldPos> = sim.targets().iter().map(|t| t.pos).collect();
+    let first = cows[0];
+    let middle = first.translate(cows.iter().map(|&c| first.delta_to(c)).sum::<Vec3>() / cows.len() as f32);
+    let far = cows.iter().map(|&c| middle.delta_to(c).truncate().length()).fold(0.0, f32::max);
+    (middle, far)
+}
+
+/// The closest any two cows' feet are, level.
+fn closest_pair(sim: &Simulation) -> f32 {
+    let cows: Vec<WorldPos> = sim.targets().iter().map(|t| t.pos).collect();
+    let mut closest = f32::MAX;
+    for (i, a) in cows.iter().enumerate() {
+        for b in &cows[i + 1..] {
+            closest = closest.min(a.delta_to(*b).truncate().length());
+        }
+    }
+    closest
+}
+
 #[test]
-fn cows_wander_about_but_stay_in_the_pen() {
+fn cows_wander_about_as_a_herd_and_stay_in_the_pasture() {
     let mut sim = base_sim();
     let start = cow_spots(&sim);
-    let (lo, hi) = (BoxelPos::new(-19, 9, 0), BoxelPos::new(-9, 19, 0));
+    let (first_middle, _) = herd_spread(&sim);
     let mut moved = vec![0.0f32; start.len()];
     let mut clips = std::collections::BTreeSet::new();
-    for _ in 0..90 * 60 {
+    let mut widest = 0.0f32;
+    let mut closest = f32::MAX;
+    for tick in 0..120 * 60 {
         sim.step(&PlayerInput::default());
         for (i, cow) in sim.targets().iter().enumerate() {
-            let rel = WorldPos::at_boxel(lo).delta_to(cow.pos);
-            let size = WorldPos::at_boxel(lo).delta_to(WorldPos::at_boxel(hi)) + Vec3::ONE;
-            assert!(rel.x > 0.0 && rel.y > 0.0 && rel.x < size.x && rel.y < size.y, "cow {} left the pen: {rel}", cow.id);
-            assert!(rel.z > -0.01 && rel.z < 2.01, "and stays between the floor and the platform top: {}", rel.z);
+            assert!(in_pasture(cow.pos), "cow {} left the pasture: {:?}", cow.id, cow.pos);
             moved[i] = moved[i].max(start[i].1.delta_to(cow.pos).truncate().length());
             clips.insert(cow.clip.clone());
+        }
+        // After the first few seconds, once they've spread from their spots.
+        if tick > 10 * 60 {
+            widest = widest.max(herd_spread(&sim).1);
+            closest = closest.min(closest_pair(&sim));
         }
     }
     assert!(moved.iter().all(|&m| m > 1.0), "every cow wandered: {moved:?}");
     for clip in ["stand", "walk", "eat"] {
         assert!(clips.contains(clip), "{clip} played: {clips:?}");
     }
+    assert!(widest < 9.0, "kept together: one got {widest} m from the middle");
+    assert!(closest > 0.8, "never inside each other: {closest} m");
+    let (middle, _) = herd_spread(&sim);
+    assert!(first_middle.delta_to(middle).truncate().length() > 0.5, "the herd drifts about together");
+}
+
+#[test]
+fn a_straying_cow_comes_back_to_the_herd() {
+    let mut sim = base_sim();
+    let (middle, _) = herd_spread(&sim);
+    // Carry one cow off toward the fence, out of the others' way, by knocking it there.
+    let cow = sim.targets().iter().next().unwrap().id;
+    let mut far = 0.0;
+    for _ in 0..30 {
+        let pos = sim.targets().iter().find(|t| t.id == cow).unwrap().pos;
+        far = middle.delta_to(pos).truncate().length();
+        if far > 8.0 {
+            break;
+        }
+        sim.teleport_player(pos.translate(Vec3::new(1.8, 1.8, 0.0)));
+        idle(&mut sim, 20);
+        let pos = sim.targets().iter().find(|t| t.id == cow).unwrap().pos;
+        swing_at(&mut sim, pos.translate(Vec3::Z * 0.6));
+        idle(&mut sim, 40);
+    }
+    assert!(far > 8.0, "got it away: {far}");
+    // Take the player well away and let things settle.
+    sim.teleport_player(WorldPos::at_boxel(BoxelPos::new(0, 0, 0)));
+    idle(&mut sim, 60 * 60);
+    let (middle, _) = herd_spread(&sim);
+    let pos = sim.targets().iter().find(|t| t.id == cow).map(|t| t.pos).expect("not broken");
+    let back = middle.delta_to(pos).truncate().length();
+    assert!(back < 7.0, "back with the herd: {back} m from the middle");
+}
+
+#[test]
+fn hitting_one_cow_spooks_the_others() {
+    let mut sim = base_sim();
+    idle(&mut sim, 60);
+    let cow = sim.targets().iter().next().unwrap().clone();
+    let def = sim.target_def(cow.kind).clone();
+    sim.teleport_player(cow.pos.translate(Vec3::new(-2.0, -2.0, 0.0)));
+    idle(&mut sim, 10);
+    let now = sim.targets().iter().find(|t| t.id == cow.id).unwrap().clone();
+    swing_at(&mut sim, now.pos.translate(Vec3::Z * def.height * 0.5)).hit.expect("in reach");
+    // Within a couple of seconds most of the herd is running.
+    let mut ran = std::collections::BTreeSet::new();
+    for _ in 0..120 {
+        sim.step(&PlayerInput::default());
+        for t in sim.targets().iter().filter(|t| t.clip == "run") {
+            ran.insert(t.id);
+        }
+    }
+    assert!(ran.len() >= 5, "{} of {} ran", ran.len(), sim.targets().len());
+    // And it dies out.
+    sim.teleport_player(WorldPos::at_boxel(BoxelPos::new(0, 0, 0)));
+    idle(&mut sim, 12 * 60);
+    let running = sim.targets().iter().filter(|t| t.clip == "run").count();
+    assert_eq!(running, 0, "all calm again");
+}
+
+#[test]
+fn the_player_shoves_a_cow_and_cannot_walk_through_it() {
+    let mut sim = dummy_sim();
+    idle(&mut sim, 60);
+    let cow = sim.targets().iter().next().unwrap().clone();
+    // Walk north into the middle of its side (it faces east) for two seconds.
+    let start = cow.pos.translate(Vec3::new(0.5, -2.0, 0.0));
+    sim.teleport_player(start);
+    idle(&mut sim, 30);
+    let walk = PlayerInput { movement: api::Vec2::new(0.0, 1.0), yaw: std::f32::consts::FRAC_PI_2, ..Default::default() };
+    let mut closest = f32::MAX;
+    for _ in 0..120 {
+        sim.step(&walk);
+        let now = sim.targets().iter().find(|t| t.id == cow.id).unwrap();
+        let player = sim.player().unwrap().pos();
+        closest = closest.min(now.pos.delta_to(player).truncate().length());
+        assert!(now.pos.delta_to(player).y < 0.0, "never got through to the far side");
+    }
+    let now = sim.targets().iter().find(|t| t.id == cow.id).unwrap();
+    assert!(cow.pos.delta_to(now.pos).y > 0.5, "the cow was shoved north: {}", cow.pos.delta_to(now.pos));
+    assert!(closest > 0.3, "and the player stayed mostly out of it: {closest}");
+}
+
+#[test]
+fn the_player_walks_through_the_herd_without_getting_stuck() {
+    let mut sim = base_sim();
+    idle(&mut sim, 60);
+    let (middle, _) = herd_spread(&sim);
+    // From 12 m west of the middle to 12 m east of it, steering straight at the far side.
+    let goal = middle.translate(Vec3::new(12.0, 0.0, 0.0));
+    sim.teleport_player(middle.translate(Vec3::new(-12.0, 0.0, 0.0)));
+    idle(&mut sim, 20);
+    let mut made_it = false;
+    for _ in 0..15 * 60 {
+        let to = sim.player().unwrap().pos().delta_to(goal);
+        if to.truncate().length() < 1.0 {
+            made_it = true;
+            break;
+        }
+        let input = PlayerInput { movement: api::Vec2::new(0.0, 1.0), yaw: to.y.atan2(to.x), ..Default::default() };
+        sim.step(&input);
+    }
+    assert!(made_it, "got across within 15 s");
 }
 
 #[test]

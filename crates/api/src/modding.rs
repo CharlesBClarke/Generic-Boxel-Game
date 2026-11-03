@@ -1,7 +1,7 @@
 //! The traits a mod implements and the engine services it is handed.
 
 use crate::{
-    ApiError, BlockDef, Brain, BoxelPos, CraftingDef, InteractionDef, InventoryDef, ItemDropDef, LookDef, ModelDef,
+    ApiError, BlockDef, Brain, BoxelPos, CraftingDef, CrowdDef, InteractionDef, InventoryDef, ItemDropDef, LookDef, ModelDef,
     MovementController, Orientation, PlayerDef, PushOutDef, ShapeGrid, SoundDef, TargetDef, ToolDef, WorldPos,
 };
 
@@ -10,8 +10,8 @@ pub trait Mod {
     /// The mod's namespace, such as `"base"`.
     fn name(&self) -> &str;
 
-    /// Registers content: looks, blocks, movement controllers, brains, the player, interaction, push-out
-    /// item drop, inventory and crafting definitions, models, sounds, targets and tools.
+    /// Registers content: looks, blocks, movement controllers, brains, the player, interaction, push-out,
+    /// crowd, item drop, inventory and crafting definitions, models, sounds, targets and tools.
     fn register(&self, registrar: &mut dyn Registrar) -> Result<(), ApiError>;
 
     /// Places blocks in the world once all content is registered.
@@ -40,6 +40,8 @@ pub trait Registrar {
     fn register_player(&mut self, def: PlayerDef) -> Result<(), ApiError>;
     fn register_interaction(&mut self, def: InteractionDef) -> Result<(), ApiError>;
     fn register_push_out(&mut self, def: PushOutDef) -> Result<(), ApiError>;
+    /// Registers how creatures share space: seeing each other and being pushed apart.
+    fn register_crowd(&mut self, def: CrowdDef) -> Result<(), ApiError>;
     fn register_item_drops(&mut self, def: ItemDropDef) -> Result<(), ApiError>;
     /// Registers what players carry. Its starting materials are checked once every mod has
     /// registered its blocks.

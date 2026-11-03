@@ -1,5 +1,5 @@
 //! The live tuning panel: sliders for every value the player's movement controller, the
-//! interaction, push-out, item drop and inventory definitions, tools, targets, brains, the camera
+//! interaction, push-out, crowd, item drop and inventory definitions, tools, targets, brains, the camera
 //! feel and the combat feel and the animation expose, whichever mod they come from.
 
 use api::{Tunable, Tunables};
@@ -22,6 +22,8 @@ pub struct TuningPanel {
     interaction_defaults: Option<Vec<Tunable>>,
     /// The push-out definition when the game started, for reset.
     push_out_defaults: Option<Vec<Tunable>>,
+    /// The crowd definition when the game started, for reset.
+    crowd_defaults: Option<Vec<Tunable>>,
     /// The item drop definition when the game started, for reset.
     item_drop_defaults: Option<Vec<Tunable>>,
     /// The inventory definition when the game started, for reset.
@@ -64,6 +66,10 @@ pub fn tuning_panel(
     let mut push_out = sim.0.push_out_def().cloned();
     if panel.push_out_defaults.is_none() {
         panel.push_out_defaults = push_out.as_ref().map(|p| p.tunables());
+    }
+    let mut crowd = sim.0.crowd_def().cloned();
+    if panel.crowd_defaults.is_none() {
+        panel.crowd_defaults = crowd.as_ref().map(|c| c.tunables());
     }
     let mut item_drops = sim.0.item_drop_def().cloned();
     if panel.item_drop_defaults.is_none() {
@@ -116,6 +122,11 @@ pub fn tuning_panel(
                 ui.separator();
                 ui.heading("Push-out");
                 sliders(ui, "push_out", push_out);
+            }
+            if let Some(crowd) = &mut crowd {
+                ui.separator();
+                ui.heading("Crowd");
+                sliders(ui, "crowd", crowd);
             }
             if let Some(item_drops) = &mut item_drops {
                 ui.separator();
@@ -210,6 +221,11 @@ pub fn tuning_panel(
                         push_out.set_tunable(&t.name, t.value);
                     }
                 }
+                if let Some(crowd) = &mut crowd {
+                    for t in panel.crowd_defaults.iter().flatten() {
+                        crowd.set_tunable(&t.name, t.value);
+                    }
+                }
                 if let Some(item_drops) = &mut item_drops {
                     for t in panel.item_drop_defaults.iter().flatten() {
                         item_drops.set_tunable(&t.name, t.value);
@@ -261,6 +277,10 @@ pub fn tuning_panel(
             out += "// push-out\n";
             out += &printout(&push_out.tunables());
         }
+        if let Some(crowd) = &crowd {
+            out += "// crowd\n";
+            out += &printout(&crowd.tunables());
+        }
         if let Some(item_drops) = &item_drops {
             out += "// item drops\n";
             out += &printout(&item_drops.tunables());
@@ -300,6 +320,11 @@ pub fn tuning_panel(
         *def = edited;
     }
     if let (Some(edited), Some(def)) = (push_out, sim.0.push_out_def_mut())
+        && edited != *def
+    {
+        *def = edited;
+    }
+    if let (Some(edited), Some(def)) = (crowd, sim.0.crowd_def_mut())
         && edited != *def
     {
         *def = edited;

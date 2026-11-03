@@ -122,6 +122,8 @@ pub struct Player {
     height: f32,
     velocity: Vec3,
     pending_impulse: Vec3,
+    /// Level distance it's pushed by other bodies on its next step, through collision.
+    pending_shove: Vec2,
     on_ground: bool,
     flying: bool,
     landings: u32,
@@ -156,6 +158,7 @@ impl Player {
             height: shape.height,
             velocity: Vec3::ZERO,
             pending_impulse: Vec3::ZERO,
+            pending_shove: Vec2::ZERO,
             on_ground: false,
             flying: false,
             landings: 0,
@@ -264,12 +267,19 @@ impl Player {
         self.pending_impulse += impulse;
     }
 
+    /// Queues a level push for the next step: it moves that far on top of its own movement,
+    /// through collision and its edge guard, without gaining speed. Shoves add up.
+    pub fn shove(&mut self, by: Vec2) {
+        self.pending_shove += by;
+    }
+
     /// Moves instantly, with no interpolation from the old spot.
     pub fn teleport(&mut self, pos: WorldPos) {
         self.pos = pos;
         self.prev_pos = pos;
         self.velocity = Vec3::ZERO;
         self.pending_impulse = Vec3::ZERO;
+        self.pending_shove = Vec2::ZERO;
         self.on_ground = false;
     }
 
@@ -330,7 +340,8 @@ impl Player {
         let guard_before = edge_guard;
         let feet_before = self.feet_z();
 
-        let delta = self.velocity * dt;
+        let shove = std::mem::take(&mut self.pending_shove);
+        let delta = self.velocity * dt + shove.extend(0.0);
         let (mut moved, stepped) = self.sweep(delta, terrain);
         if let Some(drop) = edge_guard
             && stepped == 0.0

@@ -5,7 +5,7 @@ use std::fmt;
 
 use api::block::is_valid_name;
 use api::{
-    ApiError, BlockDef, BoxelPos, Brain, ChunkPos, CraftingDef, I64Vec3, InteractionDef, InventoryDef, ItemDropDef, LookDef,
+    ApiError, BlockDef, BoxelPos, Brain, ChunkPos, CraftingDef, CrowdDef, I64Vec3, InteractionDef, InventoryDef, ItemDropDef, LookDef,
     ModelDef, Mod, MovementController, Orientation, PlayerDef, PushOutDef, Registrar, ShapeGrid, SoundDef,
     TargetDef, ToolDef, Turning, Vec3, WorldEdit, WorldPos, look_direction,
 };
@@ -88,6 +88,7 @@ pub struct Simulation {
     player_def: Option<PlayerDef>,
     interaction_def: Option<InteractionDef>,
     push_out_def: Option<PushOutDef>,
+    crowd_def: Option<CrowdDef>,
     item_drop_def: Option<ItemDropDef>,
     models: Vec<ModelDef>,
     sounds: Vec<SoundDef>,
@@ -140,6 +141,7 @@ impl Simulation {
                 player: &mut sim.player_def,
                 interaction: &mut sim.interaction_def,
                 push_out: &mut sim.push_out_def,
+                crowd: &mut sim.crowd_def,
                 item_drops: &mut sim.item_drop_def,
                 inventory: &mut sim.inventory_def,
                 crafting: &mut sim.crafting_def,
@@ -225,7 +227,7 @@ impl Simulation {
         self.use_tool(input);
         self.throw(input);
         let capacity = self.capacity();
-        let Self { blocks, universe, player, items, item_drop_def, inventory, targets, target_defs, .. } = self;
+        let Self { blocks, universe, player, items, item_drop_def, inventory, targets, target_defs, crowd_def, .. } = self;
         let terrain = GridTerrain { grid: universe.main(), blocks };
         if let Some(player) = player {
             player.step(input, Self::TICK_SECONDS, &terrain);
@@ -235,8 +237,14 @@ impl Simulation {
         } else {
             self.target_brains.iter().map(|b| b.map(|i| &*self.brains[i].1)).collect()
         };
-        let seen = player.as_ref().map(|p| (p.pos(), p.velocity()));
-        let ctx = StepContext { defs: target_defs, brains: &brains, player: seen, tick: self.tick, dt: Self::TICK_SECONDS };
+        let ctx = StepContext {
+            defs: target_defs,
+            brains: &brains,
+            crowd: crowd_def.as_ref(),
+            player: player.as_mut(),
+            tick: self.tick,
+            dt: Self::TICK_SECONDS,
+        };
         targets.step(ctx, &terrain);
         if let Some(def) = item_drop_def {
             let room = inventory.room(capacity);
@@ -607,6 +615,15 @@ impl Simulation {
         self.push_out_def.as_mut()
     }
 
+    pub fn crowd_def(&self) -> Option<&CrowdDef> {
+        self.crowd_def.as_ref()
+    }
+
+    /// For engine tools such as the tuning panel.
+    pub fn crowd_def_mut(&mut self) -> Option<&mut CrowdDef> {
+        self.crowd_def.as_mut()
+    }
+
     pub fn item_drop_def(&self) -> Option<&ItemDropDef> {
         self.item_drop_def.as_ref()
     }
@@ -920,6 +937,7 @@ struct ContentRegistrar<'a> {
     player: &'a mut Option<PlayerDef>,
     interaction: &'a mut Option<InteractionDef>,
     push_out: &'a mut Option<PushOutDef>,
+    crowd: &'a mut Option<CrowdDef>,
     item_drops: &'a mut Option<ItemDropDef>,
     inventory: &'a mut Option<InventoryDef>,
     crafting: &'a mut Option<CraftingDef>,
@@ -987,6 +1005,15 @@ impl Registrar for ContentRegistrar<'_> {
         }
         def.validate().map_err(ApiError::InvalidDef)?;
         *self.push_out = Some(def);
+        Ok(())
+    }
+
+    fn register_crowd(&mut self, def: CrowdDef) -> Result<(), ApiError> {
+        if self.crowd.is_some() {
+            return Err(ApiError::DuplicateCrowdDef);
+        }
+        def.validate().map_err(ApiError::InvalidDef)?;
+        *self.crowd = Some(def);
         Ok(())
     }
 

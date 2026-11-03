@@ -1,16 +1,28 @@
 //! The cow's brain. A cow stands about, grazes and wanders; it stops to watch the player when
 //! they come near, and runs off when hit.
 //!
+//! Cows keep together as a herd. One that strays wanders back toward the others, one that's
+//! crowded steps away, and they loosely follow a leader: the oldest cow each one can see, which
+//! is the one with the lowest ID. A hit cow shows it's alarmed, and cows near an alarmed one run
+//! too, so a scare spreads; once calm, a cow ignores alarms for a while, so it dies out.
+//!
 //! Everything it remembers between ticks is in its memory (see [`Slot`]), which the engine
 //! keeps, so one brain serves every cow. Trig goes through `libm`, so it decides the same
 //! natively and in WebAssembly.
 
 use std::f32::consts::{PI, TAU};
 
-use api::{Brain, BrainContext, BrainOutput, Tunable, Tunables, Vec2};
+use api::{Brain, BrainContext, BrainOutput, Neighbor, Tunable, Tunables, Vec2};
+
+use crate::COW;
 
 /// The registered name `targets.toml` refers to.
 pub const COW_BRAIN: &str = "base:cow";
+
+/// What a fleeing cow shows other cows.
+pub const ALARMED: &str = "alarmed";
+/// What a grazing cow shows other cows.
+pub const GRAZING: &str = "grazing";
 
 /// What a cow is doing.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -53,9 +65,11 @@ enum Slot {
     Left,
     /// The way it's heading while wandering or fleeing, radians counterclockwise from +X.
     Heading,
+    /// Seconds left in which it ignores other cows' alarms, after a scare.
+    Calm,
 }
 
-const MEMORY: usize = 3;
+const MEMORY: usize = 4;
 
 /// How much further than `notice_range` the player has to go before a watching cow loses
 /// interest, so it doesn't flicker at the edge.
@@ -89,6 +103,21 @@ pub struct CowBrain {
     /// Faster or slower plays them faster or slower, so the feet keep up with the ground.
     pub walk_pace: f32,
     pub run_pace: f32,
+    /// How far from the middle of the cows it sees it can be, in meters, before it wanders back.
+    pub stray_range: f32,
+    /// How near another cow can be, feet to feet in meters, before a wandering cow turns away.
+    pub personal_space: f32,
+    /// Share of wanders that go roughly the leader's way, and of rests that turn to grazing
+    /// when the leader grazes. 0 is no leader.
+    pub follow: f32,
+    /// How far, in radians either way, a follower's heading strays from the leader's.
+    pub follow_spread: f32,
+    /// How near an alarmed cow has to be, in meters, to scare it.
+    pub alarm_range: f32,
+    /// Seconds a cow runs when scared by another, rather than hit.
+    pub spook_time: f32,
+    /// Seconds after a scare in which it ignores alarms.
+    pub calm_time: f32,
 }
 
 impl Default for CowBrain {
@@ -108,6 +137,13 @@ impl Default for CowBrain {
             edge_drop: 0.6,
             walk_pace: 1.0,
             run_pace: 2.5,
+            stray_range: 5.0,
+            personal_space: 2.2,
+            follow: 0.7,
+            follow_spread: 0.6,
+            alarm_range: 6.0,
+            spook_time: 2.0,
+            calm_time: 4.0,
         }
     }
 }
@@ -129,6 +165,13 @@ impl Tunables for CowBrain {
             Tunable::new("edge_drop", self.edge_drop, 0.0, 3.0),
             Tunable::new("walk_pace", self.walk_pace, 0.1, 4.0),
             Tunable::new("run_pace", self.run_pace, 0.1, 8.0),
+            Tunable::new("stray_range", self.stray_range, 0.0, 20.0),
+            Tunable::new("personal_space", self.personal_space, 0.0, 6.0),
+            Tunable::new("follow", self.follow, 0.0, 1.0),
+            Tunable::new("follow_spread", self.follow_spread, 0.0, PI),
+            Tunable::new("alarm_range", self.alarm_range, 0.0, 20.0),
+            Tunable::new("spook_time", self.spook_time, 0.0, 10.0),
+            Tunable::new("calm_time", self.calm_time, 0.0, 20.0),
         ]
     }
 
@@ -148,6 +191,13 @@ impl Tunables for CowBrain {
             "edge_drop" => &mut self.edge_drop,
             "walk_pace" => &mut self.walk_pace,
             "run_pace" => &mut self.run_pace,
+            "stray_range" => &mut self.stray_range,
+            "personal_space" => &mut self.personal_space,
+            "follow" => &mut self.follow,
+            "follow_spread" => &mut self.follow_spread,
+            "alarm_range" => &mut self.alarm_range,
+            "spook_time" => &mut self.spook_time,
+            "calm_time" => &mut self.calm_time,
             _ => return false,
         };
         *field = value;
@@ -165,20 +215,32 @@ impl Brain for CowBrain {
         let mut mode = Mode::from_memory(get(&memory, Slot::Mode));
         let mut left = get(&memory, Slot::Left) - ctx.dt;
         let mut heading = get(&memory, Slot::Heading);
+        let mut calm = (get(&memory, Slot::Calm) - ctx.dt).max(0.0);
         if fresh {
             // Newly spawned: stand a random while first, so cows don't all move at once.
             mode = Mode::Idle;
             left = self.idle_min * ctx.random_unit(1) + self.idle_spread * ctx.random_unit(2);
+            calm = 0.0;
         }
+        let herd = Herd::seen(ctx);
 
         let player = ctx.player.as_ref().map(|p| Vec2::new(p.offset.x, p.offset.y));
         let near = player.map(|p| p.length());
+        let alarm = herd.alarm(self.alarm_range).filter(|_| calm <= 0.0 && mode != Mode::Flee);
         if let Some(hurt) = &ctx.hurt {
             mode = Mode::Flee;
             left = self.flee_time;
+            calm = 0.0;
             // Away from the hit; straight up hits give no direction, so away from the player.
             let away = if hurt.from.truncate() != Vec2::ZERO { -hurt.from.truncate() } else { -player.unwrap_or(Vec2::X) };
-            heading = libm::atan2f(away.y, away.x);
+            heading = angle(away);
+        } else if let Some(other) = alarm {
+            // Run the way it runs, and away from it.
+            mode = Mode::Flee;
+            left = self.spook_time;
+            let at = level(other.offset);
+            let away = level(other.velocity).normalize_or_zero() - at.normalize_or_zero() * 0.5;
+            heading = if away != Vec2::ZERO { angle(away) } else { TAU * ctx.random_unit(8) };
         } else if mode != Mode::Flee {
             match (mode, near) {
                 (Mode::Watch, Some(d)) if d <= self.notice_range + LOSE_RANGE => {}
@@ -196,20 +258,51 @@ impl Brain for CowBrain {
             heading = ctx.yaw + PI * (0.5 + ctx.random_unit(3));
         }
         if mode != Mode::Watch && left <= 0.0 {
+            if mode == Mode::Flee {
+                calm = self.calm_time;
+            }
+            let strayed = herd.strayed(self.stray_range);
+            let crowded = herd.crowding(self.personal_space);
+            let leader = herd.leader(ctx.id);
+            let follows = leader.is_some() && ctx.random_unit(9) < self.follow;
+            let graze = if follows && leader.is_some_and(|l| l.signal == GRAZING) {
+                true
+            } else {
+                ctx.random_unit(4) < self.graze_chance
+            };
             (mode, left) = match mode {
-                Mode::Idle if ctx.random_unit(4) < self.graze_chance => (Mode::Graze, self.graze_time),
+                Mode::Idle if strayed.is_none() && crowded.is_none() && graze => (Mode::Graze, self.graze_time),
                 Mode::Idle => {
-                    heading = TAU * ctx.random_unit(5);
+                    let led = leader.filter(|_| follows).map(|l| level(l.velocity)).filter(|v| v.length() > 0.2);
+                    let jitter = self.follow_spread * (2.0 * ctx.random_unit(10) - 1.0);
+                    heading = match (strayed, crowded, led) {
+                        (Some(home), ..) => angle(home),
+                        (None, Some(away), _) => angle(away),
+                        (None, None, Some(way)) => angle(way) + jitter,
+                        (None, None, None) => TAU * ctx.random_unit(5),
+                    };
                     (Mode::Wander, self.wander_min + self.wander_spread * ctx.random_unit(6))
                 }
                 _ => (Mode::Idle, self.idle_time(ctx)),
             };
         }
+        if mode == Mode::Wander && !ctx.blocked {
+            // Steer while walking: back toward the herd once too far out, away from one too close.
+            if let Some(home) = herd.strayed(self.stray_range) {
+                heading = angle(home);
+            } else if let Some(away) = herd.crowding(self.personal_space) {
+                let (sin, cos) = libm::sincosf(heading);
+                let blend = Vec2::new(cos, sin) + away.normalize_or_zero();
+                if blend != Vec2::ZERO {
+                    heading = angle(blend);
+                }
+            }
+        }
 
         let (face, speed, turn) = match mode {
             Mode::Wander => (Some(heading), self.walk_speed, self.turn_speed),
             Mode::Flee => (Some(heading), self.run_speed, self.turn_speed * 2.0),
-            Mode::Watch => (player.filter(|p| *p != Vec2::ZERO).map(|p| libm::atan2f(p.y, p.x)), 0.0, self.turn_speed),
+            Mode::Watch => (player.filter(|p| *p != Vec2::ZERO).map(angle), 0.0, self.turn_speed),
             Mode::Idle | Mode::Graze => (None, 0.0, 0.0),
         };
         let yaw = libm::remainderf(face.map_or(ctx.yaw, |f| turn_toward(ctx.yaw, f, turn * ctx.dt)), TAU);
@@ -222,16 +315,23 @@ impl Brain for CowBrain {
             Mode::Flee => moving / self.run_pace.max(0.01),
             _ => 1.0,
         };
+        let signal = match mode {
+            Mode::Flee => ALARMED,
+            Mode::Graze => GRAZING,
+            _ => "",
+        };
 
         set(&mut memory, Slot::Mode, mode as usize as f32);
         set(&mut memory, Slot::Left, left);
         set(&mut memory, Slot::Heading, heading);
+        set(&mut memory, Slot::Calm, calm);
         BrainOutput {
             walk,
             yaw,
             edge_guard: Some(self.edge_drop),
             clip: mode.clip().into(),
             clip_speed,
+            signal: signal.into(),
             memory,
         }
     }
@@ -241,6 +341,52 @@ impl CowBrain {
     fn idle_time(&self, ctx: &BrainContext) -> f32 {
         self.idle_min + self.idle_spread * ctx.random_unit(7)
     }
+}
+
+/// The other cows one cow sees.
+struct Herd<'a> {
+    cows: Vec<&'a Neighbor>,
+}
+
+impl<'a> Herd<'a> {
+    fn seen(ctx: &'a BrainContext) -> Self {
+        Herd { cows: ctx.others.iter().filter(|n| n.kind == COW).collect() }
+    }
+
+    /// The way back to the middle of the herd, if that's further than `range`.
+    fn strayed(&self, range: f32) -> Option<Vec2> {
+        if self.cows.is_empty() {
+            return None;
+        }
+        let middle = self.cows.iter().map(|n| level(n.offset)).sum::<Vec2>() / self.cows.len() as f32;
+        (middle.length() > range).then_some(middle)
+    }
+
+    /// The way away from the nearest cow, if it's nearer than `space`.
+    fn crowding(&self, space: f32) -> Option<Vec2> {
+        let nearest = self.cows.first()?;
+        let at = level(nearest.offset);
+        (at.length() < space).then(|| if at != Vec2::ZERO { -at } else { Vec2::X })
+    }
+
+    /// The leader: the oldest cow it sees, unless it's older than all of them.
+    fn leader(&self, id: u64) -> Option<&'a Neighbor> {
+        self.cows.iter().copied().filter(|n| n.id < id).min_by_key(|n| n.id)
+    }
+
+    /// The nearest alarmed cow within `range`.
+    fn alarm(&self, range: f32) -> Option<&'a Neighbor> {
+        self.cows.iter().copied().find(|n| n.signal == ALARMED && level(n.offset).length() <= range)
+    }
+}
+
+fn level(v: api::Vec3) -> Vec2 {
+    Vec2::new(v.x, v.y)
+}
+
+/// The direction of `v`, radians counterclockwise from +X.
+fn angle(v: Vec2) -> f32 {
+    libm::atan2f(v.y, v.x)
 }
 
 /// `from` turned toward `to` by at most `step` radians, the short way round.
@@ -260,6 +406,7 @@ mod tests {
     fn ctx() -> BrainContext {
         BrainContext {
             dt: DT,
+            id: 10,
             velocity: Vec3::ZERO,
             yaw: 0.0,
             on_ground: true,
@@ -268,6 +415,7 @@ mod tests {
             full_health: 20.0,
             player: None,
             hurt: None,
+            others: Vec::new(),
             random: 1,
             memory: Vec::new(),
         }
@@ -275,7 +423,7 @@ mod tests {
 
     /// A cow in `mode` with `left` seconds of it and the given heading.
     fn remembering(mode: Mode, left: f32, heading: f32) -> BrainContext {
-        BrainContext { memory: vec![mode as usize as f32, left, heading], ..ctx() }
+        BrainContext { memory: vec![mode as usize as f32, left, heading, 0.0], ..ctx() }
     }
 
     fn mode(out: &BrainOutput) -> Mode {
@@ -407,5 +555,123 @@ mod tests {
             assert!(b.set_tunable(&t.name, t.min), "{}", t.name);
         }
         assert!(!b.set_tunable("missing", 1.0));
+    }
+
+    fn cow(x: f32, y: f32, id: u64, signal: &str) -> Neighbor {
+        Neighbor { offset: Vec3::new(x, y, 0.0), velocity: Vec3::ZERO, kind: COW.into(), id, signal: signal.into() }
+    }
+
+    /// Nearest first, as the engine gives them.
+    fn seeing(mut others: Vec<Neighbor>, c: BrainContext) -> BrainContext {
+        others.sort_by(|a, b| a.offset.length().total_cmp(&b.offset.length()));
+        BrainContext { others, ..c }
+    }
+
+    fn heading(out: &BrainOutput) -> f32 {
+        out.memory[Slot::Heading as usize]
+    }
+
+    fn near_angle(a: f32, b: f32, within: f32) -> bool {
+        libm::remainderf(a - b, TAU).abs() <= within
+    }
+
+    /// A cow whose rest is just up, with no wish to graze.
+    fn rested(brain: &CowBrain, others: Vec<Neighbor>) -> BrainOutput {
+        brain.think(&seeing(others, remembering(Mode::Idle, 0.0, 0.0)))
+    }
+
+    #[test]
+    fn a_straying_cow_wanders_back_to_the_middle_of_the_herd() {
+        let brain = CowBrain { graze_chance: 1.0, follow: 0.0, ..CowBrain::default() };
+        // The others are all well to the north.
+        let herd = vec![cow(-1.0, 8.0, 1, ""), cow(1.0, 9.0, 2, ""), cow(0.0, 10.0, 3, "")];
+        let out = rested(&brain, herd.clone());
+        assert_eq!(mode(&out), Mode::Wander, "not grazing while strayed");
+        assert!(near_angle(heading(&out), PI / 2.0, 0.2), "north: {}", heading(&out));
+        // Already wandering east, it turns for home.
+        let out = brain.think(&seeing(herd, remembering(Mode::Wander, 5.0, 0.0)));
+        assert!(near_angle(heading(&out), PI / 2.0, 0.2), "north: {}", heading(&out));
+        // Near enough, it grazes as it likes.
+        let close = vec![cow(-1.0, 3.0, 1, ""), cow(1.0, 3.0, 2, ""), cow(0.0, 4.0, 3, "")];
+        assert_eq!(mode(&rested(&brain, close)), Mode::Graze);
+    }
+
+    #[test]
+    fn a_crowded_cow_steps_away_from_the_nearest() {
+        let brain = CowBrain { graze_chance: 1.0, follow: 0.0, ..CowBrain::default() };
+        let out = rested(&brain, vec![cow(1.0, 0.0, 1, ""), cow(3.0, 0.0, 2, "")]);
+        assert_eq!(mode(&out), Mode::Wander);
+        assert!(near_angle(heading(&out), PI, 0.01), "west, away from it: {}", heading(&out));
+        // Wandering toward it, it veers off.
+        let out = brain.think(&seeing(vec![cow(1.0, 0.5, 1, "")], remembering(Mode::Wander, 5.0, 0.0)));
+        assert!(heading(&out) < -0.3, "turned south, away: {}", heading(&out));
+    }
+
+    #[test]
+    fn followers_wander_the_leaders_way_and_graze_when_it_grazes() {
+        let brain = CowBrain { graze_chance: 0.0, follow: 1.0, follow_spread: 0.0, ..CowBrain::default() };
+        let mut leader = cow(3.0, 0.0, 1, "");
+        leader.velocity = Vec3::new(0.0, -1.0, 0.0);
+        let other = cow(-3.0, 0.0, 4, "");
+        let out = rested(&brain, vec![leader.clone(), other.clone()]);
+        assert_eq!(mode(&out), Mode::Wander);
+        assert!(near_angle(heading(&out), -PI / 2.0, 1e-4), "south with the leader: {}", heading(&out));
+        // The leader is the oldest it sees, not the nearest.
+        let mut young = cow(2.5, 0.0, 5, "");
+        young.velocity = Vec3::X;
+        let out = rested(&brain, vec![young, leader.clone(), other.clone()]);
+        assert!(near_angle(heading(&out), -PI / 2.0, 1e-4));
+        // The leader grazing, it grazes too, however little it likes to.
+        let grazing = Neighbor { signal: GRAZING.into(), velocity: Vec3::ZERO, ..leader };
+        assert_eq!(mode(&rested(&brain, vec![grazing.clone(), other.clone()])), Mode::Graze);
+        // A cow older than all it sees leads itself.
+        let elder = BrainContext { id: 0, ..remembering(Mode::Idle, 0.0, 0.0) };
+        assert_eq!(mode(&brain.think(&seeing(vec![grazing, other], elder))), Mode::Wander);
+    }
+
+    #[test]
+    fn an_alarmed_cow_nearby_sets_it_running_and_it_passes_the_alarm_on() {
+        let brain = CowBrain::default();
+        let mut scared = cow(2.0, 0.0, 1, ALARMED);
+        scared.velocity = Vec3::new(0.0, 3.0, 0.0);
+        let out = brain.think(&seeing(vec![scared.clone()], remembering(Mode::Graze, 1.0, 0.0)));
+        assert_eq!((mode(&out), out.clip.as_str(), out.signal.as_str()), (Mode::Flee, "run", ALARMED));
+        assert!((out.memory[Slot::Left as usize] - brain.spook_time).abs() < 1e-4, "for the spook time");
+        let h = heading(&out);
+        assert!(h > PI / 2.0 && h < PI, "north with it, and west away from it: {h}");
+        // Too far, or another kind, and it carries on.
+        let far = Neighbor { offset: Vec3::new(brain.alarm_range + 1.0, 0.0, 0.0), ..scared.clone() };
+        assert_eq!(mode(&brain.think(&seeing(vec![far], remembering(Mode::Graze, 1.0, 0.0)))), Mode::Graze);
+        let pig = Neighbor { kind: "other:pig".into(), ..scared.clone() };
+        assert_eq!(mode(&brain.think(&seeing(vec![pig], remembering(Mode::Graze, 1.0, 0.0)))), Mode::Graze);
+    }
+
+    #[test]
+    fn after_a_scare_it_ignores_alarms_for_a_while() {
+        let brain = CowBrain::default();
+        let scared = cow(2.0, 0.0, 1, ALARMED);
+        // The flee just running out: it calms down and stays calm with the alarm still showing.
+        let out = brain.think(&seeing(vec![scared.clone()], remembering(Mode::Flee, 0.001, 0.0)));
+        assert_eq!(mode(&out), Mode::Idle);
+        assert_eq!(out.signal, "");
+        assert!((out.memory[Slot::Calm as usize] - brain.calm_time).abs() < 1e-4);
+        let outs = run(&brain, seeing(vec![scared.clone()], BrainContext { memory: out.memory, ..ctx() }), brain.calm_time - 0.2);
+        assert!(outs.iter().all(|o| mode(o) != Mode::Flee), "calm for its calm time");
+        // Then it can be scared again.
+        let last = outs.last().unwrap().memory.clone();
+        let outs = run(&brain, seeing(vec![scared], BrainContext { memory: last, ..ctx() }), 0.5);
+        assert_eq!(mode(outs.last().unwrap()), Mode::Flee);
+        // A hit scares it even while calm.
+        let calm = BrainContext { memory: vec![Mode::Idle as usize as f32, 2.0, 0.0, 3.0], ..ctx() };
+        let hit = BrainContext { hurt: Some(Hurt { from: Vec3::X, damage: 1.0 }), ..calm };
+        assert_eq!(mode(&brain.think(&hit)), Mode::Flee);
+    }
+
+    #[test]
+    fn it_shows_what_it_is_doing() {
+        let brain = CowBrain::default();
+        assert_eq!(brain.think(&remembering(Mode::Graze, 1.0, 0.0)).signal, GRAZING);
+        assert_eq!(brain.think(&remembering(Mode::Flee, 1.0, 0.0)).signal, ALARMED);
+        assert_eq!(brain.think(&remembering(Mode::Wander, 1.0, 0.0)).signal, "");
     }
 }
