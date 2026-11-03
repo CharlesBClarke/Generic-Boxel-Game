@@ -2,7 +2,7 @@
 //! and their looks are a data mod in `mods/base`, loaded by the engine alongside it.
 
 use api::{
-    ApiError, BoxelPos, I64Vec3, InteractionDef, ItemDropDef, Mod, Orientation, PlayerDef, PushOutDef, Registrar, ToolDef, Vec3,
+    ApiError, BoxelPos, CrowdDef, I64Vec3, InteractionDef, ItemDropDef, Mod, Orientation, PlayerDef, PushOutDef, Registrar, ToolDef, Vec3,
     WorldEdit, WorldPos,
 };
 
@@ -29,10 +29,24 @@ pub const COW: &str = "base:cow";
 /// The melee tool.
 pub const CLUB: &str = "base:club";
 
-/// Where the cows stand in the walled pen, relative to the test area's origin, and which way
-/// each faces, in degrees counterclockwise from east.
-pub const COWS: &[(i64, i64, f32)] = &[(-16, 11, 20.0), (-12, 11, 160.0), (-13, 18, -60.0), (-11, 15, 250.0)];
-/// Just outside the pen's doorway, looking in.
+/// Where the cows stand in the pasture, relative to the test area's origin, and which way each
+/// faces, in degrees counterclockwise from east. Loosely bunched near the middle, as a herd.
+pub const COWS: &[(i64, i64, f32)] = &[
+    (-50, -49, 0.0),
+    (-47, -51, 90.0),
+    (-44, -48, 200.0),
+    (-49, -45, 300.0),
+    (-46, -44, 45.0),
+    (-43, -45, 160.0),
+    (-48, -41, 270.0),
+    (-44, -41, 10.0),
+];
+/// The pasture's fence, one block high, around the square between these corners (fence
+/// included), relative to the test area's origin. Cows can't step it; the player jumps it.
+pub const PASTURE: ((i64, i64), (i64, i64)) = ((-62, -62), (-32, -32));
+/// Just outside the pasture's east fence, looking in.
+pub const PASTURE_SPOT: (i64, i64, i64) = (-30, -47, 0);
+/// Just outside the empty cow pen's doorway, looking in.
 pub const COW_PEN_SPOT: (i64, i64, i64) = (-6, 14, 0);
 
 /// Where the shapes corner of the test area starts, relative to its origin: where the feet stand
@@ -86,6 +100,9 @@ impl Mod for BaseMod {
         r.register_interaction(InteractionDef { reach: 4.5, repeat_rate: 4.0 })?;
         // Block-jumping: placing a block at your feet lifts you onto it and launches you.
         r.register_push_out(PushOutDef { strength: 6.0, upward_bias: 1.0 })?;
+        // Creatures see each other across a herd, and bodies push apart firmly enough that you
+        // can't walk through a cow; the player is a little lighter than one (2.5).
+        r.register_crowd(CrowdDef { sight: 12.0, push: 25.0, max_push: 8.0, player_weight: 1.5 })?;
         // Minecraft-like drops: a small hop out of the broken block, pulled in from a couple of
         // meters, picked up on touch.
         r.register_item_drops(ItemDropDef {
@@ -128,6 +145,8 @@ impl Mod for BaseMod {
         w.add_waypoint("shapes", WorldPos::new(origin.0 + I64Vec3::new(x, y, z), Vec3::new(0.5, 0.5, 0.0)));
         let (x, y, z) = COW_PEN_SPOT;
         w.add_waypoint("cow pen", WorldPos::new(origin.0 + I64Vec3::new(x, y, z), Vec3::new(0.5, 0.5, 0.0)));
+        let (x, y, z) = PASTURE_SPOT;
+        w.add_waypoint("pasture", WorldPos::new(origin.0 + I64Vec3::new(x, y, z), Vec3::new(0.5, 0.5, 0.0)));
         for &(x, y, facing) in COWS {
             w.add_target(COW, WorldPos::new(origin.0 + I64Vec3::new(x, y, 0), Vec3::new(0.5, 0.5, 0.0)), facing.to_radians())?;
         }
@@ -178,6 +197,13 @@ pub fn build_test_area(w: &mut dyn WorldEdit, o: BoxelPos) -> Result<(), ApiErro
         w.add_shaped(at(-17, y, 1), BRICK, &shapes::slab(), Orientation::IDENTITY)?;
         w.add_shaped(at(-15, y, 0), BRICK, &shapes::slab(), Orientation::IDENTITY)?;
     }
+
+    // The pasture: a square fence one block high.
+    let ((x0, y0), (x1, y1)) = PASTURE;
+    w.fill(at(x0, y0, 0), at(x1, y0, 0), WOOD)?;
+    w.fill(at(x0, y1, 0), at(x1, y1, 0), WOOD)?;
+    w.fill(at(x0, y0, 0), at(x0, y1, 0), WOOD)?;
+    w.fill(at(x1, y0, 0), at(x1, y1, 0), WOOD)?;
 
     // A tunnel with exactly 2 boxels of headroom.
     w.fill(at(-3, -20, 0), at(-3, -8, 2), STONE)?;

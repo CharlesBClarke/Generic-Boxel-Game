@@ -5,14 +5,17 @@
 //! wind-up, the strike, then a recovery, and the strike hits the nearest hit box along the line
 //! of sight that no block hides.
 //!
+//! With a crowd definition, targets see the others near them, and overlapping bodies, the
+//! player's included, are pushed gently apart.
+//!
 //! Like the player, each target does its collision math relative to its own cell, so it behaves
 //! the same at any distance from zero.
 
-use api::{Brain, BrainContext, Hurt, Seen, TargetDef, ToolDef, Vec2, Vec3, WorldPos};
+use api::{Brain, BrainContext, CrowdDef, Hurt, MAX_NEIGHBORS, Neighbor, Seen, TargetDef, ToolDef, Vec2, Vec3, WorldPos};
 
 use crate::player::{Terrain, clamp_axis, guard_edges, sweep_stepping};
 use crate::raycast::ray_box;
-use crate::CellBox;
+use crate::{CellBox, Player};
 
 /// How far below a target still counts as resting on something.
 const GROUND_PROBE: f32 = 0.01;
@@ -21,6 +24,8 @@ const GROUND_PROBE: f32 = 0.01;
 const MIN_BOUNCE_SPEED: f32 = 1.5;
 /// A target this far below its spot fell out of the world, and goes back.
 const LOST_DEPTH: f32 = 200.0;
+/// Bodies overlapping by less than this, in meters, aren't pushed, so ones just touching rest.
+const PUSH_SLACK: f32 = 0.01;
 
 /// A runtime target definition ID, in registration order. Names are the identity.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -68,6 +73,10 @@ pub struct Target {
     pub edge_guard: Option<f32>,
     /// Its level movement was stopped last tick.
     pub blocked: bool,
+    /// What its brain shows other targets.
+    pub signal: String,
+    /// The level velocity it's being pushed out of other bodies at this tick, on top of its own.
+    shove: Vec2,
     /// What hurt it since its brain last thought, if anything.
     hurt: Option<Hurt>,
 }
@@ -79,6 +88,24 @@ impl Target {
         (Vec3::new(-half, -half, 0.0), Vec3::new(half, half, def.height))
     }
 
+    /// Its level footprint for pushing, in its own space with the front along +Y: a capsule
+    /// from `(x, back)` to `(x, front)` of the given radius. Over its hit boxes, since a long
+    /// creature's collision box covers only its middle; without any, its collision box.
+    fn footprint(def: &TargetDef) -> Footprint {
+        if def.hit_boxes.is_empty() {
+            return Footprint { x: 0.0, back: 0.0, front: 0.0, radius: def.width * 0.5 };
+        }
+        let (mut min, mut max) = (Vec2::splat(f32::MAX), Vec2::splat(f32::MIN));
+        for b in &def.hit_boxes {
+            min = min.min(Vec2::new(b.min[0], b.min[1]));
+            max = max.max(Vec2::new(b.max[0], b.max[1]));
+        }
+        let radius = (max.x - min.x) * 0.5;
+        let (back, front) = (min.y + radius, max.y - radius);
+        let (back, front) = if back <= front { (back, front) } else { ((min.y + max.y) * 0.5, (min.y + max.y) * 0.5) };
+        Footprint { x: (min.x + max.x) * 0.5, back, front, radius }
+    }
+
     /// Whether its box overlaps `boxes` in the boxel at `pos`.
     pub fn overlaps_boxes(&self, def: &TargetDef, pos: api::BoxelPos, boxes: &[CellBox]) -> bool {
         let (min, max) = Self::bounds(def);
@@ -86,6 +113,26 @@ impl Target {
         let (min, max) = (min + rel, max + rel);
         boxes.iter().any(|b| (min.cmplt(b.max) & max.cmpgt(b.min)).all())
     }
+}
+
+/// A level capsule; see [`Target::footprint`].
+#[derive(Clone, Copy, Debug)]
+struct Footprint {
+    x: f32,
+    back: f32,
+    front: f32,
+    radius: f32,
+}
+
+/// A body taking part in pushing, relative to the first target's feet: a level segment with a
+/// radius, its height range, and its weight.
+struct Body {
+    a: Vec2,
+    b: Vec2,
+    radius: f32,
+    bottom: f32,
+    top: f32,
+    weight: f32,
 }
 
 /// Where a target lives: it starts there and comes back there after breaking.
@@ -215,6 +262,8 @@ impl Targets {
             walk: Vec2::ZERO,
             edge_guard: None,
             blocked: false,
+            signal: String::new(),
+            shove: Vec2::ZERO,
             hurt: None,
         });
         self.homes.push(spot);
@@ -254,21 +303,36 @@ impl Targets {
     /// `player` is the player's feet and velocity, if there is a player, and `tick` the tick
     /// being run, for the brains' random numbers.
     pub fn step(&mut self, ctx: StepContext<'_>, terrain: &impl Terrain) {
-        let StepContext { defs, brains, player, tick, dt } = ctx;
-        let mut broken = Vec::new();
+        let StepContext { defs, brains, crowd, player, tick, dt } = ctx;
+        let seen = player.as_ref().map(|p| (p.pos(), p.velocity()));
+        let mut others = crowd.map_or_else(Vec::new, |c| self.neighbors(defs, c.sight));
         for (i, target) in self.list.iter_mut().enumerate() {
             let def = &defs[target.kind.index()];
             target.prev_yaw = target.yaw;
             match brains.get(target.kind.index()).copied().flatten() {
-                Some(brain) => think(target, def, brain, player, tick, dt),
+                Some(brain) => {
+                    let others = others.get_mut(i).map(std::mem::take).unwrap_or_default();
+                    think(target, def, brain, seen, others, tick, dt);
+                }
                 None => {
                     target.walk = Vec2::ZERO;
                     target.edge_guard = None;
                     target.clip.clear();
                     target.clip_speed = 1.0;
+                    target.signal.clear();
                     target.hurt = None;
                 }
             }
+        }
+        for target in &mut self.list {
+            target.shove = Vec2::ZERO;
+        }
+        if let Some(crowd) = crowd {
+            self.push_apart(defs, crowd, player, dt);
+        }
+        let mut broken = Vec::new();
+        for (i, target) in self.list.iter_mut().enumerate() {
+            let def = &defs[target.kind.index()];
             let Some(into) = step_target(target, def, dt, terrain) else {
                 continue;
             };
@@ -305,6 +369,97 @@ impl Targets {
                 let kind = self.spots[spot].kind;
                 self.spawn(spot, &defs[kind.index()]);
             }
+        }
+    }
+
+    /// Each target's view of the others within `sight` meters, nearest first, at most
+    /// [`MAX_NEIGHBORS`], alongside the list.
+    fn neighbors(&self, defs: &[TargetDef], sight: f32) -> Vec<Vec<Neighbor>> {
+        let list = &self.list;
+        (0..list.len())
+            .map(|i| {
+                let mut near: Vec<(f32, usize, Vec3)> = (0..list.len())
+                    .filter(|&j| j != i)
+                    .map(|j| {
+                        let offset = list[i].pos.delta_to(list[j].pos);
+                        (offset.length(), j, offset)
+                    })
+                    .filter(|&(d, ..)| d <= sight)
+                    .collect();
+                near.sort_by(|a, b| a.0.total_cmp(&b.0).then(list[a.1].id.cmp(&list[b.1].id)));
+                near.truncate(MAX_NEIGHBORS);
+                near.into_iter()
+                    .map(|(_, j, offset)| Neighbor {
+                        offset,
+                        velocity: list[j].velocity,
+                        kind: defs[list[j].kind.index()].name.clone(),
+                        id: list[j].id,
+                        signal: list[j].signal.clone(),
+                    })
+                    .collect()
+            })
+            .collect()
+    }
+
+    /// Works out how fast overlapping bodies are pushed apart this tick: each target's `shove`,
+    /// and the player's share as a shove it takes on its next step.
+    fn push_apart(&mut self, defs: &[TargetDef], crowd: &CrowdDef, player: Option<&mut Player>, dt: f32) {
+        let Some(origin) = self.list.first().map(|t| t.pos) else {
+            return;
+        };
+        let mut bodies: Vec<Body> = self
+            .list
+            .iter()
+            .map(|t| {
+                let def = &defs[t.kind.index()];
+                let f = Target::footprint(def);
+                let at = origin.delta_to(t.pos);
+                // Its own space has the front along +Y; the facing is from +X.
+                let turn = t.yaw - std::f32::consts::FRAC_PI_2;
+                let place = |y: f32| at.truncate() + Vec2::from_angle(turn).rotate(Vec2::new(f.x, y));
+                Body { a: place(f.back), b: place(f.front), radius: f.radius, bottom: at.z, top: at.z + def.height, weight: def.weight }
+            })
+            .collect();
+        let players = bodies.len();
+        if let Some(p) = &player {
+            let at = origin.delta_to(p.pos());
+            bodies.push(Body {
+                a: at.truncate(),
+                b: at.truncate(),
+                radius: p.shape().width * 0.5,
+                bottom: at.z,
+                top: at.z + p.height(),
+                weight: crowd.player_weight,
+            });
+        }
+        let mut shoves = vec![Vec2::ZERO; bodies.len()];
+        for i in 0..bodies.len() {
+            for j in i + 1..bodies.len() {
+                let (p, q) = (&bodies[i], &bodies[j]);
+                if p.bottom >= q.top || q.bottom >= p.top {
+                    continue;
+                }
+                let (on_p, on_q) = closest_points(p.a, p.b, q.a, q.b);
+                let between = on_q - on_p;
+                let depth = p.radius + q.radius - between.length();
+                if depth <= PUSH_SLACK {
+                    continue;
+                }
+                // Right on top of each other: apart along the line between their middles, or
+                // failing that, along +X.
+                let middles = (q.a + q.b - p.a - p.b) * 0.5;
+                let dir = between.try_normalize().or(middles.try_normalize()).unwrap_or(Vec2::X);
+                let speed = (crowd.push * depth).min(crowd.max_push);
+                let total = p.weight + q.weight;
+                shoves[i] -= dir * speed * q.weight / total;
+                shoves[j] += dir * speed * p.weight / total;
+            }
+        }
+        for (target, shove) in self.list.iter_mut().zip(&shoves) {
+            target.shove = shove.clamp_length_max(crowd.max_push);
+        }
+        if let Some(p) = player {
+            p.shove(shoves[players].clamp_length_max(crowd.max_push) * dt);
         }
     }
 
@@ -415,11 +570,13 @@ impl Targets {
 }
 
 /// What [`Targets::step`] needs besides the terrain.
-#[derive(Clone, Copy)]
 pub struct StepContext<'a> {
     pub defs: &'a [TargetDef],
     pub brains: &'a [Option<&'a dyn Brain>],
-    pub player: Option<(WorldPos, Vec3)>,
+    /// How targets see each other and get pushed apart; `None` for neither.
+    pub crowd: Option<&'a CrowdDef>,
+    /// The player, if there is one: brains see it, and it's pushed and pushes.
+    pub player: Option<&'a mut Player>,
     pub tick: u64,
     pub dt: f32,
 }
@@ -433,9 +590,18 @@ fn hurt(target: &mut Target, from: Vec3, damage: f32) {
 }
 
 /// Lets `brain` decide what `target` wants this tick.
-fn think(target: &mut Target, def: &TargetDef, brain: &dyn Brain, player: Option<(WorldPos, Vec3)>, tick: u64, dt: f32) {
+fn think(
+    target: &mut Target,
+    def: &TargetDef,
+    brain: &dyn Brain,
+    player: Option<(WorldPos, Vec3)>,
+    others: Vec<Neighbor>,
+    tick: u64,
+    dt: f32,
+) {
     let ctx = BrainContext {
         dt,
+        id: target.id,
         velocity: target.velocity,
         yaw: target.yaw,
         on_ground: target.on_ground,
@@ -444,6 +610,7 @@ fn think(target: &mut Target, def: &TargetDef, brain: &dyn Brain, player: Option
         full_health: def.health,
         player: player.map(|(feet, velocity)| Seen { offset: target.pos.delta_to(feet), velocity }),
         hurt: target.hurt.take(),
+        others,
         random: tick.wrapping_mul(0x9e37_79b9_7f4a_7c15) ^ target.id.rotate_left(32),
         memory: std::mem::take(&mut target.memory),
     };
@@ -455,12 +622,44 @@ fn think(target: &mut Target, def: &TargetDef, brain: &dyn Brain, player: Option
     target.edge_guard = out.edge_guard;
     target.clip = out.clip;
     target.clip_speed = out.clip_speed;
+    target.signal = out.signal;
     target.memory = out.memory;
 }
 
 /// The part of the speed `v` along one axis beyond the walking speed `w` the same way.
 fn beyond(v: f32, w: f32) -> f32 {
     if v * w <= 0.0 { v } else if v.abs() > w.abs() { v - w } else { 0.0 }
+}
+
+/// The closest points between the segments `a0`–`a1` and `b0`–`b1`, one on each.
+fn closest_points(a0: Vec2, a1: Vec2, b0: Vec2, b1: Vec2) -> (Vec2, Vec2) {
+    let (d1, d2, r) = (a1 - a0, b1 - b0, a0 - b0);
+    let (a, e, f) = (d1.length_squared(), d2.length_squared(), d2.dot(r));
+    const TINY: f32 = 1e-8;
+    let (s, t) = if a <= TINY && e <= TINY {
+        (0.0, 0.0)
+    } else if a <= TINY {
+        (0.0, (f / e).clamp(0.0, 1.0))
+    } else {
+        let c = d1.dot(r);
+        if e <= TINY {
+            ((-c / a).clamp(0.0, 1.0), 0.0)
+        } else {
+            let b = d1.dot(d2);
+            let denom = a * e - b * b;
+            let mut s = if denom > TINY { ((b * f - c * e) / denom).clamp(0.0, 1.0) } else { 0.0 };
+            let mut t = (b * s + f) / e;
+            if t < 0.0 {
+                t = 0.0;
+                s = (-c / a).clamp(0.0, 1.0);
+            } else if t > 1.0 {
+                t = 1.0;
+                s = ((b - c) / a).clamp(0.0, 1.0);
+            }
+            (s, t)
+        }
+    };
+    (a0 + d1 * s, b0 + d2 * t)
 }
 
 /// `v` turned by `-angle` about +Z.
@@ -492,7 +691,7 @@ fn step_target(target: &mut Target, def: &TargetDef, dt: f32, terrain: &impl Ter
         target.velocity.x = walk.x + (target.velocity.x - walk.x) * keep;
         target.velocity.y = walk.y + (target.velocity.y - walk.y) * keep;
     }
-    let delta = target.velocity * dt;
+    let delta = target.velocity * dt + (target.shove * dt).extend(0.0);
     let step = if target.on_ground { def.step_height } else { 0.0 };
     let (swept, stepped) = sweep_stepping(min, max, delta, step, cell, terrain);
     let moved = match target.edge_guard {
@@ -601,7 +800,7 @@ mod tests {
 
     fn run(targets: &mut Targets, defs: &[TargetDef], terrain: &impl Terrain, seconds: f32) {
         for _ in 0..(seconds / DT) as usize {
-            targets.step(StepContext { defs, brains: &[], player: None, tick: 0, dt: DT }, terrain);
+            targets.step(StepContext { defs, brains: &[], crowd: None, player: None, tick: 0, dt: DT }, terrain);
         }
     }
 
@@ -893,7 +1092,15 @@ mod tests {
                 memory[2] = h.from.x;
             }
             memory[3] = ctx.player.as_ref().map_or(0.0, |p| p.offset.x);
-            api::BrainOutput { walk: self.walk, yaw: 1.0, edge_guard: self.guard, clip: "walk".into(), clip_speed: 2.0, memory }
+            api::BrainOutput {
+                walk: self.walk,
+                yaw: 1.0,
+                edge_guard: self.guard,
+                clip: "walk".into(),
+                clip_speed: 2.0,
+                signal: format!("seen {}", ctx.others.len()),
+                memory,
+            }
         }
     }
 
@@ -937,9 +1144,10 @@ mod tests {
 
     fn think_run(targets: &mut Targets, defs: &[TargetDef], brain: &Walker, terrain: &impl Terrain, seconds: f32) {
         let brains: [Option<&dyn Brain>; 1] = [Some(brain)];
-        let player = Some((at(-3.0, 0.5, 0.0), Vec3::ZERO));
+        let mut player = standing_player(at(-3.0, 0.5, 0.0));
         for tick in 0..(seconds / DT).round() as u64 {
-            targets.step(StepContext { defs, brains: &brains, player, tick, dt: DT }, terrain);
+            let ctx = StepContext { defs, brains: &brains, crowd: None, player: Some(&mut player), tick, dt: DT };
+            targets.step(ctx, terrain);
         }
     }
 
@@ -1057,5 +1265,211 @@ mod tests {
         let t = targets.iter().next().unwrap();
         assert!(t.velocity.length() < 1e-4, "settled: {}", t.velocity);
         assert_eq!((t.clip.as_str(), t.walk), ("", Vec2::ZERO), "brains off: a dummy again");
+    }
+
+    /// A movement controller that only falls.
+    #[derive(Clone)]
+    struct Standing;
+
+    impl api::Tunables for Standing {
+        fn tunables(&self) -> Vec<api::Tunable> {
+            Vec::new()
+        }
+        fn set_tunable(&mut self, _: &str, _: f32) -> bool {
+            false
+        }
+    }
+
+    impl api::MovementController for Standing {
+        fn spawn(&self) -> Box<dyn api::MovementController> {
+            Box::new(self.clone())
+        }
+        fn step(&mut self, ctx: &api::MoveContext) -> api::MoveOutput {
+            api::MoveOutput { velocity: Vec3::new(0.0, 0.0, ctx.velocity.z - 25.0 * ctx.dt), ..Default::default() }
+        }
+    }
+
+    fn standing_player(pos: WorldPos) -> Player {
+        let shape = crate::Shape { width: 0.6, height: 1.8, eye_height: 1.6, step_height: 0.5 };
+        Player::with_controller(shape, Box::new(Standing), pos)
+    }
+
+    fn crowd() -> CrowdDef {
+        CrowdDef { sight: 10.0, push: 10.0, max_push: 3.0, player_weight: 1.0 }
+    }
+
+    /// Targets of `defs[0]`'s kind at `spots`, all facing east.
+    fn many(spots: &[(f32, f32)], def: TargetDef) -> (Targets, Vec<TargetDef>) {
+        let mut targets = Targets::default();
+        for &(x, y) in spots {
+            targets.add_spot(TargetKind(0), at(x, y, 0.0), 0.0, &def);
+        }
+        (targets, vec![def])
+    }
+
+    /// Steps the targets, and the player if any, with a crowd and `brains`.
+    fn crowd_run(
+        targets: &mut Targets,
+        defs: &[TargetDef],
+        brains: &[Option<&dyn Brain>],
+        mut player: Option<&mut Player>,
+        terrain: &impl Terrain,
+        seconds: f32,
+    ) {
+        let crowd = crowd();
+        for tick in 0..(seconds / DT).round() as u64 {
+            if let Some(p) = player.as_deref_mut() {
+                p.step(&crate::PlayerInput::default(), DT, terrain);
+            }
+            let ctx = StepContext { defs, brains, crowd: Some(&crowd), player: player.as_deref_mut(), tick, dt: DT };
+            targets.step(ctx, terrain);
+        }
+    }
+
+    fn abs_x(p: WorldPos) -> f32 {
+        at(0.0, 0.0, 0.0).delta_to(p).x
+    }
+
+    fn level_gap(a: WorldPos, b: WorldPos) -> f32 {
+        a.delta_to(b).truncate().length()
+    }
+
+    #[test]
+    fn overlapping_targets_are_pushed_apart_and_come_to_rest() {
+        let (mut targets, defs) = many(&[(0.5, 0.5), (0.8, 0.5)], def());
+        crowd_run(&mut targets, &defs, &[], None, &room(), 2.0);
+        let t: Vec<&Target> = targets.iter().collect();
+        let gap = level_gap(t[0].pos, t[1].pos);
+        assert!(gap >= 0.9 - PUSH_SLACK - 1e-3, "apart: {gap}");
+        assert!(gap < 0.95, "but only just: {gap}");
+        assert!(t.iter().all(|t| t.pos.delta_to(t.prev_pos).length() < 1e-5), "and still");
+        assert_eq!(t[0].velocity.truncate(), Vec2::ZERO, "pushing gives no speed");
+        assert!(targets.take_slams().is_empty());
+    }
+
+    #[test]
+    fn the_heavier_body_moves_less() {
+        let mut targets = Targets::default();
+        let light = def();
+        let heavy = TargetDef { weight: 6.0, ..def() };
+        targets.add_spot(TargetKind(0), at(0.5, 0.5, 0.0), 0.0, &light);
+        targets.add_spot(TargetKind(1), at(1.0, 0.5, 0.0), 0.0, &heavy);
+        let defs = vec![light, heavy];
+        crowd_run(&mut targets, &defs, &[], None, &room(), 2.0);
+        let t: Vec<&Target> = targets.iter().collect();
+        let (moved_light, moved_heavy) = (0.5 - abs_x(t[0].pos), abs_x(t[1].pos) - 1.0);
+        assert!(moved_light > 0.0 && moved_heavy > 0.0);
+        // Weights 2 and 6: the light one moves three times as far.
+        assert!((moved_light / moved_heavy - 3.0).abs() < 0.1, "{moved_light} vs {moved_heavy}");
+    }
+
+    #[test]
+    fn a_pile_settles_without_jitter_and_nothing_is_pushed_into_a_wall() {
+        let terrain = Room { wall_x: 2, ice_y: 1000 };
+        // Five in a heap against the wall.
+        let spots = [(1.5, 0.5), (1.4, 0.6), (1.5, 0.7), (1.3, 0.5), (1.45, 0.55)];
+        let (mut targets, defs) = many(&spots, def());
+        let half = 0.45;
+        for _ in 0..(6.0 / DT) as usize {
+            crowd_run(&mut targets, &defs, &[], None, &terrain, DT);
+            for t in targets.iter() {
+                let x = at(0.0, 0.0, 0.0).delta_to(t.pos).x;
+                assert!(x <= 2.0 - half + 1e-4, "never into the wall: {x}");
+            }
+        }
+        let t: Vec<&Target> = targets.iter().collect();
+        for (i, a) in t.iter().enumerate() {
+            assert!(a.pos.delta_to(a.prev_pos).length() < 1e-4, "settled: {:?}", a.pos.delta_to(a.prev_pos));
+            for b in &t[i + 1..] {
+                assert!(level_gap(a.pos, b.pos) > 0.9 - 0.05, "spread out");
+            }
+        }
+    }
+
+    #[test]
+    fn long_bodies_push_along_their_whole_length() {
+        // Hit boxes 2 m long front to back, but a collision box only 0.9 wide.
+        let long = TargetDef {
+            hit_boxes: vec![api::HitBox { name: "body".into(), min: [-0.45, -1.0, 0.0], max: [0.45, 1.0, 1.3], damage: 1.0 }],
+            ..def()
+        };
+        // Both facing east, so the bodies run east–west; the second's back is in the first's front.
+        let (mut targets, defs) = many(&[(0.5, 0.5), (2.0, 0.5)], long);
+        crowd_run(&mut targets, &defs, &[], None, &room(), 2.0);
+        let t: Vec<&Target> = targets.iter().collect();
+        assert!(level_gap(t[0].pos, t[1].pos) > 2.0 - 0.05, "{}", level_gap(t[0].pos, t[1].pos));
+    }
+
+    #[test]
+    fn the_player_and_a_target_push_each_other() {
+        let (mut targets, defs) = many(&[(0.5, 0.5)], def());
+        let mut player = standing_player(at(0.8, 0.5, 0.0));
+        crowd_run(&mut targets, &defs, &[], Some(&mut player), &room(), 2.0);
+        let t = targets.iter().next().unwrap();
+        let gap = level_gap(t.pos, player.pos());
+        assert!(gap >= 0.45 + 0.3 - PUSH_SLACK - 1e-3, "apart: {gap}");
+        // Player weight 1, target 2: the player moves twice as far.
+        let (moved_target, moved_player) = (0.5 - abs_x(t.pos), abs_x(player.pos()) - 0.8);
+        assert!((moved_player / moved_target - 2.0).abs() < 0.15, "{moved_player} vs {moved_target}");
+        assert!(player.velocity().truncate().length() < 1e-5, "pushing gives the player no speed either");
+    }
+
+    #[test]
+    fn bodies_at_different_heights_pass() {
+        let mut targets = Targets::default();
+        targets.add_spot(TargetKind(0), at(0.5, 0.5, 0.0), 0.0, &def());
+        let defs = vec![def()];
+        // Standing on a ledge above it.
+        let mut player = standing_player(at(0.6, 0.5, 2.0));
+        let terrain = Room { wall_x: 1000, ice_y: 1000 };
+        let crowd = crowd();
+        let ctx = StepContext { defs: &defs, brains: &[], crowd: Some(&crowd), player: Some(&mut player), tick: 0, dt: DT };
+        targets.step(ctx, &terrain);
+        assert_eq!(targets.iter().next().unwrap().shove, Vec2::ZERO);
+    }
+
+    #[test]
+    fn brains_see_the_nearest_others_within_sight_with_their_signals() {
+        let walker = Walker { walk: Vec2::ZERO, guard: None };
+        let brains: [Option<&dyn Brain>; 1] = [Some(&walker)];
+        // Eleven in a row 1.5 m apart, then one out of sight.
+        let mut spots: Vec<(f32, f32)> = (0..11).map(|i| (0.5 + 1.5 * i as f32, 0.5)).collect();
+        spots.push((40.0, 0.5));
+        let (mut targets, defs) = many(&spots, walker_def());
+        crowd_run(&mut targets, &defs, &brains, None, &room(), DT);
+        let seen: Vec<&str> = targets.iter().map(|t| t.signal.as_str()).collect();
+        assert_eq!(seen[0], "seen 6", "within 10 m: 1.5 to 9 m");
+        assert_eq!(seen[5], "seen 8", "capped");
+        assert_eq!(seen[11], "seen 0", "nobody near");
+
+        let list = targets.neighbors(&defs, 10.0);
+        let d: Vec<f32> = list[5].iter().map(|n| n.offset.x).collect();
+        assert_eq!(d, vec![-1.5, 1.5, -3.0, 3.0, -4.5, 4.5, -6.0, 6.0], "nearest first, ties by age");
+        assert_eq!(list[5][0].kind, "test:dummy");
+        assert_eq!(list[5][0].signal, "seen 8", "last tick's signals");
+        assert!(list[5][0].id < list[5][1].id);
+    }
+
+    #[test]
+    fn without_a_crowd_they_neither_see_nor_push() {
+        let walker = Walker { walk: Vec2::ZERO, guard: None };
+        let brains: [Option<&dyn Brain>; 1] = [Some(&walker)];
+        let (mut targets, defs) = many(&[(0.5, 0.5), (0.7, 0.5)], walker_def());
+        for tick in 0..30 {
+            targets.step(StepContext { defs: &defs, brains: &brains, crowd: None, player: None, tick, dt: DT }, &room());
+        }
+        let t: Vec<&Target> = targets.iter().collect();
+        assert_eq!(t[0].signal, "seen 0");
+        assert!((level_gap(t[0].pos, t[1].pos) - 0.2).abs() < 1e-4);
+    }
+
+    #[test]
+    fn closest_points_between_segments() {
+        let (p, q) = closest_points(Vec2::ZERO, Vec2::X * 2.0, Vec2::new(1.0, 1.0), Vec2::new(1.0, 3.0));
+        assert_eq!((p, q), (Vec2::X, Vec2::new(1.0, 1.0)));
+        let (p, q) = closest_points(Vec2::ZERO, Vec2::ZERO, Vec2::new(-1.0, 1.0), Vec2::new(1.0, 1.0));
+        assert_eq!((p, q), (Vec2::ZERO, Vec2::Y), "a point and a segment");
+        let (p, q) = closest_points(Vec2::ZERO, Vec2::X, Vec2::new(3.0, 0.0), Vec2::new(5.0, 0.0));
+        assert_eq!((p, q), (Vec2::X, Vec2::new(3.0, 0.0)), "in line");
     }
 }

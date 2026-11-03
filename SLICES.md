@@ -106,6 +106,21 @@ A run of small toy slices. Each one takes a single game-feel feature that doesn'
 
 **Waiting for a play check** (remind the user at the start of every session, and at good moments during one, until they confirm; then delete the line): none.
 
+#### Cow herd (branch `toy-cow-herd`) — stage: Implement
+
+**Goal:** cows act as a herd: they keep together and drift back when one strays, keep a little space, loosely follow a leader when wandering and grazing, and spook together when one is hit. Bodies push each other apart, the player included.
+
+**Plan** (approved 2026-11-03):
+- **API (`api::brain`).** `BrainContext.others: Vec<Neighbor>`, the nearest few creatures within sight, nearest first, capped at 8: `offset`, `velocity`, `kind` (name), `id` (stable, so a brain can pick a leader) and `signal`. `BrainOutput.signal: String`, a short label others see (`"alarmed"`), so a spook spreads without brains reading each other's memory.
+- **API (`api::crowd`).** A `CrowdDef` the mod registers, like `PushOutDef`: how far creatures see each other, how hard overlapping bodies are pushed apart, the push's top speed and the player's weight. Without one, no neighbors and no pushing.
+- **Engine (`sim::combat`).** One pass over all creatures per tick builds the neighbor lists before brains think (every pair; a spatial grid can wait for many more creatures). Then a soft push: each overlapping pair, cow–cow and cow–player, is moved apart this tick, harder the deeper the overlap, split by weight so the lighter moves more. The push is a displacement through the normal sweep, not velocity, so nothing is shoved into a wall, nothing slams and nothing keeps momentum. Bodies are level capsules: a creature's runs along its facing over its hit boxes' length (the cow is long, its collision box is not), the player's is a circle.
+- **Base (`base::cow`).** Nudges on the existing state machine: cohesion (beyond `stray_range` from the herd's center, wander back toward it), spacing (inside `personal_space`, turn away from the nearest cow), leader (the lowest id it sees; wander roughly the leader's heading, lean toward grazing when it grazes), spooking (a hit cow shows `"alarmed"`; a cow seeing an alarmed one within `alarm_range` flees too, shorter, away from it, and shows `"alarmed"` itself). Each a tunable.
+- **Test area.** A pasture about 30×30, fenced one block high (cows can't step it, the player jumps it), with all the cows: free range, 8 of them. The small pen stays, empty.
+- **Tests.** Push (overlap separates, heavier moves less, a pile settles without jitter, never into walls); neighbor list capped and nearest first; each herd rule in the brain; integration: the herd stays within a spread over 2 minutes, hitting one sets others fleeing within a couple of seconds, the player can shove a cow and walk through a herd without getting stuck.
+- **Out of scope:** looking at the player (head-only looking, graded reactions, facing a newcomer together: deferred, the user's call), pathfinding, line of sight, anything from Fighting cow.
+
+*Done when:* (1) cows keep together as a loose herd and a straying cow drifts back; (2) they keep a little space and don't walk through each other or the player; (3) the player can shove a cow, a little lighter than one, and is shoved back, with no jitter or sticking; (4) hitting one cow spooks the ones near it; (5) cows still stay in the pasture and everything from Cow brain works; (6) tests pass and clippy is clean.
+
 ### Toy backlog
 
 - ~~**Block shapes and placement.**~~ Now the current toy, as Block shapes and shared cells. Suggested order after it: inventory and items, then interaction controls and block interactions, then combat feel.

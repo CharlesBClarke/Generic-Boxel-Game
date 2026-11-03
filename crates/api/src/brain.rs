@@ -18,6 +18,24 @@ pub struct Seen {
     pub velocity: Vec3,
 }
 
+/// How many other creatures a brain is shown at most, nearest first.
+pub const MAX_NEIGHBORS: usize = 8;
+
+/// Another creature, as a creature sees it.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Neighbor {
+    /// From this creature's feet to the other's, meters, Z-up.
+    pub offset: Vec3,
+    pub velocity: Vec3,
+    /// Its kind's registered name, such as `"base:cow"`.
+    pub kind: String,
+    /// Stays the same for as long as it lives, and newer creatures get bigger ones, so brains can
+    /// agree on things like a leader without talking.
+    pub id: u64,
+    /// What its brain is showing, from [`BrainOutput::signal`].
+    pub signal: String,
+}
+
 /// Something hurt the creature since its last think.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Hurt {
@@ -31,6 +49,8 @@ pub struct Hurt {
 pub struct BrainContext {
     /// Seconds this tick covers.
     pub dt: f32,
+    /// This creature's [`Neighbor::id`], as others see it.
+    pub id: u64,
     pub velocity: Vec3,
     /// Facing, radians counterclockwise from +X (east) around +Z.
     pub yaw: f32,
@@ -44,6 +64,9 @@ pub struct BrainContext {
     /// The player, if there is one.
     pub player: Option<Seen>,
     pub hurt: Option<Hurt>,
+    /// Other creatures within sight (see [`crate::CrowdDef`]), nearest first, at most
+    /// [`MAX_NEIGHBORS`]. Empty without a crowd definition.
+    pub others: Vec<Neighbor>,
     /// A random number for this creature and tick. The same game gives the same numbers, so
     /// replays and multiplayer stay in step.
     pub random: u64,
@@ -79,6 +102,9 @@ pub struct BrainOutput {
     pub clip: String,
     /// How fast the clip plays, as a share of its own speed.
     pub clip_speed: f32,
+    /// A short label other creatures see as [`Neighbor::signal`], such as `"alarmed"`. What it
+    /// means is up to the brains; empty shows nothing.
+    pub signal: String,
     /// Handed back on the next call.
     pub memory: Vec<f32>,
 }
@@ -96,6 +122,7 @@ mod tests {
     fn ctx(random: u64) -> BrainContext {
         BrainContext {
             dt: 1.0 / 60.0,
+            id: 0,
             velocity: Vec3::ZERO,
             yaw: 0.0,
             on_ground: true,
@@ -104,6 +131,7 @@ mod tests {
             full_health: 1.0,
             player: None,
             hurt: None,
+            others: Vec::new(),
             random,
             memory: Vec::new(),
         }
