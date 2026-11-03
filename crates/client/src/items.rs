@@ -177,7 +177,7 @@ impl View {
 fn item_mesh(item: &Item, blocks: &BlockRegistry, chunk_meshes: &ChunkMeshes) -> Mesh {
     let mut data = mesher::MeshData::default();
     let middle = ((item.bounds.min + item.bounds.max) * -0.5).to_array();
-    mesher::mesh_occupant(&mut data, Occupant::new(item.block), middle, blocks, &chunk_meshes.volumes, |_| false, &mut Vec::new());
+    mesher::mesh_occupant(&mut data, Occupant::new(item.block), middle, blocks, &chunk_meshes.volumes, |_| false, &mesher::unlit, &mut Vec::new());
     crate::to_bevy_mesh(data)
 }
 

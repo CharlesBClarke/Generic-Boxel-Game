@@ -313,7 +313,7 @@ pub(crate) fn update_ghost(
     if ghost.shown != Some(place.occupant) {
         let mut data = mesher::MeshData::default();
         // Built around the boxel's center, so scaling shrinks it in place.
-        mesher::mesh_occupant(&mut data, place.occupant, [-0.5; 3], blocks, &chunk_meshes.volumes, |_| false, &mut Vec::new());
+        mesher::mesh_occupant(&mut data, place.occupant, [-0.5; 3], blocks, &chunk_meshes.volumes, |_| false, &mesher::unlit, &mut Vec::new());
         mesh.0 = meshes.add(crate::to_bevy_mesh(data));
         ghost.shown = Some(place.occupant);
     }
@@ -326,7 +326,8 @@ pub(crate) fn update_ghost(
         .with_scale(Vec3::splat(GHOST_SCALE));
 }
 
-/// Rebuilds the meshes of chunks the simulation changed.
+/// Rebuilds the meshes of chunks the simulation changed, and of every chunk when the ambient
+/// occlusion tuning changes.
 pub(crate) fn remesh_changed_chunks(
     mut commands: Commands,
     mut sim: ResMut<Sim>,
@@ -334,13 +335,17 @@ pub(crate) fn remesh_changed_chunks(
     mut meshes: ResMut<Assets<Mesh>>,
     mut chunk_meshes: ResMut<ChunkMeshes>,
     mut handles: Query<&mut Mesh3d, With<ChunkMesh>>,
+    ao: Res<mesher::AoTuning>,
 ) {
     // Crafting registers blocks while playing; their looks must be known before they're drawn.
     chunk_meshes.volumes.sync(sim.0.blocks());
-    let changed = sim.0.take_changed_chunks();
+    let mut changed = sim.0.take_changed_chunks();
     let grid = sim.0.universe().main();
+    if ao.is_changed() && !ao.is_added() {
+        changed = grid.chunks().map(|(pos, _)| pos).collect();
+    }
     for pos in changed {
-        let data = mesher::mesh_chunk(grid, pos, sim.0.blocks(), &chunk_meshes.volumes);
+        let data = mesher::mesh_chunk(grid, pos, sim.0.blocks(), &chunk_meshes.volumes, &ao);
         match chunk_meshes.entities.get(&pos).copied() {
             Some(entity) if data.is_empty() => {
                 commands.entity(entity).despawn();
@@ -703,12 +708,12 @@ mod tests {
 
         let volumes = Volumes::build(sim.looks(), sim.blocks());
         let chunk = ChunkPos::new(-1, -1, 0);
-        let before = mesher::mesh_chunk(sim.universe().main(), chunk, sim.blocks(), &volumes).quad_count();
+        let before = mesher::mesh_chunk(sim.universe().main(), chunk, sim.blocks(), &volumes, &mesher::AoTuning::default()).quad_count();
         sim.step(&PlayerInput { yaw, pitch, use_pressed: true, use_held: true, ..Default::default() });
         let left: Vec<_> = sim.universe().main().cell(cell).iter().map(|o| o.block).collect();
         assert_eq!(left, [slab]);
         assert!(sim.take_changed_chunks().contains(&chunk));
-        let after = mesher::mesh_chunk(sim.universe().main(), chunk, sim.blocks(), &volumes).quad_count();
+        let after = mesher::mesh_chunk(sim.universe().main(), chunk, sim.blocks(), &volumes, &mesher::AoTuning::default()).quad_count();
         assert_eq!(after, before - 5, "the post's faces are gone; its bottom was already hidden by the floor");
     }
 
@@ -720,7 +725,7 @@ mod tests {
         sim.teleport_player(WorldPos::new(I64Vec3::new(10, 10, 0), ZVec3::new(0.5, 0.5, 0.0)));
         let below = ChunkPos::new(0, 0, -1);
         let volumes = Volumes::build(sim.looks(), sim.blocks());
-        let before = mesher::mesh_chunk(sim.universe().main(), below, sim.blocks(), &volumes).quad_count();
+        let before = mesher::mesh_chunk(sim.universe().main(), below, sim.blocks(), &volumes, &mesher::AoTuning::default()).quad_count();
 
         let down = -89f32.to_radians();
         sim.step(&PlayerInput { pitch: down, use_pressed: true, use_held: true, ..Default::default() });
@@ -730,7 +735,33 @@ mod tests {
         assert!(changed.contains(&ChunkPos::new(0, 0, 0)));
 
         // One top face gone; four side faces and the floor of the hole appear.
-        let after = mesher::mesh_chunk(sim.universe().main(), below, sim.blocks(), &volumes).quad_count();
+        let after = mesher::mesh_chunk(sim.universe().main(), below, sim.blocks(), &volumes, &mesher::AoTuning::default()).quad_count();
         assert_eq!(after, before + 4);
+    }
+}
+#[cfg(test)]
+mod remesh_timing {
+    use super::*;
+    use crate::volumes::Volumes;
+    use sim::Simulation;
+
+    /// Times meshing every chunk of the base game's test area. Run with `--ignored --nocapture`.
+    #[test]
+    #[ignore]
+    fn time_a_full_remesh() {
+        let data = data_mods::load(std::path::Path::new(base::DATA_DIR)).unwrap();
+        let sim = Simulation::with_mods(&[&data, &base::BaseMod, &base_movement::BaseMovementMod]).unwrap();
+        let volumes = Volumes::build(sim.looks(), sim.blocks());
+        let ao = mesher::AoTuning::default();
+        let grid = sim.universe().main();
+        let chunks: Vec<_> = grid.chunks().map(|(pos, _)| pos).collect();
+        let mut best = std::time::Duration::MAX;
+        let mut quads = 0;
+        for _ in 0..5 {
+            let start = std::time::Instant::now();
+            quads = chunks.iter().map(|&pos| mesher::mesh_chunk(grid, pos, sim.blocks(), &volumes, &ao).quad_count()).sum();
+            best = best.min(start.elapsed());
+        }
+        println!("{} chunks, {quads} quads, best of 5: {best:?}", chunks.len());
     }
 }

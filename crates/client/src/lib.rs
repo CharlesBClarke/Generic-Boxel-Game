@@ -58,6 +58,7 @@ pub fn run(sim: Simulation) {
         .init_resource::<FrameCap>()
         .init_resource::<WaypointCursor>()
         .init_resource::<CameraFeel>()
+        .init_resource::<mesher::AoTuning>()
         .init_resource::<FeelState>()
         .init_resource::<TuningPanel>()
         .init_resource::<Palette>()
@@ -197,6 +198,7 @@ fn spawn_chunk_meshes(
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<SolidMaterial>>,
     mut images: ResMut<Assets<Image>>,
+    ao: Res<mesher::AoTuning>,
 ) {
     let volumes = Volumes::build(sim.0.looks(), sim.0.blocks());
     // Unlit: shading is baked into vertex colors until there is a lighting system.
@@ -221,7 +223,7 @@ fn spawn_chunk_meshes(
     let grid = sim.0.universe().main();
     let mut entities = std::collections::HashMap::new();
     for (pos, _) in grid.chunks() {
-        let data = mesher::mesh_chunk(grid, pos, sim.0.blocks(), &volumes);
+        let data = mesher::mesh_chunk(grid, pos, sim.0.blocks(), &volumes, &ao);
         if data.is_empty() {
             continue;
         }
