@@ -14,11 +14,14 @@ fn base_sim() -> Simulation {
     sim
 }
 
-/// The base game with cows that run when hit instead of fighting back.
+/// The base game with cows that run when hit, or when another is, instead of fighting.
 fn timid_sim() -> Simulation {
     let mut sim = base_sim();
     let cow = sim.brain_names().position(|n| n == base::cow::COW_BRAIN).unwrap();
-    assert!(sim.brain_mut(cow).unwrap().set_tunable("fight_share", 0.0));
+    let brain = sim.brain_mut(cow).unwrap();
+    for name in ["fight_share", "defend_chance", "courage", "injury_pull"] {
+        assert!(brain.set_tunable(name, 0.0), "{name}");
+    }
     sim
 }
 
@@ -576,14 +579,14 @@ fn cow_mode(sim: &Simulation, id: u64) -> Option<f32> {
 }
 
 #[test]
-fn a_hit_cow_kicks_a_player_up_close_tossing_them_up_and_away() {
+fn a_hit_cow_tosses_a_player_up_close_throwing_them_up_and_away() {
     let mut sim = base_sim();
     let cow = anger_a_cow(&mut sim);
     let hurts = blows(&mut sim, 5.0);
-    let first = hurts.first().expect("kicked within 5 s");
+    let first = hurts.first().expect("tossed within 5 s");
     let brain = base::cow::CowBrain::default();
-    assert_eq!(first.target, cow);
-    assert!((first.damage - brain.kick_damage).abs() < 1e-4, "a kick's damage: {}", first.damage);
+    assert_eq!(first.attacker.map(|a| a.0), Some(cow));
+    assert!((first.damage - brain.toss_damage).abs() < 1e-4, "a toss's damage: {}", first.damage);
     assert!(first.push.z > first.push.truncate().length(), "mostly up: {}", first.push);
     assert!(first.push.truncate().length() > 1.0, "and away: {}", first.push);
 }
@@ -603,7 +606,7 @@ fn a_hit_cow_charges_a_player_far_off_for_big_damage_and_knockback() {
     let hurts = blows(&mut sim, 8.0);
     let brain = base::cow::CowBrain::default();
     let charge = hurts.iter().find(|h| (h.damage - brain.charge_damage).abs() < 1e-4).expect("charged within 8 s");
-    assert_eq!(charge.target, cow);
+    assert_eq!(charge.attacker.map(|a| a.0), Some(cow));
     assert!(charge.push.truncate().length() > 10.0, "thrown hard: {}", charge.push);
 }
 
@@ -640,5 +643,40 @@ fn a_cow_charging_into_the_fence_is_stunned_and_then_gives_up() {
     assert!(mode < base::cow::Mode::Angry as usize, "gave up well before its anger ran out: mode {mode}");
     let calm = sim.targets().iter().find(|t| t.id == cow).unwrap();
     assert!(in_pasture(calm.pos), "still in the pasture");
+}
+
+
+#[test]
+fn hitting_one_cow_brings_some_of_the_herd_to_its_side_and_scatters_the_rest() {
+    let mut sim = base_sim();
+    // Whether any one cow helps is down to chance; a keener herd makes both outcomes sure.
+    let cow = sim.brain_names().position(|n| n == base::cow::COW_BRAIN).unwrap();
+    assert!(sim.brain_mut(cow).unwrap().set_tunable("defend_chance", 0.5));
+    let hit = anger_a_cow(&mut sim);
+    let mut fought = std::collections::BTreeSet::new();
+    let mut ran = std::collections::BTreeSet::new();
+    for _ in 0..4 * 60 {
+        sim.step(&PlayerInput::default());
+        sim.take_player_hurts();
+        for t in sim.targets().iter() {
+            match t.signal.as_str() {
+                base::cow::ANGRY => {
+                    fought.insert(t.id);
+                }
+                base::cow::ALARMED if !fought.contains(&t.id) => {
+                    ran.insert(t.id);
+                }
+                _ => {}
+            }
+        }
+    }
+    fought.remove(&hit);
+    ran.retain(|id| *id != hit && !fought.contains(id));
+    assert!(!fought.is_empty(), "at least one came to help");
+    assert!(ran.len() >= 2, "others ran: {} ran, {} fought", ran.len(), fought.len());
+    // They calm down once the player is far off.
+    sim.teleport_player(WorldPos::at_boxel(BoxelPos::new(0, 0, 0)));
+    idle(&mut sim, 6 * 60);
+    assert!(sim.targets().iter().all(|t| t.signal != base::cow::ANGRY), "lost interest");
 }
 

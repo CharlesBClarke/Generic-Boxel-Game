@@ -34,6 +34,8 @@ pub struct Neighbor {
     pub id: u64,
     /// What its brain is showing, from [`BrainOutput::signal`].
     pub signal: String,
+    /// Its health, as a share of its full health: 1 is unhurt.
+    pub health: f32,
 }
 
 /// Something hurt the creature since its last think.

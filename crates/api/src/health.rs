@@ -1,5 +1,5 @@
-//! The player's health: how much they have, how it comes back, and how a guard takes the
-//! sting out of blows. The engine keeps the health and applies hits the same way for every
+//! The player's health: how much they have, how it comes back, how a guard takes the sting
+//! out of blows, and how hard a landing has to be to hurt. The engine keeps the health and applies hits the same way for every
 //! mod's creatures; the numbers are content.
 
 use crate::{Tunable, Tunables};
@@ -15,6 +15,10 @@ pub struct HealthDef {
     /// How far off the player's look, in radians either way, an attacker can be for a raised
     /// guard to catch its blow.
     pub guard_angle: f32,
+    /// Landing faster than this, meters per second, hurts: `fall_damage` health for each meter
+    /// per second over.
+    pub fall_speed: f32,
+    pub fall_damage: f32,
 }
 
 impl HealthDef {
@@ -23,7 +27,7 @@ impl HealthDef {
         if !(self.health.is_finite() && self.health > 0.0) {
             return Err(format!("health must be above 0, got {}", self.health));
         }
-        for (name, value) in [("regen", self.regen), ("regen_delay", self.regen_delay), ("guard_angle", self.guard_angle)] {
+        for (name, value) in [("regen", self.regen), ("regen_delay", self.regen_delay), ("guard_angle", self.guard_angle), ("fall_speed", self.fall_speed), ("fall_damage", self.fall_damage)] {
             if !(value.is_finite() && value >= 0.0) {
                 return Err(format!("{name} must be at least 0, got {value}"));
             }
@@ -39,6 +43,8 @@ impl Tunables for HealthDef {
             Tunable::new("regen", self.regen, 0.0, 20.0),
             Tunable::new("regen_delay", self.regen_delay, 0.0, 20.0),
             Tunable::new("guard_angle", self.guard_angle, 0.0, std::f32::consts::PI),
+            Tunable::new("fall_speed", self.fall_speed, 0.0, 60.0),
+            Tunable::new("fall_damage", self.fall_damage, 0.0, 10.0),
         ]
     }
 
@@ -48,6 +54,8 @@ impl Tunables for HealthDef {
             "regen" => &mut self.regen,
             "regen_delay" => &mut self.regen_delay,
             "guard_angle" => &mut self.guard_angle,
+            "fall_speed" => &mut self.fall_speed,
+            "fall_damage" => &mut self.fall_damage,
             _ => return false,
         };
         *field = value;
@@ -60,7 +68,7 @@ mod tests {
     use super::*;
 
     fn def() -> HealthDef {
-        HealthDef { health: 20.0, regen: 1.0, regen_delay: 4.0, guard_angle: 1.0 }
+        HealthDef { health: 20.0, regen: 1.0, regen_delay: 4.0, guard_angle: 1.0, fall_speed: 15.0, fall_damage: 1.0 }
     }
 
     #[test]

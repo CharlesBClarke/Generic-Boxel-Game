@@ -56,7 +56,7 @@ fn attack() -> Attack {
 }
 
 fn health() -> HealthDef {
-    HealthDef { health: 10.0, regen: 2.0, regen_delay: 1.0, guard_angle: 1.0 }
+    HealthDef { health: 10.0, regen: 2.0, regen_delay: 1.0, guard_angle: 1.0, fall_speed: 12.0, fall_damage: 0.5 }
 }
 
 /// A stone floor, the player at the spawn, a club, and the jabber 1.5 m west of the spawn,
@@ -297,4 +297,61 @@ fn a_second_health_definition_is_refused() {
     }
     let err = Simulation::with_mods(&[&Twice]).err().expect("refused");
     assert_eq!(err, sim::SimError::Api(ApiError::DuplicateHealthDef));
+}
+
+/// Drops the player from `height` meters above the floor, away from the jabber, and gathers
+/// what hurts them until just after they land, before health comes back.
+fn drop_from(sim: &mut Simulation, height: f32) -> Vec<PlayerHurt> {
+    sim.teleport_player(spawn().translate(Vec3::new(10.0, 0.0, height)));
+    let landed = sim.player().unwrap().landings();
+    let mut hurts = Vec::new();
+    for _ in 0..180 {
+        hurts.extend(run(sim, &PlayerInput::default(), 1));
+        if sim.player().unwrap().landings() != landed {
+            hurts.extend(run(sim, &PlayerInput::default(), 2));
+            return hurts;
+        }
+    }
+    panic!("never landed");
+}
+
+#[test]
+fn a_short_drop_does_not_hurt() {
+    let mut sim = arena(0, 1);
+    let hurts = drop_from(&mut sim, 2.0);
+    assert!(hurts.is_empty(), "{hurts:?}");
+    assert_eq!(sim.health(), health().health);
+}
+
+#[test]
+fn a_long_drop_hurts_by_how_far_past_the_limit_it_lands() {
+    let mut sim = arena(0, 1);
+    let hurts = drop_from(&mut sim, 6.0);
+    assert_eq!(hurts.len(), 1, "{hurts:?}");
+    let speed = sim.player().unwrap().last_landing_speed();
+    assert!(speed > health().fall_speed, "{speed}");
+    let fall = &hurts[0];
+    assert_eq!(fall.attacker, None);
+    assert!((fall.damage - (speed - health().fall_speed) * health().fall_damage).abs() < 1e-4, "{}", fall.damage);
+    assert!((sim.health() - (health().health - fall.damage)).abs() < 1e-4);
+    // Further hurts more.
+    let mut sim = arena(0, 1);
+    let further = drop_from(&mut sim, 12.0);
+    assert!(further[0].damage > fall.damage);
+}
+
+#[test]
+fn a_fall_can_knock_the_player_out_unless_unkillable() {
+    let mut sim = arena(0, 1);
+    sim.set_health(1.0);
+    let hurts = drop_from(&mut sim, 8.0);
+    assert!(hurts.len() == 1 && hurts[0].died, "{hurts:?}");
+    assert_eq!(sim.health(), health().health);
+    assert!(spawn().delta_to(sim.player().unwrap().pos()).length() < 0.1, "back at the spawn");
+    let mut sim = arena(0, 1);
+    sim.set_unkillable(true);
+    sim.set_health(1.0);
+    let hurts = drop_from(&mut sim, 8.0);
+    assert!(hurts.iter().all(|h| !h.died));
+    assert_eq!(sim.health(), 0.0);
 }

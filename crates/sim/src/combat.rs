@@ -444,6 +444,7 @@ impl Targets {
                         kind: defs[list[j].kind.index()].name.clone(),
                         id: list[j].id,
                         signal: list[j].signal.clone(),
+                        health: list[j].health / defs[list[j].kind.index()].health,
                     })
                     .collect()
             })
@@ -1514,6 +1515,11 @@ mod tests {
         assert_eq!(list[5][0].kind, "test:dummy");
         assert_eq!(list[5][0].signal, "seen 8", "last tick's signals");
         assert!(list[5][0].id < list[5][1].id);
+        assert_eq!(list[5][0].health, 1.0, "unhurt");
+        let hurt = targets.list[4].id;
+        targets.list[4].health = defs[0].health * 0.25;
+        let list = targets.neighbors(&defs, 10.0);
+        assert_eq!(list[5].iter().find(|n| n.id == hurt).unwrap().health, 0.25, "as a share of full health");
     }
 
     #[test]

@@ -73,14 +73,13 @@ pub struct PlaceReport {
     pub push_out: Option<(PushOut, f32)>,
 }
 
-/// A creature's attack hitting the player.
+/// The player being hurt: by a creature's attack, or by landing hard.
 #[derive(Clone, Debug, PartialEq)]
 pub struct PlayerHurt {
     pub tick: u64,
-    /// The attacker's ID and kind.
-    pub target: u64,
-    pub kind: TargetKind,
-    /// Level unit direction from the player toward the attacker.
+    /// The attacker's ID and kind; `None` for a fall.
+    pub attacker: Option<(u64, TargetKind)>,
+    /// Level unit direction from the player toward the attacker; zero for a fall.
     pub from: Vec3,
     /// Health lost, after the guard.
     pub damage: f32,
@@ -114,8 +113,10 @@ pub struct Simulation {
     since_hurt: f32,
     /// Out of health doesn't send the player back; health stops at none.
     unkillable: bool,
-    /// Blows on the player since the last [`Simulation::take_player_hurts`].
+    /// Blows and falls hurting the player since the last [`Simulation::take_player_hurts`].
     player_hurts: Vec<PlayerHurt>,
+    /// The player's landings counted so far, so each is judged once.
+    seen_landings: u32,
     item_drop_def: Option<ItemDropDef>,
     models: Vec<ModelDef>,
     sounds: Vec<SoundDef>,
@@ -285,7 +286,7 @@ impl Simulation {
                 inventory.add(drop.material, drop.amount, capacity);
             }
         }
-        self.take_blows(input.yaw);
+        self.hurt_player(input.yaw);
         self.tick += 1;
     }
 
@@ -460,11 +461,11 @@ impl Simulation {
         self.items.spawn_waiting(crate::Drop { material, amount }, block, &self.blocks, at, velocity, wait);
     }
 
-    /// Hurts and knocks back the player with the creatures' attacks that hit them this tick,
-    /// softened by a guard raised toward the attacker with the player looking along `yaw`, and
-    /// lets health come back once they haven't been hurt for a while. Out of health, they go
-    /// back to the spawn point, whole.
-    fn take_blows(&mut self, yaw: f32) {
+    /// Hurts the player for a hard landing this tick, and hurts and knocks them back with the
+    /// creatures' attacks that hit them, softened by a guard raised toward the attacker with the
+    /// player looking along `yaw`. Lets health come back once they haven't been hurt for a
+    /// while. Out of health, they go back to the spawn point, whole.
+    fn hurt_player(&mut self, yaw: f32) {
         let blows = self.targets.take_blows();
         let Some(player) = &mut self.player else {
             return;
@@ -475,6 +476,34 @@ impl Simulation {
             && self.since_hurt >= def.regen_delay
         {
             self.health = (self.health + def.regen * dt).min(def.health);
+        }
+        if player.landings() != self.seen_landings {
+            self.seen_landings = player.landings();
+            let speed = player.last_landing_speed();
+            if let Some(def) = &self.health_def
+                && speed > def.fall_speed
+            {
+                let damage = (speed - def.fall_speed) * def.fall_damage;
+                self.health = (self.health - damage).max(0.0);
+                self.since_hurt = 0.0;
+                let died = self.health <= 0.0 && !self.unkillable;
+                if died {
+                    self.health = def.health;
+                    player.teleport(self.spawn);
+                }
+                self.player_hurts.push(PlayerHurt {
+                    tick: self.tick,
+                    attacker: None,
+                    from: Vec3::ZERO,
+                    damage,
+                    push: Vec3::ZERO,
+                    guarded: false,
+                    died,
+                });
+                if died {
+                    return;
+                }
+            }
         }
         let look = Vec2::from_angle(yaw);
         for blow in blows {
@@ -503,8 +532,7 @@ impl Simulation {
             }
             self.player_hurts.push(PlayerHurt {
                 tick: self.tick,
-                target: blow.target,
-                kind: blow.kind,
+                attacker: Some((blow.target, blow.kind)),
                 from: toward.extend(0.0),
                 damage,
                 push,
@@ -744,7 +772,7 @@ impl Simulation {
         self.unkillable = on;
     }
 
-    /// Blows on the player since the last call, oldest first.
+    /// Blows and falls that hurt the player since the last call, oldest first.
     pub fn take_player_hurts(&mut self) -> Vec<PlayerHurt> {
         std::mem::take(&mut self.player_hurts)
     }

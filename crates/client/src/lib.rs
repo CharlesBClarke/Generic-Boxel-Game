@@ -434,13 +434,14 @@ fn update_camera(
     let Some(player) = sim.0.player() else {
         return;
     };
+    let feel = &landing_feel(&feel, &sim.0);
     let alpha = fixed.overstep_fraction();
     let prev = player.prev_pos();
     let step = prev.delta_to(player.pos());
     let feet = prev.translate(step * alpha);
 
     feel_state.update(
-        &feel,
+        feel,
         &Motion {
             horizontal_speed: player.velocity().truncate().length(),
             grounded: player.on_ground() && !player.flying(),
@@ -451,7 +452,7 @@ fn update_camera(
         },
         time.delta_secs(),
     );
-    let eye_height = player.eye_height() + feel_state.vertical_offset(&feel);
+    let eye_height = player.eye_height() + feel_state.vertical_offset(feel);
     let eye = feet.translate(ZVec3::new(0.0, 0.0, eye_height));
 
     let from_origin = (eye.cell() - origin.cell).abs().max_element();
@@ -465,6 +466,13 @@ fn update_camera(
     if let Projection::Perspective(perspective) = &mut **projection {
         perspective.fov = feel_state.fov.to_radians();
     }
+}
+
+/// The camera feel, with landings bottoming out from the speed at which falls start to hurt
+/// when there is fall damage, so the camera says when a fall hurt.
+fn landing_feel(feel: &CameraFeel, sim: &Simulation) -> CameraFeel {
+    let hard_landing_speed = sim.health_def().filter(|h| h.fall_damage > 0.0).map_or(feel.hard_landing_speed, |h| h.fall_speed);
+    CameraFeel { hard_landing_speed, ..feel.clone() }
 }
 
 fn sync_chunk_transforms(origin: Res<RenderOrigin>, mut chunks: Query<(&ChunkMesh, &mut Transform)>) {
@@ -498,7 +506,7 @@ fn update_hud(
         precise.z,
         player.velocity().truncate().length(),
         player.last_landing_speed(),
-        if player.last_landing_speed() >= feel.hard_landing_speed { "hard" } else { "soft" },
+        if player.last_landing_speed() >= landing_feel(&feel, &sim.0).hard_landing_speed { "hard" } else { "soft" },
         origin.cell.x,
         origin.cell.y,
         origin.cell.z,

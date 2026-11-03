@@ -103,9 +103,18 @@ impl Mod for BaseMod {
         // Creatures see each other across a herd, and bodies push apart firmly enough that you
         // can't walk through a cow; the player is a little lighter than one (2.5).
         r.register_crowd(CrowdDef { sight: 12.0, push: 25.0, max_push: 8.0, player_weight: 1.5 })?;
-        // Three charges or ten kicks from whole; it comes back slowly once you've got clear. A
-        // guard catches what's within 60 degrees of the look.
-        r.register_health(HealthDef { health: 20.0, regen: 1.0, regen_delay: 4.0, guard_angle: 1.05 })?;
+        // Three charges or ten tosses from whole; it comes back slowly once you've got clear. A
+        // guard catches what's within 60 degrees of the look. Falls hurt from about 4 blocks
+        // (16.5 m/s, with the controller's fall gravity of 35), so a 10-block drop costs about
+        // half your health.
+        r.register_health(HealthDef {
+            health: 20.0,
+            regen: 1.0,
+            regen_delay: 4.0,
+            guard_angle: 1.05,
+            fall_speed: 16.5,
+            fall_damage: 1.0,
+        })?;
         // Minecraft-like drops: a small hop out of the broken block, pulled in from a couple of
         // meters, picked up on touch.
         r.register_item_drops(ItemDropDef {

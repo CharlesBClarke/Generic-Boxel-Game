@@ -1,8 +1,8 @@
 //! The player being hurt, on the client side: a health bar, and the juice of a creature's blow
 //! landing. The simulation decides what hits and how hard; this only shows it.
 //!
-//! A blow freezes the game for a moment, jolts and shakes the view, flashes the screen red
-//! (weaker when the guard caught it), plays the attacker's sound low and says what happened
+//! A blow, or a fall that hurts, freezes the game for a moment, jolts and shakes the view, flashes the screen red
+//! (weaker when the guard caught it), plays an attacker's sound low and says what happened
 //! under the crosshair.
 
 use bevy::prelude::*;
@@ -42,11 +42,12 @@ impl HurtFlash {
 }
 
 /// The readout's words for a blow.
-fn hurt_words(damage: f32, guarded: bool, died: bool) -> String {
-    match (died, guarded) {
-        (true, _) => "KNOCKED OUT".into(),
-        (false, true) => format!("GUARDED  -{damage:.0}"),
-        (false, false) => format!("HURT  -{damage:.0}"),
+fn hurt_words(damage: f32, guarded: bool, fall: bool, died: bool) -> String {
+    match (died, guarded, fall) {
+        (true, ..) => "KNOCKED OUT".into(),
+        (false, _, true) => format!("FALL  -{damage:.0}"),
+        (false, true, false) => format!("GUARDED  -{damage:.0}"),
+        (false, false, false) => format!("HURT  -{damage:.0}"),
     }
 }
 
@@ -114,9 +115,11 @@ pub(crate) fn play_player_hurts(
         kick.kick(feel.hurt_kick * share);
         kick.shake(feel.hurt_shake * share, feel.shake_time * 2.0);
         flash.flash(feel.hurt_flash, feel.hurt_flash_alpha * share);
-        readout.show(hurt_words(hurt.damage, hurt.guarded, hurt.died));
-        let sound = sim.0.target_def(hurt.kind).hit_sound.clone();
-        play_sound(&mut commands, &views, sound.as_deref(), 0.75, &feel, hurt.tick ^ hurt.target);
+        readout.show(hurt_words(hurt.damage, hurt.guarded, hurt.attacker.is_none(), hurt.died));
+        if let Some((target, kind)) = hurt.attacker {
+            let sound = sim.0.target_def(kind).hit_sound.clone();
+            play_sound(&mut commands, &views, sound.as_deref(), 0.75, &feel, hurt.tick ^ target);
+        }
     }
 }
 
@@ -164,8 +167,9 @@ mod tests {
 
     #[test]
     fn the_readout_says_what_a_blow_did() {
-        assert_eq!(hurt_words(7.0, false, false), "HURT  -7");
-        assert_eq!(hurt_words(1.5, true, false), "GUARDED  -2");
-        assert_eq!(hurt_words(7.0, false, true), "KNOCKED OUT");
+        assert_eq!(hurt_words(7.0, false, false, false), "HURT  -7");
+        assert_eq!(hurt_words(1.5, true, false, false), "GUARDED  -2");
+        assert_eq!(hurt_words(4.6, false, true, false), "FALL  -5");
+        assert_eq!(hurt_words(7.0, false, false, true), "KNOCKED OUT");
     }
 }
