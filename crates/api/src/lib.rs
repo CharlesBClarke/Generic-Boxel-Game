@@ -28,7 +28,7 @@ pub use coords::{BoxelPos, CHUNK_SIZE, CHUNK_VOLUME, ChunkPos, LocalPos, WorldPo
 pub use error::ApiError;
 pub use interaction::{InteractionDef, PushOutDef};
 pub use item::{InventoryDef, ItemDropDef};
-pub use media::{ModelDef, SoundDef, Texture};
+pub use media::{Bone, BonePose, Clip, ModelDef, Skin, SoundDef, Texture, Track};
 pub use glam::{I64Vec3, Vec2, Vec3};
 pub use modding::{Mod, Registrar, WorldEdit};
 pub use orientation::Orientation;

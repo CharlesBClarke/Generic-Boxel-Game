@@ -1,6 +1,7 @@
 //! The Bevy client: opens a window, feeds input to the simulation at a fixed 60 Hz, and
 //! draws the world relative to a floating render origin, interpolated between ticks.
 
+pub mod animation;
 pub mod combat;
 pub mod controls;
 pub mod coords;
@@ -69,6 +70,8 @@ pub fn run(sim: Simulation) {
         .init_resource::<drill::Drill>()
         .init_resource::<trainer::Trainer>()
         .init_resource::<combat::CombatFeel>()
+        .init_resource::<animation::AnimationTuning>()
+        .init_resource::<animation::AnimationPreview>()
         .init_resource::<combat::HitStop>()
         .init_resource::<combat::ViewKick>()
         .init_resource::<combat::TargetViews>()

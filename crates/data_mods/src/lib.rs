@@ -15,6 +15,7 @@
 
 mod crafting;
 mod inventory;
+mod glb;
 mod looks;
 mod targets;
 
@@ -724,6 +725,53 @@ mod tests {
         assert!(message.contains("weight"), "{message}");
         let (_, message) = error("t_box", "max = [0.4, 0.4, 1.2]", "max = [0.4, 0.4, 0.5]");
         assert!(message.contains("hit box \"top\""), "{message}");
+    }
+
+    /// The base mod's cow, a glTF binary with a skeleton and animations.
+    fn cow_glb() -> Vec<u8> {
+        fs::read(Path::new(env!("CARGO_MANIFEST_DIR")).join("../../mods/base/models/cow.glb")).unwrap()
+    }
+
+    fn animated_folder(test: &str, model: &str) -> Folder {
+        let folder = target_folder(test, &TARGETS.replacen("        mesh = \"box.obj\"\n", model, 1));
+        folder.write("cow.glb", cow_glb());
+        folder
+    }
+
+    #[test]
+    fn reads_an_animated_model_with_its_bones_and_clips() {
+        let m = animated_folder("t_glb", "        mesh = \"cow.glb\"\n        play_once = [\"eat\", \"die\"]\n").load().unwrap();
+        let model = &m.models()[0];
+        let skin = model.skin.as_ref().expect("a skin");
+        assert_eq!(skin.bones.len(), 26);
+        assert_eq!(skin.joints.len(), model.positions.len());
+        let names: Vec<&str> = skin.clips.iter().map(|c| c.name.as_str()).collect();
+        assert_eq!(names, ["eat", "stand", "walk", "run", "punch", "die"]);
+        let clip = |name: &str| &skin.clips[skin.clip(name).unwrap()];
+        assert!(clip("stand").looping && clip("walk").looping);
+        assert!(!clip("eat").looping && !clip("die").looping);
+        // stand is frames 35 to 75 at 20 a second.
+        assert!((clip("stand").length - 2.0).abs() < 1e-4, "{}", clip("stand").length);
+        let head = skin.bones.iter().position(|b| b.name == "Head").unwrap();
+        assert!(skin.bones[head].parent.is_some(), "the head hangs from the neck");
+        assert_eq!(model.validate(), Ok(()));
+    }
+
+    #[test]
+    fn animated_model_mistakes_name_the_file() {
+        let error = |test: &str, model: &str| {
+            let folder = animated_folder(test, model);
+            folder.write("junk.glb", b"not a model");
+            let e = folder.load().unwrap_err();
+            assert!(e.path.ends_with("targets.toml"), "{e}");
+            e.message
+        };
+        let message = error("t_glb_once", "        mesh = \"cow.glb\"\n        play_once = [\"moonwalk\"]\n");
+        assert!(message.contains("cow.glb") && message.contains("moonwalk"), "{message}");
+        let message = error("t_glb_junk", "        mesh = \"junk.glb\"\n");
+        assert!(message.contains("junk.glb") && message.contains("not a glTF file"), "{message}");
+        let message = error("t_obj_once", "        mesh = \"box.obj\"\n        play_once = [\"eat\"]\n");
+        assert!(message.contains("play_once needs an animated model"), "{message}");
     }
 
     #[test]

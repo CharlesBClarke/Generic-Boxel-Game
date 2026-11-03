@@ -1,12 +1,14 @@
 # Things to hit. See the data_mods crate's targets module for every field.
 #
-# Models are OBJ files, Z up, in meters, with the feet at the origin and the front facing +Y.
-# Textures are PNGs, drawn with hard pixel edges. Sounds are Ogg Vorbis. Where they came from
-# is in CREDITS.md.
+# Models are OBJ files, or glTF binaries with a skeleton and animations; Z up, in meters, with
+# the feet at the origin and the front facing +Y. Textures are PNGs, drawn with hard pixel
+# edges. Sounds are Ogg Vorbis. Where they came from is in CREDITS.md.
 
 [models.cow]
-mesh = "models/cow.obj"
+mesh = "models/cow.glb"
 texture = "textures/cow.png"
+# The rest loop.
+play_once = ["eat", "punch", "die"]
 
 [sounds.moo]
 file = "sounds/moo.ogg"

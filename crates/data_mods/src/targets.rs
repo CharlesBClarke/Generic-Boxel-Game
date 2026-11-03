@@ -2,8 +2,10 @@
 //!
 //! ```toml
 //! [models.cow]
-//! mesh = "models/cow.obj"       # an OBJ file: Z up, meters, feet at the origin, facing +Y
+//! mesh = "models/cow.glb"       # Z up, meters, feet at the origin, facing +Y: an OBJ file, or
+//!                               # a glTF binary with a skeleton and named animations
 //! texture = "textures/cow.png"  # a PNG, drawn with hard pixel edges
+//! play_once = ["eat", "die"]    # optional: animations that hold their last pose; others loop
 //!
 //! [sounds.moo]
 //! file = "sounds/moo.ogg"       # Ogg Vorbis
@@ -61,6 +63,8 @@ struct TargetsFile {
 struct ModelEntry {
     mesh: String,
     texture: String,
+    #[serde(default)]
+    play_once: Vec<String>,
 }
 
 #[derive(Deserialize)]
@@ -128,11 +132,21 @@ pub(crate) fn load(dir: &Path, namespace: &str) -> Result<Media, LoadError> {
         let name = named(short, entry.span(), "model")?;
         let e = entry.get_ref();
         let at = |message: String| file.error_at(entry, format!("model {short:?}: {message}"));
-        let obj = fs::read_to_string(dir.join(&e.mesh)).map_err(|err| at(format!("{}: {err}", e.mesh)))?;
-        let (positions, uvs, indices) = parse_obj(&obj).map_err(|err| at(format!("{}: {err}", e.mesh)))?;
+        let mesh_err = |err: String| at(format!("{}: {err}", e.mesh));
+        let bytes = fs::read(dir.join(&e.mesh)).map_err(|err| mesh_err(err.to_string()))?;
+        let (positions, uvs, indices, skin) = if e.mesh.ends_with(".glb") {
+            crate::glb::read(&bytes, &e.play_once).map_err(mesh_err)?
+        } else {
+            if !e.play_once.is_empty() {
+                return Err(at("play_once needs an animated model (.glb)".into()));
+            }
+            let obj = String::from_utf8(bytes).map_err(|_| mesh_err("not text".into()))?;
+            let (positions, uvs, indices) = parse_obj(&obj).map_err(mesh_err)?;
+            (positions, uvs, indices, None)
+        };
         let png = fs::read(dir.join(&e.texture)).map_err(|err| at(format!("{}: {err}", e.texture)))?;
         let texture = decode_png(&png).map_err(|err| at(format!("{}: {err}", e.texture)))?;
-        let def = ModelDef { name, positions, uvs, indices, texture };
+        let def = ModelDef { name, positions, uvs, indices, texture, skin };
         def.validate().map_err(at)?;
         models.push(def);
     }

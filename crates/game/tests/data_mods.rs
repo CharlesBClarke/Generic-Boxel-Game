@@ -97,6 +97,10 @@ fn the_cow_is_data_and_its_numbers_can_be_edited() {
     let model = sim.models().iter().find(|m| m.name == cow.model).expect("with its model");
     assert_eq!((model.texture.width, model.texture.height), (128, 128));
     assert!(model.indices.len() > 300, "the whole cow, {} indices", model.indices.len());
+    let skin = model.skin.as_ref().expect("with its skeleton");
+    for clip in ["stand", "eat", "walk", "run", "punch", "die"] {
+        assert!(skin.clip(clip).is_some(), "and its {clip} clip");
+    }
     assert!(cow.hit_sound.as_ref().is_some_and(|s| sim.sounds().iter().any(|d| &d.name == s)), "and its moo");
 
     let copy = Copy::new("cow");
@@ -105,7 +109,7 @@ fn the_cow_is_data_and_its_numbers_can_be_edited() {
     assert_eq!(sim.target_defs().iter().find(|d| d.name == base::COW).unwrap().health, 55.0);
 
     let copy = Copy::new("cow_broken");
-    copy.edit("targets.toml", "mesh = \"models/cow.obj\"", "mesh = \"models/bull.obj\"");
+    copy.edit("targets.toml", "mesh = \"models/cow.glb\"", "mesh = \"models/bull.glb\"");
     let error = game::load_from(&copy.0, Movement::Native).err().unwrap().to_string();
-    assert!(error.contains("targets.toml:") && error.contains("bull.obj"), "{error}");
+    assert!(error.contains("targets.toml:") && error.contains("bull.glb"), "{error}");
 }
