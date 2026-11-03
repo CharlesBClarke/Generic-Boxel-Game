@@ -106,7 +106,7 @@ A run of small toy slices. Each one takes a single game-feel feature that doesn'
 
 **Waiting for a play check** (remind the user at the start of every session, and at good moments during one, until they confirm; then delete the line): none.
 
-#### Cow herd (branch `toy-cow-herd`) — stage: Implement
+#### Cow herd (branch `toy-cow-herd`) — stage: Verify
 
 **Goal:** cows act as a herd: they keep together and drift back when one strays, keep a little space, loosely follow a leader when wandering and grazing, and spook together when one is hit. Bodies push each other apart, the player included.
 
@@ -118,6 +118,14 @@ A run of small toy slices. Each one takes a single game-feel feature that doesn'
 - **Test area.** A pasture about 30×30, fenced one block high (cows can't step it, the player jumps it), with all the cows: free range, 8 of them. The small pen stays, empty.
 - **Tests.** Push (overlap separates, heavier moves less, a pile settles without jitter, never into walls); neighbor list capped and nearest first; each herd rule in the brain; integration: the herd stays within a spread over 2 minutes, hitting one sets others fleeing within a couple of seconds, the player can shove a cow and walk through a herd without getting stuck.
 - **Out of scope:** looking at the player (head-only looking, graded reactions, facing a newcomer together: deferred, the user's call), pathfinding, line of sight, anything from Fighting cow.
+
+**Built** (2026-11-03), as planned, with small additions:
+- `BrainContext.id`: a brain's own ID, so it can tell whether it's older than everyone it sees (the leader).
+- The push moves bodies as a displacement through the sweep (and the edge guard), so it gives no speed, no slams and nothing goes into walls; the player gets `Player::shove`, applied on its next step. `max_push` caps how fast. Base values: sight 12 m, push 25 per second, max 8 m/s, player weight 1.5 against the cow's 2.5. With a lower cap the player could walk straight through a cow.
+- The cow's memory gains a slot, `Calm`: seconds it ignores alarms after a scare, so a spook spreads then dies out instead of bouncing between cows forever. New tunables: `stray_range`, `personal_space`, `follow`, `follow_spread`, `alarm_range`, `spook_time`, `calm_time`. Signals are `"alarmed"` (fleeing) and `"grazing"`.
+- Pasture: a wood fence one high from (-62, -62) to (-32, -32), 8 cows, waypoint `pasture` just east of it (the 5th teleport press). The far test area gets the fence but no cows, as before. The pen stays, empty; its platform and slab steps no longer have cows on them (stepping is still covered by the `sim` tests).
+- Crowd sliders in the tuning panel.
+- Tests: 416 pass across the workspace (1 ignored, as before). Clippy is clean natively and for `wasm32`. New: crowd def (2), pushing and neighbors in `sim` (8), herd rules in the cow brain (6), and in the base world: the herd keeps together for 2 minutes without cows inside each other, a strayed cow comes back, hitting one spooks at least 5 of 8 and it dies out, the player shoves a cow and can't walk through it, and the player crosses the herd without getting stuck. The game starts and runs cleanly.
 
 *Done when:* (1) cows keep together as a loose herd and a straying cow drifts back; (2) they keep a little space and don't walk through each other or the player; (3) the player can shove a cow, a little lighter than one, and is shoved back, with no jitter or sticking; (4) hitting one cow spooks the ones near it; (5) cows still stay in the pasture and everything from Cow brain works; (6) tests pass and clippy is clean.
 
