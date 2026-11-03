@@ -6,6 +6,7 @@ use api::{
     WorldEdit, WorldPos,
 };
 
+pub mod cow;
 pub mod shapes;
 
 /// The base game's data half, in the source tree. Both halves share the `base` namespace.
@@ -23,14 +24,14 @@ pub const LOG: &str = "base:log";
 pub const GRAVEL: &str = "base:gravel";
 pub const CRAFTING_TABLE: &str = "base:crafting_table";
 
-/// The cow-shaped training dummy, defined in `mods/base/targets.toml`.
+/// The cow, defined in `mods/base/targets.toml`, with its brain in [`cow`].
 pub const COW: &str = "base:cow";
 /// The melee tool.
 pub const CLUB: &str = "base:club";
 
 /// Where the cows stand in the walled pen, relative to the test area's origin, and which way
 /// each faces, in degrees counterclockwise from east.
-pub const COWS: &[(i64, i64, f32)] = &[(-16, 11, 20.0), (-12, 11, 160.0), (-16, 17, -60.0), (-12, 16, 250.0)];
+pub const COWS: &[(i64, i64, f32)] = &[(-16, 11, 20.0), (-12, 11, 160.0), (-13, 18, -60.0), (-11, 15, 250.0)];
 /// Just outside the pen's doorway, looking in.
 pub const COW_PEN_SPOT: (i64, i64, i64) = (-6, 14, 0);
 
@@ -72,6 +73,7 @@ impl Mod for BaseMod {
 
     fn register(&self, r: &mut dyn Registrar) -> Result<(), ApiError> {
         // Blocks and their looks are data, in `mods/base`; see `DATA_DIR`.
+        r.register_brain(cow::COW_BRAIN, Box::new(cow::CowBrain::default()))?;
         r.register_player(PlayerDef {
             width: 0.6,
             height: 1.8,
@@ -165,7 +167,17 @@ pub fn build_test_area(w: &mut dyn WorldEdit, o: BoxelPos) -> Result<(), ApiErro
     w.fill(at(-20, 20, 0), at(-8, 20, 2), BRICK)?;
     w.fill(at(-20, 8, 0), at(-20, 20, 2), BRICK)?;
     w.fill(at(-8, 8, 0), at(-8, 20, 2), BRICK)?;
-    w.clear(at(-8, 13, 0), at(-8, 15, 1));
+    // The doorway has a sill a block high: the player jumps it, cows can't step it.
+    w.clear(at(-8, 13, 0), at(-8, 15, 2));
+    w.fill(at(-8, 13, 0), at(-8, 15, 0), BRICK)?;
+    // In the pen's north-west corner, a platform 2 high, reached from the east by slab steps
+    // half a block each: cows walk up and down the steps but not off the sides.
+    w.fill(at(-19, 17, 0), at(-18, 19, 1), BRICK)?;
+    w.fill(at(-17, 17, 0), at(-16, 19, 0), BRICK)?;
+    for y in 17..=19 {
+        w.add_shaped(at(-17, y, 1), BRICK, &shapes::slab(), Orientation::IDENTITY)?;
+        w.add_shaped(at(-15, y, 0), BRICK, &shapes::slab(), Orientation::IDENTITY)?;
+    }
 
     // A tunnel with exactly 2 boxels of headroom.
     w.fill(at(-3, -20, 0), at(-3, -8, 2), STONE)?;

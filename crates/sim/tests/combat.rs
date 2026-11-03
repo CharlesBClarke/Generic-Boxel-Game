@@ -14,6 +14,13 @@ fn base_sim() -> Simulation {
     sim
 }
 
+/// The base game with its cows' brains off, so they stand still as dummies.
+fn dummy_sim() -> Simulation {
+    let mut sim = base_sim();
+    sim.set_brains_on(false);
+    sim
+}
+
 fn idle(sim: &mut Simulation, ticks: usize) {
     for _ in 0..ticks {
         sim.step(&PlayerInput::default());
@@ -43,7 +50,7 @@ fn swing_at(sim: &mut Simulation, pos: WorldPos) -> Strike {
 
 #[test]
 fn base_places_its_cows_in_the_pen_where_they_settle() {
-    let mut sim = base_sim();
+    let mut sim = dummy_sim();
     let cows: Vec<_> = sim.targets().iter().filter(|t| sim.target_def(t.kind).name == base::COW).collect();
     assert_eq!(cows.len(), base::COWS.len(), "one cow per spot, in the near test area only");
     let model = &sim.target_def(cows[0].kind).model;
@@ -79,7 +86,7 @@ fn the_club_strikes_after_its_windup_and_knocks_a_cow_away() {
 
 #[test]
 fn enough_hits_break_a_cow_and_it_comes_back() {
-    let mut sim = base_sim();
+    let mut sim = dummy_sim();
     let cow = sim.targets().iter().next().unwrap().clone();
     let def = sim.target_def(cow.kind).clone();
     let mut broke = false;
@@ -104,7 +111,7 @@ fn enough_hits_break_a_cow_and_it_comes_back() {
 
 #[test]
 fn a_cows_head_takes_double_damage() {
-    let mut sim = base_sim();
+    let mut sim = dummy_sim();
     idle(&mut sim, 60);
     let cow = sim.targets().iter().next().unwrap().clone();
     let def = sim.target_def(cow.kind).clone();
@@ -153,7 +160,7 @@ fn holding_a_tool_swings_and_guards_instead_of_editing() {
 
 #[test]
 fn a_block_cannot_be_placed_into_a_cow() {
-    let mut sim = base_sim();
+    let mut sim = dummy_sim();
     idle(&mut sim, 60);
     let cow = sim.targets().iter().next().unwrap().clone();
     let inside = cow.pos.translate(Vec3::Z * 0.5).boxel();
@@ -166,6 +173,125 @@ fn a_block_cannot_be_placed_into_a_cow() {
     let place = sim.placement(&hit, brick, yaw, pitch, false).unwrap();
     assert_eq!(place.pos, inside);
     assert!(!place.allowed, "the cow is in the way");
+}
+
+/// Where each cow is, by ID.
+fn cow_spots(sim: &Simulation) -> Vec<(u64, WorldPos)> {
+    sim.targets().iter().map(|t| (t.id, t.pos)).collect()
+}
+
+#[test]
+fn cows_wander_about_but_stay_in_the_pen() {
+    let mut sim = base_sim();
+    let start = cow_spots(&sim);
+    let (lo, hi) = (BoxelPos::new(-19, 9, 0), BoxelPos::new(-9, 19, 0));
+    let mut moved = vec![0.0f32; start.len()];
+    let mut clips = std::collections::BTreeSet::new();
+    for _ in 0..90 * 60 {
+        sim.step(&PlayerInput::default());
+        for (i, cow) in sim.targets().iter().enumerate() {
+            let rel = WorldPos::at_boxel(lo).delta_to(cow.pos);
+            let size = WorldPos::at_boxel(lo).delta_to(WorldPos::at_boxel(hi)) + Vec3::ONE;
+            assert!(rel.x > 0.0 && rel.y > 0.0 && rel.x < size.x && rel.y < size.y, "cow {} left the pen: {rel}", cow.id);
+            assert!(rel.z > -0.01 && rel.z < 2.01, "and stays between the floor and the platform top: {}", rel.z);
+            moved[i] = moved[i].max(start[i].1.delta_to(cow.pos).truncate().length());
+            clips.insert(cow.clip.clone());
+        }
+    }
+    assert!(moved.iter().all(|&m| m > 1.0), "every cow wandered: {moved:?}");
+    for clip in ["stand", "walk", "eat"] {
+        assert!(clips.contains(clip), "{clip} played: {clips:?}");
+    }
+}
+
+#[test]
+fn a_cow_watches_the_player_come_near() {
+    let mut sim = base_sim();
+    let cow = sim.targets().iter().next().unwrap().clone();
+    sim.teleport_player(cow.pos.translate(Vec3::new(0.0, 3.0, 0.0)));
+    idle(&mut sim, 120);
+    let now = sim.targets().iter().find(|t| t.id == cow.id).unwrap();
+    let to_player = now.pos.delta_to(sim.player().unwrap().pos());
+    let wanted = to_player.y.atan2(to_player.x);
+    let off = (now.yaw - wanted + std::f32::consts::PI).rem_euclid(std::f32::consts::TAU) - std::f32::consts::PI;
+    assert!(off.abs() < 0.05, "facing the player: off by {off}");
+    assert_eq!(now.clip, "stand");
+    assert!(now.velocity.truncate().length() < 0.05, "standing still: {}", now.velocity);
+}
+
+#[test]
+fn a_hit_cow_runs_off_then_calms_down() {
+    let mut sim = base_sim();
+    let cow = sim.targets().iter().next().unwrap().clone();
+    let def = sim.target_def(cow.kind).clone();
+    sim.teleport_player(cow.pos.translate(Vec3::new(-2.0, 0.0, 0.0)));
+    idle(&mut sim, 30);
+    let now = sim.targets().iter().find(|t| t.id == cow.id).unwrap().clone();
+    let hit = swing_at(&mut sim, now.pos.translate(Vec3::Z * def.height * 0.5)).hit.expect("in reach");
+    assert_eq!(hit.target, cow.id);
+    idle(&mut sim, 30);
+    let running = sim.targets().iter().find(|t| t.id == cow.id).unwrap().clone();
+    assert_eq!(running.clip, "run");
+    let away = |sim: &Simulation, pos: WorldPos| sim.player().unwrap().pos().delta_to(pos).truncate().length();
+    idle(&mut sim, 30);
+    let later = sim.targets().iter().find(|t| t.id == cow.id).unwrap().clone();
+    assert!(away(&sim, later.pos) > away(&sim, running.pos), "getting away from the player");
+    idle(&mut sim, 5 * 60);
+    let calm = sim.targets().iter().find(|t| t.id == cow.id).unwrap();
+    assert_ne!(calm.clip, "run", "calmed down");
+}
+
+#[test]
+fn with_brains_off_cows_stand_as_dummies() {
+    let mut sim = base_sim();
+    idle(&mut sim, 60 * 10);
+    sim.set_brains_on(false);
+    idle(&mut sim, 120);
+    let still = cow_spots(&sim);
+    idle(&mut sim, 120);
+    assert_eq!(cow_spots(&sim), still, "nobody moves");
+    assert!(sim.targets().iter().all(|t| t.clip.is_empty() && t.walk == api::Vec2::ZERO));
+}
+
+#[test]
+fn a_target_naming_an_unknown_brain_is_an_error() {
+    struct Lost;
+    impl Mod for Lost {
+        fn name(&self) -> &str {
+            "lost"
+        }
+
+        fn register(&self, r: &mut dyn Registrar) -> Result<(), ApiError> {
+            Room.register(r)?;
+            r.register_target(TargetDef { name: "lost:cow".into(), brain: Some("lost:nowhere".into()), ..dummy() })
+        }
+    }
+    let err = Simulation::with_mods(&[&Lost]).err().expect("refused");
+    assert_eq!(err, sim::SimError::Api(ApiError::UnknownBrain("lost:nowhere".into())));
+}
+
+/// The room's target.
+fn dummy() -> TargetDef {
+    TargetDef {
+        name: "room:dummy".into(),
+        model: "room:box".into(),
+        hit_sound: None,
+        brain: None,
+        width: 0.8,
+        height: 1.2,
+        step_height: 0.0,
+        hit_boxes: Vec::new(),
+        // Enough that the tests never break it, slams included.
+        health: 1000.0,
+        weight: 1.0,
+        gravity: 25.0,
+        drag: 5.0,
+        air_drag: 2.0,
+        bounce: 0.2,
+        respawn_time: 1.0,
+        slam_speed: 4.0,
+        slam_damage: 1.0,
+    }
 }
 
 /// A stone room with one target and a club: a floor, and a wall across x = 2 to 3.
@@ -188,24 +314,7 @@ impl Mod for Room {
             texture: Texture { width: 1, height: 1, rgba: vec![255; 4] },
             skin: None,
         })?;
-        r.register_target(TargetDef {
-            name: "room:dummy".into(),
-            model: "room:box".into(),
-            hit_sound: None,
-            width: 0.8,
-            height: 1.2,
-            hit_boxes: Vec::new(),
-            // Enough that the tests never break it, slams included.
-            health: 1000.0,
-            weight: 1.0,
-            gravity: 25.0,
-            drag: 5.0,
-            air_drag: 2.0,
-            bounce: 0.2,
-            respawn_time: 1.0,
-            slam_speed: 4.0,
-            slam_damage: 1.0,
-        })?;
+        r.register_target(dummy())?;
         r.register_tool(ToolDef {
             name: "room:club".into(),
             reach: 3.0,

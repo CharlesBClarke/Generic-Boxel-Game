@@ -14,8 +14,11 @@
 //! name = "cow"
 //! model = "cow"
 //! hit_sound = "moo"             # optional
-//! width = 0.9                   # every number is required; see api::TargetDef
+//! brain = "cow"                 # optional: a brain a code mod registers; without one it's a
+//!                               # dummy that only moves when hit
+//! width = 0.9                   # every number is required unless marked; see api::TargetDef
 //! height = 1.3
+//! step_height = 0.6             # optional, 0 if left out
 //! health = 20
 //! weight = 3
 //! gravity = 40
@@ -79,8 +82,11 @@ struct TargetEntry {
     name: Spanned<String>,
     model: Spanned<String>,
     hit_sound: Option<Spanned<String>>,
+    brain: Option<Spanned<String>>,
     width: f32,
     height: f32,
+    #[serde(default)]
+    step_height: f32,
     health: f32,
     weight: f32,
     gravity: f32,
@@ -105,6 +111,18 @@ struct HitBoxEntry {
 
 /// Everything `targets.toml` defines.
 pub(crate) type Media = (Vec<ModelDef>, Vec<SoundDef>, Vec<TargetDef>);
+
+/// A brain's full name. Brains come from code, so a short one is only checked for form here;
+/// whether it exists is checked once every mod has registered.
+fn brain_name(spanned: &Spanned<String>, namespace: &str, file: &Source) -> Result<String, LoadError> {
+    let short = spanned.get_ref();
+    let full = if short.contains(':') { short.clone() } else { format!("{namespace}:{short}") };
+    if is_valid_name(&full) {
+        Ok(full)
+    } else {
+        Err(file.error_at(spanned, format!("invalid brain name {short:?}: use lowercase letters, digits and underscores")))
+    }
+}
 
 /// An OBJ file's vertex positions, texture coordinates and triangle indices.
 type ObjMesh = (Vec<[f32; 3]>, Vec<[f32; 2]>, Vec<u32>);
@@ -180,8 +198,10 @@ pub(crate) fn load(dir: &Path, namespace: &str) -> Result<Media, LoadError> {
             name,
             model: reference(&entry.model, &model_names, "model", "models")?,
             hit_sound: entry.hit_sound.as_ref().map(|s| reference(s, &sound_names, "sound", "sounds")).transpose()?,
+            brain: entry.brain.as_ref().map(|b| brain_name(b, namespace, &file)).transpose()?,
             width: entry.width,
             height: entry.height,
+            step_height: entry.step_height,
             hit_boxes: entry.hit_box.iter().map(|b| HitBox { name: b.name.clone(), min: b.min, max: b.max, damage: b.damage }).collect(),
             health: entry.health,
             weight: entry.weight,

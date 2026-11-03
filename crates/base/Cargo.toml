@@ -7,3 +7,4 @@ publish.workspace = true
 
 [dependencies]
 api.workspace = true
+libm.workspace = true

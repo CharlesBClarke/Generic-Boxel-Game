@@ -5,12 +5,12 @@ use std::fmt;
 
 use api::block::is_valid_name;
 use api::{
-    ApiError, BlockDef, BoxelPos, ChunkPos, CraftingDef, I64Vec3, InteractionDef, InventoryDef, ItemDropDef, LookDef,
+    ApiError, BlockDef, BoxelPos, Brain, ChunkPos, CraftingDef, I64Vec3, InteractionDef, InventoryDef, ItemDropDef, LookDef,
     ModelDef, Mod, MovementController, Orientation, PlayerDef, PushOutDef, Registrar, ShapeGrid, SoundDef,
     TargetDef, ToolDef, Turning, Vec3, WorldEdit, WorldPos, look_direction,
 };
 
-use crate::combat::{Strike, Swing, SwingStage, TargetKind, Targets, ToolId};
+use crate::combat::{StepContext, Strike, Swing, SwingStage, TargetKind, Targets, ToolId};
 use crate::crafting::{Craft, CraftPlan, CraftRefusal};
 use crate::edit::{ChangedChunks, Repeater};
 use crate::inventory::{Inventory, capacity_units};
@@ -79,6 +79,12 @@ pub struct Simulation {
     looks: LookRegistry,
     /// Movement controllers by name, as registered. Each body gets its own from `spawn`.
     controllers: HashMap<String, Box<dyn MovementController>>,
+    /// Brains by name, in registration order.
+    brains: Vec<(String, Box<dyn Brain>)>,
+    /// Each target kind's brain, as an index into `brains`.
+    target_brains: Vec<Option<usize>>,
+    /// Targets stand still as dummies, whatever their brains would do.
+    brains_off: bool,
     player_def: Option<PlayerDef>,
     interaction_def: Option<InteractionDef>,
     push_out_def: Option<PushOutDef>,
@@ -130,6 +136,7 @@ impl Simulation {
                 looks: &mut sim.looks,
                 blocks: &mut sim.blocks,
                 controllers: &mut sim.controllers,
+                brains: &mut sim.brains,
                 player: &mut sim.player_def,
                 interaction: &mut sim.interaction_def,
                 push_out: &mut sim.push_out_def,
@@ -161,6 +168,13 @@ impl Simulation {
             if let Some(sound) = def.hit_sound.as_ref().filter(|&name| !sim.sounds.iter().any(|s| s.name == *name)) {
                 return Err(ApiError::UnknownSound(sound.clone()).into());
             }
+            let brain = match &def.brain {
+                None => None,
+                Some(name) => Some(
+                    sim.brains.iter().position(|(n, _)| n == name).ok_or_else(|| ApiError::UnknownBrain(name.clone()))?,
+                ),
+            };
+            sim.target_brains.push(brain);
         }
         for m in mods {
             m.build_world(&mut WorldEditor {
@@ -216,7 +230,14 @@ impl Simulation {
         if let Some(player) = player {
             player.step(input, Self::TICK_SECONDS, &terrain);
         }
-        targets.step(target_defs, Self::TICK_SECONDS, &terrain);
+        let brains: Vec<Option<&dyn Brain>> = if self.brains_off {
+            Vec::new()
+        } else {
+            self.target_brains.iter().map(|b| b.map(|i| &*self.brains[i].1)).collect()
+        };
+        let seen = player.as_ref().map(|p| (p.pos(), p.velocity()));
+        let ctx = StepContext { defs: target_defs, brains: &brains, player: seen, tick: self.tick, dt: Self::TICK_SECONDS };
+        targets.step(ctx, &terrain);
         if let Some(def) = item_drop_def {
             let room = inventory.room(capacity);
             let collector =
@@ -670,6 +691,26 @@ impl Simulation {
         &mut self.tools
     }
 
+    /// Registered brains' names, in registration order.
+    pub fn brain_names(&self) -> impl Iterator<Item = &str> {
+        self.brains.iter().map(|(name, _)| name.as_str())
+    }
+
+    /// A brain by its index in [`Simulation::brain_names`], for engine tools such as the tuning
+    /// panel.
+    pub fn brain_mut(&mut self, index: usize) -> Option<&mut dyn Brain> {
+        self.brains.get_mut(index).map(|(_, b)| &mut **b as &mut dyn Brain)
+    }
+
+    /// Whether targets' brains run. Off, every target is a dummy that only moves when hit.
+    pub fn brains_on(&self) -> bool {
+        !self.brains_off
+    }
+
+    pub fn set_brains_on(&mut self, on: bool) {
+        self.brains_off = !on;
+    }
+
     /// The targets in the world, broken ones excluded.
     pub fn targets(&self) -> &Targets {
         &self.targets
@@ -875,6 +916,7 @@ struct ContentRegistrar<'a> {
     looks: &'a mut LookRegistry,
     blocks: &'a mut BlockRegistry,
     controllers: &'a mut HashMap<String, Box<dyn MovementController>>,
+    brains: &'a mut Vec<(String, Box<dyn Brain>)>,
     player: &'a mut Option<PlayerDef>,
     interaction: &'a mut Option<InteractionDef>,
     push_out: &'a mut Option<PushOutDef>,
@@ -913,6 +955,12 @@ impl Registrar for ContentRegistrar<'_> {
         controller: Box<dyn MovementController>,
     ) -> Result<(), ApiError> {
         add_controller(self.controllers, name, controller)
+    }
+
+    fn register_brain(&mut self, name: &str, brain: Box<dyn Brain>) -> Result<(), ApiError> {
+        check_new_name(name, self.brains.iter().map(|(n, _)| n.clone()))?;
+        self.brains.push((name.into(), brain));
+        Ok(())
     }
 
     fn register_player(&mut self, def: PlayerDef) -> Result<(), ApiError> {

@@ -411,21 +411,10 @@ impl Player {
     }
 
     /// Cuts the horizontal parts of `moved` that would leave the body with nothing solid
-    /// under it within `drop`, keeping whichever axis still has support, so it slides along
-    /// edges instead of stopping dead.
+    /// under it within `drop` (see [`guard_edges`]).
     fn guard_edges(&self, moved: Vec3, drop: f32, terrain: &impl Terrain) -> Vec3 {
         let (min, max) = self.bounds();
-        let cell = self.pos.cell();
-        let reach = drop.max(0.0) + GROUND_PROBE;
-        let supported = |m: Vec3| clamp_axis(2, -reach, min + m, max + m, cell, terrain) > -reach;
-        if supported(moved) {
-            return moved;
-        }
-        let x_only = Vec3::new(moved.x, 0.0, moved.z);
-        let y_only = Vec3::new(0.0, moved.y, moved.z);
-        let mut options = [x_only, y_only];
-        options.sort_by(|a, b| b.truncate().length().total_cmp(&a.truncate().length()));
-        options.into_iter().find(|&m| supported(m)).unwrap_or(Vec3::new(0.0, 0.0, moved.z))
+        guard_edges(min, max, self.pos.cell(), moved, drop, terrain)
     }
 
     /// Changes height toward `want`. Shrinking always works. Growing goes only as far as there
@@ -501,26 +490,56 @@ impl Player {
     /// moved and how high it stepped.
     fn sweep(&self, delta: Vec3, terrain: &impl Terrain) -> (Vec3, f32) {
         let (min, max) = self.bounds();
-        let cell = self.pos.cell();
-        let plain = sweep_box(min, max, delta, cell, terrain);
-        let blocked_sideways = plain.x != delta.x || plain.y != delta.y;
-        if self.shape.step_height <= 0.0 || !self.on_ground || !blocked_sideways {
-            return (plain, 0.0);
-        }
-
-        // Try again from higher up: rise, move sideways, then settle back down.
-        let up = clamp_axis(2, self.shape.step_height, min, max, cell, terrain);
-        let lift = Vec3::new(0.0, 0.0, up);
-        let side = sweep_box(min + lift, max + lift, Vec3::new(delta.x, delta.y, 0.0), cell, terrain);
-        let raised = lift + side;
-        let down = clamp_axis(2, -up + delta.z.min(0.0), min + raised, max + raised, cell, terrain);
-        let stepped = Vec3::new(side.x, side.y, up + down);
-        if side.truncate().length() > plain.truncate().length() + EPS && stepped.z > EPS {
-            (stepped, stepped.z)
-        } else {
-            (plain, 0.0)
-        }
+        let step = if self.on_ground { self.shape.step_height } else { 0.0 };
+        sweep_stepping(min, max, delta, step, self.pos.cell(), terrain)
     }
+}
+
+/// Moves a box from `min` to `max` (relative to `cell`) by `delta`, stepping up ledges as high
+/// as `step_height` when blocked sideways. Pass 0 for a body that isn't on the ground. Returns
+/// how far it moved and how high it stepped.
+pub(crate) fn sweep_stepping(
+    min: Vec3,
+    max: Vec3,
+    delta: Vec3,
+    step_height: f32,
+    cell: I64Vec3,
+    terrain: &impl Terrain,
+) -> (Vec3, f32) {
+    let plain = sweep_box(min, max, delta, cell, terrain);
+    let blocked_sideways = plain.x != delta.x || plain.y != delta.y;
+    if step_height <= 0.0 || !blocked_sideways {
+        return (plain, 0.0);
+    }
+
+    // Try again from higher up: rise, move sideways, then settle back down.
+    let up = clamp_axis(2, step_height, min, max, cell, terrain);
+    let lift = Vec3::new(0.0, 0.0, up);
+    let side = sweep_box(min + lift, max + lift, Vec3::new(delta.x, delta.y, 0.0), cell, terrain);
+    let raised = lift + side;
+    let down = clamp_axis(2, -up + delta.z.min(0.0), min + raised, max + raised, cell, terrain);
+    let stepped = Vec3::new(side.x, side.y, up + down);
+    if side.truncate().length() > plain.truncate().length() + EPS && stepped.z > EPS {
+        (stepped, stepped.z)
+    } else {
+        (plain, 0.0)
+    }
+}
+
+/// Cuts the horizontal parts of `moved` that would leave a box from `min` to `max` (relative
+/// to `cell`) with nothing solid under it within `drop`, keeping whichever axis still has
+/// support, so it slides along edges instead of stopping dead.
+pub(crate) fn guard_edges(min: Vec3, max: Vec3, cell: I64Vec3, moved: Vec3, drop: f32, terrain: &impl Terrain) -> Vec3 {
+    let reach = drop.max(0.0) + GROUND_PROBE;
+    let supported = |m: Vec3| clamp_axis(2, -reach, min + m, max + m, cell, terrain) > -reach;
+    if supported(moved) {
+        return moved;
+    }
+    let x_only = Vec3::new(moved.x, 0.0, moved.z);
+    let y_only = Vec3::new(0.0, moved.y, moved.z);
+    let mut options = [x_only, y_only];
+    options.sort_by(|a, b| b.truncate().length().total_cmp(&a.truncate().length()));
+    options.into_iter().find(|&m| supported(m)).unwrap_or(Vec3::new(0.0, 0.0, moved.z))
 }
 
 /// Moves a box one axis at a time (vertical first), stopping each axis at the first solid

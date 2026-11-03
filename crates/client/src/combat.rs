@@ -285,6 +285,9 @@ pub(crate) struct BoneMarker;
 struct TargetView {
     entity: Entity,
     inner: Entity,
+    /// The entity that turns the model to its facing, and its turn on top of the facing.
+    turn: Entity,
+    turn_extra: Quat,
     material: Handle<StandardMaterial>,
     rig: Option<Rig>,
     /// Render-space turn on top of its facing, from tumbling.
@@ -678,6 +681,11 @@ pub(crate) fn update_chunks(
     }
 }
 
+/// A target's facing in render space: the model's front is +Y, the target's yaw counts from +X.
+fn facing(yaw: f32) -> Quat {
+    Quat::from_axis_angle(coords::to_render(ZVec3::Z), yaw - std::f32::consts::FRAC_PI_2)
+}
+
 /// Spawns, moves and despawns target entities to match the simulation's targets.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn sync_targets(
@@ -717,21 +725,22 @@ pub(crate) fn sync_targets(
                 alpha_mode: AlphaMode::Mask(0.5),
                 ..default()
             });
-            // Facing: the model's front is +Y, the target's yaw counts from +X.
-            let facing = Quat::from_axis_angle(coords::to_render(ZVec3::Z), target.yaw - std::f32::consts::FRAC_PI_2);
+            let facing = facing(target.yaw);
             let feet = Transform::from_translation(coords::to_render(ZVec3::Z * -def.height * 0.5)).with_rotation(facing);
             let inner = commands.spawn((Transform::default(), Visibility::default(), TargetMarker)).id();
-            let rig = match &model.skin {
+            let (turn, turn_extra, rig) = match &model.skin {
                 None => {
-                    commands.entity(inner).with_child((Mesh3d(model.mesh.clone()), MeshMaterial3d(material.clone()), feet));
-                    None
+                    let turn = commands
+                        .spawn((Mesh3d(model.mesh.clone()), MeshMaterial3d(material.clone()), feet, TargetMarker, ChildOf(inner)))
+                        .id();
+                    (turn, Quat::IDENTITY, None)
                 }
                 Some((skin, bindposes)) => {
                     // The rig turns the model's Z-up space into render space; bones and their
                     // keys stay Z-up beneath it.
                     let to_render = Quat::from_rotation_x(-std::f32::consts::FRAC_PI_2);
                     let space = commands
-                        .spawn((Transform { rotation: facing * to_render, ..feet }, Visibility::default(), ChildOf(inner)))
+                        .spawn((Transform { rotation: facing * to_render, ..feet }, Visibility::default(), TargetMarker, ChildOf(inner)))
                         .id();
                     let mut entities: Vec<Entity> = Vec::with_capacity(skin.bones.len());
                     for bone in &skin.bones {
@@ -747,7 +756,7 @@ pub(crate) fn sync_targets(
                         Transform::default(),
                         ChildOf(space),
                     ));
-                    Some(Rig { bones: entities, animator: Animator::new(skin, target.id, &tuning) })
+                    (space, to_render, Some(Rig { bones: entities, animator: Animator::new(skin, target.id) }))
                 }
             };
             let outer = Transform::from_translation(coords::render_translation(drawn, origin.cell));
@@ -755,6 +764,8 @@ pub(crate) fn sync_targets(
             TargetView {
                 entity,
                 inner,
+                turn,
+                turn_extra,
                 material,
                 rig,
                 tilt: Quat::IDENTITY,
@@ -793,7 +804,7 @@ pub(crate) fn sync_targets(
             }
         }
         if let (Some(rig), Some((skin, _))) = (&mut view.rig, &model.skin) {
-            rig.animator.update(skin, &tuning, preview.clip.as_deref(), dt);
+            rig.animator.update(skin, &tuning, preview.clip.as_deref(), (&target.clip, target.clip_speed), dt);
             for (entity, pose) in rig.bones.iter().zip(rig.animator.pose(skin, &tuning)) {
                 if let Ok(mut transform) = bones.get_mut(*entity) {
                     *transform = animation::transform(&pose);
@@ -820,6 +831,12 @@ pub(crate) fn sync_targets(
         }
         if let Ok(mut transform) = transforms.get_mut(view.inner) {
             *transform = Transform::from_rotation(to_hit.inverse() * view.tilt);
+        }
+        // Facing, blended between ticks the short way round.
+        let (pi, tau) = (std::f32::consts::PI, std::f32::consts::TAU);
+        let yaw = target.prev_yaw + ((target.yaw - target.prev_yaw + pi).rem_euclid(tau) - pi) * alpha;
+        if let Ok(mut transform) = transforms.get_mut(view.turn) {
+            transform.rotation = facing(yaw) * view.turn_extra;
         }
     }
     views.retain(|id, view| {
@@ -1011,7 +1028,7 @@ pub(crate) fn draw_hit_boxes(sim: Res<Sim>, panel: Res<crate::tuning::TuningPane
     }
     for target in sim.0.targets().iter() {
         let def = sim.0.target_def(target.kind);
-        let turn = Quat::from_axis_angle(coords::to_render(ZVec3::Z), target.yaw - std::f32::consts::FRAC_PI_2);
+        let turn = facing(target.yaw);
         for b in &def.hit_boxes {
             let (min, max) = (ZVec3::from(b.min), ZVec3::from(b.max));
             let middle = coords::render_translation(target.pos, origin.cell) + turn * coords::to_render((min + max) * 0.5);
@@ -1075,6 +1092,8 @@ mod tests {
         let mut view = TargetView {
             entity: Entity::PLACEHOLDER,
             inner: Entity::PLACEHOLDER,
+            turn: Entity::PLACEHOLDER,
+            turn_extra: Quat::IDENTITY,
             material: Handle::default(),
             rig: None,
             tilt: Quat::IDENTITY,

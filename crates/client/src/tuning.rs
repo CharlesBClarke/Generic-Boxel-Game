@@ -1,6 +1,6 @@
 //! The live tuning panel: sliders for every value the player's movement controller, the
-//! interaction, push-out, item drop and inventory definitions, tools, targets, the camera feel and the combat
-//! feel and the animation expose, whichever mod they come from.
+//! interaction, push-out, item drop and inventory definitions, tools, targets, brains, the camera
+//! feel and the combat feel and the animation expose, whichever mod they come from.
 
 use api::{Tunable, Tunables};
 use bevy::prelude::*;
@@ -29,6 +29,8 @@ pub struct TuningPanel {
     /// Each tool's and each target's values when the game started, for reset.
     tool_defaults: Option<Vec<Vec<Tunable>>>,
     target_defaults: Option<Vec<Vec<Tunable>>>,
+    /// Each brain's values when the game started, for reset.
+    brain_defaults: Option<Vec<Vec<Tunable>>>,
     /// The last printout, shown in the panel so it can be copied.
     printout: String,
 }
@@ -79,6 +81,15 @@ pub fn tuning_panel(
     if panel.target_defaults.is_none() {
         panel.target_defaults = Some(targets.iter().map(|t| t.tunables()).collect());
     }
+    // Copies of each brain's values too, written back at the end.
+    let brain_names: Vec<String> = sim.0.brain_names().map(String::from).collect();
+    let mut brains: Vec<Values> =
+        (0..brain_names.len()).map(|i| Values(sim.0.brain_mut(i).map_or_else(Vec::new, |b| b.tunables()))).collect();
+    let brains_before = brains.clone();
+    if panel.brain_defaults.is_none() {
+        panel.brain_defaults = Some(brains.iter().map(|b| b.0.clone()).collect());
+    }
+    let mut brains_on = sim.0.brains_on();
     let Some(player) = sim.0.player_mut() else {
         return Ok(());
     };
@@ -127,6 +138,15 @@ pub fn tuning_panel(
                 ui.heading(format!("Target: {}", target.name));
                 let id = format!("target {}", target.name);
                 sliders(ui, &id, target);
+            }
+            if !brain_names.is_empty() {
+                ui.separator();
+                ui.heading("Brains");
+                ui.checkbox(&mut brains_on, "think (off: targets are dummies)");
+            }
+            for (name, brain) in brain_names.iter().zip(&mut brains) {
+                ui.label(format!("Brain: {name}"));
+                sliders(ui, &format!("brain {name}"), brain);
             }
             ui.separator();
             ui.heading("Combat feel");
@@ -210,6 +230,10 @@ pub fn tuning_panel(
                         target.set_tunable(&t.name, t.value);
                     }
                 }
+                for (brain, defaults) in brains.iter_mut().zip(panel.brain_defaults.iter().flatten()) {
+                    brain.0.clone_from(defaults);
+                }
+                brains_on = true;
                 *feel = CameraFeel::default();
                 ao.set_if_neq(AoTuning::default());
                 *combat = CombatFeel::default();
@@ -253,6 +277,10 @@ pub fn tuning_panel(
             out += &format!("// target {}\n", target.name);
             out += &printout(&target.tunables());
         }
+        for (name, brain) in brain_names.iter().zip(&brains) {
+            out += &format!("// brain {name}\n");
+            out += &printout(&brain.0);
+        }
         out += "// combat feel\n";
         out += &printout(&combat.tunables());
         out += "// animation\n";
@@ -292,7 +320,33 @@ pub fn tuning_panel(
     if targets != sim.0.target_defs() {
         sim.0.target_defs_mut().clone_from_slice(&targets);
     }
+    for (i, (edited, before)) in brains.iter().zip(&brains_before).enumerate() {
+        if let Some(brain) = sim.0.brain_mut(i) {
+            for (t, b) in edited.0.iter().zip(&before.0) {
+                if t.value != b.value {
+                    brain.set_tunable(&t.name, t.value);
+                }
+            }
+        }
+    }
+    if brains_on != sim.0.brains_on() {
+        sim.0.set_brains_on(brains_on);
+    }
     Ok(())
+}
+
+/// A copy of something's values, for editing while the original is out of reach.
+#[derive(Clone)]
+struct Values(Vec<Tunable>);
+
+impl Tunables for Values {
+    fn tunables(&self) -> Vec<Tunable> {
+        self.0.clone()
+    }
+
+    fn set_tunable(&mut self, name: &str, value: f32) -> bool {
+        self.0.iter_mut().find(|t| t.name == name).map(|t| t.value = value).is_some()
+    }
 }
 
 fn sliders<T: Tunables + ?Sized>(ui: &mut egui::Ui, id: &str, target: &mut T) {

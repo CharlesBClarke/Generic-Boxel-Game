@@ -38,7 +38,7 @@ fn base_blocks_come_from_its_data_files() {
     let blocks = sim.blocks();
     let def = |name| blocks.get(blocks.id(name).unwrap()).unwrap();
     // The data file's full blocks, then the shapes the test area was built with, crafted as it
-    // was built: stone stairs, brick slabs, wood posts, a stone slab.
+    // was built: brick slabs (the cow pen's steps), stone stairs, wood posts, a stone slab.
     let names: Vec<_> = blocks.iter().map(|(_, d)| d.name.as_str()).collect();
     let listed = [
         base::STONE,
@@ -54,8 +54,8 @@ fn base_blocks_come_from_its_data_files() {
     ];
     assert_eq!(names[..listed.len()], listed);
     let crafted = [
-        (base::STONE, base::shapes::stairs()),
         (base::BRICK, base::shapes::slab()),
+        (base::STONE, base::shapes::stairs()),
         (base::WOOD, base::shapes::post()),
         (base::STONE, base::shapes::slab()),
     ];
