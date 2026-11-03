@@ -106,33 +106,6 @@ A run of small toy slices. Each one takes a single game-feel feature that doesn'
 
 **Waiting for a play check** (remind the user at the start of every session, and at good moments during one, until they confirm; then delete the line): none.
 
-#### Cow animation (branch `toy-cow-animation`)
-
-**Stage:** Verify (2026-11-03): waiting for the user to play it. Asked for by the user: "add some basic ai, I want to eventurly get a fighting cow but maybe that should be multi steps". Split into three toys: Cow animation, then Cow brain, then Fighting cow (see the backlog). The user chose animation first and to keep the respawning cows.
-
-**Goal:** the pen's cows look alive: they breathe, shift, flick their tails and graze. Every clip the model has can be previewed, so walk, run and the headbutt are checked before an AI needs them.
-
-*Plan*
-- **Source.** The original `mobs_cow.b3d` has 26 bones (spine, legs, neck, head, jaw, ears, horns, tail), 186 frames at 60 fps, and clips named in the Luanti mod's `cow.lua`: eat 0–30, stand 35–75, walk 85–114, run 120–140, punch 145–160 (a headbutt), die 165–185. Assimp refused it because its keys run 1–186 against an animation of 0–185. Most of its 412 vertices follow one bone; a few spread small weights over up to 23, so keep each vertex's 4 strongest and renormalize.
-- **Converter.** `tools/b3d_to_glb.py` writes one `.glb` with the mesh, skeleton and the six clips cut at those frame ranges and at `cow.lua`'s speeds, handling the frame offset. The Y-up to Z-up turn stays in the converter. glTF so a modder can open it in Blender. OBJ stays for static models.
-- **API (`api::media`).** `ModelDef` gains optional skinning: per vertex up to 4 bone indices and weights; bones with a parent and rest pose; named clips with a length, whether they loop, and per-bone position and rotation keys. Plain data; `validate()` checks indices, weights, parents before children and key times in order. The simulation still never looks inside.
-- **Loader (`data_mods`).** `targets.toml` takes `mesh = "models/cow.glb"` beside `.obj`, read with the `gltf` crate, with file-and-line errors.
-- **Client.** A Bevy skinned mesh, bones as child entities under the existing tumble and squash entities, so hit feel doesn't change. Our own small sampler sets the bone transforms each frame (not Bevy's `AnimationPlayer`, since the data arrives as API data). Each cow loops `stand` and now and then plays `eat`, at random times so they aren't in step.
-- **Preview** in the tuning panel: force every cow into one clip, a playback speed, and the idle and eat timings. No new keys.
-- **API debt:** the client picks which clip plays (idle, eat). The Cow brain toy pays it by letting the brain choose.
-- **Tests:** the sampler (blending, looping, a clip that holds its last frame, speed); `ModelDef` validation; the glTF loader (the real cow has 26 bones and 6 named clips; broken files name the file); the OBJ path still works. Screenshots of a few clips for tearing.
-- **Out of scope:** AI and walking about; hit boxes following the animation (they stay on the standing pose); shading following moving parts (baked shading stays as is); new sounds.
-- **Open question, taken at its default** (the user said engage without answering): a breaking cow still bursts at once, and `die` is only previewed until the Fighting cow toy. A tumbling cow keeps its current clip; there's no flinch clip.
-
-*Built*
-- As planned. `tools/b3d_to_glb.py` replaces `b3d_to_obj.py`; `mods/base/models/cow.glb` replaces `cow.obj` (412 vertices, 26 bones, 6 clips). Blitz3D's quaternions turn the opposite way to the usual convention, so b3d (w, x, y, z) becomes (w, x, z, y) in Z-up; checked by posing every clip on the CPU and drawing side views (scratch only): legs swing in walk and run, the head reaches the ground in eat, the cow folds down in die, punch is a head-down butt, stand opens the jaw.
-- `api::{Skin, Bone, BonePose, Clip, Track}`, `ModelDef::skin`, `Skin::pose` (sampling) and `BonePose::blend` in `api::media`. `targets.toml` models take `.glb` and `play_once` (the cow: eat, punch, die). `data_mods::glb` reads them with the `gltf` crate (no default features).
-- `client::animation`: `Animator` (idle, graze, preview, blending), `AnimationTuning` (speed, blend, graze_min, graze_spread) and `AnimationPreview`. The rig hangs under the existing tumble and squash entities and turns Z-up to render space once, so bones and keys stay Z-up. Skinned meshes skip frustum culling. Clips freeze during hit-stop like everything else.
-- Panel: an "Animation" section with an "every creature plays" clip picker and the four sliders; Reset and Print cover them.
-- Tests: 372 pass across the workspace, clippy clean. New: skin validation, sampling (blending, wrapping, holding), pose blending, the cow loading with its bones and clips, glb mistakes naming the file, the animator (out of step, grazing and back, speed, preview repeat, blending from the last pose), animation tunables. The game starts cleanly; the in-game look wasn't screenshotted (capturing the window failed here), so it rests on the user's play.
-
-*Done when:* (1) the pen's cows play the standing idle with legs, ears and tail moving and no tearing or stretching; (2) they graze now and then, out of step; (3) every clip plays correctly from the panel and the speed works; (4) hits, flash, squash, tumbling, slams and bursts work as before while animating; (5) tests pass and clippy is clean.
-
 ### Toy backlog
 
 - ~~**Block shapes and placement.**~~ Now the current toy, as Block shapes and shared cells. Suggested order after it: inventory and items, then interaction controls and block interactions, then combat feel.
@@ -164,7 +137,7 @@ A run of small toy slices. Each one takes a single game-feel feature that doesn'
     - **Limits to plan for.** Block IDs are 16 bits (about 65,000 kinds, counting every material × shape and each toggle's second shape); widen before it's painful. The block and cell tables never shrink while running, so unused shapes need a cleanup pass once saving exists. Saves must carry the shape data of every design used, since names are hashes. Meshing cost of worst-case crafted shapes is unmeasured; a small benchmark (a chunk of them, timed and face-counted) would settle it.
     - **A proof toy.** Trigger, toggle (with the derived 90° turn) and listener. Done when you can build a working door, and a lever that opens it from beside it, with no door code in the engine. Connectors (fences) and wiring would be a second toy. Doors open only with interact, never with left or right click, which answers the design doc's ambiguous-interactions gripe.
 - ~~**Combat feel.**~~ Done (2026-10-31), see Done toys.
-- **Cow brain.** Added 2026-11-03, the second of three steps toward a fighting cow (after Cow animation). A behavior hook in the API shaped like the movement controller: the engine keeps each cow's state as plain data, passes it in each tick and gets back what it wants (walk direction, facing, which clip to play). The base mod's cow wanders, grazes, turns to look at the player and runs off when hit. Cows walk for real: steering, stepping up blocks, not walking off ledges. Native Rust first; WebAssembly with the behavior seam. Pays the Cow animation toy's clip-choice debt. Keeps the pen's respawning cows (the user's call).
+- **Cow brain.** Added 2026-11-03, the second of three steps toward a fighting cow (Cow animation is done). Suggested next. A behavior hook in the API shaped like the movement controller: the engine keeps each cow's state as plain data, passes it in each tick and gets back what it wants (walk direction, facing, which clip to play). The base mod's cow wanders, grazes, turns to look at the player and runs off when hit. Cows walk for real: steering, stepping up blocks, not walking off ledges. Native Rust first; WebAssembly with the behavior seam. Pays the Cow animation toy's clip-choice debt. Keeps the pen's respawning cows (the user's call).
 - **Fighting cow.** Added 2026-11-03, the third step. Player health, the cow turning angry, a charge or headbutt (the `punch` clip) with a wind-up telegraphed longer than lag, knockback on the player, and something for the guard to do. Combat depth becomes tunable here; the `die` clip may play before the burst.
 - **Combat depth.** Added 2026-10-31, deferred from Combat feel. Ideas for a higher skill ceiling, to try once enemies, tools and movement give combat something to be tuned against: swing direction from the mouse during the wind-up (sweep sideways, slam down, launch up), air combos with growing knockback, a sweet spot at the club's full reach, cancelling the recovery into a jump or dash, a charged heavy swing with a perfect-release window (the robot's spring), and what the guard does once something hits back. Also the Doom loop: close kills restoring health once the player has some.
 - **Liquid rule sets.** The rule sets from the design doc.
@@ -220,6 +193,33 @@ Bugs found in already-merged code, each fixed on its own `fix-` branch (see the 
 - 2026-10-28, `fix-step-smoothing`: a step-up moved the body but not its previous position, so the renderer blended the rise between ticks while the camera feel also eased it, making the view dip and snap when climbing. Latent until the block shapes toy gave the player a step height.
 
 ### Done toys
+
+#### Cow animation (branch `toy-cow-animation`)
+
+**Stage:** Done (2026-11-03). Verified: the user played it: "the cows animate and everything works". Asked for by the user: "add some basic ai, I want to eventurly get a fighting cow but maybe that should be multi steps". Split into three toys: Cow animation, then Cow brain, then Fighting cow (see the backlog). The user chose animation first and to keep the respawning cows.
+
+**Goal:** the pen's cows look alive: they breathe, shift, flick their tails and graze. Every clip the model has can be previewed, so walk, run and the headbutt are checked before an AI needs them.
+
+*Plan*
+- **Source.** The original `mobs_cow.b3d` has 26 bones (spine, legs, neck, head, jaw, ears, horns, tail), 186 frames at 60 fps, and clips named in the Luanti mod's `cow.lua`: eat 0–30, stand 35–75, walk 85–114, run 120–140, punch 145–160 (a headbutt), die 165–185. Assimp refused it because its keys run 1–186 against an animation of 0–185. Most of its 412 vertices follow one bone; a few spread small weights over up to 23, so keep each vertex's 4 strongest and renormalize.
+- **Converter.** `tools/b3d_to_glb.py` writes one `.glb` with the mesh, skeleton and the six clips cut at those frame ranges and at `cow.lua`'s speeds, handling the frame offset. The Y-up to Z-up turn stays in the converter. glTF so a modder can open it in Blender. OBJ stays for static models.
+- **API (`api::media`).** `ModelDef` gains optional skinning: per vertex up to 4 bone indices and weights; bones with a parent and rest pose; named clips with a length, whether they loop, and per-bone position and rotation keys. Plain data; `validate()` checks indices, weights, parents before children and key times in order. The simulation still never looks inside.
+- **Loader (`data_mods`).** `targets.toml` takes `mesh = "models/cow.glb"` beside `.obj`, read with the `gltf` crate, with file-and-line errors.
+- **Client.** A Bevy skinned mesh, bones as child entities under the existing tumble and squash entities, so hit feel doesn't change. Our own small sampler sets the bone transforms each frame (not Bevy's `AnimationPlayer`, since the data arrives as API data). Each cow loops `stand` and now and then plays `eat`, at random times so they aren't in step.
+- **Preview** in the tuning panel: force every cow into one clip, a playback speed, and the idle and eat timings. No new keys.
+- **API debt:** the client picks which clip plays (idle, eat). The Cow brain toy pays it by letting the brain choose.
+- **Tests:** the sampler (blending, looping, a clip that holds its last frame, speed); `ModelDef` validation; the glTF loader (the real cow has 26 bones and 6 named clips; broken files name the file); the OBJ path still works. Screenshots of a few clips for tearing.
+- **Out of scope:** AI and walking about; hit boxes following the animation (they stay on the standing pose); shading following moving parts (baked shading stays as is); new sounds.
+- **Open question, taken at its default** (the user said engage without answering): a breaking cow still bursts at once, and `die` is only previewed until the Fighting cow toy. A tumbling cow keeps its current clip; there's no flinch clip.
+
+*Built*
+- As planned. `tools/b3d_to_glb.py` replaces `b3d_to_obj.py`; `mods/base/models/cow.glb` replaces `cow.obj` (412 vertices, 26 bones, 6 clips). Blitz3D's quaternions turn the opposite way to the usual convention, so b3d (w, x, y, z) becomes (w, x, z, y) in Z-up; checked by posing every clip on the CPU and drawing side views (scratch only): legs swing in walk and run, the head reaches the ground in eat, the cow folds down in die, punch is a head-down butt, stand opens the jaw.
+- `api::{Skin, Bone, BonePose, Clip, Track}`, `ModelDef::skin`, `Skin::pose` (sampling) and `BonePose::blend` in `api::media`. `targets.toml` models take `.glb` and `play_once` (the cow: eat, punch, die). `data_mods::glb` reads them with the `gltf` crate (no default features).
+- `client::animation`: `Animator` (idle, graze, preview, blending), `AnimationTuning` (speed, blend, graze_min, graze_spread) and `AnimationPreview`. The rig hangs under the existing tumble and squash entities and turns Z-up to render space once, so bones and keys stay Z-up. Skinned meshes skip frustum culling. Clips freeze during hit-stop like everything else.
+- Panel: an "Animation" section with an "every creature plays" clip picker and the four sliders; Reset and Print cover them.
+- Tests: 372 pass across the workspace, clippy clean. New: skin validation, sampling (blending, wrapping, holding), pose blending, the cow loading with its bones and clips, glb mistakes naming the file, the animator (out of step, grazing and back, speed, preview repeat, blending from the last pose), animation tunables. The game starts cleanly; the in-game look wasn't screenshotted (capturing the window failed here), so it rests on the user's play.
+
+*Done when:* (1) the pen's cows play the standing idle with legs, ears and tail moving and no tearing or stretching; (2) they graze now and then, out of step; (3) every clip plays correctly from the panel and the speed works; (4) hits, flash, squash, tumbling, slams and bursts work as before while animating; (5) tests pass and clippy is clean.
 
 #### Ambient occlusion (branch `toy-ambient-occlusion`)
 
