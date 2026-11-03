@@ -5,9 +5,9 @@ use std::fmt;
 
 use api::block::is_valid_name;
 use api::{
-    ApiError, BlockDef, BoxelPos, Brain, ChunkPos, CraftingDef, CrowdDef, I64Vec3, InteractionDef, InventoryDef, ItemDropDef, LookDef,
+    ApiError, BlockDef, BoxelPos, Brain, ChunkPos, CraftingDef, CrowdDef, HealthDef, I64Vec3, InteractionDef, InventoryDef, ItemDropDef, LookDef,
     ModelDef, Mod, MovementController, Orientation, PlayerDef, PushOutDef, Registrar, ShapeGrid, SoundDef,
-    TargetDef, ToolDef, Turning, Vec3, WorldEdit, WorldPos, look_direction,
+    TargetDef, ToolDef, Turning, Vec2, Vec3, WorldEdit, WorldPos, look_direction,
 };
 
 use crate::combat::{StepContext, Strike, Swing, SwingStage, TargetKind, Targets, ToolId};
@@ -73,6 +73,25 @@ pub struct PlaceReport {
     pub push_out: Option<(PushOut, f32)>,
 }
 
+/// A creature's attack hitting the player.
+#[derive(Clone, Debug, PartialEq)]
+pub struct PlayerHurt {
+    pub tick: u64,
+    /// The attacker's ID and kind.
+    pub target: u64,
+    pub kind: TargetKind,
+    /// Level unit direction from the player toward the attacker.
+    pub from: Vec3,
+    /// Health lost, after the guard.
+    pub damage: f32,
+    /// The knockback given.
+    pub push: Vec3,
+    /// A raised guard caught it.
+    pub guarded: bool,
+    /// It took the last of the player's health, and they went back to the spawn point.
+    pub died: bool,
+}
+
 #[derive(Default)]
 pub struct Simulation {
     blocks: BlockRegistry,
@@ -89,6 +108,14 @@ pub struct Simulation {
     interaction_def: Option<InteractionDef>,
     push_out_def: Option<PushOutDef>,
     crowd_def: Option<CrowdDef>,
+    health_def: Option<HealthDef>,
+    /// The player's health, and seconds since they were last hurt.
+    health: f32,
+    since_hurt: f32,
+    /// Out of health doesn't send the player back; health stops at none.
+    unkillable: bool,
+    /// Blows on the player since the last [`Simulation::take_player_hurts`].
+    player_hurts: Vec<PlayerHurt>,
     item_drop_def: Option<ItemDropDef>,
     models: Vec<ModelDef>,
     sounds: Vec<SoundDef>,
@@ -142,6 +169,7 @@ impl Simulation {
                 interaction: &mut sim.interaction_def,
                 push_out: &mut sim.push_out_def,
                 crowd: &mut sim.crowd_def,
+                health: &mut sim.health_def,
                 item_drops: &mut sim.item_drop_def,
                 inventory: &mut sim.inventory_def,
                 crafting: &mut sim.crafting_def,
@@ -152,6 +180,7 @@ impl Simulation {
             })?;
         }
         sim.looks.check_blocks(&sim.blocks)?;
+        sim.health = sim.health_def.as_ref().map_or(0.0, |d| d.health);
         if let Some(def) = &sim.crafting_def
             && sim.blocks.id(&def.table).is_none()
         {
@@ -210,12 +239,14 @@ impl Simulation {
             .get(&def.controller)
             .ok_or_else(|| ApiError::UnknownController(def.controller.clone()))?;
         self.player = Some(Player::new(def, controller.spawn(), self.spawn));
+        self.health = self.health_def.as_ref().map_or(0.0, |d| d.health);
         Ok(())
     }
 
     /// Advances one fixed tick. Block edits and tool swings happen first, from where the
     /// player stood at the end of the last tick, which is what the client aimed from. Targets
-    /// move after the player, and loose items last, toward where the player ended up.
+    /// move after the player, and loose items after them, toward where the player ended up. Last,
+    /// creatures' attacks that hit the player hurt them.
     pub fn step(&mut self, input: &PlayerInput) {
         if let Some(craft) = &input.craft {
             self.last_craft = Some(self.craft(craft));
@@ -254,6 +285,7 @@ impl Simulation {
                 inventory.add(drop.material, drop.amount, capacity);
             }
         }
+        self.take_blows(input.yaw);
         self.tick += 1;
     }
 
@@ -426,6 +458,63 @@ impl Simulation {
         self.inventory.take(material, amount);
         let block = self.blocks.material_block(material);
         self.items.spawn_waiting(crate::Drop { material, amount }, block, &self.blocks, at, velocity, wait);
+    }
+
+    /// Hurts and knocks back the player with the creatures' attacks that hit them this tick,
+    /// softened by a guard raised toward the attacker with the player looking along `yaw`, and
+    /// lets health come back once they haven't been hurt for a while. Out of health, they go
+    /// back to the spawn point, whole.
+    fn take_blows(&mut self, yaw: f32) {
+        let blows = self.targets.take_blows();
+        let Some(player) = &mut self.player else {
+            return;
+        };
+        let dt = Self::TICK_SECONDS;
+        self.since_hurt += dt;
+        if let Some(def) = &self.health_def
+            && self.since_hurt >= def.regen_delay
+        {
+            self.health = (self.health + def.regen * dt).min(def.health);
+        }
+        let look = Vec2::from_angle(yaw);
+        for blow in blows {
+            let a = &blow.attack;
+            let toward = -blow.away.truncate();
+            let guarded = self.guarding
+                && self.health_def.as_ref().is_some_and(|d| look.angle_to(toward).abs() <= d.guard_angle);
+            let (damage_share, push_share) = if guarded { (a.guarded_damage, a.guarded_push) } else { (1.0, 1.0) };
+            // Knocked from wherever it was going: speed toward the attacker, or falling, doesn't
+            // eat into the knockback.
+            let velocity = player.velocity();
+            let back = velocity.dot(blow.away).min(0.0);
+            let push = blow.away * (a.push * push_share - back) + Vec3::Z * (a.lift * push_share - velocity.z.min(0.0));
+            player.apply_impulse(push);
+            let mut died = false;
+            let mut damage = 0.0;
+            if let Some(def) = &self.health_def {
+                damage = (a.damage * damage_share).max(0.0);
+                self.health = (self.health - damage).max(0.0);
+                self.since_hurt = 0.0;
+                if self.health <= 0.0 && !self.unkillable {
+                    died = true;
+                    self.health = def.health;
+                    player.teleport(self.spawn);
+                }
+            }
+            self.player_hurts.push(PlayerHurt {
+                tick: self.tick,
+                target: blow.target,
+                kind: blow.kind,
+                from: toward.extend(0.0),
+                damage,
+                push,
+                guarded,
+                died,
+            });
+            if died {
+                break;
+            }
+        }
     }
 
     /// Works the tool in hand: the main use starts a swing when none is under way, held or
@@ -622,6 +711,42 @@ impl Simulation {
     /// For engine tools such as the tuning panel.
     pub fn crowd_def_mut(&mut self) -> Option<&mut CrowdDef> {
         self.crowd_def.as_mut()
+    }
+
+    pub fn health_def(&self) -> Option<&HealthDef> {
+        self.health_def.as_ref()
+    }
+
+    /// For tuning while the game runs. Health above a lowered limit comes down to it.
+    pub fn health_def_mut(&mut self) -> Option<&mut HealthDef> {
+        self.health_def.as_mut()
+    }
+
+    /// The player's health; 0 without a health definition.
+    pub fn health(&self) -> f32 {
+        match &self.health_def {
+            Some(def) => self.health.min(def.health),
+            None => 0.0,
+        }
+    }
+
+    /// Sets the player's health, within what the health definition allows.
+    pub fn set_health(&mut self, health: f32) {
+        self.health = self.health_def.as_ref().map_or(0.0, |d| health.clamp(0.0, d.health));
+    }
+
+    pub fn unkillable(&self) -> bool {
+        self.unkillable
+    }
+
+    /// With it on, running out of health doesn't send the player back.
+    pub fn set_unkillable(&mut self, on: bool) {
+        self.unkillable = on;
+    }
+
+    /// Blows on the player since the last call, oldest first.
+    pub fn take_player_hurts(&mut self) -> Vec<PlayerHurt> {
+        std::mem::take(&mut self.player_hurts)
     }
 
     pub fn item_drop_def(&self) -> Option<&ItemDropDef> {
@@ -938,6 +1063,7 @@ struct ContentRegistrar<'a> {
     interaction: &'a mut Option<InteractionDef>,
     push_out: &'a mut Option<PushOutDef>,
     crowd: &'a mut Option<CrowdDef>,
+    health: &'a mut Option<HealthDef>,
     item_drops: &'a mut Option<ItemDropDef>,
     inventory: &'a mut Option<InventoryDef>,
     crafting: &'a mut Option<CraftingDef>,
@@ -1014,6 +1140,15 @@ impl Registrar for ContentRegistrar<'_> {
         }
         def.validate().map_err(ApiError::InvalidDef)?;
         *self.crowd = Some(def);
+        Ok(())
+    }
+
+    fn register_health(&mut self, def: HealthDef) -> Result<(), ApiError> {
+        if self.health.is_some() {
+            return Err(ApiError::DuplicateHealthDef);
+        }
+        def.validate().map_err(ApiError::InvalidDef)?;
+        *self.health = Some(def);
         Ok(())
     }
 

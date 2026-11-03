@@ -14,7 +14,7 @@ pub mod registry;
 pub mod simulation;
 pub mod world;
 
-pub use combat::{Slam, StepContext, Strike, Swing, SwingStage, Target, TargetHit, TargetKind, Targets, ToolId};
+pub use combat::{Blow, Slam, StepContext, Strike, Swing, SwingStage, Target, TargetHit, TargetKind, Targets, ToolId};
 pub use cell::{CellBox, CellId, CellTable, MAX_OCCUPANTS, Occupant, ShareError, can_share, occupant_boxes};
 pub use crafting::{Cells, Craft, CraftPlan, CraftRefusal, Piece};
 pub use inventory::Inventory;
@@ -23,5 +23,5 @@ pub use layer::Layer;
 pub use player::{Player, PlayerInput, PushOut, Shape, StepReport, Terrain};
 pub use raycast::{Hit, raycast};
 pub use registry::{BlockId, BlockRegistry, Drop, FULL_VOLUME, LookRegistry, MaterialId, volume};
-pub use simulation::{FACE_CENTER, PlaceReport, PlaceTarget, SimError, Simulation, face_region};
+pub use simulation::{FACE_CENTER, PlaceReport, PlayerHurt, PlaceTarget, SimError, Simulation, face_region};
 pub use world::{Chunk, Grid, GridId, Universe};

@@ -9,6 +9,7 @@ pub mod crafting;
 pub mod drill;
 pub mod editing;
 pub mod feel;
+pub mod hurt;
 pub mod items;
 pub mod mesher;
 pub mod solid;
@@ -77,6 +78,7 @@ pub fn run(sim: Simulation) {
         .init_resource::<combat::TargetViews>()
         .init_resource::<combat::WeaponState>()
         .init_resource::<combat::HitReadout>()
+        .init_resource::<hurt::HurtFlash>()
         .add_systems(
             Startup,
             (
@@ -87,6 +89,7 @@ pub fn run(sim: Simulation) {
                 combat::setup_media,
                 combat::setup_weapon.after(setup_scene),
                 combat::setup_readout,
+                hurt::setup_health,
             ),
         )
         .add_systems(FixedUpdate, (tick_simulation, drill::drill_tick).chain())
@@ -102,12 +105,12 @@ pub fn run(sim: Simulation) {
                 trainer::trainer_keys,
                 editing::remesh_changed_chunks,
                 // Strikes first: a broken target bursts from where its view was drawn.
-                (combat::play_strikes, combat::play_slams, combat::update_hit_stop).chain(),
+                (combat::play_strikes, combat::play_slams, hurt::play_player_hurts, combat::update_hit_stop).chain(),
                 (update_camera, sync_chunk_transforms).chain(),
                 editing::draw_outline,
                 editing::update_ghost,
                 items::sync_items,
-                (combat::sync_targets, combat::update_chunks, combat::animate_weapon, combat::draw_hit_boxes, combat::update_readout)
+                (combat::sync_targets, combat::update_chunks, combat::animate_weapon, combat::draw_hit_boxes, combat::update_readout, hurt::update_health)
                     .chain(),
                 editing::draw_region_guide,
                 drill::draw_drill,

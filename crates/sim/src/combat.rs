@@ -11,7 +11,7 @@
 //! Like the player, each target does its collision math relative to its own cell, so it behaves
 //! the same at any distance from zero.
 
-use api::{Brain, BrainContext, CrowdDef, Hurt, MAX_NEIGHBORS, Neighbor, Seen, TargetDef, ToolDef, Vec2, Vec3, WorldPos};
+use api::{Attack, Brain, BrainContext, CrowdDef, Hurt, MAX_NEIGHBORS, Neighbor, Seen, TargetDef, ToolDef, Vec2, Vec3, WorldPos};
 
 use crate::player::{Terrain, clamp_axis, guard_edges, sweep_stepping};
 use crate::raycast::ray_box;
@@ -79,6 +79,12 @@ pub struct Target {
     shove: Vec2,
     /// What hurt it since its brain last thought, if anything.
     hurt: Option<Hurt>,
+    /// The attack its brain has under way, if any.
+    pub attack: Option<Attack>,
+    /// The attack under way has already hit, so it doesn't hit again.
+    spent: bool,
+    /// Its attack hit since its brain last thought.
+    landed: bool,
 }
 
 impl Target {
@@ -234,6 +240,8 @@ pub struct Targets {
     next_id: u64,
     /// Slams since the last [`Targets::take_slams`].
     slams: Vec<Slam>,
+    /// Attacks that hit the player since the last [`Targets::take_blows`].
+    blows: Vec<Blow>,
 }
 
 impl Targets {
@@ -265,6 +273,9 @@ impl Targets {
             signal: String::new(),
             shove: Vec2::ZERO,
             hurt: None,
+            attack: None,
+            spent: false,
+            landed: false,
         });
         self.homes.push(spot);
         self.next_id += 1;
@@ -292,6 +303,11 @@ impl Targets {
         }
     }
 
+    /// Attacks that hit the player since the last call, oldest first.
+    pub fn take_blows(&mut self) -> Vec<Blow> {
+        std::mem::take(&mut self.blows)
+    }
+
     /// Slams since the last call, oldest first.
     pub fn take_slams(&mut self) -> Vec<Slam> {
         std::mem::take(&mut self.slams)
@@ -305,6 +321,7 @@ impl Targets {
     pub fn step(&mut self, ctx: StepContext<'_>, terrain: &impl Terrain) {
         let StepContext { defs, brains, crowd, player, tick, dt } = ctx;
         let seen = player.as_ref().map(|p| (p.pos(), p.velocity()));
+        let body = player.as_ref().map(|p| (p.pos(), p.shape().width * 0.5, p.height()));
         let mut others = crowd.map_or_else(Vec::new, |c| self.neighbors(defs, c.sight));
         for (i, target) in self.list.iter_mut().enumerate() {
             let def = &defs[target.kind.index()];
@@ -321,6 +338,7 @@ impl Targets {
                     target.clip_speed = 1.0;
                     target.signal.clear();
                     target.hurt = None;
+                    target.attack = None;
                 }
             }
         }
@@ -349,6 +367,9 @@ impl Targets {
                 broken.push(i);
             }
         }
+        if let Some(body) = body {
+            self.attack(body);
+        }
         for &i in broken.iter().rev() {
             self.break_target(i, defs);
         }
@@ -369,6 +390,34 @@ impl Targets {
                 let kind = self.spots[spot].kind;
                 self.spawn(spot, &defs[kind.index()]);
             }
+        }
+    }
+
+    /// Tests each live attack against the player's body: its feet, level radius and height. One
+    /// that touches it, and hasn't hit yet, is a blow.
+    fn attack(&mut self, (feet, radius, height): (WorldPos, f32, f32)) {
+        for target in &mut self.list {
+            let Some(attack) = &target.attack else {
+                target.spent = false;
+                continue;
+            };
+            if target.spent {
+                continue;
+            }
+            let turn = target.yaw - std::f32::consts::FRAC_PI_2;
+            let at = unturn(target.pos.delta_to(feet), turn);
+            let (min, max) = (Vec3::from(attack.min), Vec3::from(attack.max));
+            let near = Vec2::new(at.x.clamp(min.x, max.x), at.y.clamp(min.y, max.y));
+            let touches = near.distance(at.truncate()) <= radius && at.z < max.z && at.z + height > min.z;
+            if !touches {
+                continue;
+            }
+            target.spent = true;
+            target.landed = true;
+            let level = target.pos.delta_to(feet).truncate();
+            let (sin, cos) = target.yaw.sin_cos();
+            let away = level.try_normalize().unwrap_or(Vec2::new(cos, sin)).extend(0.0);
+            self.blows.push(Blow { target: target.id, kind: target.kind, pos: target.pos, away, attack: attack.clone() });
         }
     }
 
@@ -569,6 +618,18 @@ impl Targets {
     }
 }
 
+/// A creature's attack hitting the player.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Blow {
+    pub target: u64,
+    pub kind: TargetKind,
+    /// Where the attacker's feet were.
+    pub pos: WorldPos,
+    /// Level unit direction from the attacker toward the player: the way the blow knocks them.
+    pub away: Vec3,
+    pub attack: Attack,
+}
+
 /// What [`Targets::step`] needs besides the terrain.
 pub struct StepContext<'a> {
     pub defs: &'a [TargetDef],
@@ -610,6 +671,7 @@ fn think(
         full_health: def.health,
         player: player.map(|(feet, velocity)| Seen { offset: target.pos.delta_to(feet), velocity }),
         hurt: target.hurt.take(),
+        attack_landed: std::mem::take(&mut target.landed),
         others,
         random: tick.wrapping_mul(0x9e37_79b9_7f4a_7c15) ^ target.id.rotate_left(32),
         memory: std::mem::take(&mut target.memory),
@@ -623,6 +685,9 @@ fn think(
     target.clip = out.clip;
     target.clip_speed = out.clip_speed;
     target.signal = out.signal;
+    target.attack = out.attack.filter(|a| {
+        a.min.iter().chain(&a.max).chain(&[a.damage, a.push, a.lift, a.guarded_damage, a.guarded_push]).all(|v| v.is_finite())
+    });
     target.memory = out.memory;
 }
 
@@ -1099,6 +1164,7 @@ mod tests {
                 clip: "walk".into(),
                 clip_speed: 2.0,
                 signal: format!("seen {}", ctx.others.len()),
+                attack: None,
                 memory,
             }
         }

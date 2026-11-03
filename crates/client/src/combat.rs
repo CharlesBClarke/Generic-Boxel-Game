@@ -99,6 +99,13 @@ pub struct CombatFeel {
     pub dust: f32,
     /// How much a landing squashes a target for each meter a second it lands at.
     pub landing_squash: f32,
+    /// When a creature's blow hits the player: a freeze, seconds; a jolt of the view, degrees;
+    /// a shake, meters; and a red flash over the screen, seconds and how strong at first.
+    pub hurt_hitstop: f32,
+    pub hurt_kick: f32,
+    pub hurt_shake: f32,
+    pub hurt_flash: f32,
+    pub hurt_flash_alpha: f32,
 }
 
 impl Default for CombatFeel {
@@ -131,6 +138,11 @@ impl Default for CombatFeel {
             dust_speed: 5.0,
             dust: 8.0,
             landing_squash: 0.03,
+            hurt_hitstop: 0.05,
+            hurt_kick: 3.0,
+            hurt_shake: 0.08,
+            hurt_flash: 0.4,
+            hurt_flash_alpha: 0.35,
         }
     }
 }
@@ -181,6 +193,11 @@ tunable_fields! {
     dust_speed: 0.0, 20.0;
     dust: 0.0, 40.0;
     landing_squash: 0.0, 0.1;
+    hurt_hitstop: 0.0, 0.3;
+    hurt_kick: 0.0, 15.0;
+    hurt_shake: 0.0, 0.3;
+    hurt_flash: 0.0, 2.0;
+    hurt_flash_alpha: 0.0, 1.0;
 }
 
 /// Freezes the simulation for a moment after a hit. Ticks that would have run meanwhile are
@@ -224,11 +241,11 @@ impl Default for ViewKick {
 }
 
 impl ViewKick {
-    fn kick(&mut self, degrees: f32) {
+    pub(crate) fn kick(&mut self, degrees: f32) {
         self.pitch += degrees;
     }
 
-    fn shake(&mut self, amount: f32, seconds: f32) {
+    pub(crate) fn shake(&mut self, amount: f32, seconds: f32) {
         self.shake_amount = amount;
         self.shake_length = seconds.max(1e-3);
         self.shake_left = seconds;
@@ -315,7 +332,7 @@ pub(crate) struct HitReadout {
 }
 
 impl HitReadout {
-    fn show(&mut self, text: String) {
+    pub(crate) fn show(&mut self, text: String) {
         self.text = text;
         self.age = 0.0;
     }
@@ -497,7 +514,7 @@ pub(crate) fn play_strikes(
 }
 
 /// Plays a target's sound, if it has one, at `pitch` give or take the feel's spread.
-fn play_sound(commands: &mut Commands, views: &TargetViews, sound: Option<&str>, pitch: f32, feel: &CombatFeel, seed: u64) {
+pub(crate) fn play_sound(commands: &mut Commands, views: &TargetViews, sound: Option<&str>, pitch: f32, feel: &CombatFeel, seed: u64) {
     let Some(sound) = sound.and_then(|s| views.sounds.get(s)) else {
         return;
     };
