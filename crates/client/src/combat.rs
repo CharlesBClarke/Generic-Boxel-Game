@@ -13,15 +13,18 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use api::{ModelDef, Tunable, Tunables, Vec3 as ZVec3, WorldPos};
+use api::{ModelDef, Skin, Tunable, Tunables, Vec3 as ZVec3, WorldPos};
 use bevy::asset::RenderAssetUsages;
 use bevy::audio::{AudioPlayer, AudioSource, PlaybackSettings};
 use bevy::image::ImageSampler;
-use bevy::mesh::{Indices, PrimitiveTopology};
+use bevy::camera::visibility::NoFrustumCulling;
+use bevy::mesh::skinning::{SkinnedMesh, SkinnedMeshInverseBindposes};
+use bevy::mesh::{Indices, PrimitiveTopology, VertexAttributeValues};
 use bevy::prelude::*;
 use bevy::render::render_resource::{Extent3d, TextureDimension, TextureFormat};
 use sim::{SwingStage, Target};
 
+use crate::animation::{self, AnimationPreview, AnimationTuning, Animator};
 use crate::drill::Drill;
 use crate::editing::{Held, Palette};
 use crate::{RenderOrigin, Sim, coords};
@@ -263,7 +266,18 @@ struct ModelAssets {
     texture: Handle<Image>,
     /// Opaque texel colors, for chunks.
     colors: Vec<Color>,
+    /// The skeleton and clips of a model that moves, and its bones' inverse bind poses.
+    skin: Option<(Skin, Handle<SkinnedMeshInverseBindposes>)>,
 }
+
+/// A drawn model's bones, posed each frame by its animator.
+struct Rig {
+    bones: Vec<Entity>,
+    animator: Animator,
+}
+
+#[derive(Component)]
+pub(crate) struct BoneMarker;
 
 /// One target's entities and motion. The outer entity sits at the middle of the target's box and
 /// holds the squash, along the last hit; the inner one holds the tumble, about that middle; the
@@ -272,6 +286,7 @@ struct TargetView {
     entity: Entity,
     inner: Entity,
     material: Handle<StandardMaterial>,
+    rig: Option<Rig>,
     /// Render-space turn on top of its facing, from tumbling.
     tilt: Quat,
     /// Render-space axis times radians a second.
@@ -342,12 +357,18 @@ pub(crate) fn setup_media(
     mut meshes: ResMut<Assets<Mesh>>,
     mut images: ResMut<Assets<Image>>,
     mut sounds: ResMut<Assets<AudioSource>>,
+    mut bindposes: ResMut<Assets<SkinnedMeshInverseBindposes>>,
 ) {
     for model in sim.0.models() {
+        let skin = model.skin.as_ref().map(|skin| {
+            let poses: Vec<Mat4> = skin.bones.iter().map(|b| Mat4::from_cols_array(&b.inverse_bind)).collect();
+            (skin.clone(), bindposes.add(SkinnedMeshInverseBindposes::from(poses)))
+        });
         let assets = ModelAssets {
             mesh: meshes.add(model_mesh(model)),
             texture: images.add(model_image(model)),
             colors: model.texture.rgba.chunks(4).filter(|p| p[3] > 128).map(|p| Color::srgb_u8(p[0], p[1], p[2])).collect(),
+            skin,
         };
         views.models.insert(model.name.clone(), assets);
     }
@@ -356,15 +377,26 @@ pub(crate) fn setup_media(
     }
 }
 
-/// A model as a render mesh, with shading baked into vertex colors like the world's.
+/// A model as a render mesh, with shading baked into vertex colors like the world's. A model
+/// with a skin stays in its own Z-up space, since its bones carry it into render space; one
+/// without is turned to Y up here.
 fn model_mesh(model: &ModelDef) -> Mesh {
-    let positions: Vec<[f32; 3]> = model.positions.iter().map(|&p| coords::to_render(Vec3::from_array(p)).to_array()).collect();
+    let (positions, light): (Vec<[f32; 3]>, Vec3) = match model.skin {
+        Some(_) => (model.positions.clone(), LIGHT.normalize()),
+        None => (
+            model.positions.iter().map(|&p| coords::to_render(Vec3::from_array(p)).to_array()).collect(),
+            coords::to_render(LIGHT.normalize()),
+        ),
+    };
     let mut mesh = Mesh::new(PrimitiveTopology::TriangleList, RenderAssetUsages::RENDER_WORLD)
         .with_inserted_attribute(Mesh::ATTRIBUTE_POSITION, positions)
         .with_inserted_attribute(Mesh::ATTRIBUTE_UV_0, model.uvs.clone())
         .with_inserted_indices(Indices::U32(model.indices.clone()))
         .with_computed_smooth_normals();
-    let light = coords::to_render(LIGHT.normalize());
+    if let Some(skin) = &model.skin {
+        mesh.insert_attribute(Mesh::ATTRIBUTE_JOINT_INDEX, VertexAttributeValues::Uint16x4(skin.joints.clone()));
+        mesh.insert_attribute(Mesh::ATTRIBUTE_JOINT_WEIGHT, skin.weights.clone());
+    }
     let colors: Vec<[f32; 4]> = match mesh.attribute(Mesh::ATTRIBUTE_NORMAL).and_then(|n| n.as_float3()) {
         Some(normals) => normals
             .iter()
@@ -657,9 +689,12 @@ pub(crate) fn sync_targets(
     fixed: Res<Time<Fixed>>,
     time: Res<Time>,
     stop: Res<HitStop>,
+    tuning: Res<AnimationTuning>,
+    preview: Res<AnimationPreview>,
     mut state: ResMut<TargetViews>,
     mut materials: ResMut<Assets<StandardMaterial>>,
-    mut transforms: Query<&mut Transform, With<TargetMarker>>,
+    mut transforms: Query<&mut Transform, (With<TargetMarker>, Without<BoneMarker>)>,
+    mut bones: Query<&mut Transform, (With<BoneMarker>, Without<TargetMarker>)>,
 ) {
     // While frozen, everything holds still but the flash.
     let real_dt = time.delta_secs();
@@ -685,16 +720,43 @@ pub(crate) fn sync_targets(
             // Facing: the model's front is +Y, the target's yaw counts from +X.
             let facing = Quat::from_axis_angle(coords::to_render(ZVec3::Z), target.yaw - std::f32::consts::FRAC_PI_2);
             let feet = Transform::from_translation(coords::to_render(ZVec3::Z * -def.height * 0.5)).with_rotation(facing);
-            let inner = commands
-                .spawn((Transform::default(), Visibility::default(), TargetMarker))
-                .with_child((Mesh3d(model.mesh.clone()), MeshMaterial3d(material.clone()), feet))
-                .id();
+            let inner = commands.spawn((Transform::default(), Visibility::default(), TargetMarker)).id();
+            let rig = match &model.skin {
+                None => {
+                    commands.entity(inner).with_child((Mesh3d(model.mesh.clone()), MeshMaterial3d(material.clone()), feet));
+                    None
+                }
+                Some((skin, bindposes)) => {
+                    // The rig turns the model's Z-up space into render space; bones and their
+                    // keys stay Z-up beneath it.
+                    let to_render = Quat::from_rotation_x(-std::f32::consts::FRAC_PI_2);
+                    let space = commands
+                        .spawn((Transform { rotation: facing * to_render, ..feet }, Visibility::default(), ChildOf(inner)))
+                        .id();
+                    let mut entities: Vec<Entity> = Vec::with_capacity(skin.bones.len());
+                    for bone in &skin.bones {
+                        let parent = bone.parent.map_or(space, |p| entities[p as usize]);
+                        entities.push(commands.spawn((animation::transform(&bone.rest), BoneMarker, ChildOf(parent))).id());
+                    }
+                    commands.spawn((
+                        Mesh3d(model.mesh.clone()),
+                        MeshMaterial3d(material.clone()),
+                        SkinnedMesh { inverse_bindposes: bindposes.clone(), joints: entities.clone() },
+                        // Its bones place it, so its own bounds don't say where it is.
+                        NoFrustumCulling,
+                        Transform::default(),
+                        ChildOf(space),
+                    ));
+                    Some(Rig { bones: entities, animator: Animator::new(skin, target.id, &tuning) })
+                }
+            };
             let outer = Transform::from_translation(coords::render_translation(drawn, origin.cell));
             let entity = commands.spawn((outer, Visibility::default(), TargetMarker)).add_child(inner).id();
             TargetView {
                 entity,
                 inner,
                 material,
+                rig,
                 tilt: Quat::IDENTITY,
                 spin: Vec3::ZERO,
                 flash: 0.0,
@@ -728,6 +790,14 @@ pub(crate) fn sync_targets(
             let wanted = Color::linear_rgb(bright.x, bright.y, bright.z);
             if material.base_color != wanted {
                 material.base_color = wanted;
+            }
+        }
+        if let (Some(rig), Some((skin, _))) = (&mut view.rig, &model.skin) {
+            rig.animator.update(skin, &tuning, preview.clip.as_deref(), dt);
+            for (entity, pose) in rig.bones.iter().zip(rig.animator.pose(skin, &tuning)) {
+                if let Ok(mut transform) = bones.get_mut(*entity) {
+                    *transform = animation::transform(&pose);
+                }
             }
         }
         view.squash.0 += dt;
@@ -1006,6 +1076,7 @@ mod tests {
             entity: Entity::PLACEHOLDER,
             inner: Entity::PLACEHOLDER,
             material: Handle::default(),
+            rig: None,
             tilt: Quat::IDENTITY,
             spin: Vec3::ZERO,
             flash: 0.0,

@@ -186,6 +186,7 @@ impl Mod for Room {
             uvs: vec![[0.0; 2]; 3],
             indices: vec![0, 1, 2],
             texture: Texture { width: 1, height: 1, rgba: vec![255; 4] },
+            skin: None,
         })?;
         r.register_target(TargetDef {
             name: "room:dummy".into(),

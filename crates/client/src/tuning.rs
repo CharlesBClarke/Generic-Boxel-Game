@@ -1,12 +1,13 @@
 //! The live tuning panel: sliders for every value the player's movement controller, the
 //! interaction, push-out, item drop and inventory definitions, tools, targets, the camera feel and the combat
-//! feel expose, whichever mod they come from.
+//! feel and the animation expose, whichever mod they come from.
 
 use api::{Tunable, Tunables};
 use bevy::prelude::*;
 use bevy_egui::{EguiContexts, egui};
 
 use crate::Sim;
+use crate::animation::{AnimationPreview, AnimationTuning};
 use crate::combat::CombatFeel;
 use crate::drill::{Drill, DrillTuning};
 use crate::feel::CameraFeel;
@@ -32,6 +33,7 @@ pub struct TuningPanel {
     printout: String,
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn tuning_panel(
     mut contexts: EguiContexts,
     mut panel: ResMut<TuningPanel>,
@@ -40,7 +42,18 @@ pub fn tuning_panel(
     mut ao: ResMut<AoTuning>,
     mut combat: ResMut<CombatFeel>,
     mut drill: ResMut<Drill>,
+    mut animation: ResMut<AnimationTuning>,
+    mut preview: ResMut<AnimationPreview>,
 ) -> Result {
+    // Every clip any model has, for the preview.
+    let mut clips: Vec<String> = Vec::new();
+    for skin in sim.0.models().iter().filter_map(|m| m.skin.as_ref()) {
+        for clip in &skin.clips {
+            if !clips.contains(&clip.name) {
+                clips.push(clip.name.clone());
+            }
+        }
+    }
     // A copy, since the controller below borrows the simulation; written back at the end.
     let mut interaction = sim.0.interaction_def().cloned();
     if panel.interaction_defaults.is_none() {
@@ -123,6 +136,25 @@ pub fn tuning_panel(
                 *combat = juice;
             }
             ui.separator();
+            ui.heading("Animation");
+            let mut shown = preview.clip.clone();
+            egui::ComboBox::from_label("every creature plays")
+                .selected_text(shown.as_deref().unwrap_or("its own choice"))
+                .show_ui(ui, |ui| {
+                    ui.selectable_value(&mut shown, None, "its own choice");
+                    for clip in &clips {
+                        ui.selectable_value(&mut shown, Some(clip.clone()), clip);
+                    }
+                });
+            if shown != preview.clip {
+                preview.clip = shown;
+            }
+            let mut playing = animation.clone();
+            sliders(ui, "animation", &mut playing);
+            if playing != *animation {
+                *animation = playing;
+            }
+            ui.separator();
             ui.heading("Camera");
             // Read through a copy so the resource is only marked changed when a value moves.
             let mut camera = feel.clone();
@@ -181,6 +213,8 @@ pub fn tuning_panel(
                 *feel = CameraFeel::default();
                 ao.set_if_neq(AoTuning::default());
                 *combat = CombatFeel::default();
+                *animation = AnimationTuning::default();
+                preview.clip = None;
                 drill.tuning = DrillTuning::default();
             }
             print = ui.button("Print values").clicked();
@@ -221,6 +255,8 @@ pub fn tuning_panel(
         }
         out += "// combat feel\n";
         out += &printout(&combat.tunables());
+        out += "// animation\n";
+        out += &printout(&animation.tunables());
         out += "// camera\n";
         out += &printout(&feel.tunables());
         out += "// ambient occlusion\n";
