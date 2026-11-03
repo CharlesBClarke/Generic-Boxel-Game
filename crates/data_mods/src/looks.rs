@@ -88,7 +88,9 @@ enum BrickPattern {
 /// Boards running along X, with a joint somewhere along each. Seams run half a board in from
 /// the block's sides, and joints keep off its ends and middle. With `cross`, each layer of
 /// boards turns a quarter turn from the one below, along X then Y, a whole block long with no
-/// joints.
+/// joints. The grain runs in thin lines along each board: every row of texels along it is
+/// one color, switching once somewhere along its length, and rows that touch inside a board
+/// never match.
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Planks {
@@ -428,14 +430,9 @@ impl Planks {
             return Err("crossed planks need an even number of layers, so they repeat".into());
         }
         check_fraction("planks shade", self.shade)?;
-        // Grain runs along the boards: long blobs along them, thin ones across.
-        let grain = [
-            Field::new(Scale::Axes([8.0, 1.0, 1.0]), self.seed)?,
-            Field::new(Scale::Axes([1.0, 8.0, 1.0]), self.seed)?,
-        ];
-        // Each texel's board (or `MORTAR` on a seam), which way it runs, and where its grain
-        // starts.
-        let layout: Vec<(u32, usize)> = positions()
+        // Each texel's board (or `MORTAR` on a seam), its row of grain
+        // (across the board, then up it) and how far along the board it is.
+        let layout: Vec<(u32, [usize; 2], usize)> = positions()
             .map(|(_, [x, y, z])| {
                 // Seams keep half a board in from the block's sides.
                 let az = (z + thickness / 2) % SIZE;
@@ -456,29 +453,43 @@ impl Planks {
                 };
                 let seam = ac.is_multiple_of(self.width) || az.is_multiple_of(thickness) || joint == Some(a);
                 let id = if seam && self.seam.is_some() { MORTAR } else { ((layer * SIZE + board) * 2 + piece) as u32 };
-                (id, along)
+                (id, [ac % self.width, az % thickness], a)
             })
             .collect();
-        let ids: Vec<u32> = layout.iter().map(|&(id, _)| id).collect();
+        let ids: Vec<u32> = layout.iter().map(|&(id, ..)| id).collect();
         // Four shade steps, from `shade` darker to `shade` lighter, so neighbors always differ
         // by at least two thirds of it: a board touches the boards beside it and those across
         // the layers above and below, so three steps aren't always enough.
         let steps = if self.shade > 0.0 { 4 } else { 1 };
         let step = distinct(&ids, steps, self.seed).ok_or("planks boards can't be kept apart by shade")?;
-        for (i, [x, y, z]) in positions() {
-            let (id, along) = layout[i];
+        for (i, _) in positions() {
+            let (id, [across, up], a) = layout[i];
             texels[i] = match (id, self.seam) {
                 (MORTAR, Some(seam)) => seam,
                 (id, _) => {
-                    // Each board's grain from its own part of the field, so neighbors differ.
-                    let offset = (hash([id, 0, 1], self.seed) % SIZE as u32) as usize;
-                    let p = if along == 0 { [(x + offset) % SIZE, y, z] } else { [x, (y + offset) % SIZE, z] };
                     let tint = if steps == 1 { 0.0 } else { step[&id] as f32 / (steps - 1) as f32 * 2.0 - 1.0 };
-                    shade(pick(&self.colors, grain[along].at(p)), 1.0 + self.shade * tint)
+                    shade(self.grain(id, across, up, a), 1.0 + self.shade * tint)
                 }
             };
         }
         Ok(())
+    }
+}
+
+impl Planks {
+    /// The grain color of a board's row of texels, `a` texels along it. Rows take turns
+    /// between the colors at even places in `colors` and those at odd ones, so rows beside
+    /// and above each other never match.
+    fn grain(&self, board: u32, across: usize, up: usize, a: usize) -> [u8; 3] {
+        let n = self.colors.len();
+        let start = (across + up) % 2;
+        let set: Vec<usize> = if n > 1 { (start..n).step_by(2).collect() } else { vec![0] };
+        let h = hash([board, (across * SIZE + up) as u32, 2], self.seed) as usize;
+        let first = h % set.len();
+        // Where the row switches, never at its very start, and to which other color.
+        let switch = 1 + (h >> 8) % (SIZE - 1);
+        let second = if set.len() > 1 { (first + 1 + (h >> 16) % (set.len() - 1)) % set.len() } else { first };
+        self.colors[set[if a < switch { first } else { second }]]
     }
 }
 
@@ -976,6 +987,41 @@ mod tests {
         assert_eq!(patches(&v), 32);
         // No board strays more than the shade from the grain.
         assert!(colors(&v).iter().all(|c| (162..=198).contains(&c[0])), "{:?}", colors(&v));
+    }
+
+    #[test]
+    fn grain_runs_in_thin_lines_along_each_board() {
+        let grain = [[160, 120, 80], [170, 130, 85], [180, 140, 90], [190, 150, 95]];
+        let v = recipe("planks = { width = 4, thickness = 2, colors = [[160, 120, 80], [170, 130, 85], [180, 140, 90], [190, 150, 95]], cross = true, seed = 3 }")
+            .generate()
+            .unwrap();
+        // The bottom layer (z 15 and 0) runs along X, the next (z 1 and 2) along Y.
+        let row = |c: usize, z: usize, along_x: bool| -> Vec<[u8; 3]> {
+            (0..SIZE).map(|a| if along_x { texel(&v, a, c, z) } else { texel(&v, c, a, z) }).collect()
+        };
+        for (along_x, zs) in [(true, [15, 0]), (false, [1, 2])] {
+            for c in 0..SIZE {
+                for z in zs {
+                    // A row switches color at most twice around the block: once along it, and
+                    // where it wraps.
+                    let r = row(c, z, along_x);
+                    let switches = (0..SIZE).filter(|&a| r[a] != r[(a + 1) % SIZE]).count();
+                    assert!(switches <= 2, "row {c} {z}: {r:?}");
+                }
+            }
+            // The board from 2 to 5 across: rows beside and above each other differ all along.
+            for c in 2..5 {
+                for z in zs {
+                    let (r, beside) = (row(c, z, along_x), row(c + 1, z, along_x));
+                    assert!((0..SIZE).all(|a| r[a] != beside[a]), "rows {c} and {} at z {z}", c + 1);
+                }
+            }
+            for c in 2..6 {
+                let (below, above) = (row(c, zs[0], along_x), row(c, zs[1], along_x));
+                assert!((0..SIZE).all(|a| below[a] != above[a]), "row {c} up its board");
+            }
+        }
+        assert_eq!(colors(&v), HashSet::from(grain), "only the grain, and all of it");
     }
 
     #[test]

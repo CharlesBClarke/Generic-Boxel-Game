@@ -81,7 +81,7 @@ bricks = { pattern = "staggered", length = 8, height = 4, colors = [[150, 66, 52
 noise = { colors = [[158, 198, 234], [172, 210, 241], [188, 221, 247]], scale = 4, seed = 5 }
 
 [looks.wood]
-planks = { width = 4, colors = [[165, 127, 79], [174, 134, 84], [183, 141, 89]], thickness = 2, shade = 0.25, cross = true, seed = 6 }
+planks = { width = 4, colors = [[163, 125, 78], [170, 131, 82], [177, 136, 86], [184, 142, 90]], thickness = 2, shade = 0.15, cross = true, seed = 6 }
 
 [looks.log]
 turns = true
@@ -92,7 +92,7 @@ noise = { colors = [[78, 76, 74], [98, 94, 91], [120, 116, 111], [142, 136, 129]
 
 # Dark boards under a light top, so the table reads as a work surface.
 [looks.crafting_table]
-planks = { width = 4, colors = [[114, 80, 47], [120, 84, 50], [126, 88, 53]], thickness = 2, shade = 0.07, cross = true, seed = 9 }
+planks = { width = 4, colors = [[114, 80, 47], [118, 83, 49], [122, 86, 51], [126, 88, 53]], thickness = 2, shade = 0.07, cross = true, seed = 9 }
 top = { colors = [[200, 166, 117], [196, 162, 113]], depth = 2, ragged = 0, scale = 2, seed = 10 }
 
 [[block]]
