@@ -350,6 +350,7 @@ pub(crate) fn setup_trainer(mut commands: Commands) {
         TextFont { font_size: 16.0, ..default() },
         Node { position_type: PositionType::Absolute, bottom: px(64), left: px(8), max_width: px(720), ..default() },
         TrainerHud,
+        crate::dev::DevText,
     ));
 }
 

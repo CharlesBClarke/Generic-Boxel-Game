@@ -47,6 +47,9 @@ pub struct Controls {
     pub trainer: KeyCode,
     /// Puts every target back at its spot, whole.
     pub respawn_targets: KeyCode,
+    /// Shows and hides the dev text (readouts, coordinates, controls). Hidden by default in
+    /// release builds.
+    pub dev_text: KeyCode,
     /// Throws a block's worth of the held material. Held, it keeps throwing.
     pub drop: KeyCode,
     /// Opens the crafting menu at a crafting table aimed at, and closes it.
@@ -118,6 +121,7 @@ impl Default for Controls {
             drill: KeyCode::F4,
             trainer: KeyCode::F5,
             respawn_targets: KeyCode::F6,
+            dev_text: KeyCode::F1,
             drop: KeyCode::KeyQ,
             interact: KeyCode::KeyE,
             turn_part: KeyCode::KeyR,
@@ -222,6 +226,7 @@ impl Controls {
                 "drill" => &mut self.drill,
                 "trainer" => &mut self.trainer,
                 "respawn_targets" => &mut self.respawn_targets,
+                "dev_text" => &mut self.dev_text,
                 "drop" => &mut self.drop,
                 "interact" => &mut self.interact,
                 "turn_part" => &mut self.turn_part,
@@ -432,6 +437,14 @@ mod tests {
         assert_eq!(controls.turn_part, KeyCode::KeyR);
         assert!(controls.apply("turn_part = KeyG\n").is_empty());
         assert_eq!(controls.turn_part, KeyCode::KeyG);
+    }
+
+    #[test]
+    fn dev_text_is_bound() {
+        let mut controls = Controls::default();
+        assert_eq!(controls.dev_text, KeyCode::F1);
+        assert!(controls.apply("dev_text = F2\n").is_empty());
+        assert_eq!(controls.dev_text, KeyCode::F2);
     }
 
     #[test]

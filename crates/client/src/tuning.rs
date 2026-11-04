@@ -1,6 +1,7 @@
 //! The live tuning panel: sliders for every value the player's movement controller, the
 //! interaction, push-out, crowd, health, item drop and inventory definitions, tools, targets, brains, the camera
-//! feel and the combat feel and the animation expose, whichever mod they come from.
+//! feel and the combat feel and the animation expose, whichever mod they come from. Save keeps
+//! them in the tuning file (see `tuning_file`), which is applied at startup.
 
 use api::{Tunable, Tunables};
 use bevy::prelude::*;
@@ -10,6 +11,7 @@ use crate::Sim;
 use crate::animation::{AnimationPreview, AnimationTuning};
 use crate::combat::CombatFeel;
 use crate::drill::{Drill, DrillTuning};
+use crate::tuning_file;
 use crate::feel::CameraFeel;
 use crate::mesher::AoTuning;
 
@@ -37,6 +39,10 @@ pub struct TuningPanel {
     brain_defaults: Option<Vec<Vec<Tunable>>>,
     /// The last printout, shown in the panel so it can be copied.
     printout: String,
+    /// Whether the saved tuning file has been applied yet.
+    loaded: bool,
+    /// Where the last save went, or why it failed.
+    note: String,
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -104,6 +110,13 @@ pub fn tuning_panel(
         panel.brain_defaults = Some(brains.iter().map(|b| b.0.clone()).collect());
     }
     let mut brains_on = sim.0.brains_on();
+    // The client's own values, through copies so a resource is only marked changed when a
+    // value moves (an ambient occlusion change remeshes every chunk).
+    let mut juice = combat.clone();
+    let mut playing = animation.clone();
+    let mut camera = feel.clone();
+    let mut shading = *ao;
+    let mut drill_tuning = drill.tuning.clone();
     let Some(player) = sim.0.player_mut() else {
         return Ok(());
     };
@@ -111,235 +124,250 @@ pub fn tuning_panel(
     if panel.movement_defaults.is_none() {
         panel.movement_defaults = Some(controller.tunables());
     }
-    if !panel.open {
+    // The saved file is applied once, on the first frame there is a player, open or not.
+    let load = !panel.loaded;
+    if !panel.open && !load {
         return Ok(());
     }
+    panel.loaded = true;
 
-    let ctx = contexts.ctx_mut()?;
-    let mut print = false;
-    egui::Window::new("Tuning").default_pos([10.0, 120.0]).show(ctx, |ui| {
-        egui::ScrollArea::vertical().max_height(600.0).show(ui, |ui| {
-            ui.heading("Movement");
-            sliders(ui, "movement", controller);
-            if let Some(interaction) = &mut interaction {
-                ui.separator();
-                ui.heading("Interaction");
-                sliders(ui, "interaction", interaction);
+    // Every section of sliders by its saved name, for loading, saving and printing.
+    macro_rules! sections {
+        () => {{
+            let mut s: Vec<(String, &mut dyn Tunables)> = vec![("movement".to_owned(), &mut *controller as &mut dyn Tunables)];
+            if let Some(x) = &mut interaction {
+                s.push(("interaction".to_owned(), x));
             }
-            if let Some(push_out) = &mut push_out {
-                ui.separator();
-                ui.heading("Push-out");
-                sliders(ui, "push_out", push_out);
+            if let Some(x) = &mut push_out {
+                s.push(("push_out".to_owned(), x));
             }
-            if let Some(crowd) = &mut crowd {
-                ui.separator();
-                ui.heading("Crowd");
-                sliders(ui, "crowd", crowd);
+            if let Some(x) = &mut crowd {
+                s.push(("crowd".to_owned(), x));
             }
-            if let Some(health) = &mut health {
-                ui.separator();
-                ui.heading("Player health");
-                ui.horizontal(|ui| {
-                    ui.checkbox(&mut unkillable, "Can't be knocked out");
-                    refill = ui.button("Heal").clicked();
-                });
-                sliders(ui, "health", health);
+            if let Some(x) = &mut health {
+                s.push(("health".to_owned(), x));
             }
-            if let Some(item_drops) = &mut item_drops {
-                ui.separator();
-                ui.heading("Item drops");
-                sliders(ui, "item_drops", item_drops);
+            if let Some(x) = &mut item_drops {
+                s.push(("item_drops".to_owned(), x));
             }
-            if let Some(inventory) = &mut inventory {
-                ui.separator();
-                ui.heading("Inventory");
-                sliders(ui, "inventory", inventory);
+            if let Some(x) = &mut inventory {
+                s.push(("inventory".to_owned(), x));
             }
             for tool in &mut tools {
-                ui.separator();
-                ui.heading(format!("Tool: {}", tool.name));
-                let id = format!("tool {}", tool.name);
-                sliders(ui, &id, tool);
+                s.push((format!("tool {}", tool.name), tool));
             }
             for target in &mut targets {
-                ui.separator();
-                ui.heading(format!("Target: {}", target.name));
-                let id = format!("target {}", target.name);
-                sliders(ui, &id, target);
-            }
-            if !brain_names.is_empty() {
-                ui.separator();
-                ui.heading("Brains");
-                ui.checkbox(&mut brains_on, "think (off: targets are dummies)");
+                s.push((format!("target {}", target.name), target));
             }
             for (name, brain) in brain_names.iter().zip(&mut brains) {
-                ui.label(format!("Brain: {name}"));
-                sliders(ui, &format!("brain {name}"), brain);
+                s.push((format!("brain {name}"), brain));
             }
-            ui.separator();
-            ui.heading("Combat feel");
-            let mut juice = combat.clone();
-            sliders(ui, "combat", &mut juice);
-            if juice != *combat {
-                *combat = juice;
-            }
-            ui.separator();
-            ui.heading("Animation");
-            let mut shown = preview.clip.clone();
-            egui::ComboBox::from_label("every creature plays")
-                .selected_text(shown.as_deref().unwrap_or("its own choice"))
-                .show_ui(ui, |ui| {
-                    ui.selectable_value(&mut shown, None, "its own choice");
-                    for clip in &clips {
-                        ui.selectable_value(&mut shown, Some(clip.clone()), clip);
-                    }
-                });
-            if shown != preview.clip {
-                preview.clip = shown;
-            }
-            let mut playing = animation.clone();
-            sliders(ui, "animation", &mut playing);
-            if playing != *animation {
-                *animation = playing;
-            }
-            ui.separator();
-            ui.heading("Camera");
-            // Read through a copy so the resource is only marked changed when a value moves.
-            let mut camera = feel.clone();
-            sliders(ui, "camera", &mut camera);
-            if camera != *feel {
-                *feel = camera;
-            }
-            ui.separator();
-            ui.heading("Ambient occlusion");
-            // Through a copy too: a change remeshes every chunk.
-            let mut shading = *ao;
-            sliders(ui, "ao", &mut shading);
-            if shading != *ao {
-                *ao = shading;
-            }
-            ui.separator();
-            ui.heading("Chase drill");
-            sliders(ui, "drill", &mut drill.tuning);
-        });
-        ui.separator();
-        ui.horizontal(|ui| {
-            if ui.button("Reset all").clicked() {
-                for t in panel.movement_defaults.iter().flatten() {
-                    controller.set_tunable(&t.name, t.value);
-                }
+            s.push(("combat".to_owned(), &mut juice));
+            s.push(("animation".to_owned(), &mut playing));
+            s.push(("camera".to_owned(), &mut camera));
+            s.push(("ao".to_owned(), &mut shading));
+            s.push(("drill".to_owned(), &mut drill_tuning));
+            s
+        }};
+    }
+
+    if load
+        && let Some(path) = tuning_file::path()
+        && let Ok(text) = std::fs::read_to_string(&path)
+    {
+        let (saved, mut problems) = tuning_file::SavedTuning::parse(&text);
+        let mut sections = sections!();
+        for (name, target) in &mut sections {
+            saved.apply(name, &mut **target, &mut problems);
+        }
+        let known: Vec<String> = sections.into_iter().map(|(name, _)| name).collect();
+        for section in saved.unknown_sections(&known) {
+            problems.push(format!("no section named [{section}]"));
+        }
+        for problem in problems {
+            warn!("{}: {problem}", path.display());
+        }
+        info!("loaded tuning from {}", path.display());
+    }
+
+    let mut print = false;
+    let mut save = false;
+    if panel.open {
+        let ctx = contexts.ctx_mut()?;
+        egui::Window::new("Tuning").default_pos([10.0, 120.0]).show(ctx, |ui| {
+            egui::ScrollArea::vertical().max_height(600.0).show(ui, |ui| {
+                ui.heading("Movement");
+                sliders(ui, "movement", controller);
                 if let Some(interaction) = &mut interaction {
-                    for t in panel.interaction_defaults.iter().flatten() {
-                        interaction.set_tunable(&t.name, t.value);
-                    }
+                    ui.separator();
+                    ui.heading("Interaction");
+                    sliders(ui, "interaction", interaction);
                 }
                 if let Some(push_out) = &mut push_out {
-                    for t in panel.push_out_defaults.iter().flatten() {
-                        push_out.set_tunable(&t.name, t.value);
-                    }
+                    ui.separator();
+                    ui.heading("Push-out");
+                    sliders(ui, "push_out", push_out);
                 }
                 if let Some(crowd) = &mut crowd {
-                    for t in panel.crowd_defaults.iter().flatten() {
-                        crowd.set_tunable(&t.name, t.value);
-                    }
+                    ui.separator();
+                    ui.heading("Crowd");
+                    sliders(ui, "crowd", crowd);
                 }
                 if let Some(health) = &mut health {
-                    for t in panel.health_defaults.iter().flatten() {
-                        health.set_tunable(&t.name, t.value);
-                    }
+                    ui.separator();
+                    ui.heading("Player health");
+                    ui.horizontal(|ui| {
+                        ui.checkbox(&mut unkillable, "Can't be knocked out");
+                        refill = ui.button("Heal").clicked();
+                    });
+                    sliders(ui, "health", health);
                 }
-                unkillable = false;
                 if let Some(item_drops) = &mut item_drops {
-                    for t in panel.item_drop_defaults.iter().flatten() {
-                        item_drops.set_tunable(&t.name, t.value);
-                    }
+                    ui.separator();
+                    ui.heading("Item drops");
+                    sliders(ui, "item_drops", item_drops);
                 }
                 if let Some(inventory) = &mut inventory {
-                    for t in panel.inventory_defaults.iter().flatten() {
-                        inventory.set_tunable(&t.name, t.value);
+                    ui.separator();
+                    ui.heading("Inventory");
+                    sliders(ui, "inventory", inventory);
+                }
+                for tool in &mut tools {
+                    ui.separator();
+                    ui.heading(format!("Tool: {}", tool.name));
+                    let id = format!("tool {}", tool.name);
+                    sliders(ui, &id, tool);
+                }
+                for target in &mut targets {
+                    ui.separator();
+                    ui.heading(format!("Target: {}", target.name));
+                    let id = format!("target {}", target.name);
+                    sliders(ui, &id, target);
+                }
+                if !brain_names.is_empty() {
+                    ui.separator();
+                    ui.heading("Brains");
+                    ui.checkbox(&mut brains_on, "think (off: targets are dummies)");
+                }
+                for (name, brain) in brain_names.iter().zip(&mut brains) {
+                    ui.label(format!("Brain: {name}"));
+                    sliders(ui, &format!("brain {name}"), brain);
+                }
+                ui.separator();
+                ui.heading("Combat feel");
+                sliders(ui, "combat", &mut juice);
+                ui.separator();
+                ui.heading("Animation");
+                let mut shown = preview.clip.clone();
+                egui::ComboBox::from_label("every creature plays")
+                    .selected_text(shown.as_deref().unwrap_or("its own choice"))
+                    .show_ui(ui, |ui| {
+                        ui.selectable_value(&mut shown, None, "its own choice");
+                        for clip in &clips {
+                            ui.selectable_value(&mut shown, Some(clip.clone()), clip);
+                        }
+                    });
+                if shown != preview.clip {
+                    preview.clip = shown;
+                }
+                sliders(ui, "animation", &mut playing);
+                ui.separator();
+                ui.heading("Camera");
+                sliders(ui, "camera", &mut camera);
+                ui.separator();
+                ui.heading("Ambient occlusion");
+                sliders(ui, "ao", &mut shading);
+                ui.separator();
+                ui.heading("Chase drill");
+                sliders(ui, "drill", &mut drill_tuning);
+            });
+            ui.separator();
+            ui.horizontal(|ui| {
+                if ui.button("Reset all").clicked() {
+                    for t in panel.movement_defaults.iter().flatten() {
+                        controller.set_tunable(&t.name, t.value);
                     }
-                }
-                for (tool, defaults) in tools.iter_mut().zip(panel.tool_defaults.iter().flatten()) {
-                    for t in defaults {
-                        tool.set_tunable(&t.name, t.value);
+                    if let Some(interaction) = &mut interaction {
+                        for t in panel.interaction_defaults.iter().flatten() {
+                            interaction.set_tunable(&t.name, t.value);
+                        }
                     }
-                }
-                for (target, defaults) in targets.iter_mut().zip(panel.target_defaults.iter().flatten()) {
-                    for t in defaults {
-                        target.set_tunable(&t.name, t.value);
+                    if let Some(push_out) = &mut push_out {
+                        for t in panel.push_out_defaults.iter().flatten() {
+                            push_out.set_tunable(&t.name, t.value);
+                        }
                     }
+                    if let Some(crowd) = &mut crowd {
+                        for t in panel.crowd_defaults.iter().flatten() {
+                            crowd.set_tunable(&t.name, t.value);
+                        }
+                    }
+                    if let Some(health) = &mut health {
+                        for t in panel.health_defaults.iter().flatten() {
+                            health.set_tunable(&t.name, t.value);
+                        }
+                    }
+                    unkillable = false;
+                    if let Some(item_drops) = &mut item_drops {
+                        for t in panel.item_drop_defaults.iter().flatten() {
+                            item_drops.set_tunable(&t.name, t.value);
+                        }
+                    }
+                    if let Some(inventory) = &mut inventory {
+                        for t in panel.inventory_defaults.iter().flatten() {
+                            inventory.set_tunable(&t.name, t.value);
+                        }
+                    }
+                    for (tool, defaults) in tools.iter_mut().zip(panel.tool_defaults.iter().flatten()) {
+                        for t in defaults {
+                            tool.set_tunable(&t.name, t.value);
+                        }
+                    }
+                    for (target, defaults) in targets.iter_mut().zip(panel.target_defaults.iter().flatten()) {
+                        for t in defaults {
+                            target.set_tunable(&t.name, t.value);
+                        }
+                    }
+                    for (brain, defaults) in brains.iter_mut().zip(panel.brain_defaults.iter().flatten()) {
+                        brain.0.clone_from(defaults);
+                    }
+                    brains_on = true;
+                    camera = CameraFeel::default();
+                    shading = AoTuning::default();
+                    juice = CombatFeel::default();
+                    playing = AnimationTuning::default();
+                    preview.clip = None;
+                    drill_tuning = DrillTuning::default();
                 }
-                for (brain, defaults) in brains.iter_mut().zip(panel.brain_defaults.iter().flatten()) {
-                    brain.0.clone_from(defaults);
-                }
-                brains_on = true;
-                *feel = CameraFeel::default();
-                ao.set_if_neq(AoTuning::default());
-                *combat = CombatFeel::default();
-                *animation = AnimationTuning::default();
-                preview.clip = None;
-                drill.tuning = DrillTuning::default();
+                save = ui.button("Save").on_hover_text("Keep these values for next time").clicked();
+                print = ui.button("Print values").clicked();
+            });
+            if !panel.note.is_empty() {
+                ui.label(&panel.note);
             }
-            print = ui.button("Print values").clicked();
+            if !panel.printout.is_empty() {
+                ui.label("Printed to the log too:");
+                let mut text = panel.printout.clone();
+                ui.add(egui::TextEdit::multiline(&mut text).code_editor().desired_rows(6));
+            }
         });
-        if !panel.printout.is_empty() {
-            ui.label("Printed to the log too:");
-            let mut text = panel.printout.clone();
-            ui.add(egui::TextEdit::multiline(&mut text).code_editor().desired_rows(6));
-        }
-    });
+    }
 
-    if print {
-        let mut out = String::from("// movement\n");
-        out += &printout(&controller.tunables());
-        if let Some(interaction) = &interaction {
-            out += "// interaction\n";
-            out += &printout(&interaction.tunables());
+    if print || save {
+        let values: Vec<(String, Vec<Tunable>)> =
+            sections!().into_iter().map(|(name, target)| (name, target.tunables())).collect();
+        if print {
+            let out: String = values.iter().map(|(name, t)| format!("// {name}\n{}", printout(t))).collect();
+            info!("tuned values:\n{out}");
+            panel.printout = out;
         }
-        if let Some(push_out) = &push_out {
-            out += "// push-out\n";
-            out += &printout(&push_out.tunables());
+        if save {
+            panel.note = match save_file(&values) {
+                Ok(path) => format!("Saved to {}", path.display()),
+                Err(e) => format!("Couldn't save: {e}"),
+            };
+            info!("{}", panel.note);
         }
-        if let Some(crowd) = &crowd {
-            out += "// crowd\n";
-            out += &printout(&crowd.tunables());
-        }
-        if let Some(health) = &health {
-            out += "// health\n";
-            out += &printout(&health.tunables());
-        }
-        if let Some(item_drops) = &item_drops {
-            out += "// item drops\n";
-            out += &printout(&item_drops.tunables());
-        }
-        if let Some(inventory) = &inventory {
-            out += "// inventory\n";
-            out += &printout(&inventory.tunables());
-        }
-        for tool in &tools {
-            out += &format!("// tool {}\n", tool.name);
-            out += &printout(&tool.tunables());
-        }
-        for target in &targets {
-            out += &format!("// target {}\n", target.name);
-            out += &printout(&target.tunables());
-        }
-        for (name, brain) in brain_names.iter().zip(&brains) {
-            out += &format!("// brain {name}\n");
-            out += &printout(&brain.0);
-        }
-        out += "// combat feel\n";
-        out += &printout(&combat.tunables());
-        out += "// animation\n";
-        out += &printout(&animation.tunables());
-        out += "// camera\n";
-        out += &printout(&feel.tunables());
-        out += "// ambient occlusion\n";
-        out += &printout(&ao.tunables());
-        out += "// chase drill\n";
-        out += &printout(&drill.tuning.tunables());
-        info!("tuned values:\n{out}");
-        panel.printout = out;
     }
     if let (Some(edited), Some(def)) = (interaction, sim.0.interaction_def_mut())
         && edited != *def
@@ -395,7 +423,30 @@ pub fn tuning_panel(
     if brains_on != sim.0.brains_on() {
         sim.0.set_brains_on(brains_on);
     }
+    if juice != *combat {
+        *combat = juice;
+    }
+    if playing != *animation {
+        *animation = playing;
+    }
+    if camera != *feel {
+        *feel = camera;
+    }
+    ao.set_if_neq(shading);
+    if drill_tuning != drill.tuning {
+        drill.tuning = drill_tuning;
+    }
     Ok(())
+}
+
+/// Writes the values to the tuning file, making its folder if needed.
+fn save_file(values: &[(String, Vec<Tunable>)]) -> std::io::Result<std::path::PathBuf> {
+    let path = tuning_file::path().ok_or_else(|| std::io::Error::other("no config folder (HOME isn't set)"))?;
+    if let Some(folder) = path.parent() {
+        std::fs::create_dir_all(folder)?;
+    }
+    std::fs::write(&path, tuning_file::format(values))?;
+    Ok(path)
 }
 
 /// A copy of something's values, for editing while the original is out of reach.
