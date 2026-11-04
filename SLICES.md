@@ -110,20 +110,7 @@ A run of small toy slices. Each one takes a single game-feel feature that doesn'
 - Cow herd (1): a cow shoved well away from the herd walks back to it on its own.
 - Cow herd (3): a moving cow that runs into the player pushes them back, with no jitter or sticking.
 
-#### Release mode and saved tuning (branch `toy-release-mode`)
-
-**Stage:** Verify. A micro toy asked for by the user (2026-11-03): "relese disables, all the on sreen dev text, and the ablity to save the sliders I do". Taken ahead of the suggested WebAssembly behavior seam. Plan approved and engaged 2026-11-03, with the recommended answers to the open questions.
-
-**Plan:**
-- **Dev text hides in release.** A `client::dev::DevMode` resource, on in debug builds and off in release builds (`cfg!(debug_assertions)`). Off hides the dev text: the top-left readout (position, speed, fps, controls), the hit readout under the crosshair, the chase drill and block-jump trainer text, and the hit-box outlines. Game UI stays: crosshair, hotbar, health bar, table hint. A new `dev_text` action (default F1) flips it in any build. Only the text goes; the dev keys (tuning, fly, teleport, drill, trainer, respawn, frame cap) keep working in release.
-- **Saved tuning.** The tuning panel gets a Save button that writes every slider to `$BOXEL_TUNING`, else `$XDG_CONFIG_HOME/boxel/tuning.txt`: `[section]` headers (the panel's section names, such as `movement`, `tool club`, `brain cow`) and `name = value` lines. Loaded at startup in every build, over the code's defaults; unknown sections or names are skipped with a warning, values outside a slider's range are clamped. Reset all still goes to the code's defaults and touches the file only on the next Save. Checkboxes and the animation preview aren't saved. Saving is by button only.
-- **Tests:** reading and writing the file (round trip, comments, bad lines, unknown names, clamping), and applying a saved file over defaults changes only what it names.
-
-**Done when:**
-1. A release build shows no dev text.
-2. F1 brings it back (and hides it again).
-3. Saved slider values are back after a restart.
-4. Reset all, then Save, returns the file to the defaults.
+None. Plan the next toy in a new session. The API debt list has seven items, so a seam slice is suggested next: WebAssembly behavior, with the cow's brain as the first behavior to sandbox (see its backlog entry).
 
 ### Toy backlog
 
@@ -224,6 +211,25 @@ Bugs found in already-merged code, each fixed on its own `fix-` branch (see the 
 - 2026-10-28, `fix-step-smoothing`: a step-up moved the body but not its previous position, so the renderer blended the rise between ticks while the camera feel also eased it, making the view dip and snap when climbing. Latent until the block shapes toy gave the player a step height.
 
 ### Done toys
+
+#### Release mode and saved tuning (branch `toy-release-mode`)
+
+**Stage:** Done (2026-11-03). Verified: the user played it: "ok it works" (all four criteria). A micro toy asked for by the user (2026-11-03): "relese disables, all the on sreen dev text, and the ablity to save the sliders I do". Taken ahead of the suggested WebAssembly behavior seam. Plan approved and engaged 2026-11-03, with the recommended answers to the open questions.
+
+**Plan:**
+- **Dev text hides in release.** A `client::dev::DevMode` resource, on in debug builds and off in release builds (`cfg!(debug_assertions)`). Off hides the dev text: the top-left readout (position, speed, fps, controls), the hit readout under the crosshair, the chase drill and block-jump trainer text, and the hit-box outlines. Game UI stays: crosshair, hotbar, health bar, table hint. A new `dev_text` action (default F1) flips it in any build. Only the text goes; the dev keys (tuning, fly, teleport, drill, trainer, respawn, frame cap) keep working in release.
+- **Saved tuning.** The tuning panel gets a Save button that writes every slider to `$BOXEL_TUNING`, else `$XDG_CONFIG_HOME/boxel/tuning.txt`: `[section]` headers (the panel's section names, such as `movement`, `tool club`, `brain cow`) and `name = value` lines. Loaded at startup in every build, over the code's defaults; unknown sections or names are skipped with a warning, values outside a slider's range are clamped. Reset all still goes to the code's defaults and touches the file only on the next Save. Checkboxes and the animation preview aren't saved. Saving is by button only.
+- **Tests:** reading and writing the file (round trip, comments, bad lines, unknown names, clamping), and applying a saved file over defaults changes only what it names.
+
+**Done when:**
+1. A release build shows no dev text.
+2. F1 brings it back (and hides it again).
+3. Saved slider values are back after a restart.
+4. Reset all, then Save, returns the file to the defaults.
+
+**Decisions:**
+- The tuning file's section names (`movement`, `tool <name>`, `brain <name>`, `camera`, `ao` and so on) and slider names are its format, so renaming either drops that saved value, with a warning in the log. It is a personal tuning file, not a game save; world saving is still the infrastructure item.
+- Release builds keep every dev key; only the text and the hit-box outlines hide. The hit readout under the crosshair counts as dev text.
 
 #### Fighting cow (branch `toy-fighting-cow`)
 
