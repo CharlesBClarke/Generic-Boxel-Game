@@ -1,0 +1,15 @@
+# Advanced movement revisited
+
+Moved from the `SLICES.md` backlog on 2026-11-03; the backlog keeps a short pitch.
+
+**Advanced movement revisited.** Added 2026-10-26 at the user's request. Comes after toys that add tools, items and enemies. Rework push-out (block-jumping, and later pistons). The user doesn't like that the body is moved out of the block instantly, like a teleport, or that the launch is mostly upward. Prompted by spam-placing blocks at the dead end of a 1-high tunnel while crouched: the body crawls backward through position shifts while the speed readout stays at 0. Things to settle:
+- How the body gets out of the block with real motion instead of a shift, and how much of the launch should go up.
+- What placing a block while crouched should do. The crouched body's center is at or below the block's center, so today it gives a sideways shove off the side of the block that was never designed.
+- Whether a jump should keep wiping out the push-out kick. Today, placing a moment before jumping loses the kick, which makes block-jumping feel inconsistent.
+- **Known flaw, deferred to this toy (2026-10-26):** the kick can point opposite to the shift. The kick's direction comes from the body's position before the shift, so in the tunnel case the body is shifted backward but kicked forward, into the block it just left, and the collision zeroes it. That's why the speed readout stays at 0 (the readout itself is correct). Found by reading the code and confirmed by the user's play; not yet covered by a test. The redesign must make the launch go the way the body actually leaves the block.
+- **Direction proposed by the user (2026-10-30, after the block-jump trainer),** recorded as candidates to try:
+  - *Kick straight up only,* keeping the body's own horizontal speed. Forward speed comes from running, which the player controls. The standing-position tilt is noise players can't learn, and dropping it also removes the opposite-direction flaw above. Pistons can bring their own direction later. Note: the 2026-10-26 entry says the user disliked the launch being *mostly* upward, so settle which one holds when playing it.
+  - *Analog kick, scaled by how far the block has to push the body:* full with the feet at the bottom of the boxel, fading to nothing as they near the top. That turns the cliff between "kick" and "too late" into a smooth slope ("sooner is stronger") and reads like a spring, which fits the robotic player.
+  - *Order-independent jumping:* a jump adds to rising speed instead of resetting it, so placing a tick before the jump no longer loses the kick. The controller's comment says the jump replaces *downward* speed, but the code zeroes upward speed too. Changing it affects all jumps, so it belongs in this toy, not in a fix.
+  - *Later:* push the body out over a few ticks like a spring instead of the instant shift. Collision has to ignore the block while the body is still inside it.
+  - The block-jump trainer is the measuring tool: once this toy is done, same-tick, early and late attempts should land close together.

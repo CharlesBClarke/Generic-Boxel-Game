@@ -3,19 +3,20 @@
 A moddable boxel survival game. The Rust engine ships with no content; the base game is a mod on the public API.
 
 - `Boxel Game Design Document.md` is the source of truth for design decisions. Read the sections relevant to the current slice before planning it.
-- `SLICES.md` is the roadmap: the ordered vertical slices, each with its current stage.
+- `SLICES.md` is the roadmap: the ordered vertical slices, each with its current stage. Keep it short: it's read every session.
+- `docs/done-toys.md` archives each finished slice's full write-up. `docs/notes/<topic>.md` holds long design notes for backlog entries; read only the one for the slice being planned.
 
 ## Workflow
 
 We work one vertical slice at a time. Each slice goes through these stages in order:
 
-1. **Plan.** Read the slice in `SLICES.md` and the relevant design doc sections. Propose an approach: crates and modules touched, key types, how it will be tested, and open questions. No code until the user approves the plan. Write the approved plan under the slice in `SLICES.md`.
+1. **Plan.** Read the slice in `SLICES.md`, its notes file if it has one, and the relevant design doc sections. Propose an approach: crates and modules touched, key types, how it will be tested, and open questions. No code until the user approves the plan. Write the approved plan under the slice in `SLICES.md`.
 2. **Implement.** Build the approved plan in small steps. Keep `cargo check` and `cargo clippy` clean as you go. If the plan turns out wrong, stop and say so instead of quietly changing course.
 3. **Test.** Write tests for the slice's behavior: unit tests for logic, plus integration tests where pieces meet. Run `cargo test` and report the real output.
 4. **Verify.** Check the slice's "Done when" criteria one by one. Run the game when the slice is visual or interactive, and have the user try it. Report each criterion as met or not met.
-5. **Close.** Update `SLICES.md` (mark the slice done, record decisions, anything deferred and any new API debt), update the design doc if a decision changed, and offer to commit.
+5. **Close.** Mark the slice done and record decisions, anything deferred and any new API debt. Then move its full write-up to the top of `docs/done-toys.md` and leave one line under Done toys in `SLICES.md` (name, date, branch, what it gave the game). Decisions that still bind later work go in the design doc or the Phase 2 decisions list, not only in the archive. Update the design doc if a decision changed, and offer to commit.
 
-Planning the next slice always happens in a new session, with a fresh context. After closing a slice, don't start planning the next one: at most, leave notes for it in `SLICES.md` (under its backlog entry) for the next session's planner to pick up, then tell the user to start a new session.
+Planning the next slice always happens in a new session, with a fresh context. After closing a slice, don't start planning the next one: at most, leave notes for it (in its notes file, or under its backlog entry if short) for the next session's planner to pick up, then tell the user to start a new session.
 
 ### The go word: "engage"
 
@@ -33,6 +34,8 @@ When a problem turns up while working on something else, first decide which kind
 2. **A bug in earlier, already-merged code:** fix it on its own branch (below), not inside the current slice.
 3. **Working as built, but the user doesn't like it:** a design change, not a bug. Add it to the backlog in `SLICES.md`.
 
+Backlog entries are short pitches, two or three lines. Longer design notes go in `docs/notes/<topic>.md`, linked from the pitch.
+
 Fix branch steps:
 
 1. Commit or close the current work first, so nothing half-done comes along.
@@ -46,7 +49,7 @@ A fix skips the full plan stage: describe the bug and the fix in a sentence or t
 
 ### Git
 
-Each slice or toy gets its own feature branch off `master` (for example `slice-1-minimum-engine`, `toy-movement`). Commit there, and when the slice is closed, merge it into `master` with `--no-ff` so each slice stays visible in the history. Never commit code directly to `master`. The exception is commits that only touch `SLICES.md`, the design doc or `CLAUDE.md` (planning and bookkeeping, no code): those can go straight to `master`.
+Each slice or toy gets its own feature branch off `master` (for example `slice-1-minimum-engine`, `toy-movement`). Commit there, and when the slice is closed, merge it into `master` with `--no-ff` so each slice stays visible in the history. Never commit code directly to `master`. The exception is commits that only touch `SLICES.md`, `docs/`, the design doc or `CLAUDE.md` (planning and bookkeeping, no code): those can go straight to `master`.
 
 ### At the start of every session
 

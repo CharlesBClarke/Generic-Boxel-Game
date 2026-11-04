@@ -1,0 +1,5 @@
+# Local server (seam)
+
+Moved from the `SLICES.md` backlog on 2026-11-03; the backlog keeps a short pitch.
+
+**Local server.** Added 2026-11-03 at the user's request, from a review of the engine fundamentals furthest away. *Suggested after WebAssembly behavior.* The design doc wants a server that decides everything, with single-player running a local server so there is one code path. Today the client owns `Simulation` as a resource and reaches into it everywhere: the tuning panel edits definitions in place, the drill and trainer read internals, input is written straight in, and hit-stop pauses the simulation itself (already deferred as unworkable for multiplayer). Every toy adds more of this, and each is a small rewrite later; building prediction and rewinding hit checks (the doc's multiplayer combat) on it would be painful. Bit-for-bit determinism, the hard prerequisite, is in. The seam: same process, no networking, the simulation behind a message boundary: inputs in, snapshots and events out, tuning through commands. Hit-stop becomes a client-side effect. Networking itself (QUIC, iroh) can come much later on top.
