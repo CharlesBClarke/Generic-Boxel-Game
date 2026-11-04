@@ -152,7 +152,7 @@ Sub-grids and world views may be one system: worlds are grids, and the client ca
 - **Runs on integrated GPUs.** Advanced GPU features (indirect-count drawing, mesh shaders, hardware ray tracing) are optional fast paths, always with a fallback.
 - **Colored light from the start.** Stored light holds red, green, blue and sky channels. Moving lights, such as held torches and lights on sub-grids, are drawn as dynamic lights rather than written into the stored grid.
 - **Rasterizer first.** A traditional triangle renderer comes first. Ray marching through boxel data comes later, for shadows, ambient occlusion and lighting effects.
-- **Baked ambient occlusion.** Inside corners darken per vertex, baked by the mesher from how much of the space in front of each corner block shapes fill, measured in sixteenths so partial shapes count by volume. Free each frame and fine on WebGL2, unlike screen-space AO (2026-11-02).
+- **Baked ambient occlusion.** Inside corners darken per vertex, baked by the mesher from how much of the space in front of each corner block shapes fill, measured in sixteenths so partial shapes count by volume. Free each frame and cheap on integrated GPUs, unlike screen-space AO (2026-11-02). The game renders natively through wgpu (Vulkan, DirectX 12 or Metal); there is no browser build.
 - **32×32×32 chunks.**
 - **Culled meshing by default.** Each visible face becomes its own quad. Identical neighboring faces are merged (greedy meshing) only when texture, lighting and shading match; blocks that need per-face variation opt out.
 - **One grid, transform and view system.** The world, sub-grids, pocket dimensions, portals, cameras and mirrors all go through the same code path.
