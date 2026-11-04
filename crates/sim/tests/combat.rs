@@ -648,18 +648,29 @@ fn a_cow_charging_into_the_fence_is_stunned_and_then_gives_up() {
             break;
         }
     }
-    // Then step out over it, far enough off that it charges, into the fence.
-    let at = sim.targets().iter().find(|t| t.id == cow).unwrap().pos;
-    let off = 8.0 - at.delta_to(out).x;
-    sim.teleport_player(out.translate(Vec3::new(off.max(0.0), 0.0, 0.0)));
+    // Then step out over it, 8 m past the fence: far enough off that it charges, into the
+    // fence, and still wants to after.
+    sim.teleport_player(out.translate(Vec3::new(6.0, 0.0, 0.0)));
+    // Charges at the fence until it gives up, staying far enough out that it never stops
+    // wanting to charge.
+    let far = |sim: &Simulation| {
+        let cow = sim.targets().iter().find(|t| t.id == cow).map(|t| t.pos);
+        cow.map(|c| c.delta_to(sim.player().unwrap().pos()).truncate().length())
+    };
     let stunned = base::cow::Mode::Stunned as usize as f32;
     let mut was_stunned = false;
     let mut hurts = Vec::new();
+    let mut nearest = f32::MAX;
     for _ in 0..12 * 60 {
         sim.step(&PlayerInput::default());
         hurts.extend(sim.take_player_hurts());
         was_stunned |= cow_mode(&sim, cow) == Some(stunned);
+        if was_stunned {
+            nearest = nearest.min(far(&sim).unwrap_or(f32::MAX));
+        }
     }
+    let brain = base::cow::CowBrain::default();
+    assert!(nearest >= brain.charge_range, "still far enough to charge after the stun: {nearest} m");
     assert!(was_stunned, "ran into the fence");
     assert!(hurts.is_empty(), "never reached the player");
     let mode = cow_mode(&sim, cow).expect("not broken") as usize;

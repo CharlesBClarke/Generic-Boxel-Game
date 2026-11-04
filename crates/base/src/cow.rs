@@ -85,7 +85,9 @@ impl Mode {
 
     fn clip(self) -> &'static str {
         match self {
-            Mode::Idle | Mode::Watch | Mode::Angry | Mode::Stunned => "stand",
+            Mode::Idle | Mode::Watch | Mode::Angry => "stand",
+            // Crumples to the ground, and blends back up when it's over.
+            Mode::Stunned => "die",
             Mode::Wander => "walk",
             // The start of grazing puts the head down.
             Mode::Graze | Mode::ChargeUp => "eat",
@@ -129,6 +131,8 @@ const PUNCH_UP: f32 = 0.25;
 /// Seconds a charge runs before a run-into-something counts, so one starting against a wall
 /// doesn't stun itself straight away.
 const CHARGE_GRACE: f32 = 0.15;
+/// How fast the `die` clip plays for a stun: it crumples in about half a second.
+const STUN_FALL: f32 = 1.5;
 /// How far past the player, in meters along its run, a charge goes before giving up.
 const OVERSHOOT: f32 = 1.5;
 /// Where the toss and the charge hit, in the cow's own space: in front of the head.
@@ -631,9 +635,16 @@ impl CowBrain {
         let rise = seen.offset.z;
         let toward = if to != Vec2::ZERO { angle(to) } else { ctx.yaw };
         let moving = Vec2::new(ctx.velocity.x, ctx.velocity.y).length();
-        if ctx.attack_landed {
+        // Getting nowhere, the whole fight through: wind-ups, charges and stuns count too, so a
+        // cow charging a fence again and again gives up. The player in reach, or a hit landing,
+        // is getting somewhere.
+        let reach = seen.offset.length();
+        let in_reach = distance <= self.toss_range && rise.abs() <= self.toss_height;
+        if ctx.attack_landed || in_reach || reach < fight.best - PROGRESS {
+            fight.best = reach;
             fight.stuck = 0.0;
-            fight.best = f32::MAX;
+        } else {
+            fight.stuck += ctx.dt;
         }
         // A move running out leads back to squaring up.
         match *mode {
@@ -660,13 +671,6 @@ impl CowBrain {
         if *mode == Mode::Angry && *left <= 0.0 {
             if fight.anger <= 0.0 {
                 return None;
-            }
-            let reach = seen.offset.length();
-            if reach < fight.best - PROGRESS {
-                fight.best = reach;
-                fight.stuck = 0.0;
-            } else {
-                fight.stuck += ctx.dt;
             }
             if fight.stuck >= self.give_up_time {
                 return None;
@@ -715,7 +719,8 @@ impl CowBrain {
                 };
                 (*heading, self.charge_speed, moving / self.run_pace.max(0.01), Some(attack))
             }
-            _ => (ctx.yaw, 0.0, 0.5, None),
+            Mode::Stunned => (ctx.yaw, 0.0, STUN_FALL, None),
+            _ => (ctx.yaw, 0.0, 1.0, None),
         };
         let (sin, cos) = libm::sincosf(yaw);
         let clip = match *mode {
@@ -1364,5 +1369,23 @@ mod tests {
         let brain = CowBrain::default();
         let out = brain.think(&fighting(Mode::Angry, 0.0, 10.0, brain.chase_range + 1.0));
         assert!(!mode(&out).fighting());
+    }
+
+    #[test]
+    fn charging_a_fence_again_and_again_it_gives_up() {
+        let brain = CowBrain::default();
+        // The player stays 8 m off, past a fence the cow keeps running into.
+        let start = fighting(Mode::Angry, 0.0, brain.anger_time, 8.0);
+        let mut charging = 0;
+        let outs = run_with(&brain, start, 20.0, |_, c| {
+            let m = Mode::from_memory(c.memory.first().copied().unwrap_or(0.0));
+            charging = if m == Mode::Charge { charging + 1 } else { 0 };
+            c.blocked = charging > 12;
+        });
+        let stuns = outs.windows(2).filter(|w| mode(&w[0]) != Mode::Stunned && mode(&w[1]) == Mode::Stunned).count();
+        assert!(stuns >= 1, "ran into it");
+        let gave_up = outs.iter().position(|o| !mode(o).fighting()).expect("gave up");
+        assert!((gave_up as f32 * DT) < brain.give_up_time + 4.0, "within a couple of charges: {} s, {stuns} stuns", gave_up as f32 * DT);
+        assert!(outs.iter().any(|o| mode(o) == Mode::Stunned && o.clip == "die"), "crumples while stunned");
     }
 }
