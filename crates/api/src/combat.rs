@@ -159,6 +159,12 @@ pub struct ToolDef {
     pub momentum: f32,
     /// Extra damage for each meter per second the player moves toward the target.
     pub momentum_damage: f32,
+    /// A hit while the player is in the air pushes them back, opposite their look, by this many
+    /// meters per second for each point of damage dealt: swinging down onto something slows a
+    /// fall. Never more than leaves them rising at `recoil_bounce`, so it can stop a fall and
+    /// bounce them a little but not launch them.
+    pub recoil: f32,
+    pub recoil_bounce: f32,
     /// Seconds from starting a swing to the strike.
     pub windup: f32,
     /// Seconds after the strike before the next swing can start.
@@ -178,6 +184,8 @@ impl ToolDef {
             ("lift", self.lift),
             ("momentum", self.momentum),
             ("momentum_damage", self.momentum_damage),
+            ("recoil", self.recoil),
+            ("recoil_bounce", self.recoil_bounce),
             ("windup", self.windup),
             ("recover", self.recover),
         ];
@@ -198,6 +206,8 @@ impl Tunables for ToolDef {
             Tunable::new("lift", self.lift, 0.0, 20.0),
             Tunable::new("momentum", self.momentum, 0.0, 2.0),
             Tunable::new("momentum_damage", self.momentum_damage, 0.0, 5.0),
+            Tunable::new("recoil", self.recoil, 0.0, 3.0),
+            Tunable::new("recoil_bounce", self.recoil_bounce, 0.0, 15.0),
             Tunable::new("windup", self.windup, 0.0, 1.0),
             Tunable::new("recover", self.recover, 0.0, 2.0),
         ]
@@ -212,6 +222,8 @@ impl Tunables for ToolDef {
             "lift" => &mut self.lift,
             "momentum" => &mut self.momentum,
             "momentum_damage" => &mut self.momentum_damage,
+            "recoil" => &mut self.recoil,
+            "recoil_bounce" => &mut self.recoil_bounce,
             "windup" => &mut self.windup,
             "recover" => &mut self.recover,
             _ => return false,
@@ -258,6 +270,8 @@ mod tests {
             lift: 4.0,
             momentum: 0.8,
             momentum_damage: 0.5,
+            recoil: 0.0,
+            recoil_bounce: 0.0,
             windup: 0.08,
             recover: 0.3,
         }

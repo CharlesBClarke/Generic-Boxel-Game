@@ -6,7 +6,7 @@ use api::{
     ApiError, Attack, BoxelPos, Brain, BrainContext, BrainOutput, HealthDef, I64Vec3, Mod, ModelDef, PlayerDef, Registrar,
     TargetDef, Texture, ToolDef, Tunable, Tunables, Vec3, WorldEdit, WorldPos,
 };
-use sim::{PlayerHurt, PlayerInput, Simulation};
+use sim::{PlayerHurt, PlayerInput, Simulation, Strike};
 
 /// Faces east and jabs the box in front of it for `on` ticks out of every `every`, counting from
 /// its first think.
@@ -39,6 +39,10 @@ impl Brain for Jab {
 }
 
 const DAMAGE: f32 = 3.0;
+/// The club's push back in the air, per point of damage, and the most it leaves the player
+/// rising at.
+const RECOIL: f32 = 2.0;
+const BOUNCE: f32 = 3.0;
 const PUSH: f32 = 8.0;
 const LIFT: f32 = 5.0;
 
@@ -121,6 +125,8 @@ impl Mod for Arena {
             lift: 0.0,
             momentum: 0.0,
             momentum_damage: 0.0,
+            recoil: RECOIL,
+            recoil_bounce: BOUNCE,
             windup: 0.1,
             recover: 0.2,
         })
@@ -406,4 +412,119 @@ fn a_knock_out_puts_every_creature_back_when_the_health_def_says_so() {
         let after: Vec<u64> = sim.targets().iter().map(|t| t.id).collect();
         assert_eq!(after != before, resets, "put back, under new IDs: {resets}");
     }
+}
+
+/// The middle of the jabber's body.
+fn jabber_middle(sim: &Simulation) -> WorldPos {
+    sim.targets().iter().next().unwrap().pos.translate(Vec3::Z * 0.6)
+}
+
+/// The yaw and pitch that look from the player's eyes at `pos`.
+fn aim_at(sim: &Simulation, pos: WorldPos) -> (f32, f32) {
+    let d = sim.player().unwrap().eye().delta_to(pos);
+    (d.y.atan2(d.x), d.z.atan2(d.truncate().length()))
+}
+
+/// Drops the player from `height` meters beside the jabber, which never attacks. With `swing`,
+/// swings the club at it once it's in reach on the way down. Returns the strike, if one landed,
+/// and what hurt the player by the time they've landed.
+fn fall_past(height: f32, swing: bool, recoil: f32) -> (Option<Strike>, Vec<PlayerHurt>) {
+    let mut sim = arena(0, 1);
+    // The base club's hit, and falling into it adds damage.
+    let club = &mut sim.tools_mut()[0];
+    (club.damage, club.momentum_damage, club.recoil) = (5.0, 0.5, recoil);
+    let beside = sim.targets().iter().next().unwrap().pos.translate(Vec3::new(1.2, 0.0, height));
+    sim.teleport_player(beside);
+    let tool = sim.tool_ids().next();
+    let landed = sim.player().unwrap().landings();
+    let (mut strike, mut hurts, mut pressed) = (None, Vec::new(), false);
+    for _ in 0..600 {
+        let (yaw, pitch) = aim_at(&sim, jabber_middle(&sim));
+        // Pressed early enough that it's in reach when the wind-up ends, as a player would.
+        let p = sim.player().unwrap();
+        let ahead = p.eye().translate(p.velocity() * sim.tools()[0].windup);
+        let near = ahead.delta_to(jabber_middle(&sim)).length() < 2.5;
+        let press = swing && near && !pressed;
+        pressed |= press;
+        sim.step(&PlayerInput { yaw, pitch, tool, use_pressed: press, ..Default::default() });
+        hurts.extend(sim.take_player_hurts());
+        if let Some(s) = sim.take_strikes().into_iter().find(|s| s.hit.is_some()) {
+            strike = Some(s);
+        }
+        if sim.player().unwrap().landings() != landed {
+            hurts.extend(run(&mut sim, &PlayerInput::default(), 2));
+            return (strike, hurts);
+        }
+    }
+    panic!("never landed");
+}
+
+#[test]
+fn a_hit_on_the_way_down_pushes_back_from_the_look_by_the_damage() {
+    let (strike, _) = fall_past(12.0, true, RECOIL);
+    let strike = strike.expect("hit it on the way down");
+    let damage = strike.hit.as_ref().unwrap().damage;
+    assert!(strike.look.z < -0.3, "looking down at it: {}", strike.look);
+    let level = Vec3::new(strike.recoil.x, strike.recoil.y, 0.0);
+    let wanted = -strike.look * RECOIL * damage;
+    assert!((level - Vec3::new(wanted.x, wanted.y, 0.0)).length() < 1e-3, "back from the look: {}", strike.recoil);
+    assert!(strike.recoil.z > 0.0 && strike.recoil.z <= wanted.z + 1e-3, "up, by up to the damage: {}", strike.recoil);
+}
+
+#[test]
+fn recoil_never_leaves_the_player_rising_faster_than_the_bounce() {
+    let mut sim = arena(0, 1);
+    sim.tools_mut()[0].recoil = 50.0;
+    // Just above it, falling slowly, swing down at it.
+    let above = sim.targets().iter().next().unwrap().pos.translate(Vec3::new(1.0, 0.0, 1.5));
+    sim.teleport_player(above);
+    let tool = sim.tool_ids().next();
+    let (yaw, pitch) = aim_at(&sim, jabber_middle(&sim));
+    let mut input = PlayerInput { yaw, pitch, tool, use_pressed: true, ..Default::default() };
+    let mut strike = None;
+    for _ in 0..30 {
+        sim.step(&input);
+        input.use_pressed = false;
+        if let Some(s) = sim.take_strikes().pop() {
+            strike = Some(s);
+            break;
+        }
+    }
+    let strike = strike.expect("struck");
+    assert!(strike.hit.is_some());
+    sim.step(&PlayerInput::default());
+    assert!(sim.player().unwrap().velocity().z <= BOUNCE + 1e-3, "{}", sim.player().unwrap().velocity());
+}
+
+#[test]
+fn a_hit_on_the_ground_gives_no_recoil() {
+    let mut sim = arena(0, 1);
+    run(&mut sim, &PlayerInput::default(), 30);
+    let tool = sim.tool_ids().next();
+    let (yaw, pitch) = aim_at(&sim, jabber_middle(&sim));
+    let mut input = PlayerInput { yaw, pitch, tool, use_pressed: true, ..Default::default() };
+    for _ in 0..30 {
+        sim.step(&input);
+        input.use_pressed = false;
+        if let Some(s) = sim.take_strikes().pop() {
+            assert!(s.hit.is_some());
+            assert_eq!(s.recoil, Vec3::ZERO);
+            return;
+        }
+    }
+    panic!("never struck");
+}
+
+#[test]
+fn swinging_down_onto_something_on_the_way_down_cuts_the_fall_damage() {
+    // The base club's recoil.
+    let (_, plain) = fall_past(12.0, false, 0.8);
+    let (strike, broken) = fall_past(12.0, true, 0.8);
+    assert!(strike.is_some(), "hit it on the way down");
+    let fall = |hurts: &[PlayerHurt]| hurts.iter().filter(|h| h.attacker.is_none()).map(|h| h.damage).sum::<f32>();
+    assert!(fall(&plain) > 1.0, "a 12 m drop hurts: {}", fall(&plain));
+    assert!(fall(&broken) < fall(&plain) * 0.5, "broken by the hit: {} against {}", fall(&broken), fall(&plain));
+    // Without recoil the hit doesn't help.
+    let (_, unbroken) = fall_past(12.0, true, 0.0);
+    assert!((fall(&unbroken) - fall(&plain)).abs() < 0.5, "{} against {}", fall(&unbroken), fall(&plain));
 }

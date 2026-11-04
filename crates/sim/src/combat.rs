@@ -200,6 +200,9 @@ pub struct Strike {
     /// How far it reached: the tool's reach, or less where a block was in the way.
     pub reach: f32,
     pub hit: Option<TargetHit>,
+    /// The push back the player got from it: only for a hit in the air (see
+    /// [`ToolDef::recoil`]).
+    pub recoil: Vec3,
 }
 
 /// Where a swing is.
@@ -828,6 +831,8 @@ mod tests {
             lift: 4.0,
             momentum: 0.5,
             momentum_damage: 1.0,
+            recoil: 0.0,
+            recoil_bounce: 0.0,
             windup: 0.1,
             recover: 0.3,
         }

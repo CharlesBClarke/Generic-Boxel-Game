@@ -606,7 +606,19 @@ impl Simulation {
         });
         let reach = wall.map_or(def.reach, |w| w.distance);
         let hit = self.targets.strike(&self.target_defs, def, eye, look, reach, carry);
-        self.strikes.push(Strike { tick: self.tick, tool, eye, look, reach, hit });
+        let mut recoil = Vec3::ZERO;
+        if let (Some(hit), Some(player)) = (&hit, &mut self.player)
+            && !player.on_ground()
+            && !player.flying()
+        {
+            // Opposite the look, by the damage, but never past rising at the bounce.
+            recoil = -look * def.recoil * hit.damage;
+            if recoil.z > 0.0 {
+                recoil.z = recoil.z.min((def.recoil_bounce - player.velocity().z).max(0.0));
+            }
+            player.apply_impulse(recoil);
+        }
+        self.strikes.push(Strike { tick: self.tick, tool, eye, look, reach, hit, recoil });
     }
 
     /// Removes one occupant from a boxel, by its index in the boxel's list. It drops its

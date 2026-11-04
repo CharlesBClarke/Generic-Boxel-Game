@@ -141,6 +141,10 @@ impl Mod for BaseMod {
             lift: 4.0,
             momentum: 0.8,
             momentum_damage: 0.5,
+            // Swing down onto a cow to break a fall: a 20-damage head hit carried in at 20 m/s
+            // takes 16 m/s off, enough to land a 10-block drop safely.
+            recoil: 0.8,
+            recoil_bounce: 3.0,
             windup: 0.07,
             recover: 0.28,
         })

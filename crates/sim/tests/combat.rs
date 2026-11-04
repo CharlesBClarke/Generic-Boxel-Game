@@ -492,6 +492,8 @@ impl Mod for Room {
             lift: 3.0,
             momentum: 0.8,
             momentum_damage: 0.5,
+            recoil: 0.0,
+            recoil_bounce: 0.0,
             windup: 0.05,
             recover: 0.2,
         })
