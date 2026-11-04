@@ -326,6 +326,7 @@ pub(crate) fn setup_drill(
         Text::new(""),
         Node { position_type: PositionType::Absolute, top: px(8), right: px(8), ..default() },
         DrillHud,
+        crate::dev::DevText,
     ));
 }
 

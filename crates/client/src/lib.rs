@@ -6,6 +6,7 @@ pub mod combat;
 pub mod controls;
 pub mod coords;
 pub mod crafting;
+pub mod dev;
 pub mod drill;
 pub mod editing;
 pub mod feel;
@@ -15,6 +16,7 @@ pub mod mesher;
 pub mod solid;
 pub mod trainer;
 pub mod tuning;
+pub mod tuning_file;
 pub mod volumes;
 
 use std::time::{Duration, Instant};
@@ -63,6 +65,7 @@ pub fn run(sim: Simulation) {
         .init_resource::<mesher::AoTuning>()
         .init_resource::<FeelState>()
         .init_resource::<TuningPanel>()
+        .init_resource::<dev::DevMode>()
         .init_resource::<Palette>()
         .init_resource::<crafting::CraftingMenu>()
         .init_resource::<PartNames>()
@@ -100,6 +103,7 @@ pub fn run(sim: Simulation) {
                 (editing::edit_input, crafting::crafting_keys, grab_cursor).chain(),
                 mouse_look,
                 debug_keys,
+                (dev::dev_keys, dev::show_dev_text).chain(),
                 double_tap_sprint,
                 drill::drill_keys,
                 trainer::trainer_keys,
@@ -171,6 +175,7 @@ fn setup_scene(mut commands: Commands, mut cursor: Single<&mut CursorOptions, Wi
         Text::new(""),
         Node { position_type: PositionType::Absolute, top: px(8), left: px(8), ..default() },
         Hud,
+        dev::DevText,
     ));
     // A crosshair in the middle of the screen. The hotbar along the bottom is drawn with egui
     // (see `editing::hotbar`).
@@ -500,7 +505,7 @@ fn update_hud(
     let precise = pos.cell().as_dvec3() + pos.offset().as_dvec3();
     let fps = 1.0 / time.delta_secs().max(1e-6);
     text.0 = format!(
-        "pos {:.2}, {:.2}, {:.2}  speed {:.1} m/s  last landing {:.1} m/s ({})\norigin {}, {}, {}\n{} | {:.0} fps | cap {} ({})\n{}{}{}{} move, {} jump, {} sprint (or double-tap forward), {} crouch, {} down, {} fly, {} teleport, {} tuning, Esc release mouse\n{} use (break, swing), {} second use (place, guard), 1-9 or scroll pick, {} craft at a table, {} respawn targets",
+        "pos {:.2}, {:.2}, {:.2}  speed {:.1} m/s  last landing {:.1} m/s ({})\norigin {}, {}, {}\n{} | {:.0} fps | cap {} ({})\n{}{}{}{} move, {} jump, {} sprint (or double-tap forward), {} crouch, {} down, {} fly, {} teleport, {} tuning, {} hide dev text, Esc release mouse\n{} use (break, swing), {} second use (place, guard), 1-9 or scroll pick, {} craft at a table, {} respawn targets",
         precise.x,
         precise.y,
         precise.z,
@@ -525,6 +530,7 @@ fn update_hud(
         label(controls.fly),
         label(controls.teleport),
         label(controls.tuning),
+        label(controls.dev_text),
         controls.use_main.label(),
         controls.use_alt.label(),
         label(controls.interact),

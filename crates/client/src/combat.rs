@@ -1015,7 +1015,7 @@ pub(crate) fn setup_readout(mut commands: Commands) {
             justify_content: JustifyContent::Center,
             ..default()
         })
-        .with_child((Text::new(""), TextFont { font_size: 22.0, ..default() }, TextColor(Color::WHITE), ReadoutText));
+        .with_child((Text::new(""), TextFont { font_size: 22.0, ..default() }, TextColor(Color::WHITE), ReadoutText, crate::dev::DevText));
 }
 
 /// Shows the last hit's readout, fading it out after a moment.
@@ -1038,9 +1038,15 @@ pub(crate) fn update_readout(
     }
 }
 
-/// While the tuning panel is open, outlines every target's hit boxes, head-hit boxes in gold.
-pub(crate) fn draw_hit_boxes(sim: Res<Sim>, panel: Res<crate::tuning::TuningPanel>, origin: Res<RenderOrigin>, mut gizmos: Gizmos) {
-    if !panel.open {
+/// While the tuning panel is open and dev text is shown, outlines every target's hit boxes, head-hit boxes in gold.
+pub(crate) fn draw_hit_boxes(
+    sim: Res<Sim>,
+    panel: Res<crate::tuning::TuningPanel>,
+    dev: Res<crate::dev::DevMode>,
+    origin: Res<RenderOrigin>,
+    mut gizmos: Gizmos,
+) {
+    if !panel.open || !dev.show_text {
         return;
     }
     for target in sim.0.targets().iter() {
