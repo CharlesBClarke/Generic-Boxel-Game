@@ -31,8 +31,9 @@ pub struct Controls {
     pub left: KeyCode,
     pub right: KeyCode,
     pub jump: KeyCode,
+    /// Sprint. A press turns sprinting on until it's pressed again or forward is let go.
     pub sprint: KeyCode,
-    /// Crouch. Shares left Shift with fly-down by default; flying ignores crouch.
+    /// Crouch. Shares left Ctrl with fly-down by default; flying ignores crouch.
     pub crouch: KeyCode,
     /// Fly mode: down. Fly up shares the jump key.
     pub down: KeyCode,
@@ -111,9 +112,9 @@ impl Default for Controls {
             left: KeyCode::KeyA,
             right: KeyCode::KeyD,
             jump: KeyCode::Space,
-            sprint: KeyCode::ControlLeft,
-            crouch: KeyCode::ShiftLeft,
-            down: KeyCode::ShiftLeft,
+            sprint: KeyCode::ShiftLeft,
+            crouch: KeyCode::ControlLeft,
+            down: KeyCode::ControlLeft,
             fly: KeyCode::KeyF,
             teleport: KeyCode::KeyT,
             frame_cap: KeyCode::F3,
@@ -332,6 +333,27 @@ impl DoubleTapSprint {
     }
 }
 
+/// Sprint is a toggle: a press turns it on, and it stays on until sprint is pressed again or
+/// forward is let go. Pressed while standing, it waits for the walk that follows.
+#[derive(Resource, Debug, Default)]
+pub struct SprintToggle {
+    forward_was_held: bool,
+    pub active: bool,
+}
+
+impl SprintToggle {
+    /// Call every frame with whether sprint was just pressed and whether forward is held.
+    pub fn update(&mut self, pressed: bool, forward_held: bool) {
+        if pressed {
+            self.active = !self.active;
+        }
+        if self.forward_was_held && !forward_held {
+            self.active = false;
+        }
+        self.forward_was_held = forward_held;
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -348,6 +370,45 @@ mod tests {
         assert!(d.active, "holding keeps sprinting");
         d.update(false, false, 5.1, 0.3);
         assert!(!d.active, "letting go stops");
+    }
+
+    #[test]
+    fn sprint_toggles_on_and_off_with_one_press_each() {
+        let mut t = SprintToggle::default();
+        t.update(true, true);
+        assert!(t.active, "one press sprints");
+        t.update(false, true);
+        assert!(t.active, "no need to hold it");
+        t.update(true, true);
+        assert!(!t.active, "a second press walks");
+    }
+
+    #[test]
+    fn letting_go_of_forward_stops_the_sprint() {
+        let mut t = SprintToggle::default();
+        t.update(false, true);
+        t.update(true, true);
+        t.update(false, false);
+        assert!(!t.active);
+        t.update(false, true);
+        assert!(!t.active, "walking again doesn't bring it back");
+    }
+
+    #[test]
+    fn a_press_while_standing_waits_for_the_walk() {
+        let mut t = SprintToggle::default();
+        t.update(true, false);
+        t.update(false, false);
+        assert!(t.active);
+        t.update(false, true);
+        assert!(t.active, "sprints from the first step");
+    }
+
+    #[test]
+    fn shift_sprints_and_ctrl_crouches_by_default() {
+        let controls = Controls::default();
+        assert_eq!(controls.sprint, KeyCode::ShiftLeft);
+        assert_eq!((controls.crouch, controls.down), (KeyCode::ControlLeft, KeyCode::ControlLeft));
     }
 
     #[test]
