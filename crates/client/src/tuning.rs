@@ -1,5 +1,5 @@
 //! The live tuning panel: sliders for every value the player's movement controller, the
-//! interaction, push-out, crowd, item drop and inventory definitions, tools, targets, brains, the camera
+//! interaction, push-out, crowd, health, item drop and inventory definitions, tools, targets, brains, the camera
 //! feel and the combat feel and the animation expose, whichever mod they come from.
 
 use api::{Tunable, Tunables};
@@ -24,6 +24,8 @@ pub struct TuningPanel {
     push_out_defaults: Option<Vec<Tunable>>,
     /// The crowd definition when the game started, for reset.
     crowd_defaults: Option<Vec<Tunable>>,
+    /// The health definition when the game started, for reset.
+    health_defaults: Option<Vec<Tunable>>,
     /// The item drop definition when the game started, for reset.
     item_drop_defaults: Option<Vec<Tunable>>,
     /// The inventory definition when the game started, for reset.
@@ -71,6 +73,12 @@ pub fn tuning_panel(
     if panel.crowd_defaults.is_none() {
         panel.crowd_defaults = crowd.as_ref().map(|c| c.tunables());
     }
+    let mut health = sim.0.health_def().cloned();
+    if panel.health_defaults.is_none() {
+        panel.health_defaults = health.as_ref().map(|h| h.tunables());
+    }
+    let mut unkillable = sim.0.unkillable();
+    let mut refill = false;
     let mut item_drops = sim.0.item_drop_def().cloned();
     if panel.item_drop_defaults.is_none() {
         panel.item_drop_defaults = item_drops.as_ref().map(|d| d.tunables());
@@ -127,6 +135,15 @@ pub fn tuning_panel(
                 ui.separator();
                 ui.heading("Crowd");
                 sliders(ui, "crowd", crowd);
+            }
+            if let Some(health) = &mut health {
+                ui.separator();
+                ui.heading("Player health");
+                ui.horizontal(|ui| {
+                    ui.checkbox(&mut unkillable, "Can't be knocked out");
+                    refill = ui.button("Heal").clicked();
+                });
+                sliders(ui, "health", health);
             }
             if let Some(item_drops) = &mut item_drops {
                 ui.separator();
@@ -226,6 +243,12 @@ pub fn tuning_panel(
                         crowd.set_tunable(&t.name, t.value);
                     }
                 }
+                if let Some(health) = &mut health {
+                    for t in panel.health_defaults.iter().flatten() {
+                        health.set_tunable(&t.name, t.value);
+                    }
+                }
+                unkillable = false;
                 if let Some(item_drops) = &mut item_drops {
                     for t in panel.item_drop_defaults.iter().flatten() {
                         item_drops.set_tunable(&t.name, t.value);
@@ -281,6 +304,10 @@ pub fn tuning_panel(
             out += "// crowd\n";
             out += &printout(&crowd.tunables());
         }
+        if let Some(health) = &health {
+            out += "// health\n";
+            out += &printout(&health.tunables());
+        }
         if let Some(item_drops) = &item_drops {
             out += "// item drops\n";
             out += &printout(&item_drops.tunables());
@@ -328,6 +355,17 @@ pub fn tuning_panel(
         && edited != *def
     {
         *def = edited;
+    }
+    if let (Some(edited), Some(def)) = (health, sim.0.health_def_mut())
+        && edited != *def
+    {
+        *def = edited;
+    }
+    if unkillable != sim.0.unkillable() {
+        sim.0.set_unkillable(unkillable);
+    }
+    if refill {
+        sim.0.set_health(f32::MAX);
     }
     if let (Some(edited), Some(def)) = (item_drops, sim.0.item_drop_def_mut())
         && edited != *def

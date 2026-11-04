@@ -2,7 +2,7 @@
 //! and their looks are a data mod in `mods/base`, loaded by the engine alongside it.
 
 use api::{
-    ApiError, BoxelPos, CrowdDef, I64Vec3, InteractionDef, ItemDropDef, Mod, Orientation, PlayerDef, PushOutDef, Registrar, ToolDef, Vec3,
+    ApiError, BoxelPos, CrowdDef, HealthDef, I64Vec3, InteractionDef, ItemDropDef, Mod, Orientation, PlayerDef, PushOutDef, Registrar, ToolDef, Vec3,
     WorldEdit, WorldPos,
 };
 
@@ -103,6 +103,20 @@ impl Mod for BaseMod {
         // Creatures see each other across a herd, and bodies push apart firmly enough that you
         // can't walk through a cow; the player is a little lighter than one (2.5).
         r.register_crowd(CrowdDef { sight: 12.0, push: 25.0, max_push: 8.0, player_weight: 1.5 })?;
+        // Two charges or ten tosses from whole; it comes back slowly once you've got clear. A
+        // guard catches what's within 60 degrees of the look. Falls hurt from about 4 blocks
+        // (16.5 m/s, with the controller's fall gravity of 35), so a 10-block drop costs about
+        // half your health. Killed cows stay dead until you're knocked out, so taking down a
+        // herd has to happen in one life; then the whole herd is back.
+        r.register_health(HealthDef {
+            health: 20.0,
+            regen: 1.0,
+            regen_delay: 4.0,
+            guard_angle: 1.05,
+            fall_speed: 16.5,
+            fall_damage: 1.0,
+            knock_out_resets: true,
+        })?;
         // Minecraft-like drops: a small hop out of the broken block, pulled in from a couple of
         // meters, picked up on touch.
         r.register_item_drops(ItemDropDef {
@@ -127,6 +141,10 @@ impl Mod for BaseMod {
             lift: 4.0,
             momentum: 0.8,
             momentum_damage: 0.5,
+            // Swing down onto a cow to break a fall: a 20-damage head hit carried in at 20 m/s
+            // takes 16 m/s off, enough to land a 10-block drop safely.
+            recoil: 0.8,
+            recoil_bounce: 3.0,
             windup: 0.07,
             recover: 0.28,
         })

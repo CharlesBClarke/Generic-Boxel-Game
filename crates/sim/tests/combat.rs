@@ -14,6 +14,17 @@ fn base_sim() -> Simulation {
     sim
 }
 
+/// The base game with cows that run when hit, or when another is, instead of fighting.
+fn timid_sim() -> Simulation {
+    let mut sim = base_sim();
+    let cow = sim.brain_names().position(|n| n == base::cow::COW_BRAIN).unwrap();
+    let brain = sim.brain_mut(cow).unwrap();
+    for name in ["fight_share", "defend_chance", "courage", "injury_pull"] {
+        assert!(brain.set_tunable(name, 0.0), "{name}");
+    }
+    sim
+}
+
 /// The base game with its cows' brains off, so they stand still as dummies.
 fn dummy_sim() -> Simulation {
     let mut sim = base_sim();
@@ -92,28 +103,42 @@ fn the_club_strikes_after_its_windup_and_knocks_a_cow_away() {
 }
 
 #[test]
-fn enough_hits_break_a_cow_and_it_comes_back() {
+fn a_broken_cow_stays_gone_until_the_player_is_knocked_out() {
     let mut sim = dummy_sim();
     let cow = sim.targets().iter().next().unwrap().clone();
     let def = sim.target_def(cow.kind).clone();
-    let mut broke = false;
-    for _ in 0..20 {
+    for _ in 0..80 {
         let Some(now) = sim.targets().iter().find(|t| t.id == cow.id).cloned() else {
             break;
         };
         // Step up beside it each time, wherever it was knocked.
         sim.teleport_player(now.pos.translate(Vec3::new(-1.8, 0.0, 0.0)));
         idle(&mut sim, 40);
-        let now = sim.targets().iter().find(|t| t.id == cow.id).unwrap().clone();
-        if let Some(hit) = swing_at(&mut sim, now.pos.translate(Vec3::Z * def.height * 0.5)).hit {
-            broke |= hit.broke && hit.target == cow.id;
+        let Some(now) = sim.targets().iter().find(|t| t.id == cow.id).cloned() else {
+            break;
+        };
+        swing_at(&mut sim, now.pos.translate(Vec3::Z * def.height * 0.5));
+    }
+    // Broken by a swing or by a slam into the fence.
+    assert!(sim.targets().iter().all(|t| t.id != cow.id), "the cow broke and is gone");
+    // Long past its respawn time, it's still gone.
+    idle(&mut sim, (def.respawn_time / Simulation::TICK_SECONDS) as usize * 3);
+    assert!(sim.targets().len() < base::COWS.len(), "doesn't come back on its own");
+    // A fall that knocks the player out brings the whole herd back, whole.
+    sim.set_health(0.5);
+    let spawn = sim.spawn();
+    sim.teleport_player(spawn.translate(Vec3::Z * 30.0));
+    let mut out = false;
+    for _ in 0..5 * 60 {
+        sim.step(&PlayerInput::default());
+        out |= sim.take_player_hurts().iter().any(|h| h.died);
+        if out {
+            break;
         }
     }
-    assert!(broke, "the cow broke");
-    assert!(sim.targets().iter().all(|t| t.id != cow.id), "and is gone");
-    // Swings may have broken the cows next to it too; all come back.
-    idle(&mut sim, (def.respawn_time / Simulation::TICK_SECONDS) as usize + 2);
-    assert_eq!(sim.targets().len(), base::COWS.len(), "back after its respawn time");
+    assert!(out, "knocked out by the fall");
+    assert_eq!(sim.targets().len(), base::COWS.len(), "all back");
+    assert!(sim.targets().iter().all(|t| t.health == def.health), "whole");
 }
 
 #[test]
@@ -242,7 +267,13 @@ fn cows_wander_about_as_a_herd_and_stay_in_the_pasture() {
 
 #[test]
 fn a_straying_cow_comes_back_to_the_herd() {
-    let mut sim = base_sim();
+    let mut sim = timid_sim();
+    // A short, slow stampede, as before Fighting cow's tuning: at the base's run speed of 8 and
+    // spook time of 5.3 the herd scatters into groups further apart than they can see, and each
+    // group keeps to itself, which isn't what this test is about.
+    let brain = sim.brain_names().position(|n| n == base::cow::COW_BRAIN).unwrap();
+    let brain = sim.brain_mut(brain).unwrap();
+    assert!(brain.set_tunable("run_speed", 3.0) && brain.set_tunable("spook_time", 2.0));
     let (middle, _) = herd_spread(&sim);
     // Carry one cow off toward the fence, out of the others' way, by knocking it there.
     let cow = sim.targets().iter().next().unwrap().id;
@@ -357,7 +388,7 @@ fn a_cow_watches_the_player_come_near() {
 
 #[test]
 fn a_hit_cow_runs_off_then_calms_down() {
-    let mut sim = base_sim();
+    let mut sim = timid_sim();
     let cow = sim.targets().iter().next().unwrap().clone();
     let def = sim.target_def(cow.kind).clone();
     sim.teleport_player(cow.pos.translate(Vec3::new(-2.0, 0.0, 0.0)));
@@ -427,6 +458,7 @@ fn dummy() -> TargetDef {
         respawn_time: 1.0,
         slam_speed: 4.0,
         slam_damage: 1.0,
+        respawns: true,
     }
 }
 
@@ -460,6 +492,8 @@ impl Mod for Room {
             lift: 3.0,
             momentum: 0.8,
             momentum_damage: 0.5,
+            recoil: 0.0,
+            recoil_bounce: 0.0,
             windup: 0.05,
             recover: 0.2,
         })
@@ -538,3 +572,146 @@ fn sprinting_into_a_swing_hits_harder() {
     let club = sim.tool(tool.unwrap()).clone();
     assert!((hit.damage - club.damage - hit.carried * club.momentum_damage).abs() < 1e-4, "{} damage", hit.damage);
 }
+
+/// Hits the first cow from 2 m west, so it turns to fight, and returns its ID. The player is
+/// unkillable, so blows never send them back to the spawn mid-test.
+fn anger_a_cow(sim: &mut Simulation) -> u64 {
+    sim.set_unkillable(true);
+    idle(sim, 60);
+    let cow = sim.targets().iter().next().unwrap().clone();
+    let def = sim.target_def(cow.kind).clone();
+    sim.teleport_player(cow.pos.translate(Vec3::new(-2.0, 0.0, 0.0)));
+    idle(sim, 10);
+    let now = sim.targets().iter().find(|t| t.id == cow.id).unwrap().clone();
+    swing_at(sim, now.pos.translate(Vec3::Z * def.height * 0.5)).hit.expect("in reach");
+    cow.id
+}
+
+/// Runs `seconds` standing still, gathering blows on the player.
+fn blows(sim: &mut Simulation, seconds: f32) -> Vec<sim::PlayerHurt> {
+    let mut hurts = Vec::new();
+    for _ in 0..(seconds * 60.0) as usize {
+        sim.step(&PlayerInput::default());
+        hurts.extend(sim.take_player_hurts());
+    }
+    hurts
+}
+
+fn cow_mode(sim: &Simulation, id: u64) -> Option<f32> {
+    sim.targets().iter().find(|t| t.id == id).and_then(|t| t.memory.first().copied())
+}
+
+#[test]
+fn a_hit_cow_tosses_a_player_up_close_throwing_them_up_and_away() {
+    let mut sim = base_sim();
+    let cow = anger_a_cow(&mut sim);
+    let hurts = blows(&mut sim, 5.0);
+    let first = hurts.first().expect("tossed within 5 s");
+    let brain = base::cow::CowBrain::default();
+    assert_eq!(first.attacker.map(|a| a.0), Some(cow));
+    assert!((first.damage - brain.toss_damage).abs() < 1e-4, "a toss's damage: {}", first.damage);
+    assert!(first.push.z > first.push.truncate().length(), "mostly up: {}", first.push);
+    assert!(first.push.truncate().length() > 1.0, "and away: {}", first.push);
+}
+
+#[test]
+fn a_hit_cow_charges_a_player_far_off_for_big_damage_and_knockback() {
+    let mut sim = base_sim();
+    let cow = anger_a_cow(&mut sim);
+    // 10 m off across the pasture, toward its middle.
+    let at = sim.targets().iter().find(|t| t.id == cow).unwrap().pos;
+    let ((x0, _), (x1, _)) = base::PASTURE;
+    let middle_x = (x0 + x1) as f32 * 0.5;
+    let toward = if (at.cell().x as f32) < middle_x { 10.0 } else { -10.0 };
+    let spot = at.translate(Vec3::new(toward, 0.0, 0.0));
+    sim.teleport_player(spot);
+    assert!(in_pasture(spot), "{spot:?}");
+    let hurts = blows(&mut sim, 8.0);
+    let brain = base::cow::CowBrain::default();
+    let charge = hurts.iter().find(|h| (h.damage - brain.charge_damage).abs() < 1e-4).expect("charged within 8 s");
+    assert_eq!(charge.attacker.map(|a| a.0), Some(cow));
+    assert!(charge.push.truncate().length() > 10.0, "thrown hard: {}", charge.push);
+}
+
+#[test]
+fn a_cow_charging_into_the_fence_is_stunned_and_then_gives_up() {
+    let mut sim = base_sim();
+    let cow = anger_a_cow(&mut sim);
+    // Lure it over to the east fence, standing just inside it until it gets there.
+    let (_, out) = sim.waypoints().iter().find(|(n, _)| n == "pasture").unwrap().clone();
+    let inside = out.translate(Vec3::new(-3.5, 0.0, 0.0));
+    assert!(in_pasture(inside));
+    for _ in 0..10 * 60 {
+        sim.teleport_player(inside);
+        sim.step(&PlayerInput::default());
+        if !sim.take_player_hurts().is_empty() {
+            break;
+        }
+    }
+    // Then step out over it, 8 m past the fence: far enough off that it charges, into the
+    // fence, and still wants to after.
+    sim.teleport_player(out.translate(Vec3::new(6.0, 0.0, 0.0)));
+    // Charges at the fence until it gives up, staying far enough out that it never stops
+    // wanting to charge.
+    let far = |sim: &Simulation| {
+        let cow = sim.targets().iter().find(|t| t.id == cow).map(|t| t.pos);
+        cow.map(|c| c.delta_to(sim.player().unwrap().pos()).truncate().length())
+    };
+    let stunned = base::cow::Mode::Stunned as usize as f32;
+    let mut was_stunned = false;
+    let mut hurts = Vec::new();
+    let mut nearest = f32::MAX;
+    for _ in 0..12 * 60 {
+        sim.step(&PlayerInput::default());
+        hurts.extend(sim.take_player_hurts());
+        was_stunned |= cow_mode(&sim, cow) == Some(stunned);
+        if was_stunned {
+            nearest = nearest.min(far(&sim).unwrap_or(f32::MAX));
+        }
+    }
+    let brain = base::cow::CowBrain::default();
+    assert!(nearest >= brain.charge_range, "still far enough to charge after the stun: {nearest} m");
+    assert!(was_stunned, "ran into the fence");
+    assert!(hurts.is_empty(), "never reached the player");
+    let mode = cow_mode(&sim, cow).expect("not broken") as usize;
+    assert!(mode < base::cow::Mode::Angry as usize, "gave up well before its anger ran out: mode {mode}");
+    let calm = sim.targets().iter().find(|t| t.id == cow).unwrap();
+    assert!(in_pasture(calm.pos), "still in the pasture");
+}
+
+
+#[test]
+fn hitting_one_cow_brings_some_of_the_herd_to_its_side_and_scatters_the_rest() {
+    let mut sim = base_sim();
+    // Whether any one cow helps is down to chance; a keener herd makes both outcomes sure.
+    let cow = sim.brain_names().position(|n| n == base::cow::COW_BRAIN).unwrap();
+    assert!(sim.brain_mut(cow).unwrap().set_tunable("defend_chance", 0.5));
+    let hit = anger_a_cow(&mut sim);
+    let mut fought = std::collections::BTreeSet::new();
+    let mut ran = std::collections::BTreeSet::new();
+    for _ in 0..4 * 60 {
+        sim.step(&PlayerInput::default());
+        sim.take_player_hurts();
+        for t in sim.targets().iter() {
+            match t.signal.as_str() {
+                base::cow::ANGRY => {
+                    fought.insert(t.id);
+                }
+                base::cow::ALARMED if !fought.contains(&t.id) => {
+                    ran.insert(t.id);
+                }
+                _ => {}
+            }
+        }
+    }
+    fought.remove(&hit);
+    ran.retain(|id| *id != hit && !fought.contains(id));
+    assert!(!fought.is_empty(), "at least one came to help");
+    assert!(ran.len() >= 2, "others ran: {} ran, {} fought", ran.len(), fought.len());
+    // They calm down once the player is far off.
+    sim.teleport_player(WorldPos::at_boxel(BoxelPos::new(0, 0, 0)));
+    idle(&mut sim, 6 * 60);
+    assert!(sim.targets().iter().all(|t| t.signal != base::cow::ANGRY), "lost interest");
+}
+
+

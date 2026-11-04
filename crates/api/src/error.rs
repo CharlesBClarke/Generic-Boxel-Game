@@ -32,6 +32,8 @@ pub enum ApiError {
     DuplicatePushOutDef,
     /// A crowd definition is already registered.
     DuplicateCrowdDef,
+    /// A health definition is already registered.
+    DuplicateHealthDef,
     /// An item drop definition is already registered.
     DuplicateItemDropDef,
     /// An inventory definition is already registered.
@@ -61,6 +63,7 @@ impl fmt::Display for ApiError {
             ApiError::DuplicateInteractionDef => write!(f, "an interaction definition is already registered"),
             ApiError::DuplicatePushOutDef => write!(f, "a push-out definition is already registered"),
             ApiError::DuplicateCrowdDef => write!(f, "a crowd definition is already registered"),
+            ApiError::DuplicateHealthDef => write!(f, "a health definition is already registered"),
             ApiError::DuplicateItemDropDef => write!(f, "an item drop definition is already registered"),
             ApiError::DuplicateInventoryDef => write!(f, "an inventory definition is already registered"),
             ApiError::DuplicateCraftingDef => write!(f, "a crafting definition is already registered"),

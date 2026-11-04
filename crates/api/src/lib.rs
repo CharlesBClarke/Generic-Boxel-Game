@@ -11,6 +11,7 @@ pub mod crafting;
 pub mod coords;
 pub mod crowd;
 pub mod error;
+pub mod health;
 #[cfg(target_arch = "wasm32")]
 pub mod guest;
 pub mod interaction;
@@ -24,12 +25,13 @@ pub mod shape;
 pub mod tuning;
 
 pub use block::{BlockBox, BlockDef, LookDef, Turning};
-pub use brain::{Brain, BrainContext, BrainOutput, Hurt, MAX_NEIGHBORS, Neighbor, Seen};
+pub use brain::{Attack, Brain, BrainContext, BrainOutput, Hurt, MAX_NEIGHBORS, Neighbor, Seen};
 pub use combat::{HitBox, TargetDef, ToolDef};
 pub use crafting::{CraftError, CraftingDef, Layer, Stack, Stacks, craft_shape};
 pub use coords::{BoxelPos, CHUNK_SIZE, CHUNK_VOLUME, ChunkPos, LocalPos, WorldPos, look_direction};
 pub use crowd::CrowdDef;
 pub use error::ApiError;
+pub use health::HealthDef;
 pub use interaction::{InteractionDef, PushOutDef};
 pub use item::{InventoryDef, ItemDropDef};
 pub use media::{Bone, BonePose, Clip, ModelDef, Skin, SoundDef, Texture, Track};

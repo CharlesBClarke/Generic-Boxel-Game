@@ -34,6 +34,8 @@ pub struct Neighbor {
     pub id: u64,
     /// What its brain is showing, from [`BrainOutput::signal`].
     pub signal: String,
+    /// Its health, as a share of its full health: 1 is unhurt.
+    pub health: f32,
 }
 
 /// Something hurt the creature since its last think.
@@ -64,6 +66,8 @@ pub struct BrainContext {
     /// The player, if there is one.
     pub player: Option<Seen>,
     pub hurt: Option<Hurt>,
+    /// The attack it last sent ([`BrainOutput::attack`]) hit the player since its last think.
+    pub attack_landed: bool,
     /// Other creatures within sight (see [`crate::CrowdDef`]), nearest first, at most
     /// [`MAX_NEIGHBORS`]. Empty without a crowd definition.
     pub others: Vec<Neighbor>,
@@ -105,8 +109,29 @@ pub struct BrainOutput {
     /// A short label other creatures see as [`Neighbor::signal`], such as `"alarmed"`. What it
     /// means is up to the brains; empty shows nothing.
     pub signal: String,
+    /// An attack under way this tick, if any. See [`Attack`].
+    pub attack: Option<Attack>,
     /// Handed back on the next call.
     pub memory: Vec<f32>,
+}
+
+/// A blow a creature is dealing. While its brain keeps sending one, tick after tick, the
+/// engine tests it against the player and hits them at most once; to hit again, the brain
+/// stops sending it for at least a tick. Lag rules stay with the engine, so brains only say
+/// what the blow is and when it's live, and telegraph it with a wind-up first.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Attack {
+    /// The box it hits, in the creature's own space like [`crate::HitBox`]: from its feet,
+    /// meters, with its front along +Y, turned with its facing.
+    pub min: [f32; 3],
+    pub max: [f32; 3],
+    pub damage: f32,
+    /// Knockback, meters per second: level, away from the creature, and up.
+    pub push: f32,
+    pub lift: f32,
+    /// What gets through a guard that faces it: shares of the damage and of the knockback.
+    pub guarded_damage: f32,
+    pub guarded_push: f32,
 }
 
 /// Decides what one kind of creature wants. One per kind, shared by every creature of it, so
@@ -131,6 +156,7 @@ mod tests {
             full_health: 1.0,
             player: None,
             hurt: None,
+            attack_landed: false,
             others: Vec::new(),
             random,
             memory: Vec::new(),

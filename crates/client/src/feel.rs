@@ -30,8 +30,8 @@ pub struct CameraFeel {
     pub landing_damping: f32,
     /// How far the suspension can compress, meters.
     pub landing_max_travel: f32,
-    /// Landing speed, m/s, at which the suspension bottoms out. A stand-in for "this fall
-    /// hurts" until there is fall damage to take it from.
+    /// Landing speed, m/s, at which the suspension bottoms out: "this fall hurts". With fall
+    /// damage, the health definition's `fall_speed` is used instead.
     pub hard_landing_speed: f32,
     /// Spring stiffness while recovering from a hard landing; lower is slower.
     pub hard_recover_stiffness: f32,

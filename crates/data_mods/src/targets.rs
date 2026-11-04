@@ -26,6 +26,7 @@
 //! air_drag = 3
 //! bounce = 0.25
 //! respawn_time = 3
+//! respawns = false              # optional, true if left out: comes back on its own
 //! slam_speed = 4
 //! slam_damage = 2
 //!
@@ -94,6 +95,8 @@ struct TargetEntry {
     air_drag: f32,
     bounce: f32,
     respawn_time: f32,
+    #[serde(default = "yes")]
+    respawns: bool,
     slam_speed: f32,
     slam_damage: f32,
     #[serde(default)]
@@ -212,6 +215,7 @@ pub(crate) fn load(dir: &Path, namespace: &str) -> Result<Media, LoadError> {
             respawn_time: entry.respawn_time,
             slam_speed: entry.slam_speed,
             slam_damage: entry.slam_damage,
+            respawns: entry.respawns,
         };
         def.validate().map_err(|why| file.error_at(&entry.name, format!("target {short:?}: {why}")))?;
         targets.push(def);
@@ -292,6 +296,10 @@ fn decode_png(bytes: &[u8]) -> Result<Texture, String> {
         png::ColorType::Indexed => return Err("indexed colors weren't expanded".into()),
     };
     Ok(Texture { width: info.width, height: info.height, rgba })
+}
+
+fn yes() -> bool {
+    true
 }
 
 #[cfg(test)]

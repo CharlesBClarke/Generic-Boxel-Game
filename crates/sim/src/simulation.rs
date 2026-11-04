@@ -5,9 +5,9 @@ use std::fmt;
 
 use api::block::is_valid_name;
 use api::{
-    ApiError, BlockDef, BoxelPos, Brain, ChunkPos, CraftingDef, CrowdDef, I64Vec3, InteractionDef, InventoryDef, ItemDropDef, LookDef,
+    ApiError, BlockDef, BoxelPos, Brain, ChunkPos, CraftingDef, CrowdDef, HealthDef, I64Vec3, InteractionDef, InventoryDef, ItemDropDef, LookDef,
     ModelDef, Mod, MovementController, Orientation, PlayerDef, PushOutDef, Registrar, ShapeGrid, SoundDef,
-    TargetDef, ToolDef, Turning, Vec3, WorldEdit, WorldPos, look_direction,
+    TargetDef, ToolDef, Turning, Vec2, Vec3, WorldEdit, WorldPos, look_direction,
 };
 
 use crate::combat::{StepContext, Strike, Swing, SwingStage, TargetKind, Targets, ToolId};
@@ -73,6 +73,24 @@ pub struct PlaceReport {
     pub push_out: Option<(PushOut, f32)>,
 }
 
+/// The player being hurt: by a creature's attack, or by landing hard.
+#[derive(Clone, Debug, PartialEq)]
+pub struct PlayerHurt {
+    pub tick: u64,
+    /// The attacker's ID and kind; `None` for a fall.
+    pub attacker: Option<(u64, TargetKind)>,
+    /// Level unit direction from the player toward the attacker; zero for a fall.
+    pub from: Vec3,
+    /// Health lost, after the guard.
+    pub damage: f32,
+    /// The knockback given.
+    pub push: Vec3,
+    /// A raised guard caught it.
+    pub guarded: bool,
+    /// It took the last of the player's health, and they went back to the spawn point.
+    pub died: bool,
+}
+
 #[derive(Default)]
 pub struct Simulation {
     blocks: BlockRegistry,
@@ -89,6 +107,16 @@ pub struct Simulation {
     interaction_def: Option<InteractionDef>,
     push_out_def: Option<PushOutDef>,
     crowd_def: Option<CrowdDef>,
+    health_def: Option<HealthDef>,
+    /// The player's health, and seconds since they were last hurt.
+    health: f32,
+    since_hurt: f32,
+    /// Out of health doesn't send the player back; health stops at none.
+    unkillable: bool,
+    /// Blows and falls hurting the player since the last [`Simulation::take_player_hurts`].
+    player_hurts: Vec<PlayerHurt>,
+    /// The player's landings counted so far, so each is judged once.
+    seen_landings: u32,
     item_drop_def: Option<ItemDropDef>,
     models: Vec<ModelDef>,
     sounds: Vec<SoundDef>,
@@ -142,6 +170,7 @@ impl Simulation {
                 interaction: &mut sim.interaction_def,
                 push_out: &mut sim.push_out_def,
                 crowd: &mut sim.crowd_def,
+                health: &mut sim.health_def,
                 item_drops: &mut sim.item_drop_def,
                 inventory: &mut sim.inventory_def,
                 crafting: &mut sim.crafting_def,
@@ -152,6 +181,7 @@ impl Simulation {
             })?;
         }
         sim.looks.check_blocks(&sim.blocks)?;
+        sim.health = sim.health_def.as_ref().map_or(0.0, |d| d.health);
         if let Some(def) = &sim.crafting_def
             && sim.blocks.id(&def.table).is_none()
         {
@@ -210,12 +240,14 @@ impl Simulation {
             .get(&def.controller)
             .ok_or_else(|| ApiError::UnknownController(def.controller.clone()))?;
         self.player = Some(Player::new(def, controller.spawn(), self.spawn));
+        self.health = self.health_def.as_ref().map_or(0.0, |d| d.health);
         Ok(())
     }
 
     /// Advances one fixed tick. Block edits and tool swings happen first, from where the
     /// player stood at the end of the last tick, which is what the client aimed from. Targets
-    /// move after the player, and loose items last, toward where the player ended up.
+    /// move after the player, and loose items after them, toward where the player ended up. Last,
+    /// creatures' attacks that hit the player hurt them.
     pub fn step(&mut self, input: &PlayerInput) {
         if let Some(craft) = &input.craft {
             self.last_craft = Some(self.craft(craft));
@@ -254,6 +286,7 @@ impl Simulation {
                 inventory.add(drop.material, drop.amount, capacity);
             }
         }
+        self.hurt_player(input.yaw);
         self.tick += 1;
     }
 
@@ -428,6 +461,100 @@ impl Simulation {
         self.items.spawn_waiting(crate::Drop { material, amount }, block, &self.blocks, at, velocity, wait);
     }
 
+    /// Hurts the player for a hard landing this tick, and hurts and knocks them back with the
+    /// creatures' attacks that hit them, softened by a guard raised toward the attacker with the
+    /// player looking along `yaw`. Lets health come back once they haven't been hurt for a
+    /// while. Out of health, they go back to the spawn point, whole, and every creature is put
+    /// back too if the health definition says so.
+    fn hurt_player(&mut self, yaw: f32) {
+        let blows = self.targets.take_blows();
+        let Some(player) = &mut self.player else {
+            return;
+        };
+        let dt = Self::TICK_SECONDS;
+        self.since_hurt += dt;
+        if let Some(def) = &self.health_def
+            && self.since_hurt >= def.regen_delay
+        {
+            self.health = (self.health + def.regen * dt).min(def.health);
+        }
+        if player.landings() != self.seen_landings {
+            self.seen_landings = player.landings();
+            let speed = player.last_landing_speed();
+            if let Some(def) = &self.health_def
+                && speed > def.fall_speed
+            {
+                let damage = (speed - def.fall_speed) * def.fall_damage;
+                self.health = (self.health - damage).max(0.0);
+                self.since_hurt = 0.0;
+                let died = self.health <= 0.0 && !self.unkillable;
+                if died {
+                    self.health = def.health;
+                    player.teleport(self.spawn);
+                    if def.knock_out_resets {
+                        self.targets.respawn_all(&self.target_defs);
+                    }
+                }
+                self.player_hurts.push(PlayerHurt {
+                    tick: self.tick,
+                    attacker: None,
+                    from: Vec3::ZERO,
+                    damage,
+                    push: Vec3::ZERO,
+                    guarded: false,
+                    died,
+                });
+                if died {
+                    return;
+                }
+            }
+        }
+        let look = Vec2::from_angle(yaw);
+        for blow in blows {
+            let a = &blow.attack;
+            let toward = -blow.away.truncate();
+            let guarded = self.guarding
+                && self.health_def.as_ref().is_some_and(|d| look.angle_to(toward).abs() <= d.guard_angle);
+            let (damage_share, push_share) = if guarded { (a.guarded_damage, a.guarded_push) } else { (1.0, 1.0) };
+            // Knocked from wherever it was going: speed toward the attacker doesn't eat into the
+            // knockback. Lift brings the upward speed up to it, from a fall too, but doesn't add
+            // to a jump already rising, so a blow mid-jump throws no higher than one standing.
+            let velocity = player.velocity();
+            let back = velocity.dot(blow.away).min(0.0);
+            let lift = a.lift * push_share;
+            let up = if lift > 0.0 { (lift - velocity.z).max(0.0) } else { 0.0 };
+            let push = blow.away * (a.push * push_share - back) + Vec3::Z * up;
+            player.apply_impulse(push);
+            let mut died = false;
+            let mut damage = 0.0;
+            if let Some(def) = &self.health_def {
+                damage = (a.damage * damage_share).max(0.0);
+                self.health = (self.health - damage).max(0.0);
+                self.since_hurt = 0.0;
+                if self.health <= 0.0 && !self.unkillable {
+                    died = true;
+                    self.health = def.health;
+                    player.teleport(self.spawn);
+                    if def.knock_out_resets {
+                        self.targets.respawn_all(&self.target_defs);
+                    }
+                }
+            }
+            self.player_hurts.push(PlayerHurt {
+                tick: self.tick,
+                attacker: Some((blow.target, blow.kind)),
+                from: toward.extend(0.0),
+                damage,
+                push,
+                guarded,
+                died,
+            });
+            if died {
+                break;
+            }
+        }
+    }
+
     /// Works the tool in hand: the main use starts a swing when none is under way, held or
     /// pressed, and the strike lands at the end of the wind-up, aimed where the player looks
     /// on that tick. The second use guards while no swing is under way. Putting the tool away,
@@ -479,7 +606,19 @@ impl Simulation {
         });
         let reach = wall.map_or(def.reach, |w| w.distance);
         let hit = self.targets.strike(&self.target_defs, def, eye, look, reach, carry);
-        self.strikes.push(Strike { tick: self.tick, tool, eye, look, reach, hit });
+        let mut recoil = Vec3::ZERO;
+        if let (Some(hit), Some(player)) = (&hit, &mut self.player)
+            && !player.on_ground()
+            && !player.flying()
+        {
+            // Opposite the look, by the damage, but never past rising at the bounce.
+            recoil = -look * def.recoil * hit.damage;
+            if recoil.z > 0.0 {
+                recoil.z = recoil.z.min((def.recoil_bounce - player.velocity().z).max(0.0));
+            }
+            player.apply_impulse(recoil);
+        }
+        self.strikes.push(Strike { tick: self.tick, tool, eye, look, reach, hit, recoil });
     }
 
     /// Removes one occupant from a boxel, by its index in the boxel's list. It drops its
@@ -622,6 +761,42 @@ impl Simulation {
     /// For engine tools such as the tuning panel.
     pub fn crowd_def_mut(&mut self) -> Option<&mut CrowdDef> {
         self.crowd_def.as_mut()
+    }
+
+    pub fn health_def(&self) -> Option<&HealthDef> {
+        self.health_def.as_ref()
+    }
+
+    /// For tuning while the game runs. Health above a lowered limit comes down to it.
+    pub fn health_def_mut(&mut self) -> Option<&mut HealthDef> {
+        self.health_def.as_mut()
+    }
+
+    /// The player's health; 0 without a health definition.
+    pub fn health(&self) -> f32 {
+        match &self.health_def {
+            Some(def) => self.health.min(def.health),
+            None => 0.0,
+        }
+    }
+
+    /// Sets the player's health, within what the health definition allows.
+    pub fn set_health(&mut self, health: f32) {
+        self.health = self.health_def.as_ref().map_or(0.0, |d| health.clamp(0.0, d.health));
+    }
+
+    pub fn unkillable(&self) -> bool {
+        self.unkillable
+    }
+
+    /// With it on, running out of health doesn't send the player back.
+    pub fn set_unkillable(&mut self, on: bool) {
+        self.unkillable = on;
+    }
+
+    /// Blows and falls that hurt the player since the last call, oldest first.
+    pub fn take_player_hurts(&mut self) -> Vec<PlayerHurt> {
+        std::mem::take(&mut self.player_hurts)
     }
 
     pub fn item_drop_def(&self) -> Option<&ItemDropDef> {
@@ -938,6 +1113,7 @@ struct ContentRegistrar<'a> {
     interaction: &'a mut Option<InteractionDef>,
     push_out: &'a mut Option<PushOutDef>,
     crowd: &'a mut Option<CrowdDef>,
+    health: &'a mut Option<HealthDef>,
     item_drops: &'a mut Option<ItemDropDef>,
     inventory: &'a mut Option<InventoryDef>,
     crafting: &'a mut Option<CraftingDef>,
@@ -1014,6 +1190,15 @@ impl Registrar for ContentRegistrar<'_> {
         }
         def.validate().map_err(ApiError::InvalidDef)?;
         *self.crowd = Some(def);
+        Ok(())
+    }
+
+    fn register_health(&mut self, def: HealthDef) -> Result<(), ApiError> {
+        if self.health.is_some() {
+            return Err(ApiError::DuplicateHealthDef);
+        }
+        def.validate().map_err(ApiError::InvalidDef)?;
+        *self.health = Some(def);
         Ok(())
     }
 

@@ -106,7 +106,7 @@ fn the_cow_is_data_and_its_numbers_can_be_edited() {
     assert_eq!(cow.step_height, 0.6);
 
     let copy = Copy::new("cow");
-    copy.edit("targets.toml", "health = 20", "health = 55");
+    copy.edit("targets.toml", "health = 130", "health = 55");
     let sim = game::load_from(&copy.0, Movement::Native).unwrap();
     assert_eq!(sim.target_defs().iter().find(|d| d.name == base::COW).unwrap().health, 55.0);
 
