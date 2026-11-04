@@ -54,6 +54,7 @@ Each slice or toy gets its own feature branch off `master` (for example `slice-1
 ### At the start of every session
 
 1. Read `SLICES.md` and find the current slice: the one in progress, or in phase 2 the current toy.
+   Run `tools/map.sh` when you need to find where something lives: it lists every crate and module with its one-line doc.
 2. Tell the user which slice and stage we're on, and what the next step is. If nothing is in progress in phase 2, suggest a next toy from the backlog, picking one that needs little new infrastructure.
 3. Don't start work until the user confirms.
 
