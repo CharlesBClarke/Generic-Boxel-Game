@@ -49,7 +49,7 @@ A fix skips the full plan stage: describe the bug and the fix in a sentence or t
 
 ### Git
 
-Each slice or toy gets its own feature branch off `master` (for example `slice-1-minimum-engine`, `toy-movement`). Commit there, and when the slice is closed, merge it into `master` with `--no-ff` so each slice stays visible in the history. Never commit code directly to `master`. The exception is commits that only touch `SLICES.md`, `docs/`, the design doc or `CLAUDE.md` (planning and bookkeeping, no code): those can go straight to `master`.
+Each slice or toy gets its own feature branch off `master` (for example `slice-1-minimum-engine`, `toy-movement`). Commit there, and when the slice is closed, merge it into `master` with `--no-ff` so each slice stays visible in the history. Never commit project code (anything under `crates/` or `mods/`) directly to `master`. Commits that only touch bookkeeping (`SLICES.md`, `docs/`, the design doc, `CLAUDE.md`) or helper scripts in `tools/` can go straight to `master`.
 
 ### At the start of every session
 
