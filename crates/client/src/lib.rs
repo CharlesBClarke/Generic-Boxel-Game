@@ -30,7 +30,7 @@ use bevy::window::{CursorGrabMode, CursorOptions, PresentMode, PrimaryWindow};
 use bevy_egui::{EguiPlugin, EguiPrimaryContextPass};
 use sim::{PlayerInput, Simulation};
 
-use crate::controls::{Controls, DoubleTapSprint, label};
+use crate::controls::{Controls, DoubleTapSprint, SprintToggle, label};
 use crate::editing::{ChunkMeshes, Ghost, Palette, PartNames};
 use crate::feel::{CameraFeel, FeelState, Motion};
 use crate::mesher::MeshData;
@@ -71,6 +71,7 @@ pub fn run(sim: Simulation) {
         .init_resource::<PartNames>()
         .init_resource::<items::ItemViews>()
         .init_resource::<DoubleTapSprint>()
+        .init_resource::<SprintToggle>()
         .init_resource::<drill::Drill>()
         .init_resource::<trainer::Trainer>()
         .init_resource::<combat::CombatFeel>()
@@ -104,7 +105,7 @@ pub fn run(sim: Simulation) {
                 mouse_look,
                 debug_keys,
                 (dev::dev_keys, dev::show_dev_text).chain(),
-                double_tap_sprint,
+                (double_tap_sprint, sprint_toggle),
                 drill::drill_keys,
                 trainer::trainer_keys,
                 editing::remesh_changed_chunks,
@@ -281,6 +282,7 @@ fn tick_simulation(
     look: Res<Look>,
     palette: Res<Palette>,
     double_tap: Res<DoubleTapSprint>,
+    sprint_toggle: Res<SprintToggle>,
     cursor: Single<&CursorOptions, With<PrimaryWindow>>,
     mut toggles: ResMut<PendingToggles>,
     mut trainer: ResMut<trainer::Trainer>,
@@ -304,7 +306,7 @@ fn tick_simulation(
         pitch: look.pitch,
         jump_pressed: std::mem::take(&mut toggles.jump_pressed),
         jump_held: down(controls.jump),
-        sprint: down(controls.sprint) || (free && double_tap.active),
+        sprint: free && (sprint_toggle.active || double_tap.active),
         crouch: down(controls.crouch),
         toggle_fly: std::mem::take(&mut toggles.toggle_fly),
         use_pressed: std::mem::take(&mut toggles.use_pressed),
@@ -381,6 +383,17 @@ fn double_tap_sprint(
         time.elapsed_secs_f64(),
         controls.double_tap_window,
     );
+}
+
+fn sprint_toggle(
+    keys: Res<ButtonInput<KeyCode>>,
+    controls: Res<Controls>,
+    menu: Res<crafting::CraftingMenu>,
+    mut toggle: ResMut<SprintToggle>,
+) {
+    // Shift typed into the crafting menu (a capital in a part's name) isn't a sprint.
+    let pressed = menu.open.is_none() && keys.just_pressed(controls.sprint);
+    toggle.update(pressed, keys.pressed(controls.forward));
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -505,7 +518,7 @@ fn update_hud(
     let precise = pos.cell().as_dvec3() + pos.offset().as_dvec3();
     let fps = 1.0 / time.delta_secs().max(1e-6);
     text.0 = format!(
-        "pos {:.2}, {:.2}, {:.2}  speed {:.1} m/s  last landing {:.1} m/s ({})\norigin {}, {}, {}\n{} | {:.0} fps | cap {} ({})\n{}{}{}{} move, {} jump, {} sprint (or double-tap forward), {} crouch, {} down, {} fly, {} teleport, {} tuning, {} hide dev text, Esc release mouse\n{} use (break, swing), {} second use (place, guard), 1-9 or scroll pick, {} craft at a table, {} respawn targets",
+        "pos {:.2}, {:.2}, {:.2}  speed {:.1} m/s  last landing {:.1} m/s ({})\norigin {}, {}, {}\n{} | {:.0} fps | cap {} ({})\n{}{}{}{} move, {} jump, {} toggle sprint (or double-tap forward), {} crouch, {} down, {} fly, {} teleport, {} tuning, {} hide dev text, Esc release mouse\n{} use (break, swing), {} second use (place, guard), 1-9 or scroll pick, {} craft at a table, {} respawn targets",
         precise.x,
         precise.y,
         precise.z,

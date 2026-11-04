@@ -3,6 +3,21 @@
 Moved out of `SLICES.md` on 2026-11-03 so the roadmap stays short. Each toy's full write-up, newest first, as it stood when it closed. `SLICES.md` keeps a one-line summary of each.
 
 
+#### Sprint toggle (branch `toy-sprint-toggle`)
+
+**Stage:** Done (2026-11-04). Verified: the user played it: "feels good". A micro toy asked for by the user (2026-11-04): swap the default Shift and Ctrl, and make sprint a toggle. Planned and engaged in one session instead of a fresh planning session, since it was small (the user's call).
+
+**Plan:**
+- **Default keys swap.** Sprint moves to left Shift; crouch and fly-down move to left Ctrl. A player's controls file still overrides them.
+- **Sprint toggle.** `client::controls::SprintToggle`: a press of sprint turns sprinting on, and it stays on until sprint is pressed again or forward is let go. A press while standing waits for the walk that follows. Double-tap forward still sprints. Presses while the crafting menu is open are ignored (typing a capital).
+- **Tests:** toggling on and off, letting go of forward stops it, a press while standing waits, the new default keys.
+
+**Done when:** the tests pass and the user has played it and says the toggle feels right.
+
+**Decisions:**
+- Sprint is a toggle only, with the Minecraft-like stop on letting go of forward (recommended over a plain press-on, press-off toggle, which would leave sprint on through a stop and into the next walk, sideways and backward included). No setting to go back to holding; add one if someone asks.
+- No new API debt: client only.
+
 #### Release mode and saved tuning (branch `toy-release-mode`)
 
 **Stage:** Done (2026-11-03). Verified: the user played it: "ok it works" (all four criteria). A micro toy asked for by the user (2026-11-03): "relese disables, all the on sreen dev text, and the ablity to save the sliders I do". Taken ahead of the suggested WebAssembly behavior seam. Plan approved and engaged 2026-11-03, with the recommended answers to the open questions.
