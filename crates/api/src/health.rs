@@ -19,6 +19,8 @@ pub struct HealthDef {
     /// per second over.
     pub fall_speed: f32,
     pub fall_damage: f32,
+    /// A knock-out puts every creature back at its spot, whole and calm, the broken ones too.
+    pub knock_out_resets: bool,
 }
 
 impl HealthDef {
@@ -68,7 +70,7 @@ mod tests {
     use super::*;
 
     fn def() -> HealthDef {
-        HealthDef { health: 20.0, regen: 1.0, regen_delay: 4.0, guard_angle: 1.0, fall_speed: 15.0, fall_damage: 1.0 }
+        HealthDef { health: 20.0, regen: 1.0, regen_delay: 4.0, guard_angle: 1.0, fall_speed: 15.0, fall_damage: 1.0, knock_out_resets: false }
     }
 
     #[test]

@@ -56,7 +56,7 @@ fn attack() -> Attack {
 }
 
 fn health() -> HealthDef {
-    HealthDef { health: 10.0, regen: 2.0, regen_delay: 1.0, guard_angle: 1.0, fall_speed: 12.0, fall_damage: 0.5 }
+    HealthDef { health: 10.0, regen: 2.0, regen_delay: 1.0, guard_angle: 1.0, fall_speed: 12.0, fall_damage: 0.5, knock_out_resets: false }
 }
 
 /// A stone floor, the player at the spawn, a club, and the jabber 1.5 m west of the spawn,
@@ -110,6 +110,7 @@ impl Mod for Arena {
             respawn_time: 1.0,
             slam_speed: 1000.0,
             slam_damage: 0.0,
+            respawns: true,
         })?;
         r.register_tool(ToolDef {
             name: "arena:club".into(),
@@ -354,4 +355,55 @@ fn a_fall_can_knock_the_player_out_unless_unkillable() {
     let hurts = drop_from(&mut sim, 8.0);
     assert!(hurts.iter().all(|h| !h.died));
     assert_eq!(sim.health(), 0.0);
+}
+
+#[test]
+fn a_blow_mid_jump_throws_no_higher_than_one_standing() {
+    // How high the player goes, after an upward kick of `rising` m/s just as the blow lands.
+    let peak = |rising: f32| {
+        let mut sim = arena(1000, 1000);
+        sim.apply_player_impulse(Vec3::Z * rising);
+        let mut top = 0.0f32;
+        for _ in 0..90 {
+            sim.step(&PlayerInput::default());
+            top = top.max(spawn().delta_to(sim.player().unwrap().pos()).z);
+        }
+        top
+    };
+    let standing = peak(0.0);
+    let jumping = peak(4.0);
+    assert!(standing > 0.3, "{standing}");
+    // Only the bit the jump had already risen before the blow; adding the lift to the jump's
+    // speed would have thrown it about three times as high.
+    assert!(jumping < standing + 0.15, "mid-jump {jumping} m, standing {standing} m");
+    // Rising faster than the lift already, it adds nothing.
+    let mut sim = arena(1000, 1000);
+    sim.apply_player_impulse(Vec3::Z * 20.0);
+    let hurts = run(&mut sim, &PlayerInput::default(), 2);
+    assert_eq!(hurts.len(), 1);
+    assert_eq!(hurts[0].push.z, 0.0);
+}
+
+#[test]
+fn a_knock_out_puts_every_creature_back_when_the_health_def_says_so() {
+    for resets in [true, false] {
+        struct Resetting(bool);
+        impl Mod for Resetting {
+            fn name(&self) -> &str {
+                "resetting"
+            }
+
+            fn register(&self, r: &mut dyn Registrar) -> Result<(), ApiError> {
+                r.register_health(HealthDef { knock_out_resets: self.0, ..health() })
+            }
+        }
+        let mut sim = Simulation::with_mods(&[&Arena { jab: (1, 30), health: false }, &Resetting(resets), &base_movement::BaseMovementMod]).unwrap();
+        sim.spawn_player().unwrap();
+        let before: Vec<u64> = sim.targets().iter().map(|t| t.id).collect();
+        sim.set_health(1.0);
+        let hurts = held(&mut sim, &PlayerInput::default(), 3);
+        assert!(hurts.iter().any(|h| h.died));
+        let after: Vec<u64> = sim.targets().iter().map(|t| t.id).collect();
+        assert_eq!(after != before, resets, "put back, under new IDs: {resets}");
+    }
 }

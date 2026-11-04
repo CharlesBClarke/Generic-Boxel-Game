@@ -54,6 +54,10 @@ pub struct TargetDef {
     pub bounce: f32,
     /// Seconds from breaking to being back at its spot.
     pub respawn_time: f32,
+    /// Whether it comes back on its own after `respawn_time`. Without, a broken one stays gone
+    /// until every creature is put back, such as when the player is knocked out (see
+    /// [`crate::HealthDef::knock_out_resets`]).
+    pub respawns: bool,
     /// Sideways speed into a wall, meters per second, from which hitting it hurts: a slam.
     pub slam_speed: f32,
     /// Damage a slam deals for each meter per second over `slam_speed`.
@@ -240,6 +244,7 @@ mod tests {
             respawn_time: 3.0,
             slam_speed: 4.0,
             slam_damage: 1.0,
+            respawns: true,
         }
     }
 

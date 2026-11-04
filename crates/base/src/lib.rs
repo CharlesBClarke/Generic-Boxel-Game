@@ -103,10 +103,11 @@ impl Mod for BaseMod {
         // Creatures see each other across a herd, and bodies push apart firmly enough that you
         // can't walk through a cow; the player is a little lighter than one (2.5).
         r.register_crowd(CrowdDef { sight: 12.0, push: 25.0, max_push: 8.0, player_weight: 1.5 })?;
-        // Three charges or ten tosses from whole; it comes back slowly once you've got clear. A
+        // Two charges or ten tosses from whole; it comes back slowly once you've got clear. A
         // guard catches what's within 60 degrees of the look. Falls hurt from about 4 blocks
         // (16.5 m/s, with the controller's fall gravity of 35), so a 10-block drop costs about
-        // half your health.
+        // half your health. Killed cows stay dead until you're knocked out, so taking down a
+        // herd has to happen in one life; then the whole herd is back.
         r.register_health(HealthDef {
             health: 20.0,
             regen: 1.0,
@@ -114,6 +115,7 @@ impl Mod for BaseMod {
             guard_angle: 1.05,
             fall_speed: 16.5,
             fall_damage: 1.0,
+            knock_out_resets: true,
         })?;
         // Minecraft-like drops: a small hop out of the broken block, pulled in from a couple of
         // meters, picked up on touch.

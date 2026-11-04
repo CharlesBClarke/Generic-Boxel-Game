@@ -518,12 +518,13 @@ impl Targets {
         self.homes.remove(i);
     }
 
-    /// Takes a target out of the world until its respawn time is up.
+    /// Takes a target out of the world until its respawn time is up, or for good if it doesn't
+    /// respawn on its own (until [`Targets::respawn_all`]).
     fn break_target(&mut self, i: usize, defs: &[TargetDef]) {
         let spot = self.homes[i];
         let def = &defs[self.list[i].kind.index()];
         self.remove(i);
-        self.spots[spot].respawn_in = Some(def.respawn_time);
+        self.spots[spot].respawn_in = def.respawns.then_some(def.respawn_time);
     }
 
     /// The nearest hit box along the ray from `eye` along `look` (a unit vector), within
@@ -813,6 +814,7 @@ mod tests {
             // Off unless a test turns it on.
             slam_speed: 1000.0,
             slam_damage: 1.0,
+            respawns: true,
         }
     }
 

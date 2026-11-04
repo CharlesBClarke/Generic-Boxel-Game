@@ -464,7 +464,8 @@ impl Simulation {
     /// Hurts the player for a hard landing this tick, and hurts and knocks them back with the
     /// creatures' attacks that hit them, softened by a guard raised toward the attacker with the
     /// player looking along `yaw`. Lets health come back once they haven't been hurt for a
-    /// while. Out of health, they go back to the spawn point, whole.
+    /// while. Out of health, they go back to the spawn point, whole, and every creature is put
+    /// back too if the health definition says so.
     fn hurt_player(&mut self, yaw: f32) {
         let blows = self.targets.take_blows();
         let Some(player) = &mut self.player else {
@@ -490,6 +491,9 @@ impl Simulation {
                 if died {
                     self.health = def.health;
                     player.teleport(self.spawn);
+                    if def.knock_out_resets {
+                        self.targets.respawn_all(&self.target_defs);
+                    }
                 }
                 self.player_hurts.push(PlayerHurt {
                     tick: self.tick,
@@ -512,11 +516,14 @@ impl Simulation {
             let guarded = self.guarding
                 && self.health_def.as_ref().is_some_and(|d| look.angle_to(toward).abs() <= d.guard_angle);
             let (damage_share, push_share) = if guarded { (a.guarded_damage, a.guarded_push) } else { (1.0, 1.0) };
-            // Knocked from wherever it was going: speed toward the attacker, or falling, doesn't
-            // eat into the knockback.
+            // Knocked from wherever it was going: speed toward the attacker doesn't eat into the
+            // knockback. Lift brings the upward speed up to it, from a fall too, but doesn't add
+            // to a jump already rising, so a blow mid-jump throws no higher than one standing.
             let velocity = player.velocity();
             let back = velocity.dot(blow.away).min(0.0);
-            let push = blow.away * (a.push * push_share - back) + Vec3::Z * (a.lift * push_share - velocity.z.min(0.0));
+            let lift = a.lift * push_share;
+            let up = if lift > 0.0 { (lift - velocity.z).max(0.0) } else { 0.0 };
+            let push = blow.away * (a.push * push_share - back) + Vec3::Z * up;
             player.apply_impulse(push);
             let mut died = false;
             let mut damage = 0.0;
@@ -528,6 +535,9 @@ impl Simulation {
                     died = true;
                     self.health = def.health;
                     player.teleport(self.spawn);
+                    if def.knock_out_resets {
+                        self.targets.respawn_all(&self.target_defs);
+                    }
                 }
             }
             self.player_hurts.push(PlayerHurt {

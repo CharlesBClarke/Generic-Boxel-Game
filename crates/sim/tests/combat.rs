@@ -103,28 +103,42 @@ fn the_club_strikes_after_its_windup_and_knocks_a_cow_away() {
 }
 
 #[test]
-fn enough_hits_break_a_cow_and_it_comes_back() {
+fn a_broken_cow_stays_gone_until_the_player_is_knocked_out() {
     let mut sim = dummy_sim();
     let cow = sim.targets().iter().next().unwrap().clone();
     let def = sim.target_def(cow.kind).clone();
-    let mut broke = false;
-    for _ in 0..20 {
+    for _ in 0..80 {
         let Some(now) = sim.targets().iter().find(|t| t.id == cow.id).cloned() else {
             break;
         };
         // Step up beside it each time, wherever it was knocked.
         sim.teleport_player(now.pos.translate(Vec3::new(-1.8, 0.0, 0.0)));
         idle(&mut sim, 40);
-        let now = sim.targets().iter().find(|t| t.id == cow.id).unwrap().clone();
-        if let Some(hit) = swing_at(&mut sim, now.pos.translate(Vec3::Z * def.height * 0.5)).hit {
-            broke |= hit.broke && hit.target == cow.id;
+        let Some(now) = sim.targets().iter().find(|t| t.id == cow.id).cloned() else {
+            break;
+        };
+        swing_at(&mut sim, now.pos.translate(Vec3::Z * def.height * 0.5));
+    }
+    // Broken by a swing or by a slam into the fence.
+    assert!(sim.targets().iter().all(|t| t.id != cow.id), "the cow broke and is gone");
+    // Long past its respawn time, it's still gone.
+    idle(&mut sim, (def.respawn_time / Simulation::TICK_SECONDS) as usize * 3);
+    assert!(sim.targets().len() < base::COWS.len(), "doesn't come back on its own");
+    // A fall that knocks the player out brings the whole herd back, whole.
+    sim.set_health(0.5);
+    let spawn = sim.spawn();
+    sim.teleport_player(spawn.translate(Vec3::Z * 30.0));
+    let mut out = false;
+    for _ in 0..5 * 60 {
+        sim.step(&PlayerInput::default());
+        out |= sim.take_player_hurts().iter().any(|h| h.died);
+        if out {
+            break;
         }
     }
-    assert!(broke, "the cow broke");
-    assert!(sim.targets().iter().all(|t| t.id != cow.id), "and is gone");
-    // Swings may have broken the cows next to it too; all come back.
-    idle(&mut sim, (def.respawn_time / Simulation::TICK_SECONDS) as usize + 2);
-    assert_eq!(sim.targets().len(), base::COWS.len(), "back after its respawn time");
+    assert!(out, "knocked out by the fall");
+    assert_eq!(sim.targets().len(), base::COWS.len(), "all back");
+    assert!(sim.targets().iter().all(|t| t.health == def.health), "whole");
 }
 
 #[test]
@@ -254,6 +268,12 @@ fn cows_wander_about_as_a_herd_and_stay_in_the_pasture() {
 #[test]
 fn a_straying_cow_comes_back_to_the_herd() {
     let mut sim = timid_sim();
+    // A short, slow stampede, as before Fighting cow's tuning: at the base's run speed of 8 and
+    // spook time of 5.3 the herd scatters into groups further apart than they can see, and each
+    // group keeps to itself, which isn't what this test is about.
+    let brain = sim.brain_names().position(|n| n == base::cow::COW_BRAIN).unwrap();
+    let brain = sim.brain_mut(brain).unwrap();
+    assert!(brain.set_tunable("run_speed", 3.0) && brain.set_tunable("spook_time", 2.0));
     let (middle, _) = herd_spread(&sim);
     // Carry one cow off toward the fence, out of the others' way, by knocking it there.
     let cow = sim.targets().iter().next().unwrap().id;
@@ -438,6 +458,7 @@ fn dummy() -> TargetDef {
         respawn_time: 1.0,
         slam_speed: 4.0,
         slam_damage: 1.0,
+        respawns: true,
     }
 }
 
@@ -679,4 +700,5 @@ fn hitting_one_cow_brings_some_of_the_herd_to_its_side_and_scatters_the_rest() {
     idle(&mut sim, 6 * 60);
     assert!(sim.targets().iter().all(|t| t.signal != base::cow::ANGRY), "lost interest");
 }
+
 
