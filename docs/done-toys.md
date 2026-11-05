@@ -3,6 +3,53 @@
 Moved out of `SLICES.md` on 2026-11-03 so the roadmap stays short. Each toy's full write-up, newest first, as it stood when it closed. `SLICES.md` keeps a one-line summary of each.
 
 
+#### Local server seam (branch `seam-local-server`)
+
+**Stage:** Done (2026-11-05). Verified: the user played it and every check passed (movement "feels good"; editing, crafting, items, cows, dev keys and the tuning panel work; hit-stop "has always been subtle, I think it works"). Taken ahead of WebAssembly behavior: it pays down more of the API debt list, and client-to-simulation coupling grows with every toy.
+
+**Goal:** the client never touches `Simulation`. Same process, no networking: the simulation sits behind a message boundary (inputs and commands in, snapshots and events out). The game plays as before.
+
+**Plan** (approved 2026-11-05)
+- `protocol` crate (no Bevy): owned, `Send` message types, plain Rust values (no serde until networking). `ClientMsg`: `Input(PlayerInput)` each tick, plus commands (tuning changes, teleport, respawn cows, health, unkillable, brains on/off). `ServerMsg`: `Welcome` (content: registries, defs, models, sounds, tools; every chunk; spawn; waypoints), a `Snapshot` each tick (player view with previous position, cows, items, inventory, health, swing, guard), `ChunkChanged`, `BlockAdded` (crafted shapes), defs changed, and events (strikes, slams, hurts, craft result).
+- `server` crate (no Bevy): owns the `Simulation`, applies messages, emits messages. `game` builds it and hands the client a `LocalConnection`.
+- `sim`: queries the client needs (targeting, placement, `is_table`, `craft_plan`, `face_region`) become free functions over grid, registry and defs, so the client runs them on its world copy.
+- `client`: a `ClientWorld` resource (content, world copy kept from chunk messages, last two snapshots, event queues) replaces `Sim`. `crates/client/clippy.toml` bans `sim::Simulation`.
+- Same thread: each client fixed tick sends its input and runs one server tick, so timing is unchanged. A test runs the server on its own thread over channels.
+- Hit-stop, kept simple first: the client freezes its view and the simulation keeps running; when the freeze ends the view snaps to the present. New presses wait for the freeze to end, as before. Can change later.
+- The block-jump trainer is removed (block-jumping will change a lot). The chase drill stays (it's a good game for feeling the movement) and reads from the client's world copy; its debt entry stays.
+- Build order: protocol and server, client world copy, tuning commands, hit-stop, trainer removal and the lint.
+
+**Tests:** server (input moves the player, an edit sends `ChunkChanged`, a craft sends `BlockAdded`, a tuning command changes a def, debug commands); replica (after all messages, the client's world matches the server's); determinism (scripted inputs give identical snapshots directly and through the server); the server on its own thread. Client tests move from `Simulation` to the connection.
+
+**Done when**
+1. The client can't reach `Simulation` (lint), and all client-simulation traffic is `protocol` messages.
+2. Movement, editing, crafting, combat, cows, items, the chase drill, the tuning panel, saved tuning and debug keys play as before.
+3. Hit-stop is client-side: the simulation never pauses.
+4. The server runs headless in tests, including on its own thread.
+5. `cargo test` and `cargo clippy` are clean; API debt list updated.
+
+**Implementation notes**
+- `sim::Player` is now a plain-data `Body` (cloned into snapshots) plus its controller; it derefs to the body, so sim code reads the same.
+- `sim::View` holds the queries both sides ask (targeting, placement, `is_table`, `craft_plan`, capacity); `Simulation` delegates to it. Chunks travel as `ChunkData` (`Grid::export_chunk`/`import_chunk`).
+- Crafting a new shape resends the whole block registry (rare, small). Any command answers with the full `Defs`, tuning sections included.
+- Removed with the trainer: its control action (and its line in the user's controls file) and `Simulation::last_place`.
+- Hit-stop: held buttons keep acting while the view is frozen (a held swing can start its next wind-up during the freeze); before, the whole simulation paused.
+
+**Test:** `cargo test --workspace` all pass (server 5 new: input moves the player, the client copy matches the server through 200 ticks of edits and a craft, every tuning section tunes by name plus the debug commands, bit-for-bit against a direct `Simulation`, a server on its own thread says the same as a local one; client 4 new in `world`/`tuning`; client tests moved to the connection). Clippy clean, and the `Simulation` ban was checked to fire.
+
+**Decisions:**
+- The client never touches `Simulation`: it keeps a `ClientWorld` copy from `protocol` messages, and `crates/client/clippy.toml` bans the type. Binding on later work (recorded in the design doc's Multiplayer section).
+- Single-player runs a `server::LocalConnection` on the client's thread, one server tick per client tick. `ThreadConnection` exists and is tested, but nothing uses it in play yet.
+- Hit-stop freezes only the view; the simulation never pauses. Kept simple: the view snaps to the latest tick when the freeze ends, and held buttons keep acting during it. Revisit with multiplayer (likely: freeze only for your own hits).
+- Questions both sides ask go through `sim::View`, so previews (ghost, crafting) run the simulation's own rules on the client's copy.
+- Messages are plain Rust values; serde waits for networking.
+
+**Deferred:**
+- Everything networked: a server clock, serialization, transport, prediction, interpolation of others, bandwidth (the welcome carries every look volume, model and sound; snapshots carry every creature and item each tick; chunks go uncompressed).
+- Many players in the simulation (it still assumes one player everywhere: body, inventory, health, swing, the cows' view of "the player"). A candidate seam after a few more toys, before more single-player assumptions pile up.
+
+**API debt:** one item paid (block-jump trainer, removed). None added. Six items left.
+
 #### Sprint toggle (branch `toy-sprint-toggle`)
 
 **Stage:** Done (2026-11-04). Verified: the user played it: "feels good". A micro toy asked for by the user (2026-11-04): swap the default Shift and Ctrl, and make sprint a toggle. Planned and engaged in one session instead of a fresh planning session, since it was small (the user's call).

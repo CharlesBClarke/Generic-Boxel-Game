@@ -166,7 +166,7 @@ Recommendations from the multiplayer research. Rates and budgets are starting po
 
 **Architecture**
 
-- **Server-authoritative.** The server decides everything. Single-player runs a local server inside the game, so there is only one code path.
+- **Server-authoritative.** The server decides everything. Single-player runs a local server inside the game, so there is only one code path. *Built (2026-11-05):* the `server` crate owns the simulation and the client keeps a copy of the world from `protocol` messages alone; a lint keeps the client from reaching the simulation. Effects that would stop the world for everyone, like hit-stop, live in the client's view.
 - **Ticks and updates.** The simulation runs at 60 ticks per second; entity updates go out 20 to 30 times per second, most important first (nearby, visible, fast-moving), within a per-player bandwidth budget. Other players and creatures are shown slightly in the past and smoothly interpolated.
 - **Separate channels.** Chunks and block edits use reliable, ordered streams per region, so a big chunk never delays combat. Entity movement uses fast, unreliable messages.
 - **Transport.** QUIC (the `quinn` crate). For player-hosted servers, `iroh` adds connections by public key, NAT hole punching and community-run relays, so no port forwarding is needed.
