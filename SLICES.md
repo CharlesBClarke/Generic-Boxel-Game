@@ -110,7 +110,30 @@ A run of small toy slices. Each one takes a single game-feel feature that doesn'
 - Cow herd (1): a cow shoved well away from the herd walks back to it on its own.
 - Cow herd (3): a moving cow that runs into the player pushes them back, with no jitter or sticking.
 
-None. Plan the next toy in a new session. The API debt list has seven items, so a seam slice is suggested next: WebAssembly behavior, with the cow's brain as the first behavior to sandbox (see its backlog entry).
+#### Local server seam
+
+**Stage:** Implement (branch `seam-local-server`, started 2026-11-05). Taken ahead of WebAssembly behavior: it pays down more of the API debt list, and client-to-simulation coupling grows with every toy.
+
+**Goal:** the client never touches `Simulation`. Same process, no networking: the simulation sits behind a message boundary (inputs and commands in, snapshots and events out). The game plays as before.
+
+**Plan** (approved 2026-11-05)
+- `protocol` crate (no Bevy): owned, `Send` message types, plain Rust values (no serde until networking). `ClientMsg`: `Input(PlayerInput)` each tick, plus commands (tuning changes, teleport, respawn cows, health, unkillable, brains on/off). `ServerMsg`: `Welcome` (content: registries, defs, models, sounds, tools; every chunk; spawn; waypoints), a `Snapshot` each tick (player view with previous position, cows, items, inventory, health, swing, guard), `ChunkChanged`, `BlockAdded` (crafted shapes), defs changed, and events (strikes, slams, hurts, craft result).
+- `server` crate (no Bevy): owns the `Simulation`, applies messages, emits messages. `game` builds it and hands the client a `LocalConnection`.
+- `sim`: queries the client needs (targeting, placement, `is_table`, `craft_plan`, `face_region`) become free functions over grid, registry and defs, so the client runs them on its world copy.
+- `client`: a `ClientWorld` resource (content, world copy kept from chunk messages, last two snapshots, event queues) replaces `Sim`. `crates/client/clippy.toml` bans `sim::Simulation`.
+- Same thread: each client fixed tick sends its input and runs one server tick, so timing is unchanged. A test runs the server on its own thread over channels.
+- Hit-stop, kept simple first: the client freezes its view and the simulation keeps running; when the freeze ends the view snaps to the present. New presses wait for the freeze to end, as before. Can change later.
+- The block-jump trainer is removed (block-jumping will change a lot). The chase drill stays (it's a good game for feeling the movement) and reads from the client's world copy; its debt entry stays.
+- Build order: protocol and server, client world copy, tuning commands, hit-stop, trainer removal and the lint.
+
+**Tests:** server (input moves the player, an edit sends `ChunkChanged`, a craft sends `BlockAdded`, a tuning command changes a def, debug commands); replica (after all messages, the client's world matches the server's); determinism (scripted inputs give identical snapshots directly and through the server); the server on its own thread. Client tests move from `Simulation` to the connection.
+
+**Done when**
+1. The client can't reach `Simulation` (lint), and all client-simulation traffic is `protocol` messages.
+2. Movement, editing, crafting, combat, cows, items, the chase drill, the tuning panel, saved tuning and debug keys play as before.
+3. Hit-stop is client-side: the simulation never pauses.
+4. The server runs headless in tests, including on its own thread.
+5. `cargo test` and `cargo clippy` are clean; API debt list updated.
 
 ### Toy backlog
 
