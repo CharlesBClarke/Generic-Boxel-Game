@@ -57,7 +57,7 @@ impl BlockId {
     }
 }
 
-#[derive(Default)]
+#[derive(Clone, Default)]
 pub struct BlockRegistry {
     defs: Vec<BlockDef>,
     by_name: HashMap<String, BlockId>,
@@ -67,6 +67,7 @@ pub struct BlockRegistry {
     materials: Vec<Material>,
 }
 
+#[derive(Clone)]
 struct Material {
     name: String,
     block: BlockId,
@@ -257,7 +258,7 @@ pub fn volume(shape: &[BlockBox]) -> u32 {
 
 /// Looks by name, in registration order. The simulation never draws them; it keeps them so
 /// clients, and later the network, can get every mod's looks from one place.
-#[derive(Default)]
+#[derive(Clone, Default)]
 pub struct LookRegistry {
     defs: Vec<LookDef>,
     by_name: HashMap<String, usize>,

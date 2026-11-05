@@ -3,6 +3,8 @@ resolver = "3"
 members = [
     "crates/api",
     "crates/sim",
+    "crates/protocol",
+    "crates/server",
     "crates/client",
     "crates/base",
     "crates/base_movement",
@@ -22,6 +24,8 @@ publish = false
 [workspace.dependencies]
 api = { path = "crates/api" }
 sim = { path = "crates/sim" }
+protocol = { path = "crates/protocol" }
+server = { path = "crates/server" }
 client = { path = "crates/client" }
 base = { path = "crates/base" }
 base_movement = { path = "crates/base_movement" }

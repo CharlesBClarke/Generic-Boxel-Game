@@ -12,6 +12,7 @@ path = "src/main.rs"
 [dependencies]
 api.workspace = true
 sim.workspace = true
+server.workspace = true
 client.workspace = true
 base.workspace = true
 base_movement.workspace = true

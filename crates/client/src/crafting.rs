@@ -12,11 +12,13 @@ use api::{BoxelPos, CraftError, Orientation, ShapeGrid, Vec3 as ZVec3};
 use bevy::prelude::*;
 use bevy::window::{CursorOptions, PrimaryWindow};
 use bevy_egui::{EguiContexts, egui};
-use sim::{BlockRegistry, Cells, Craft, CraftRefusal, MaterialId, Piece, Simulation};
+use sim::{BlockRegistry, Cells, Craft, CraftRefusal, MaterialId, Piece};
+
+use crate::world::ClientWorld;
 
 use crate::controls::{Controls, label};
 use crate::editing::{Palette, PartNames, short};
-use crate::{Look, Sim};
+use crate::Look;
 
 /// The menu's state. Its stacks stay between openings, so a shape can be made again.
 #[derive(Resource, Default)]
@@ -55,13 +57,13 @@ impl CraftingMenu {
 pub(crate) fn crafting_keys(
     keys: Res<ButtonInput<KeyCode>>,
     controls: Res<Controls>,
-    sim: Res<Sim>,
+    world: Res<ClientWorld>,
     look: Res<Look>,
     mut menu: ResMut<CraftingMenu>,
     mut cursor: Single<&mut CursorOptions, With<PrimaryWindow>>,
 ) {
     if menu.open.is_some() {
-        let gone = menu.request(1).map(|craft| sim.0.craft_plan(&craft));
+        let gone = menu.request(1).map(|craft| world.craft_plan(&craft));
         let unreachable =
             matches!(gone, Some(Err(CraftRefusal::TooFar | CraftRefusal::NoTable | CraftRefusal::NoCrafting)));
         // While a name is typed, keys are just letters.
@@ -79,7 +81,7 @@ pub(crate) fn crafting_keys(
     if !keys.just_pressed(controls.interact) || !crate::editing::playing(&cursor) {
         return;
     }
-    let Some(pos) = aimed_table(&sim.0, &look) else {
+    let Some(pos) = aimed_table(&world, &look) else {
         return;
     };
     menu.open = Some(pos);
@@ -88,20 +90,20 @@ pub(crate) fn crafting_keys(
 }
 
 /// The crafting table the player looks at, if any.
-fn aimed_table(sim: &Simulation, look: &Look) -> Option<BoxelPos> {
-    let hit = sim.target(look.yaw, look.pitch)?;
-    sim.is_table(&hit).then_some(hit.pos)
+fn aimed_table(world: &ClientWorld, look: &Look) -> Option<BoxelPos> {
+    let hit = world.target(look.yaw, look.pitch)?;
+    world.is_table(&hit).then_some(hit.pos)
 }
 
 /// A hint by the crosshair when it's on a table.
 pub(crate) fn update_table_hint(
-    sim: Res<Sim>,
+    world: Res<ClientWorld>,
     look: Res<Look>,
     menu: Res<CraftingMenu>,
     controls: Res<Controls>,
     mut text: Single<&mut Text, With<TableHint>>,
 ) {
-    let line = match aimed_table(&sim.0, &look) {
+    let line = match aimed_table(&world, &look) {
         Some(_) if menu.open.is_none() => format!("crafting table: {} to craft", label(controls.interact)),
         _ => String::new(),
     };
@@ -125,7 +127,7 @@ const MANY: u32 = 64;
 /// Draws the menu while it's open.
 pub(crate) fn crafting_menu(
     mut contexts: EguiContexts,
-    sim: Res<Sim>,
+    world: Res<ClientWorld>,
     controls: Res<Controls>,
     mut menu: ResMut<CraftingMenu>,
     mut palette: ResMut<Palette>,
@@ -135,11 +137,11 @@ pub(crate) fn crafting_menu(
         return Ok(());
     }
     let ctx = contexts.ctx_mut()?;
-    let sim = &sim.0;
-    let blocks = sim.blocks();
+    let world = &world;
+    let blocks = world.blocks();
     let shift = ctx.input(|i| i.modifiers.shift);
-    let most = if sim.capacity().is_some() { u32::MAX } else { MANY };
-    let plan = menu.request(most).map(|craft| sim.craft_plan(&craft));
+    let most = if world.capacity().is_some() { u32::MAX } else { MANY };
+    let plan = menu.request(most).map(|craft| world.craft_plan(&craft));
     // The cell to mark, if the stacks are refused because of one.
     let bad = match &plan {
         Some(Err(CraftRefusal::Pattern(CraftError::Floating { row, col } | CraftError::TooFine { row, col, .. }))) => {
@@ -178,10 +180,10 @@ pub(crate) fn crafting_menu(
                 ui.separator();
                 ui.vertical(|ui| {
                     ui.label("Carried: press to pick, hold to paint");
-                    carried(ui, sim, &mut palette, &mut names, &mut menu);
+                    carried(ui, world, &mut palette, &mut names, &mut menu);
                 });
                 ui.separator();
-                ui.vertical(|ui| result(ui, sim, &mut menu, &mut palette, &names, plan, shift));
+                ui.vertical(|ui| result(ui, world, &mut menu, &mut palette, &names, plan, shift));
             });
         });
     Ok(())
@@ -298,9 +300,9 @@ fn grid(
 /// Everything carried. Pressing one picks it as the brush and starts a stroke, so holding on
 /// the way to the grid paints; right-clicking drops the brush. A part also has buttons to hold
 /// it, rename it and throw all of it away.
-fn carried(ui: &mut egui::Ui, sim: &Simulation, palette: &mut Palette, names: &mut PartNames, menu: &mut CraftingMenu) {
-    let blocks = sim.blocks();
-    let things: Vec<(MaterialId, u32)> = sim.inventory().iter().collect();
+fn carried(ui: &mut egui::Ui, world: &ClientWorld, palette: &mut Palette, names: &mut PartNames, menu: &mut CraftingMenu) {
+    let blocks = world.blocks();
+    let things: Vec<(MaterialId, u32)> = world.inventory().iter().collect();
     if things.is_empty() {
         ui.label("nothing");
     }
@@ -337,7 +339,7 @@ fn carried(ui: &mut egui::Ui, sim: &Simulation, palette: &mut Palette, names: &m
                     return;
                 }
                 if ui.small_button("hold").on_hover_text("put it in hand").clicked() {
-                    palette.select_part(sim, id);
+                    palette.select_part(world, id);
                 }
                 match &mut menu.renaming {
                     Some((part, typed)) if *part == id => {
@@ -369,14 +371,14 @@ fn carried(ui: &mut egui::Ui, sim: &Simulation, palette: &mut Palette, names: &m
 /// The picture of what the stacks make, the flip switch, and the craft buttons.
 fn result(
     ui: &mut egui::Ui,
-    sim: &Simulation,
+    world: &ClientWorld,
     menu: &mut CraftingMenu,
     palette: &mut Palette,
     names: &PartNames,
     plan: Option<Result<sim::CraftPlan, CraftRefusal>>,
     shift: bool,
 ) {
-    let blocks = sim.blocks();
+    let blocks = world.blocks();
     let (rect, _) = ui.allocate_exact_size(egui::vec2(PREVIEW, PREVIEW), egui::Sense::hover());
     ui.painter().rect_filled(rect, 4.0, egui::Color32::from_gray(25));
     ui.checkbox(&mut menu.flip, "Flip upside down").on_hover_text("for things easier built top first, like a table");
@@ -410,7 +412,7 @@ fn result(
     }
     match menu.result.take() {
         Some(Ok((part, count))) => {
-            palette.select_part(sim, part);
+            palette.select_part(world, part);
             menu.result = Some(Ok((part, count)));
         }
         other => menu.result = other,

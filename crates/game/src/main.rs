@@ -1,4 +1,4 @@
-//! Loads the base mod into the engine and opens the client.
+//! Loads the base mod into the engine, runs it on a local server and opens the client.
 //!
 //! - `--native-movement` runs the movement controller natively instead of as WebAssembly, for
 //!   comparing the two.
@@ -24,5 +24,6 @@ fn main() {
         eprintln!("loading the game failed: {e}");
         std::process::exit(1);
     });
-    client::run(sim);
+    let server = server::Server::new(sim);
+    client::run(Box::new(server::LocalConnection::new(server)));
 }

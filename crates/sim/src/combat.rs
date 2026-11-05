@@ -45,6 +45,11 @@ impl ToolId {
     pub fn index(self) -> usize {
         self.0 as usize
     }
+
+    /// The IDs of `count` registered tools, in registration order.
+    pub fn first(count: usize) -> impl Iterator<Item = ToolId> {
+        (0..count).map(|i| ToolId(i as u16))
+    }
 }
 
 /// One target in the world.
@@ -286,6 +291,11 @@ impl Targets {
 
     pub fn iter(&self) -> impl Iterator<Item = &Target> {
         self.list.iter()
+    }
+
+    /// Every live target, in order.
+    pub fn as_slice(&self) -> &[Target] {
+        &self.list
     }
 
     pub fn len(&self) -> usize {

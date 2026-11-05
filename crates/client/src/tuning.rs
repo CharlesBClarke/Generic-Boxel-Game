@@ -1,42 +1,30 @@
-//! The live tuning panel: sliders for every value the player's movement controller, the
-//! interaction, push-out, crowd, health, item drop and inventory definitions, tools, targets, brains, the camera
-//! feel and the combat feel and the animation expose, whichever mod they come from. Save keeps
-//! them in the tuning file (see `tuning_file`), which is applied at startup.
+//! The live tuning panel: sliders for every value the server lets a client tune (the player's
+//! movement controller, the interaction, push-out, crowd, health, item drop and inventory
+//! definitions, tools, targets and brains, whichever mod they come from) and the client's own:
+//! the camera feel, the combat feel, the animation, ambient occlusion and the chase drill. Save
+//! keeps them in the tuning file (see `tuning_file`), which is applied at startup.
+//!
+//! The server's values are edited as copies and each change is sent back as a command; the
+//! server answers with its definitions as changed.
 
 use api::{Tunable, Tunables};
 use bevy::prelude::*;
 use bevy_egui::{EguiContexts, egui};
+use protocol::{Command, TuningSection};
 
-use crate::Sim;
 use crate::animation::{AnimationPreview, AnimationTuning};
 use crate::combat::CombatFeel;
 use crate::drill::{Drill, DrillTuning};
-use crate::tuning_file;
 use crate::feel::CameraFeel;
 use crate::mesher::AoTuning;
+use crate::tuning_file;
+use crate::world::{ClientWorld, Link};
 
 #[derive(Resource, Default)]
 pub struct TuningPanel {
     pub open: bool,
-    /// The controller's values when the game started, for reset.
-    movement_defaults: Option<Vec<Tunable>>,
-    /// The interaction definition when the game started, for reset.
-    interaction_defaults: Option<Vec<Tunable>>,
-    /// The push-out definition when the game started, for reset.
-    push_out_defaults: Option<Vec<Tunable>>,
-    /// The crowd definition when the game started, for reset.
-    crowd_defaults: Option<Vec<Tunable>>,
-    /// The health definition when the game started, for reset.
-    health_defaults: Option<Vec<Tunable>>,
-    /// The item drop definition when the game started, for reset.
-    item_drop_defaults: Option<Vec<Tunable>>,
-    /// The inventory definition when the game started, for reset.
-    inventory_defaults: Option<Vec<Tunable>>,
-    /// Each tool's and each target's values when the game started, for reset.
-    tool_defaults: Option<Vec<Vec<Tunable>>>,
-    target_defaults: Option<Vec<Vec<Tunable>>>,
-    /// Each brain's values when the game started, for reset.
-    brain_defaults: Option<Vec<Vec<Tunable>>>,
+    /// The server's values when the game started, for reset.
+    server_defaults: Option<Vec<TuningSection>>,
     /// The last printout, shown in the panel so it can be copied.
     printout: String,
     /// Whether the saved tuning file has been applied yet.
@@ -49,7 +37,8 @@ pub struct TuningPanel {
 pub fn tuning_panel(
     mut contexts: EguiContexts,
     mut panel: ResMut<TuningPanel>,
-    mut sim: ResMut<Sim>,
+    mut world: ResMut<ClientWorld>,
+    mut link: ResMut<Link>,
     mut feel: ResMut<CameraFeel>,
     mut ao: ResMut<AoTuning>,
     mut combat: ResMut<CombatFeel>,
@@ -57,59 +46,33 @@ pub fn tuning_panel(
     mut animation: ResMut<AnimationTuning>,
     mut preview: ResMut<AnimationPreview>,
 ) -> Result {
+    // The saved file is applied once, on the first frame there is a player, open or not.
+    if world.player().is_none() {
+        return Ok(());
+    }
+    let load = !panel.loaded;
+    if !panel.open && !load {
+        return Ok(());
+    }
+    panel.loaded = true;
     // Every clip any model has, for the preview.
     let mut clips: Vec<String> = Vec::new();
-    for skin in sim.0.models().iter().filter_map(|m| m.skin.as_ref()) {
+    for skin in world.models().iter().filter_map(|m| m.skin.as_ref()) {
         for clip in &skin.clips {
             if !clips.contains(&clip.name) {
                 clips.push(clip.name.clone());
             }
         }
     }
-    // A copy, since the controller below borrows the simulation; written back at the end.
-    let mut interaction = sim.0.interaction_def().cloned();
-    if panel.interaction_defaults.is_none() {
-        panel.interaction_defaults = interaction.as_ref().map(|i| i.tunables());
+    // Copies of the server's values, compared with these at the end to send what changed.
+    let before = world.defs().tuning.clone();
+    if panel.server_defaults.is_none() {
+        panel.server_defaults = Some(before.clone());
     }
-    let mut push_out = sim.0.push_out_def().cloned();
-    if panel.push_out_defaults.is_none() {
-        panel.push_out_defaults = push_out.as_ref().map(|p| p.tunables());
-    }
-    let mut crowd = sim.0.crowd_def().cloned();
-    if panel.crowd_defaults.is_none() {
-        panel.crowd_defaults = crowd.as_ref().map(|c| c.tunables());
-    }
-    let mut health = sim.0.health_def().cloned();
-    if panel.health_defaults.is_none() {
-        panel.health_defaults = health.as_ref().map(|h| h.tunables());
-    }
-    let mut unkillable = sim.0.unkillable();
+    let mut server: Vec<(String, Values)> = before.iter().map(|s| (s.name.clone(), Values(s.values.clone()))).collect();
+    let mut unkillable = world.defs().unkillable;
+    let mut brains_on = world.defs().brains_on;
     let mut refill = false;
-    let mut item_drops = sim.0.item_drop_def().cloned();
-    if panel.item_drop_defaults.is_none() {
-        panel.item_drop_defaults = item_drops.as_ref().map(|d| d.tunables());
-    }
-    let mut inventory = sim.0.inventory_def().cloned();
-    if panel.inventory_defaults.is_none() {
-        panel.inventory_defaults = inventory.as_ref().map(|d| d.tunables());
-    }
-    let mut tools = sim.0.tools().to_vec();
-    if panel.tool_defaults.is_none() {
-        panel.tool_defaults = Some(tools.iter().map(|t| t.tunables()).collect());
-    }
-    let mut targets = sim.0.target_defs().to_vec();
-    if panel.target_defaults.is_none() {
-        panel.target_defaults = Some(targets.iter().map(|t| t.tunables()).collect());
-    }
-    // Copies of each brain's values too, written back at the end.
-    let brain_names: Vec<String> = sim.0.brain_names().map(String::from).collect();
-    let mut brains: Vec<Values> =
-        (0..brain_names.len()).map(|i| Values(sim.0.brain_mut(i).map_or_else(Vec::new, |b| b.tunables()))).collect();
-    let brains_before = brains.clone();
-    if panel.brain_defaults.is_none() {
-        panel.brain_defaults = Some(brains.iter().map(|b| b.0.clone()).collect());
-    }
-    let mut brains_on = sim.0.brains_on();
     // The client's own values, through copies so a resource is only marked changed when a
     // value moves (an ambient occlusion change remeshes every chunk).
     let mut juice = combat.clone();
@@ -117,51 +80,12 @@ pub fn tuning_panel(
     let mut camera = feel.clone();
     let mut shading = *ao;
     let mut drill_tuning = drill.tuning.clone();
-    let Some(player) = sim.0.player_mut() else {
-        return Ok(());
-    };
-    let controller = player.controller_mut();
-    if panel.movement_defaults.is_none() {
-        panel.movement_defaults = Some(controller.tunables());
-    }
-    // The saved file is applied once, on the first frame there is a player, open or not.
-    let load = !panel.loaded;
-    if !panel.open && !load {
-        return Ok(());
-    }
-    panel.loaded = true;
 
     // Every section of sliders by its saved name, for loading, saving and printing.
     macro_rules! sections {
         () => {{
-            let mut s: Vec<(String, &mut dyn Tunables)> = vec![("movement".to_owned(), &mut *controller as &mut dyn Tunables)];
-            if let Some(x) = &mut interaction {
-                s.push(("interaction".to_owned(), x));
-            }
-            if let Some(x) = &mut push_out {
-                s.push(("push_out".to_owned(), x));
-            }
-            if let Some(x) = &mut crowd {
-                s.push(("crowd".to_owned(), x));
-            }
-            if let Some(x) = &mut health {
-                s.push(("health".to_owned(), x));
-            }
-            if let Some(x) = &mut item_drops {
-                s.push(("item_drops".to_owned(), x));
-            }
-            if let Some(x) = &mut inventory {
-                s.push(("inventory".to_owned(), x));
-            }
-            for tool in &mut tools {
-                s.push((format!("tool {}", tool.name), tool));
-            }
-            for target in &mut targets {
-                s.push((format!("target {}", target.name), target));
-            }
-            for (name, brain) in brain_names.iter().zip(&mut brains) {
-                s.push((format!("brain {name}"), brain));
-            }
+            let mut s: Vec<(String, &mut dyn Tunables)> =
+                server.iter_mut().map(|(name, values)| (name.clone(), values as &mut dyn Tunables)).collect();
             s.push(("combat".to_owned(), &mut juice));
             s.push(("animation".to_owned(), &mut playing));
             s.push(("camera".to_owned(), &mut camera));
@@ -196,62 +120,31 @@ pub fn tuning_panel(
         let ctx = contexts.ctx_mut()?;
         egui::Window::new("Tuning").default_pos([10.0, 120.0]).show(ctx, |ui| {
             egui::ScrollArea::vertical().max_height(600.0).show(ui, |ui| {
-                ui.heading("Movement");
-                sliders(ui, "movement", controller);
-                if let Some(interaction) = &mut interaction {
-                    ui.separator();
-                    ui.heading("Interaction");
-                    sliders(ui, "interaction", interaction);
-                }
-                if let Some(push_out) = &mut push_out {
-                    ui.separator();
-                    ui.heading("Push-out");
-                    sliders(ui, "push_out", push_out);
-                }
-                if let Some(crowd) = &mut crowd {
-                    ui.separator();
-                    ui.heading("Crowd");
-                    sliders(ui, "crowd", crowd);
-                }
-                if let Some(health) = &mut health {
-                    ui.separator();
-                    ui.heading("Player health");
-                    ui.horizontal(|ui| {
-                        ui.checkbox(&mut unkillable, "Can't be knocked out");
-                        refill = ui.button("Heal").clicked();
-                    });
-                    sliders(ui, "health", health);
-                }
-                if let Some(item_drops) = &mut item_drops {
-                    ui.separator();
-                    ui.heading("Item drops");
-                    sliders(ui, "item_drops", item_drops);
-                }
-                if let Some(inventory) = &mut inventory {
-                    ui.separator();
-                    ui.heading("Inventory");
-                    sliders(ui, "inventory", inventory);
-                }
-                for tool in &mut tools {
-                    ui.separator();
-                    ui.heading(format!("Tool: {}", tool.name));
-                    let id = format!("tool {}", tool.name);
-                    sliders(ui, &id, tool);
-                }
-                for target in &mut targets {
-                    ui.separator();
-                    ui.heading(format!("Target: {}", target.name));
-                    let id = format!("target {}", target.name);
-                    sliders(ui, &id, target);
-                }
-                if !brain_names.is_empty() {
-                    ui.separator();
-                    ui.heading("Brains");
-                    ui.checkbox(&mut brains_on, "think (off: targets are dummies)");
-                }
-                for (name, brain) in brain_names.iter().zip(&mut brains) {
-                    ui.label(format!("Brain: {name}"));
-                    sliders(ui, &format!("brain {name}"), brain);
+                let mut first = true;
+                let mut brains_shown = false;
+                for (name, values) in &mut server {
+                    if !first && !name.starts_with("brain ") {
+                        ui.separator();
+                    }
+                    first = false;
+                    if let Some(brain) = name.strip_prefix("brain ") {
+                        if !brains_shown {
+                            brains_shown = true;
+                            ui.separator();
+                            ui.heading("Brains");
+                            ui.checkbox(&mut brains_on, "think (off: targets are dummies)");
+                        }
+                        ui.label(format!("Brain: {brain}"));
+                    } else {
+                        ui.heading(heading(name));
+                    }
+                    if name == "health" {
+                        ui.horizontal(|ui| {
+                            ui.checkbox(&mut unkillable, "Can't be knocked out");
+                            refill = ui.button("Heal").clicked();
+                        });
+                    }
+                    sliders(ui, name, values);
                 }
                 ui.separator();
                 ui.heading("Combat feel");
@@ -284,53 +177,13 @@ pub fn tuning_panel(
             ui.separator();
             ui.horizontal(|ui| {
                 if ui.button("Reset all").clicked() {
-                    for t in panel.movement_defaults.iter().flatten() {
-                        controller.set_tunable(&t.name, t.value);
-                    }
-                    if let Some(interaction) = &mut interaction {
-                        for t in panel.interaction_defaults.iter().flatten() {
-                            interaction.set_tunable(&t.name, t.value);
-                        }
-                    }
-                    if let Some(push_out) = &mut push_out {
-                        for t in panel.push_out_defaults.iter().flatten() {
-                            push_out.set_tunable(&t.name, t.value);
-                        }
-                    }
-                    if let Some(crowd) = &mut crowd {
-                        for t in panel.crowd_defaults.iter().flatten() {
-                            crowd.set_tunable(&t.name, t.value);
-                        }
-                    }
-                    if let Some(health) = &mut health {
-                        for t in panel.health_defaults.iter().flatten() {
-                            health.set_tunable(&t.name, t.value);
+                    for (name, values) in &mut server {
+                        let defaults = panel.server_defaults.iter().flatten().find(|d| d.name == *name);
+                        for t in defaults.map(|d| d.values.as_slice()).unwrap_or_default() {
+                            values.set_tunable(&t.name, t.value);
                         }
                     }
                     unkillable = false;
-                    if let Some(item_drops) = &mut item_drops {
-                        for t in panel.item_drop_defaults.iter().flatten() {
-                            item_drops.set_tunable(&t.name, t.value);
-                        }
-                    }
-                    if let Some(inventory) = &mut inventory {
-                        for t in panel.inventory_defaults.iter().flatten() {
-                            inventory.set_tunable(&t.name, t.value);
-                        }
-                    }
-                    for (tool, defaults) in tools.iter_mut().zip(panel.tool_defaults.iter().flatten()) {
-                        for t in defaults {
-                            tool.set_tunable(&t.name, t.value);
-                        }
-                    }
-                    for (target, defaults) in targets.iter_mut().zip(panel.target_defaults.iter().flatten()) {
-                        for t in defaults {
-                            target.set_tunable(&t.name, t.value);
-                        }
-                    }
-                    for (brain, defaults) in brains.iter_mut().zip(panel.brain_defaults.iter().flatten()) {
-                        brain.0.clone_from(defaults);
-                    }
                     brains_on = true;
                     camera = CameraFeel::default();
                     shading = AoTuning::default();
@@ -369,59 +222,17 @@ pub fn tuning_panel(
             info!("{}", panel.note);
         }
     }
-    if let (Some(edited), Some(def)) = (interaction, sim.0.interaction_def_mut())
-        && edited != *def
-    {
-        *def = edited;
+    for command in changes(&before, &server) {
+        link.command(command, &mut world);
     }
-    if let (Some(edited), Some(def)) = (push_out, sim.0.push_out_def_mut())
-        && edited != *def
-    {
-        *def = edited;
+    if unkillable != world.defs().unkillable {
+        link.command(Command::Unkillable(unkillable), &mut world);
     }
-    if let (Some(edited), Some(def)) = (crowd, sim.0.crowd_def_mut())
-        && edited != *def
-    {
-        *def = edited;
-    }
-    if let (Some(edited), Some(def)) = (health, sim.0.health_def_mut())
-        && edited != *def
-    {
-        *def = edited;
-    }
-    if unkillable != sim.0.unkillable() {
-        sim.0.set_unkillable(unkillable);
+    if brains_on != world.defs().brains_on {
+        link.command(Command::BrainsOn(brains_on), &mut world);
     }
     if refill {
-        sim.0.set_health(f32::MAX);
-    }
-    if let (Some(edited), Some(def)) = (item_drops, sim.0.item_drop_def_mut())
-        && edited != *def
-    {
-        *def = edited;
-    }
-    if let (Some(edited), Some(def)) = (inventory, sim.0.inventory_def_mut())
-        && edited != *def
-    {
-        *def = edited;
-    }
-    if tools != sim.0.tools() {
-        sim.0.tools_mut().clone_from_slice(&tools);
-    }
-    if targets != sim.0.target_defs() {
-        sim.0.target_defs_mut().clone_from_slice(&targets);
-    }
-    for (i, (edited, before)) in brains.iter().zip(&brains_before).enumerate() {
-        if let Some(brain) = sim.0.brain_mut(i) {
-            for (t, b) in edited.0.iter().zip(&before.0) {
-                if t.value != b.value {
-                    brain.set_tunable(&t.name, t.value);
-                }
-            }
-        }
-    }
-    if brains_on != sim.0.brains_on() {
-        sim.0.set_brains_on(brains_on);
+        link.command(Command::Heal, &mut world);
     }
     if juice != *combat {
         *combat = juice;
@@ -437,6 +248,38 @@ pub fn tuning_panel(
         drill.tuning = drill_tuning;
     }
     Ok(())
+}
+
+/// A server section's heading in the panel.
+fn heading(section: &str) -> String {
+    match section {
+        "movement" => "Movement".into(),
+        "interaction" => "Interaction".into(),
+        "push_out" => "Push-out".into(),
+        "crowd" => "Crowd".into(),
+        "health" => "Player health".into(),
+        "item_drops" => "Item drops".into(),
+        "inventory" => "Inventory".into(),
+        _ => match section.split_once(' ') {
+            Some(("tool", name)) => format!("Tool: {name}"),
+            Some(("target", name)) => format!("Target: {name}"),
+            _ => section.into(),
+        },
+    }
+}
+
+/// A command for every value in `edited` that differs from `before`.
+fn changes(before: &[TuningSection], edited: &[(String, Values)]) -> Vec<Command> {
+    let mut out = Vec::new();
+    for (section, (name, values)) in before.iter().zip(edited) {
+        debug_assert_eq!(section.name, *name);
+        for (old, new) in section.values.iter().zip(&values.0) {
+            if old.value != new.value {
+                out.push(Command::Tune { section: name.clone(), name: new.name.clone(), value: new.value });
+            }
+        }
+    }
+    out
 }
 
 /// Writes the values to the tuning file, making its folder if needed.
@@ -484,6 +327,21 @@ fn printout(tunables: &[Tunable]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn only_changed_values_are_sent() {
+        let before = vec![TuningSection {
+            name: "health".into(),
+            values: vec![Tunable::new("regen", 1.0, 0.0, 5.0), Tunable::new("health", 10.0, 1.0, 50.0)],
+        }];
+        let mut edited: Vec<(String, Values)> = before.iter().map(|s| (s.name.clone(), Values(s.values.clone()))).collect();
+        assert!(changes(&before, &edited).is_empty());
+        edited[0].1.set_tunable("health", 20.0);
+        assert_eq!(
+            changes(&before, &edited),
+            [Command::Tune { section: "health".into(), name: "health".into(), value: 20.0 }]
+        );
+    }
 
     #[test]
     fn printout_pastes_as_struct_fields() {

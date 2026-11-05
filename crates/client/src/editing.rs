@@ -9,12 +9,13 @@ use api::{ChunkPos, Vec3 as ZVec3, WorldPos};
 use bevy::input::mouse::{AccumulatedMouseScroll, MouseScrollUnit};
 use bevy::prelude::*;
 use bevy::window::{CursorGrabMode, CursorOptions, PrimaryWindow};
-use sim::{BlockId, BlockRegistry, FACE_CENTER, MaterialId, Occupant, Simulation, ToolId, face_region, occupant_boxes};
+use sim::{BlockId, BlockRegistry, FACE_CENTER, MaterialId, Occupant, ToolId, face_region, occupant_boxes};
 
 use crate::controls::Controls;
 use crate::solid::SolidMaterial;
 use crate::volumes::Volumes;
-use crate::{ChunkMesh, Look, PendingToggles, RenderOrigin, Sim, coords, mesher};
+use crate::world::ClientWorld;
+use crate::{ChunkMesh, Look, PendingToggles, RenderOrigin, coords, mesher};
 
 /// Scroll distance, in pixels, that moves the palette one slot on touchpads and other
 /// pixel-scrolling devices.
@@ -47,11 +48,11 @@ pub enum Entry {
 /// carried, in the order materials were first named, then each part carried, in the order they
 /// were first made, then any other placeable block. Without an inventory, placing is free and
 /// nothing is carried, so every material is listed.
-pub fn entries(sim: &Simulation) -> Vec<Entry> {
-    let blocks = sim.blocks();
-    let inventory = sim.inventory();
-    let carried = |m: MaterialId| sim.inventory_def().is_none() || inventory.amount(m) >= blocks.unit(m);
-    let mut out: Vec<Entry> = sim.tool_ids().map(Entry::Tool).collect();
+pub fn entries(world: &ClientWorld) -> Vec<Entry> {
+    let blocks = world.blocks();
+    let inventory = world.inventory();
+    let carried = |m: MaterialId| world.inventory_def().is_none() || inventory.amount(m) >= blocks.unit(m);
+    let mut out: Vec<Entry> = world.tool_ids().map(Entry::Tool).collect();
     let all = (0..blocks.material_count()).filter_map(|i| blocks.material_by_index(i));
     let (materials, parts): (Vec<_>, Vec<_>) = all.partition(|&m| blocks.part_of(m).is_none());
     let placeable = |b: BlockId| blocks.get(b).is_some_and(|def| def.placeable && def.is_full());
@@ -76,8 +77,8 @@ pub enum Held {
 
 impl Palette {
     /// What's in the selected slot.
-    pub fn held(&self, sim: &Simulation) -> Held {
-        match entries(sim).get(self.slot) {
+    pub fn held(&self, world: &ClientWorld) -> Held {
+        match entries(world).get(self.slot) {
             Some(Entry::Tool(tool)) => Held::Tool(*tool),
             Some(Entry::Material(_, block) | Entry::Part(_, block) | Entry::Block(block)) => Held::Block(*block),
             None => Held::Nothing,
@@ -85,31 +86,31 @@ impl Palette {
     }
 
     /// The material or part in the selected slot, if it holds one: what the drop key throws.
-    pub fn material(&self, sim: &Simulation) -> Option<MaterialId> {
-        match entries(sim).get(self.slot) {
+    pub fn material(&self, world: &ClientWorld) -> Option<MaterialId> {
+        match entries(world).get(self.slot) {
             Some(Entry::Material(m, _) | Entry::Part(m, _)) => Some(*m),
             _ => None,
         }
     }
 
     /// Selects the slot holding part `part`, if it's carried.
-    pub fn select_part(&mut self, sim: &Simulation, part: MaterialId) {
-        if let Some(i) = entries(sim).iter().position(|e| matches!(e, Entry::Part(p, _) if *p == part)) {
+    pub fn select_part(&mut self, world: &ClientWorld, part: MaterialId) {
+        if let Some(i) = entries(world).iter().position(|e| matches!(e, Entry::Part(p, _) if *p == part)) {
             self.slot = i;
         }
     }
 
     /// The selected block, or empty if a tool or nothing is selected.
-    pub fn selected(&self, sim: &Simulation) -> BlockId {
-        match self.held(sim) {
+    pub fn selected(&self, world: &ClientWorld) -> BlockId {
+        match self.held(world) {
             Held::Block(block) => block,
             _ => BlockId::EMPTY,
         }
     }
 
     /// The selected tool, if one is.
-    pub fn tool(&self, sim: &Simulation) -> Option<ToolId> {
-        match self.held(sim) {
+    pub fn tool(&self, world: &ClientWorld) -> Option<ToolId> {
+        match self.held(world) {
             Held::Tool(tool) => Some(tool),
             _ => None,
         }
@@ -117,8 +118,8 @@ impl Palette {
 }
 
 /// How many slots the palette has.
-pub fn slot_count(sim: &Simulation) -> usize {
-    entries(sim).len()
+pub fn slot_count(world: &ClientWorld) -> usize {
+    entries(world).len()
 }
 
 /// Every block a player may place, in registration order.
@@ -149,7 +150,7 @@ pub(crate) fn edit_input(
     scroll: Res<AccumulatedMouseScroll>,
     controls: Res<Controls>,
     cursor: Single<&CursorOptions, With<PrimaryWindow>>,
-    sim: Res<Sim>,
+    world: Res<ClientWorld>,
     mut palette: ResMut<Palette>,
     mut toggles: ResMut<PendingToggles>,
 ) {
@@ -169,7 +170,7 @@ pub(crate) fn edit_input(
         palette.precise = !palette.precise;
     }
 
-    let count = slot_count(&sim.0);
+    let count = slot_count(&world);
     if count == 0 {
         return;
     }
@@ -189,17 +190,17 @@ pub(crate) fn edit_input(
 }
 
 /// Outlines the boxes of the occupant that breaking would remove, unless a tool is in hand.
-pub(crate) fn draw_outline(sim: Res<Sim>, look: Res<Look>, palette: Res<Palette>, origin: Res<RenderOrigin>, mut gizmos: Gizmos) {
-    if palette.tool(&sim.0).is_some() {
+pub(crate) fn draw_outline(world: Res<ClientWorld>, look: Res<Look>, palette: Res<Palette>, origin: Res<RenderOrigin>, mut gizmos: Gizmos) {
+    if palette.tool(&world).is_some() {
         return;
     }
-    let Some(hit) = sim.0.target(look.yaw, look.pitch) else {
+    let Some(hit) = world.target(look.yaw, look.pitch) else {
         return;
     };
-    let Some(&occupant) = sim.0.universe().main().cell(hit.pos).get(hit.occupant) else {
+    let Some(&occupant) = world.universe().main().cell(hit.pos).get(hit.occupant) else {
         return;
     };
-    for b in occupant_boxes(occupant, sim.0.blocks()) {
+    for b in occupant_boxes(occupant, world.blocks()) {
         let center = WorldPos::at_boxel(hit.pos).translate((b.min + b.max) * 0.5);
         let size = coords::to_render(Vec3::from_array((b.max - b.min).to_array())).abs();
         // Slightly larger than the box, so the lines aren't hidden by its own faces.
@@ -215,16 +216,16 @@ const GUIDE_LIFT: f32 = 0.003;
 /// In precise placement, draws the five parts of the aimed-at face (the middle square and the
 /// four triangles around it) and picks out the one the crosshair is in.
 pub(crate) fn draw_region_guide(
-    sim: Res<Sim>,
+    world: Res<ClientWorld>,
     look: Res<Look>,
     palette: Res<Palette>,
     origin: Res<RenderOrigin>,
     mut gizmos: Gizmos,
 ) {
-    if !palette.precise || palette.tool(&sim.0).is_some() {
+    if !palette.precise || palette.tool(&world).is_some() {
         return;
     }
-    let Some(hit) = sim.0.target(look.yaw, look.pitch) else {
+    let Some(hit) = world.target(look.yaw, look.pitch) else {
         return;
     };
     if hit.normal == api::I64Vec3::ZERO {
@@ -288,7 +289,7 @@ const GHOST_SCALE: f32 = 0.99;
 /// changes, or hides it when placing would do nothing.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn update_ghost(
-    sim: Res<Sim>,
+    world: Res<ClientWorld>,
     look: Res<Look>,
     palette: Res<Palette>,
     origin: Res<RenderOrigin>,
@@ -300,11 +301,10 @@ pub(crate) fn update_ghost(
     let Ok((mut mesh, mut material, mut transform, mut visibility)) = parts.get_mut(ghost.entity) else {
         return;
     };
-    let blocks = sim.0.blocks();
-    let place = sim
-        .0
+    let blocks = world.blocks();
+    let place = world
         .target(look.yaw, look.pitch)
-        .and_then(|hit| sim.0.placement(&hit, palette.selected(&sim.0), look.yaw, look.pitch, palette.precise));
+        .and_then(|hit| world.placement(&hit, palette.selected(&world), look.yaw, look.pitch, palette.precise));
     let Some(place) = place else {
         visibility.set_if_neq(Visibility::Hidden);
         return;
@@ -330,7 +330,7 @@ pub(crate) fn update_ghost(
 /// occlusion tuning changes.
 pub(crate) fn remesh_changed_chunks(
     mut commands: Commands,
-    mut sim: ResMut<Sim>,
+    mut world: ResMut<ClientWorld>,
     origin: Res<RenderOrigin>,
     mut meshes: ResMut<Assets<Mesh>>,
     mut chunk_meshes: ResMut<ChunkMeshes>,
@@ -338,14 +338,14 @@ pub(crate) fn remesh_changed_chunks(
     ao: Res<mesher::AoTuning>,
 ) {
     // Crafting registers blocks while playing; their looks must be known before they're drawn.
-    chunk_meshes.volumes.sync(sim.0.blocks());
-    let mut changed = sim.0.take_changed_chunks();
-    let grid = sim.0.universe().main();
+    chunk_meshes.volumes.sync(world.blocks());
+    let mut changed = world.take_changed_chunks();
+    let grid = world.universe().main();
     if ao.is_changed() && !ao.is_added() {
         changed = grid.chunks().map(|(pos, _)| pos).collect();
     }
     for pos in changed {
-        let data = mesher::mesh_chunk(grid, pos, sim.0.blocks(), &chunk_meshes.volumes, &ao);
+        let data = mesher::mesh_chunk(grid, pos, world.blocks(), &chunk_meshes.volumes, &ao);
         match chunk_meshes.entities.get(&pos).copied() {
             Some(entity) if data.is_empty() => {
                 commands.entity(entity).despawn();
@@ -430,10 +430,10 @@ impl PartNames {
 }
 
 /// How full the inventory is, for the line above the hotbar.
-pub(crate) fn carried_line(sim: &Simulation) -> String {
-    let inventory = sim.inventory();
+pub(crate) fn carried_line(world: &ClientWorld) -> String {
+    let inventory = world.inventory();
     let amount = crate::items::amount_label;
-    match sim.capacity() {
+    match world.capacity() {
         Some(capacity) => {
             let full = if inventory.room(Some(capacity)) == 0 { "  FULL" } else { "" };
             format!("carrying {} / {}{full}", amount(inventory.total()), amount(capacity))
@@ -443,12 +443,12 @@ pub(crate) fn carried_line(sim: &Simulation) -> String {
 }
 
 /// A slot's name on the hotbar, and how much of it is carried, if that's counted.
-pub(crate) fn slot_label(sim: &Simulation, names: &PartNames, entry: &Entry) -> (String, Option<String>) {
-    let blocks = sim.blocks();
-    let inventory = sim.inventory();
-    let counted = sim.inventory_def().is_some();
+pub(crate) fn slot_label(world: &ClientWorld, names: &PartNames, entry: &Entry) -> (String, Option<String>) {
+    let blocks = world.blocks();
+    let inventory = world.inventory();
+    let counted = world.inventory_def().is_some();
     match entry {
-        Entry::Tool(tool) => (short(&sim.tool(*tool).name).to_owned(), None),
+        Entry::Tool(tool) => (short(&world.tool(*tool).name).to_owned(), None),
         Entry::Material(m, _) => {
             (names.label(blocks, *m), counted.then(|| crate::items::amount_label(inventory.amount(*m))))
         }
@@ -458,21 +458,21 @@ pub(crate) fn slot_label(sim: &Simulation, names: &PartNames, entry: &Entry) -> 
 }
 
 /// What's held and how it's placed, for the line under the hotbar.
-pub(crate) fn held_line(sim: &Simulation, palette: &Palette, names: &PartNames, controls: &Controls) -> String {
-    let blocks = sim.blocks();
+pub(crate) fn held_line(world: &ClientWorld, palette: &Palette, names: &PartNames, controls: &Controls) -> String {
+    let blocks = world.blocks();
     let mode = if palette.precise {
         "precise placement: the middle of a face lays it flat, an edge stands it there"
     } else {
         "basic placement"
     };
     let mode = format!("{mode} ({} switches)", controls.placement_mode.label());
-    match (palette.material(sim), palette.held(sim)) {
+    match (palette.material(world), palette.held(world)) {
         (Some(m), Held::Block(_)) => {
             let what = match blocks.part_of(m) {
                 Some(_) => format!("{}, a crafted shape", names.label(blocks, m)),
                 None => format!("{} block, shapes are crafted at a table", short(blocks.material_name(m))),
             };
-            let throw = if sim.inventory_def().is_some() {
+            let throw = if world.inventory_def().is_some() {
                 format!(", {} throws", crate::controls::label(controls.drop))
             } else {
                 String::new()
@@ -492,15 +492,15 @@ const SLOT_ICON: f32 = 40.0;
 /// what's held with the keys that change it. It only shows; keys and the wheel pick slots.
 pub(crate) fn hotbar(
     mut contexts: bevy_egui::EguiContexts,
-    sim: Res<Sim>,
+    world: Res<ClientWorld>,
     palette: Res<Palette>,
     names: Res<PartNames>,
     controls: Res<Controls>,
 ) -> Result {
     use bevy_egui::egui;
     let ctx = contexts.ctx_mut()?;
-    let sim = &sim.0;
-    let blocks = sim.blocks();
+    let world = &world;
+    let blocks = world.blocks();
     let shadow = egui::Color32::from_black_alpha(150);
     egui::Area::new(egui::Id::new("hotbar"))
         .anchor(egui::Align2::CENTER_BOTTOM, [0.0, -8.0])
@@ -508,10 +508,10 @@ pub(crate) fn hotbar(
         .show(ctx, |ui| {
             egui::Frame::new().fill(shadow).corner_radius(6.0).inner_margin(6.0).show(ui, |ui| {
                 ui.vertical_centered(|ui| {
-                    ui.label(egui::RichText::new(carried_line(sim)).color(egui::Color32::WHITE));
+                    ui.label(egui::RichText::new(carried_line(world)).color(egui::Color32::WHITE));
                     ui.horizontal(|ui| {
-                        for (i, entry) in entries(sim).iter().enumerate() {
-                            let (name, amount) = slot_label(sim, &names, entry);
+                        for (i, entry) in entries(world).iter().enumerate() {
+                            let (name, amount) = slot_label(world, &names, entry);
                             let size = egui::vec2(SLOT_ICON + 16.0, SLOT_ICON + 30.0);
                             let (rect, _) = ui.allocate_exact_size(size, egui::Sense::hover());
                             let selected = i == palette.slot;
@@ -549,7 +549,7 @@ pub(crate) fn hotbar(
                             painter.text(at, egui::Align2::CENTER_BOTTOM, label, small, egui::Color32::LIGHT_GRAY);
                         }
                     });
-                    let held = held_line(sim, &palette, &names, &controls);
+                    let held = held_line(world, &palette, &names, &controls);
                     if !held.is_empty() {
                         ui.label(egui::RichText::new(held).color(egui::Color32::WHITE));
                     }
@@ -563,8 +563,10 @@ pub(crate) fn hotbar(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::world::testing::{base_sim, connect, step};
     use api::{BlockDef, I64Vec3};
-    use sim::{PlayerInput, Simulation};
+    use protocol::Command;
+    use sim::PlayerInput;
 
     #[test]
     fn the_palette_lists_only_placeable_blocks() {
@@ -575,14 +577,19 @@ mod tests {
         assert_eq!(placeable_blocks(&blocks), [stone, dirt]);
     }
 
-    fn base_sim() -> Simulation {
-        let data = data_mods::load(std::path::Path::new(base::DATA_DIR)).unwrap();
-        Simulation::with_mods(&[&data, &base::BaseMod, &base_movement::BaseMovementMod]).unwrap()
-    }
-
     #[test]
     fn the_palette_holds_the_tools_then_what_is_carried() {
+        // Dirt and a part lie at the player's feet, to be picked up once the game runs.
         let mut sim = base_sim();
+        let wood = sim.blocks().material(base::WOOD).unwrap();
+        let dirt = sim.blocks().material(base::DIRT).unwrap();
+        let slab = sim.shaped_block(wood, &base::shapes::slab()).unwrap();
+        let part = sim.blocks().drop(slab).unwrap().material;
+        sim.spawn_player().unwrap();
+        let feet = sim.player().unwrap().pos();
+        sim.spawn_item(part, sim::FULL_VOLUME / 2, feet);
+        sim.spawn_item(dirt, sim::FULL_VOLUME, feet);
+        let (mut link, mut sim) = connect(sim);
         let club = sim.tool_ids().next().expect("base registers a tool");
         assert_eq!(sim.tool(club).name, base::CLUB);
         let blocks = sim.blocks();
@@ -601,16 +608,8 @@ mod tests {
 
         // Picking up dirt and a part puts them on offer: materials in the order they were
         // first named, then parts.
-        let wood = sim.blocks().material(base::WOOD).unwrap();
-        let dirt = sim.blocks().material(base::DIRT).unwrap();
-        let slab = sim.shaped_block(wood, &base::shapes::slab()).unwrap();
-        let part = sim.blocks().drop(slab).unwrap().material;
-        sim.spawn_player().unwrap();
-        let feet = sim.player().unwrap().pos();
-        sim.spawn_item(part, sim::FULL_VOLUME / 2, feet);
-        sim.spawn_item(dirt, sim::FULL_VOLUME, feet);
         for _ in 0..5 {
-            sim.step(&PlayerInput::default());
+            step(&mut link, &mut sim, &PlayerInput::default());
         }
         let blocks = sim.blocks();
         let material = |name| Entry::Material(blocks.material(name).unwrap(), blocks.id(name).unwrap());
@@ -622,13 +621,13 @@ mod tests {
         assert_eq!((palette.slot, palette.selected(&sim), palette.material(&sim)), (4, slab, Some(part)));
 
         // Throwing the part away takes it off the palette.
-        sim.step(&PlayerInput { discard: Some(part), ..Default::default() });
+        step(&mut link, &mut sim, &PlayerInput { discard: Some(part), ..Default::default() });
         assert_eq!(entries(&sim).len(), 4);
     }
 
     #[test]
     fn the_hotbar_shows_amounts_the_fill_and_what_is_held() {
-        let sim = base_sim();
+        let (_, sim) = connect(base_sim());
         let names = PartNames::default();
         let palette = Palette { slot: 1, ..Default::default() };
         assert_eq!(carried_line(&sim), "carrying 32, no limit");
@@ -643,7 +642,7 @@ mod tests {
 
     #[test]
     fn parts_go_by_the_names_players_give_them() {
-        let sim = base_sim();
+        let (_, sim) = connect(base_sim());
         let blocks = sim.blocks();
         let stone = blocks.material(base::STONE).unwrap();
         let stairs = blocks.drop(blocks.find_shaped(stone, &base::shapes::stairs()).unwrap()).unwrap().material;
@@ -690,16 +689,19 @@ mod tests {
 
     #[test]
     fn breaking_one_occupant_remeshes_and_leaves_the_other() {
-        let data = data_mods::load(std::path::Path::new(base::DATA_DIR)).unwrap();
-        let mut sim = Simulation::with_mods(&[&data, &base::BaseMod, &base_movement::BaseMovementMod]).unwrap();
+        let mut sim = base_sim();
         sim.spawn_player().unwrap();
+        let (mut link, mut sim) = connect(sim);
         // Stand east of a slab with a fence post through it and aim down at the post's top.
         let blocks = sim.blocks();
         let shaped = |m: &str, shape| blocks.find_shaped(blocks.material(m).unwrap(), &shape).unwrap();
         let (fence, slab) = (shaped(base::WOOD, base::shapes::post()), shaped(base::BRICK, base::shapes::slab()));
         let cell = api::BoxelPos::new(-9, -4, 0);
         assert_eq!(sim.universe().main().cell(cell).len(), 2);
-        sim.teleport_player(WorldPos::new(I64Vec3::new(-8, -4, 0), ZVec3::new(0.5, 0.5, 0.0)));
+        let to = WorldPos::new(I64Vec3::new(-8, -4, 0), ZVec3::new(0.5, 0.5, 0.0));
+        link.command(Command::TeleportPlayer(to), &mut sim);
+        step(&mut link, &mut sim, &PlayerInput::default());
+        sim.take_changed_chunks();
         let eye = sim.player().unwrap().eye();
         let aim = eye.delta_to(WorldPos::new(cell.0, ZVec3::new(0.5, 0.5, 1.0)));
         let (yaw, pitch) = (aim.y.atan2(aim.x), aim.z.atan2(aim.truncate().length()));
@@ -709,7 +711,7 @@ mod tests {
         let volumes = Volumes::build(sim.looks(), sim.blocks());
         let chunk = ChunkPos::new(-1, -1, 0);
         let before = mesher::mesh_chunk(sim.universe().main(), chunk, sim.blocks(), &volumes, &mesher::AoTuning::default()).quad_count();
-        sim.step(&PlayerInput { yaw, pitch, use_pressed: true, use_held: true, ..Default::default() });
+        step(&mut link, &mut sim, &PlayerInput { yaw, pitch, use_pressed: true, use_held: true, ..Default::default() });
         let left: Vec<_> = sim.universe().main().cell(cell).iter().map(|o| o.block).collect();
         assert_eq!(left, [slab]);
         assert!(sim.take_changed_chunks().contains(&chunk));
@@ -719,16 +721,16 @@ mod tests {
 
     #[test]
     fn breaking_a_block_remeshes_its_chunk() {
-        let data = data_mods::load(std::path::Path::new(base::DATA_DIR)).unwrap();
-        let mut sim = Simulation::with_mods(&[&data, &base::BaseMod, &base_movement::BaseMovementMod]).unwrap();
+        let mut sim = base_sim();
         sim.spawn_player().unwrap();
         sim.teleport_player(WorldPos::new(I64Vec3::new(10, 10, 0), ZVec3::new(0.5, 0.5, 0.0)));
+        let (mut link, mut sim) = connect(sim);
         let below = ChunkPos::new(0, 0, -1);
         let volumes = Volumes::build(sim.looks(), sim.blocks());
         let before = mesher::mesh_chunk(sim.universe().main(), below, sim.blocks(), &volumes, &mesher::AoTuning::default()).quad_count();
 
         let down = -89f32.to_radians();
-        sim.step(&PlayerInput { pitch: down, use_pressed: true, use_held: true, ..Default::default() });
+        step(&mut link, &mut sim, &PlayerInput { pitch: down, use_pressed: true, use_held: true, ..Default::default() });
         let changed = sim.take_changed_chunks();
         assert!(changed.contains(&below));
         // The floor's top layer is the top of this chunk, so the chunk above is told too.
@@ -743,14 +745,13 @@ mod tests {
 mod remesh_timing {
     use super::*;
     use crate::volumes::Volumes;
-    use sim::Simulation;
+    use crate::world::testing::{base_sim, connect};
 
     /// Times meshing every chunk of the base game's test area. Run with `--ignored --nocapture`.
     #[test]
     #[ignore]
     fn time_a_full_remesh() {
-        let data = data_mods::load(std::path::Path::new(base::DATA_DIR)).unwrap();
-        let sim = Simulation::with_mods(&[&data, &base::BaseMod, &base_movement::BaseMovementMod]).unwrap();
+        let (_, sim) = connect(base_sim());
         let volumes = Volumes::build(sim.looks(), sim.blocks());
         let ao = mesher::AoTuning::default();
         let grid = sim.universe().main();

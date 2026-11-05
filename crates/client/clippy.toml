@@ -1,0 +1,5 @@
+# The client talks to the simulation only through protocol messages (see the `server` crate),
+# so a headless or remote server is always possible.
+disallowed-types = [
+    { path = "sim::Simulation", reason = "the client reaches the simulation only through `protocol` messages" },
+]

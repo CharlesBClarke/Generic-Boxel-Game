@@ -8,7 +8,7 @@
 use bevy::prelude::*;
 
 use crate::combat::{CombatFeel, HitReadout, HitStop, TargetViews, ViewKick, play_sound};
-use crate::Sim;
+use crate::world::ClientWorld;
 
 /// How strong the red flash is for a guarded blow, as a share of an unguarded one.
 const GUARDED_FLASH: f32 = 0.4;
@@ -101,7 +101,7 @@ pub(crate) fn setup_health(mut commands: Commands) {
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn play_player_hurts(
     mut commands: Commands,
-    mut sim: ResMut<Sim>,
+    mut world: ResMut<ClientWorld>,
     feel: Res<CombatFeel>,
     views: Res<TargetViews>,
     mut stop: ResMut<HitStop>,
@@ -109,7 +109,7 @@ pub(crate) fn play_player_hurts(
     mut flash: ResMut<HurtFlash>,
     mut readout: ResMut<HitReadout>,
 ) {
-    for hurt in sim.0.take_player_hurts() {
+    for hurt in world.take_player_hurts() {
         let share = if hurt.guarded { GUARDED_FLASH } else { 1.0 };
         stop.freeze(feel.hurt_hitstop * share);
         kick.kick(feel.hurt_kick * share);
@@ -117,7 +117,7 @@ pub(crate) fn play_player_hurts(
         flash.flash(feel.hurt_flash, feel.hurt_flash_alpha * share);
         readout.show(hurt_words(hurt.damage, hurt.guarded, hurt.attacker.is_none(), hurt.died));
         if let Some((target, kind)) = hurt.attacker {
-            let sound = sim.0.target_def(kind).hit_sound.clone();
+            let sound = world.target_def(kind).hit_sound.clone();
             play_sound(&mut commands, &views, sound.as_deref(), 0.75, &feel, hurt.tick ^ target);
         }
     }
@@ -127,7 +127,7 @@ pub(crate) fn play_player_hurts(
 /// definition.
 pub(crate) fn update_health(
     time: Res<Time>,
-    sim: Res<Sim>,
+    world: Res<ClientWorld>,
     mut flash: ResMut<HurtFlash>,
     mut bar: Single<&mut Visibility, With<HealthBar>>,
     mut fill: Single<&mut Node, With<HealthFill>>,
@@ -138,12 +138,12 @@ pub(crate) fn update_health(
     if overlay.0 != color {
         overlay.0 = color;
     }
-    let Some(def) = sim.0.health_def() else {
+    let Some(def) = world.health_def() else {
         **bar = Visibility::Hidden;
         return;
     };
     **bar = Visibility::Inherited;
-    let width = percent(100.0 * (sim.0.health() / def.health).clamp(0.0, 1.0));
+    let width = percent(100.0 * (world.health() / def.health).clamp(0.0, 1.0));
     if fill.width != width {
         fill.width = width;
     }

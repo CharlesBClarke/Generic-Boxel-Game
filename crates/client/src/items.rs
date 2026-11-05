@@ -10,7 +10,8 @@ use bevy::prelude::*;
 use sim::{BlockId, BlockRegistry, Item, Occupant};
 
 use crate::editing::ChunkMeshes;
-use crate::{RenderOrigin, Sim, coords, mesher};
+use crate::world::ClientWorld;
+use crate::{RenderOrigin, coords, mesher};
 
 /// Tumble speed, radians a second for each meter a second the item is thrown at.
 const TUMBLE_PER_SPEED: f32 = 2.5;
@@ -60,7 +61,7 @@ pub(crate) struct ItemView;
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn sync_items(
     mut commands: Commands,
-    sim: Res<Sim>,
+    world: Res<ClientWorld>,
     origin: Res<RenderOrigin>,
     fixed: Res<Time<Fixed>>,
     time: Res<Time>,
@@ -69,15 +70,15 @@ pub(crate) fn sync_items(
     mut state: ResMut<ItemViews>,
     mut transforms: Query<&mut Transform, With<ItemView>>,
 ) {
-    let Some(def) = sim.0.item_drop_def() else {
+    let Some(def) = world.item_drop_def() else {
         return;
     };
     let alpha = fixed.overstep_fraction();
     let dt = time.delta_secs();
-    let blocks = sim.0.blocks();
+    let blocks = world.blocks();
     let ItemViews { views, meshes: block_meshes } = &mut *state;
-    let mut live = Vec::with_capacity(sim.0.items().len());
-    for item in sim.0.items().iter() {
+    let mut live = Vec::with_capacity(world.items().len());
+    for item in world.items().iter() {
         live.push(item.id);
         let mesh = block_meshes.entry(item.block).or_insert_with(|| meshes.add(item_mesh(item, blocks, &chunk_meshes))).clone();
         // A new item's entities are spawned below, once its transforms are known: spawned ones
@@ -220,12 +221,13 @@ mod tests {
 
     #[test]
     fn a_new_item_is_drawn_where_it_is_from_its_first_frame() {
-        let data = data_mods::load(std::path::Path::new(base::DATA_DIR)).unwrap();
-        let mut sim = sim::Simulation::with_mods(&[&data, &base::BaseMod, &base_movement::BaseMovementMod]).unwrap();
+        use crate::world::testing::{base_sim, connect, step};
+        let mut sim = base_sim();
         sim.spawn_player().unwrap();
         sim.teleport_player(api::WorldPos::new(api::I64Vec3::new(10, 10, 0), ZVec3::new(0.5, 0.5, 0.0)));
+        let (mut link, mut sim) = connect(sim);
         let down = -89f32.to_radians();
-        sim.step(&sim::PlayerInput { pitch: down, use_pressed: true, use_held: true, ..Default::default() });
+        step(&mut link, &mut sim, &sim::PlayerInput { pitch: down, use_pressed: true, use_held: true, ..Default::default() });
         let item_pos = sim.items().iter().next().expect("the broken floor dropped an item").pos;
 
         let volumes = crate::volumes::Volumes::build(sim.looks(), sim.blocks());
@@ -233,7 +235,7 @@ mod tests {
         app.add_plugins((MinimalPlugins, AssetPlugin::default()))
             .init_asset::<Mesh>()
             .init_asset::<crate::solid::SolidMaterial>()
-            .insert_resource(Sim(sim))
+            .insert_resource(sim)
             .init_resource::<RenderOrigin>()
             .init_resource::<ItemViews>()
             .insert_resource(ChunkMeshes { material: Handle::default(), volumes, entities: HashMap::new() })

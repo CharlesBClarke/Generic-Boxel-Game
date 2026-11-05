@@ -113,9 +113,11 @@ pub struct Shape {
     pub step_height: f32,
 }
 
-pub struct Player {
+/// The body's state: plain data, so it can be copied to a client in a snapshot. A [`Player`]
+/// is a body with a movement controller.
+#[derive(Clone, Debug)]
+pub struct Body {
     shape: Shape,
-    controller: Box<dyn MovementController>,
     pos: WorldPos,
     prev_pos: WorldPos,
     /// Current height; below the shape's while crouched.
@@ -137,6 +139,26 @@ pub struct Player {
     last_step: StepReport,
 }
 
+/// The player: a body, moved by the mod's movement controller. Derefs to its [`Body`].
+pub struct Player {
+    body: Body,
+    controller: Box<dyn MovementController>,
+}
+
+impl std::ops::Deref for Player {
+    type Target = Body;
+
+    fn deref(&self) -> &Body {
+        &self.body
+    }
+}
+
+impl std::ops::DerefMut for Player {
+    fn deref_mut(&mut self) -> &mut Body {
+        &mut self.body
+    }
+}
+
 impl Player {
     /// A player shaped by `def`, standing with its feet at `pos`.
     pub fn new(def: &PlayerDef, controller: Box<dyn MovementController>, pos: WorldPos) -> Self {
@@ -150,9 +172,32 @@ impl Player {
     }
 
     pub fn with_controller(shape: Shape, controller: Box<dyn MovementController>, pos: WorldPos) -> Self {
+        Self { body: Body::new(shape, pos), controller }
+    }
+
+    pub fn body(&self) -> &Body {
+        &self.body
+    }
+
+    pub fn controller(&self) -> &dyn MovementController {
+        self.controller.as_ref()
+    }
+
+    pub fn controller_mut(&mut self) -> &mut dyn MovementController {
+        self.controller.as_mut()
+    }
+
+    /// Advances one tick of `dt` seconds.
+    pub fn step(&mut self, input: &PlayerInput, dt: f32, terrain: &impl Terrain) {
+        self.body.step(self.controller.as_mut(), input, dt, terrain);
+    }
+}
+
+impl Body {
+    /// A body of `shape`, standing with its feet at `pos`.
+    pub fn new(shape: Shape, pos: WorldPos) -> Self {
         Self {
             shape,
-            controller,
             pos,
             prev_pos: pos,
             height: shape.height,
@@ -172,14 +217,6 @@ impl Player {
 
     pub fn shape(&self) -> Shape {
         self.shape
-    }
-
-    pub fn controller(&self) -> &dyn MovementController {
-        self.controller.as_ref()
-    }
-
-    pub fn controller_mut(&mut self) -> &mut dyn MovementController {
-        self.controller.as_mut()
     }
 
     /// Feet position after the latest tick.
@@ -283,8 +320,8 @@ impl Player {
         self.on_ground = false;
     }
 
-    /// Advances one tick of `dt` seconds.
-    pub fn step(&mut self, input: &PlayerInput, dt: f32, terrain: &impl Terrain) {
+    /// Advances one tick of `dt` seconds, `controller` deciding the velocity.
+    pub fn step(&mut self, controller: &mut dyn MovementController, input: &PlayerInput, dt: f32, terrain: &impl Terrain) {
         self.prev_pos = self.pos;
         if input.toggle_fly {
             self.flying = !self.flying;
@@ -309,7 +346,7 @@ impl Player {
             self.resize(self.shape.height, terrain);
         } else {
             let ground = self.on_ground.then(|| Ground { friction: self.ground_friction(terrain) });
-            let out = self.controller.step(&MoveContext {
+            let out = controller.step(&MoveContext {
                 dt,
                 velocity: self.velocity,
                 height: self.height,

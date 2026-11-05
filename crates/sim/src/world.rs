@@ -3,7 +3,7 @@
 
 use std::collections::HashMap;
 
-use api::{BoxelPos, ChunkPos};
+use api::{BoxelPos, CHUNK_VOLUME, ChunkPos};
 
 use crate::cell::{CellId, CellTable, Occupant};
 use crate::{BlockId, Layer};
@@ -28,6 +28,17 @@ impl Chunk {
     pub fn empty() -> Self {
         Self { cells: Layer::Uniform(CellId::EMPTY) }
     }
+}
+
+/// A chunk as plain data, with its own short list of the occupant lists it uses instead of IDs
+/// into a grid's [`CellTable`], so it can be copied into another grid, such as a client's.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ChunkData {
+    pub pos: ChunkPos,
+    /// Every occupant list the chunk uses.
+    pub lists: Vec<Vec<Occupant>>,
+    /// Each boxel's list, as an index into `lists`.
+    pub cells: Layer<u16>,
 }
 
 /// A volume of boxels made of chunks. Missing chunks read as empty.
@@ -74,6 +85,38 @@ impl Grid {
         self.cell(pos).first().map_or(BlockId::EMPTY, |o| o.block)
     }
 
+    /// The chunk at `pos` as plain data. A missing chunk comes out empty.
+    pub fn export_chunk(&self, pos: ChunkPos) -> ChunkData {
+        let mut lists: Vec<Vec<Occupant>> = Vec::new();
+        let mut index: HashMap<CellId, u16> = HashMap::new();
+        let mut local = |id: CellId| {
+            *index.entry(id).or_insert_with(|| {
+                lists.push(self.cells.get(id).to_vec());
+                // A chunk holds at most `CHUNK_VOLUME` distinct lists, which fits.
+                (lists.len() - 1) as u16
+            })
+        };
+        let cells = match self.chunks.get(&pos).map(|c| &c.cells) {
+            None => Layer::Uniform(local(CellId::EMPTY)),
+            Some(Layer::Uniform(id)) => Layer::Uniform(local(*id)),
+            Some(Layer::Dense(ids)) => Layer::Dense(ids.iter().map(|&id| local(id)).collect()),
+        };
+        ChunkData { pos, lists, cells }
+    }
+
+    /// Replaces the chunk at `data.pos` with `data`.
+    pub fn import_chunk(&mut self, data: &ChunkData) {
+        let ids: Vec<CellId> = data.lists.iter().map(|list| self.cells.intern(list)).collect();
+        let cells = match &data.cells {
+            Layer::Uniform(i) => Layer::Uniform(ids[*i as usize]),
+            Layer::Dense(values) => {
+                debug_assert_eq!(values.len(), CHUNK_VOLUME);
+                Layer::Dense(values.iter().map(|&i| ids[i as usize]).collect())
+            }
+        };
+        self.chunks.insert(data.pos, Chunk { cells });
+    }
+
     /// Fills the boxel at `pos` with just `id`, unturned, or empties it.
     pub fn set_block(&mut self, pos: BoxelPos, id: BlockId) {
         self.set_cell(pos, &[Occupant::new(id)]);
@@ -112,6 +155,7 @@ impl Universe {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use api::LocalPos;
 
     fn some_block() -> BlockId {
         let mut reg = crate::BlockRegistry::default();
@@ -170,6 +214,29 @@ mod tests {
         assert_eq!(c.cells.get(local), c.cells.get(next));
         grid.set_cell(p, &[]);
         assert!(grid.cell(p).is_empty());
+    }
+
+    #[test]
+    fn a_chunk_copies_into_another_grid() {
+        let stone = some_block();
+        let mut grid = Grid::default();
+        let turned = Occupant::turned(stone, api::Orientation::quarter_turns(2, 1));
+        grid.set_block(BoxelPos::new(1, 2, 3), stone);
+        grid.set_cell(BoxelPos::new(4, 5, 6), &[turned, Occupant::new(stone)]);
+        grid.set_block(BoxelPos::new(40, 0, 0), stone);
+        let mut copy = Grid::default();
+        // Interned in another order, so the IDs differ between the grids.
+        copy.set_cell(BoxelPos::new(-100, 0, 0), &[Occupant::new(stone), turned]);
+        copy.import_chunk(&grid.export_chunk(ChunkPos::new(0, 0, 0)));
+        for i in 0..CHUNK_VOLUME {
+            let p = BoxelPos(LocalPos::from_index(i).to_ivec());
+            assert_eq!(copy.cell(p), grid.cell(p), "{p:?}");
+        }
+        assert!(copy.cell(BoxelPos::new(40, 0, 0)).is_empty(), "only that chunk");
+        // A missing chunk comes out empty, and clears what was there.
+        copy.set_block(BoxelPos::new(0, 0, 40), stone);
+        copy.import_chunk(&grid.export_chunk(ChunkPos::new(0, 0, 1)));
+        assert!(copy.cell(BoxelPos::new(0, 0, 40)).is_empty());
     }
 
     #[test]
