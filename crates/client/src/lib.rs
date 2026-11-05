@@ -1,5 +1,6 @@
-//! The Bevy client: opens a window, feeds input to the simulation at a fixed 60 Hz, and
-//! draws the world relative to a floating render origin, interpolated between ticks.
+//! The Bevy client: opens a window, sends input to the server at a fixed 60 Hz, and draws its
+//! copy of the world (see `world`) relative to a floating render origin, interpolated between
+//! ticks. It never touches the simulation itself.
 
 pub mod animation;
 pub mod combat;
@@ -14,10 +15,10 @@ pub mod hurt;
 pub mod items;
 pub mod mesher;
 pub mod solid;
-pub mod trainer;
 pub mod tuning;
 pub mod tuning_file;
 pub mod volumes;
+pub mod world;
 
 use std::time::{Duration, Instant};
 
@@ -28,7 +29,8 @@ use bevy::mesh::{Indices, PrimitiveTopology};
 use bevy::prelude::*;
 use bevy::window::{CursorGrabMode, CursorOptions, PresentMode, PrimaryWindow};
 use bevy_egui::{EguiPlugin, EguiPrimaryContextPass};
-use sim::{PlayerInput, Simulation};
+use protocol::{ClientMsg, Command, Connection};
+use sim::PlayerInput;
 
 use crate::controls::{Controls, DoubleTapSprint, SprintToggle, label};
 use crate::editing::{ChunkMeshes, Ghost, Palette, PartNames};
@@ -37,6 +39,7 @@ use crate::mesher::MeshData;
 use crate::solid::{ATTRIBUTE_SOLID, SolidMaterial, SolidPlugin};
 use crate::tuning::TuningPanel;
 use crate::volumes::Volumes;
+use crate::world::{ClientWorld, Link};
 
 /// How far, in boxels along any axis, the camera may get from the render origin before
 /// the origin recenters on it.
@@ -44,8 +47,14 @@ pub const RECENTER_DISTANCE: i64 = 256;
 
 const MOUSE_SENSITIVITY: f32 = 0.0025;
 
-/// Runs the game until the window closes. `sim` must already have mods loaded and a player.
-pub fn run(sim: Simulation) {
+/// Runs the game until the window closes, talking to a server through `connection`. The server's
+/// world must already have its mods loaded and a player.
+pub fn run(connection: Box<dyn Connection>) {
+    let mut link = Link::new(connection);
+    let Some(world) = link.connect() else {
+        eprintln!("the server closed before welcoming the client");
+        return;
+    };
     App::new()
         .add_plugins(DefaultPlugins.set(WindowPlugin {
             primary_window: Some(Window { title: "Boxel".into(), ..default() }),
@@ -53,8 +62,9 @@ pub fn run(sim: Simulation) {
         }))
         .add_plugins((EguiPlugin::default(), SolidPlugin))
         .insert_resource(ClearColor(Color::srgb(0.55, 0.75, 0.95)))
-        .insert_resource(Time::<Fixed>::from_hz(Simulation::TICK_RATE))
-        .insert_resource(Sim(sim))
+        .insert_resource(Time::<Fixed>::from_hz(protocol::TICK_RATE))
+        .insert_resource(world)
+        .insert_resource(link)
         .insert_resource(Controls::load())
         .init_resource::<Look>()
         .init_resource::<PendingToggles>()
@@ -73,7 +83,6 @@ pub fn run(sim: Simulation) {
         .init_resource::<DoubleTapSprint>()
         .init_resource::<SprintToggle>()
         .init_resource::<drill::Drill>()
-        .init_resource::<trainer::Trainer>()
         .init_resource::<combat::CombatFeel>()
         .init_resource::<animation::AnimationTuning>()
         .init_resource::<animation::AnimationPreview>()
@@ -89,7 +98,6 @@ pub fn run(sim: Simulation) {
                 setup_scene,
                 spawn_chunk_meshes,
                 drill::setup_drill,
-                trainer::setup_trainer,
                 combat::setup_media,
                 combat::setup_weapon.after(setup_scene),
                 combat::setup_readout,
@@ -107,7 +115,6 @@ pub fn run(sim: Simulation) {
                 (dev::dev_keys, dev::show_dev_text).chain(),
                 (double_tap_sprint, sprint_toggle),
                 drill::drill_keys,
-                trainer::trainer_keys,
                 editing::remesh_changed_chunks,
                 // Strikes first: a broken target bursts from where its view was drawn.
                 (combat::play_strikes, combat::play_slams, hurt::play_player_hurts, combat::update_hit_stop).chain(),
@@ -119,7 +126,6 @@ pub fn run(sim: Simulation) {
                     .chain(),
                 editing::draw_region_guide,
                 drill::draw_drill,
-                trainer::draw_trainer,
                 update_hud,
                 crafting::update_table_hint,
             )
@@ -129,9 +135,6 @@ pub fn run(sim: Simulation) {
         .add_systems(Last, limit_frame_rate)
         .run();
 }
-
-#[derive(Resource)]
-pub struct Sim(pub Simulation);
 
 /// The camera's facing, applied every frame rather than every tick so looking feels instant.
 #[derive(Resource, Default)]
@@ -205,14 +208,14 @@ fn setup_scene(mut commands: Commands, mut cursor: Single<&mut CursorOptions, Wi
 
 fn spawn_chunk_meshes(
     mut commands: Commands,
-    sim: Res<Sim>,
+    world: Res<ClientWorld>,
     origin: Res<RenderOrigin>,
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<SolidMaterial>>,
     mut images: ResMut<Assets<Image>>,
     ao: Res<mesher::AoTuning>,
 ) {
-    let volumes = Volumes::build(sim.0.looks(), sim.0.blocks());
+    let volumes = Volumes::build(world.looks(), world.blocks());
     // Unlit: shading is baked into vertex colors until there is a lighting system.
     let image = images.add(solid::volume_image(&volumes));
     let solid = |tint: Color, alpha_mode: AlphaMode| SolidMaterial { tint: tint.into(), volumes: image.clone(), alpha_mode };
@@ -232,10 +235,10 @@ fn spawn_chunk_meshes(
         shown: None,
     };
     commands.insert_resource(ghost);
-    let grid = sim.0.universe().main();
+    let grid = world.universe().main();
     let mut entities = std::collections::HashMap::new();
     for (pos, _) in grid.chunks() {
-        let data = mesher::mesh_chunk(grid, pos, sim.0.blocks(), &volumes, &ao);
+        let data = mesher::mesh_chunk(grid, pos, world.blocks(), &volumes, &ao);
         if data.is_empty() {
             continue;
         }
@@ -275,7 +278,7 @@ fn chunk_transform(pos: ChunkPos, origin: I64Vec3) -> Transform {
 
 #[allow(clippy::too_many_arguments)]
 fn tick_simulation(
-    mut sim: ResMut<Sim>,
+    mut world: ResMut<ClientWorld>,
     keys: Res<ButtonInput<KeyCode>>,
     mouse: Res<ButtonInput<MouseButton>>,
     controls: Res<Controls>,
@@ -285,14 +288,14 @@ fn tick_simulation(
     sprint_toggle: Res<SprintToggle>,
     cursor: Single<&CursorOptions, With<PrimaryWindow>>,
     mut toggles: ResMut<PendingToggles>,
-    mut trainer: ResMut<trainer::Trainer>,
     mut menu: ResMut<crafting::CraftingMenu>,
     stop: Res<combat::HitStop>,
+    mut link: ResMut<Link>,
 ) {
-    // Held presses wait for the hit-stop to end.
-    if stop.frozen() {
-        return;
-    }
+    // The simulation never waits for a hit-stop: only the view holds still. New presses wait for
+    // it to end, as they did when it paused the simulation; held buttons and keys carry on.
+    let frozen = stop.frozen();
+    let take = |pressed: &mut bool| !frozen && std::mem::take(pressed);
     // With the crafting menu open, keys belong to it (a part's name is being typed, say), so the
     // body stands still.
     let free = menu.open.is_none();
@@ -304,29 +307,31 @@ fn tick_simulation(
         vertical: axis(controls.jump, controls.down),
         yaw: look.yaw,
         pitch: look.pitch,
-        jump_pressed: std::mem::take(&mut toggles.jump_pressed),
+        jump_pressed: take(&mut toggles.jump_pressed),
         jump_held: down(controls.jump),
         sprint: free && (sprint_toggle.active || double_tap.active),
         crouch: down(controls.crouch),
-        toggle_fly: std::mem::take(&mut toggles.toggle_fly),
-        use_pressed: std::mem::take(&mut toggles.use_pressed),
+        toggle_fly: take(&mut toggles.toggle_fly),
+        use_pressed: take(&mut toggles.use_pressed),
         use_held: playing && controls.use_main.pressed(&keys, &mouse),
-        alt_pressed: std::mem::take(&mut toggles.alt_pressed),
+        alt_pressed: take(&mut toggles.alt_pressed),
         alt_held: playing && controls.use_alt.pressed(&keys, &mouse),
-        tool: palette.tool(&sim.0),
-        place_block: palette.selected(&sim.0),
+        tool: palette.tool(&world),
+        place_block: palette.selected(&world),
         place_precise: palette.precise,
-        drop_pressed: std::mem::take(&mut toggles.drop_pressed),
+        drop_pressed: take(&mut toggles.drop_pressed),
         drop_held: playing && keys.pressed(controls.drop),
-        drop_material: palette.material(&sim.0),
-        craft: menu.pending.take(),
-        discard: menu.discard.take(),
+        drop_material: palette.material(&world),
+        craft: if frozen { None } else { menu.pending.take() },
+        discard: if frozen { None } else { menu.discard.take() },
     };
-    sim.0.step(&input);
-    if input.craft.is_some() {
-        menu.result = sim.0.last_craft();
+    link.send(ClientMsg::Input(Box::new(input)), &mut world);
+    if let Some(result) = world.take_craft() {
+        menu.result = Some(result);
     }
-    trainer::observe_tick(&sim.0, &input, &mut trainer);
+    if !frozen {
+        world.show_latest();
+    }
 }
 
 fn grab_cursor(
@@ -400,7 +405,8 @@ fn sprint_toggle(
 fn debug_keys(
     keys: Res<ButtonInput<KeyCode>>,
     controls: Res<Controls>,
-    mut sim: ResMut<Sim>,
+    mut world: ResMut<ClientWorld>,
+    mut link: ResMut<Link>,
     mut toggles: ResMut<PendingToggles>,
     mut cap: ResMut<FrameCap>,
     mut window: Single<&mut Window, With<PrimaryWindow>>,
@@ -419,12 +425,12 @@ fn debug_keys(
     }
 
     if keys.just_pressed(controls.respawn_targets) {
-        sim.0.respawn_targets();
+        link.command(Command::RespawnTargets, &mut world);
     }
-    if keys.just_pressed(controls.teleport) && !sim.0.waypoints().is_empty() {
-        waypoint.0 = (waypoint.0 + 1) % sim.0.waypoints().len();
-        let target = sim.0.waypoints()[waypoint.0].1;
-        sim.0.teleport_player(target);
+    if keys.just_pressed(controls.teleport) && !world.waypoints().is_empty() {
+        waypoint.0 = (waypoint.0 + 1) % world.waypoints().len();
+        let target = world.waypoints()[waypoint.0].1;
+        link.command(Command::TeleportPlayer(target), &mut world);
     }
     if keys.just_pressed(controls.frame_cap) {
         cap.mode = cap.mode.next();
@@ -439,7 +445,7 @@ fn debug_keys(
 /// camera feel effects, and recenters the render origin if the camera has strayed too far.
 #[allow(clippy::too_many_arguments)]
 fn update_camera(
-    sim: Res<Sim>,
+    world: Res<ClientWorld>,
     look: Res<Look>,
     fixed: Res<Time<Fixed>>,
     time: Res<Time>,
@@ -449,10 +455,10 @@ fn update_camera(
     mut origin: ResMut<RenderOrigin>,
     mut camera: Single<(&mut Transform, &mut Projection), With<PlayerCamera>>,
 ) {
-    let Some(player) = sim.0.player() else {
+    let Some(player) = world.player() else {
         return;
     };
-    let feel = &landing_feel(&feel, &sim.0);
+    let feel = &landing_feel(&feel, &world);
     let alpha = fixed.overstep_fraction();
     let prev = player.prev_pos();
     let step = prev.delta_to(player.pos());
@@ -488,8 +494,8 @@ fn update_camera(
 
 /// The camera feel, with landings bottoming out from the speed at which falls start to hurt
 /// when there is fall damage, so the camera says when a fall hurt.
-fn landing_feel(feel: &CameraFeel, sim: &Simulation) -> CameraFeel {
-    let hard_landing_speed = sim.health_def().filter(|h| h.fall_damage > 0.0).map_or(feel.hard_landing_speed, |h| h.fall_speed);
+fn landing_feel(feel: &CameraFeel, world: &ClientWorld) -> CameraFeel {
+    let hard_landing_speed = world.health_def().filter(|h| h.fall_damage > 0.0).map_or(feel.hard_landing_speed, |h| h.fall_speed);
     CameraFeel { hard_landing_speed, ..feel.clone() }
 }
 
@@ -503,7 +509,7 @@ fn sync_chunk_transforms(origin: Res<RenderOrigin>, mut chunks: Query<(&ChunkMes
 }
 
 fn update_hud(
-    sim: Res<Sim>,
+    world: Res<ClientWorld>,
     origin: Res<RenderOrigin>,
     cap: Res<FrameCap>,
     controls: Res<Controls>,
@@ -511,7 +517,7 @@ fn update_hud(
     time: Res<Time>,
     mut text: Single<&mut Text, With<Hud>>,
 ) {
-    let Some(player) = sim.0.player() else {
+    let Some(player) = world.player() else {
         return;
     };
     let pos = player.pos();
@@ -524,7 +530,7 @@ fn update_hud(
         precise.z,
         player.velocity().truncate().length(),
         player.last_landing_speed(),
-        if player.last_landing_speed() >= landing_feel(&feel, &sim.0).hard_landing_speed { "hard" } else { "soft" },
+        if player.last_landing_speed() >= landing_feel(&feel, &world).hard_landing_speed { "hard" } else { "soft" },
         origin.cell.x,
         origin.cell.y,
         origin.cell.z,

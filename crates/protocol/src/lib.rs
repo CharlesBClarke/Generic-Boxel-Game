@@ -1,0 +1,142 @@
+//! Messages between the client and the server. The client sends its input every tick and
+//! commands now and then; the server sends the world once, then what changes: chunks, blocks
+//! crafting added, definitions tuning changed, and a snapshot of every tick with its events.
+//!
+//! Every message is owned plain data with no references into the simulation, so the server can
+//! run anywhere: on the client's thread, on another thread, and later on another machine.
+
+use api::{
+    CraftingDef, CrowdDef, HealthDef, InteractionDef, InventoryDef, ItemDropDef, ModelDef, PlayerDef, PushOutDef,
+    SoundDef, TargetDef, ToolDef, Tunable, WorldPos,
+};
+use sim::{
+    Body, BlockRegistry, ChunkData, CraftRefusal, Inventory, Item, LookRegistry, MaterialId, PlayerHurt, PlayerInput,
+    Slam, Strike, Swing, Target,
+};
+
+/// Ticks per second.
+pub const TICK_RATE: f64 = sim::Simulation::TICK_RATE;
+/// Seconds per tick.
+pub const TICK_SECONDS: f32 = sim::Simulation::TICK_SECONDS;
+
+/// From the client to the server.
+#[derive(Clone, Debug, PartialEq)]
+pub enum ClientMsg {
+    /// The player's input for the next tick. The server runs one tick for each.
+    Input(Box<PlayerInput>),
+    Command(Command),
+}
+
+/// Something the client asks for outside play: tuning and debugging.
+#[derive(Clone, Debug, PartialEq)]
+pub enum Command {
+    /// Sets one value in one of the server's tuning sections (see [`Defs::tuning`]).
+    Tune { section: String, name: String, value: f32 },
+    /// Fills the player's health.
+    Heal,
+    /// With it on, running out of health doesn't send the player back.
+    Unkillable(bool),
+    /// Off, every creature is a dummy that only moves when hit.
+    BrainsOn(bool),
+    TeleportPlayer(WorldPos),
+    /// Puts every creature back at its spot, whole.
+    RespawnTargets,
+}
+
+/// From the server to the client.
+pub enum ServerMsg {
+    /// Everything, once, first.
+    Welcome(Box<Welcome>),
+    /// One tick ran.
+    Tick(Box<Snapshot>),
+    /// A chunk changed, or a neighbor's border did. Comes before the tick it changed in.
+    Chunk(ChunkData),
+    /// Blocks were added, by crafting a new shape. Comes before the tick they were added in.
+    Blocks(Box<BlockRegistry>),
+    /// Definitions or tuning changed, by a command.
+    Defs(Box<Defs>),
+}
+
+/// What a client needs to start: the content, the world and where things stand.
+pub struct Welcome {
+    pub content: Content,
+    pub blocks: BlockRegistry,
+    pub defs: Defs,
+    /// Every chunk in the world.
+    pub chunks: Vec<ChunkData>,
+    pub spawn: WorldPos,
+    /// Named spots in the world, in the order the mods made them.
+    pub waypoints: Vec<(String, WorldPos)>,
+    pub snapshot: Snapshot,
+}
+
+/// Content that never changes while the game runs.
+#[derive(Clone)]
+pub struct Content {
+    pub looks: LookRegistry,
+    pub models: Vec<ModelDef>,
+    pub sounds: Vec<SoundDef>,
+}
+
+/// The definitions mods registered, as tuned so far, and the server's tuning.
+#[derive(Clone, Default)]
+pub struct Defs {
+    pub player: Option<PlayerDef>,
+    pub interaction: Option<InteractionDef>,
+    pub push_out: Option<PushOutDef>,
+    pub crowd: Option<CrowdDef>,
+    pub health: Option<HealthDef>,
+    pub item_drops: Option<ItemDropDef>,
+    pub inventory: Option<InventoryDef>,
+    pub crafting: Option<CraftingDef>,
+    /// By [`sim::TargetKind`] index.
+    pub targets: Vec<TargetDef>,
+    /// By [`sim::ToolId`] index.
+    pub tools: Vec<ToolDef>,
+    /// Every value the server lets a client tune, by section, in the order the panel shows them.
+    pub tuning: Vec<TuningSection>,
+    pub brains_on: bool,
+    pub unkillable: bool,
+}
+
+/// One tuning section: the movement controller, a definition, a tool, a target or a brain.
+#[derive(Clone, Debug, PartialEq)]
+pub struct TuningSection {
+    /// Its name in the tuning file, such as `"movement"` or `"brain base:cow"`.
+    pub name: String,
+    pub values: Vec<Tunable>,
+}
+
+/// Where things stand after a tick, and what happened in it.
+#[derive(Clone, Default)]
+pub struct Snapshot {
+    /// Ticks run so far.
+    pub tick: u64,
+    pub player: Option<Body>,
+    pub health: f32,
+    /// Live creatures, broken ones excluded.
+    pub targets: Vec<Target>,
+    pub items: Vec<Item>,
+    pub inventory: Inventory,
+    pub swing: Option<Swing>,
+    pub guarding: bool,
+    /// What happened during the tick, in order.
+    pub events: Vec<Event>,
+}
+
+/// Something that happened during a tick.
+#[derive(Clone, Debug, PartialEq)]
+pub enum Event {
+    Strike(Strike),
+    Slam(Slam),
+    PlayerHurt(PlayerHurt),
+    /// A craft the input asked for: the part made and how many, or why nothing was.
+    Craft(Result<(MaterialId, u32), CraftRefusal>),
+}
+
+/// A client's end of its link to a server.
+pub trait Connection: Send {
+    fn send(&mut self, msg: ClientMsg);
+    /// Every message that has arrived since the last call, oldest first.
+    fn receive(&mut self) -> Vec<ServerMsg>;
+}

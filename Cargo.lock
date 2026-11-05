@@ -2004,6 +2004,8 @@ dependencies = [
  "bevy",
  "bevy_egui",
  "data_mods",
+ "protocol",
+ "server",
  "sim",
 ]
 
@@ -3069,6 +3071,7 @@ dependencies = [
  "client",
  "data_mods",
  "glam",
+ "server",
  "sim",
  "wasm_host",
  "wit-component 0.262.0",
@@ -4787,6 +4790,14 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "3d595e54a326bc53c1c197b32d295e14b169e3cfeaa8dc82b529f947fba6bcf5"
 
 [[package]]
+name = "protocol"
+version = "0.1.0"
+dependencies = [
+ "api",
+ "sim",
+]
+
+[[package]]
 name = "pulley-interpreter"
 version = "50.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5243,6 +5254,18 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "4e7523beb55eece201a2356bee0bbca0d1ab466c14c07703b2e0ee6d42cb0c2c"
 dependencies = [
  "serde_core",
+]
+
+[[package]]
+name = "server"
+version = "0.1.0"
+dependencies = [
+ "api",
+ "base",
+ "base_movement",
+ "data_mods",
+ "protocol",
+ "sim",
 ]
 
 [[package]]

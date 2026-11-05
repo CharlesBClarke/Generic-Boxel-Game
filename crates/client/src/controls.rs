@@ -44,8 +44,6 @@ pub struct Controls {
     pub tuning: KeyCode,
     /// Starts and stops the chase drill.
     pub drill: KeyCode,
-    /// Starts and stops the block-jump trainer.
-    pub trainer: KeyCode,
     /// Puts every target back at its spot, whole.
     pub respawn_targets: KeyCode,
     /// Shows and hides the dev text (readouts, coordinates, controls). Hidden by default in
@@ -120,7 +118,6 @@ impl Default for Controls {
             frame_cap: KeyCode::F3,
             tuning: KeyCode::Tab,
             drill: KeyCode::F4,
-            trainer: KeyCode::F5,
             respawn_targets: KeyCode::F6,
             dev_text: KeyCode::F1,
             drop: KeyCode::KeyQ,
@@ -225,7 +222,6 @@ impl Controls {
                 "frame_cap" => &mut self.frame_cap,
                 "tuning" => &mut self.tuning,
                 "drill" => &mut self.drill,
-                "trainer" => &mut self.trainer,
                 "respawn_targets" => &mut self.respawn_targets,
                 "dev_text" => &mut self.dev_text,
                 "drop" => &mut self.drop,

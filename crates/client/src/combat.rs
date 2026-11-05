@@ -2,7 +2,7 @@
 //! the camera, and everything that makes a hit land. The simulation decides what a strike hits;
 //! this only shows and plays it.
 //!
-//! A hit freezes the game for a moment (hit-stop), kicks the view, flashes the target white,
+//! A hit freezes the view for a moment (hit-stop), kicks the view, flashes the target white,
 //! squashes and tumbles it, recoils the tool and plays the target's sound. A head hit (any hit
 //! box that multiplies damage) freezes longer, flashes gold and sounds higher. A target slammed
 //! into a wall freezes, flashes and kicks up dust from the wall; a hard landing squashes it and
@@ -27,7 +27,8 @@ use sim::{SwingStage, Target};
 use crate::animation::{self, AnimationPreview, AnimationTuning, Animator};
 use crate::drill::Drill;
 use crate::editing::{Held, Palette};
-use crate::{RenderOrigin, Sim, coords};
+use crate::world::ClientWorld;
+use crate::{RenderOrigin, coords};
 
 /// How much brighter than its texture a target is drawn at the start of a flash. The window
 /// clamps colors at white, so this washes everything but the darkest texels out to white.
@@ -200,8 +201,9 @@ tunable_fields! {
     hurt_flash_alpha: 0.0, 1.0;
 }
 
-/// Freezes the simulation for a moment after a hit. Ticks that would have run meanwhile are
-/// skipped, not made up afterwards, so the world stops dead and carries on where it was.
+/// Freezes the view for a moment after a hit. The simulation carries on behind it (it may be
+/// shared with other players); the view holds the last tick shown and snaps to the latest when
+/// the freeze ends. New presses wait for the end.
 #[derive(Resource, Debug, Default)]
 pub struct HitStop {
     pub remaining: f32,
@@ -372,14 +374,14 @@ pub(crate) struct ChunkMarker {
 
 /// Builds every model's mesh and texture and every sound once.
 pub(crate) fn setup_media(
-    sim: Res<Sim>,
+    world: Res<ClientWorld>,
     mut views: ResMut<TargetViews>,
     mut meshes: ResMut<Assets<Mesh>>,
     mut images: ResMut<Assets<Image>>,
     mut sounds: ResMut<Assets<AudioSource>>,
     mut bindposes: ResMut<Assets<SkinnedMeshInverseBindposes>>,
 ) {
-    for model in sim.0.models() {
+    for model in world.models() {
         let skin = model.skin.as_ref().map(|skin| {
             let poses: Vec<Mat4> = skin.bones.iter().map(|b| Mat4::from_cols_array(&b.inverse_bind)).collect();
             (skin.clone(), bindposes.add(SkinnedMeshInverseBindposes::from(poses)))
@@ -392,7 +394,7 @@ pub(crate) fn setup_media(
         };
         views.models.insert(model.name.clone(), assets);
     }
-    for sound in sim.0.sounds() {
+    for sound in world.sounds() {
         views.sounds.insert(sound.name.clone(), sounds.add(AudioSource { bytes: Arc::from(sound.ogg.as_slice()) }));
     }
 }
@@ -460,7 +462,7 @@ pub(crate) fn update_hit_stop(time: Res<Time>, feel: Res<CombatFeel>, mut stop: 
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn play_strikes(
     mut commands: Commands,
-    mut sim: ResMut<Sim>,
+    mut world: ResMut<ClientWorld>,
     feel: Res<CombatFeel>,
     origin: Res<RenderOrigin>,
     mut views: ResMut<TargetViews>,
@@ -472,9 +474,9 @@ pub(crate) fn play_strikes(
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
 ) {
-    let strikes = sim.0.take_strikes();
+    let strikes = world.take_strikes();
     for strike in strikes {
-        let tool = sim.0.tool(strike.tool).clone();
+        let tool = world.tool(strike.tool).clone();
         let ghost_hit = drill.hit(strike.eye, strike.look, tool.reach, tool.radius);
         let Some(hit) = strike.hit else {
             if ghost_hit {
@@ -487,7 +489,7 @@ pub(crate) fn play_strikes(
             continue;
         };
         land_hit(&feel, hit.damage, hit.broke, &mut stop, &mut kick, &mut weapon);
-        let def = sim.0.target_def(hit.kind).clone();
+        let def = world.target_def(hit.kind).clone();
         let zone = hit.zone.map(|z| &def.hit_boxes[z]);
         let crit = zone.is_some_and(|z| z.damage > 1.0);
         if crit {
@@ -523,9 +525,9 @@ pub(crate) fn play_sound(commands: &mut Commands, views: &TargetViews, sound: Op
 }
 
 /// The color of the first solid block at `pos`, or `None` if there's nothing solid there.
-fn block_color(sim: &sim::Simulation, pos: WorldPos) -> Option<Color> {
-    let blocks = sim.blocks();
-    let cell = sim.universe().main().cell(pos.boxel());
+fn block_color(world: &ClientWorld, pos: WorldPos) -> Option<Color> {
+    let blocks = world.blocks();
+    let cell = world.universe().main().cell(pos.boxel());
     let def = cell.iter().filter_map(|o| blocks.get(o.block)).find(|d| d.solid)?;
     Some(Color::srgb_u8(def.color[0], def.color[1], def.color[2]))
 }
@@ -536,7 +538,7 @@ fn block_color(sim: &sim::Simulation, pos: WorldPos) -> Option<Color> {
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn play_slams(
     mut commands: Commands,
-    mut sim: ResMut<Sim>,
+    mut world: ResMut<ClientWorld>,
     feel: Res<CombatFeel>,
     origin: Res<RenderOrigin>,
     mut views: ResMut<TargetViews>,
@@ -546,16 +548,16 @@ pub(crate) fn play_slams(
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
 ) {
-    let slams = sim.0.take_slams();
+    let slams = world.take_slams();
     for slam in slams {
-        let def = sim.0.target_def(slam.kind).clone();
+        let def = world.target_def(slam.kind).clone();
         stop.freeze(feel.slam_hitstop + if slam.broke { feel.break_hitstop } else { 0.0 });
         kick.shake(feel.slam_shake, feel.shake_time);
         readout.show(format!("SLAM  {:.0}{}", slam.damage, if slam.broke { "  BROKEN" } else { "" }));
         play_sound(&mut commands, &views, def.hit_sound.as_deref(), 0.8, &feel, slam.target.wrapping_mul(31));
         let middle = slam.pos.translate(ZVec3::Z * def.height * 0.5);
         let wall = middle.translate(slam.into * (def.width * 0.5 + 0.1));
-        if let Some(color) = block_color(&sim.0, wall) {
+        if let Some(color) = block_color(&world, wall) {
             let dust = Burst { seed: slam.target ^ 0x51a4, center: wall, push: -slam.into * 2.0, count: feel.dust, speed: 2.5, size: 0.06 };
             dust.spawn(&mut commands, &[color], &origin, &mut meshes, &mut materials);
         }
@@ -655,15 +657,15 @@ impl Burst {
 /// had their time.
 pub(crate) fn update_chunks(
     mut commands: Commands,
-    sim: Res<Sim>,
+    world: Res<ClientWorld>,
     time: Res<Time>,
     stop: Res<HitStop>,
     origin: Res<RenderOrigin>,
     mut chunks: Query<(Entity, &mut ChunkMarker, &mut Transform)>,
 ) {
     let dt = if stop.frozen() { 0.0 } else { time.delta_secs() };
-    let grid = sim.0.universe().main();
-    let blocks = sim.0.blocks();
+    let grid = world.universe().main();
+    let blocks = world.blocks();
     let solid = |pos: WorldPos| grid.cell(pos.boxel()).iter().any(|o| blocks.is_solid(o.block));
     for (entity, mut chunk, mut transform) in &mut chunks {
         chunk.age += dt;
@@ -707,7 +709,7 @@ fn facing(yaw: f32) -> Quat {
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn sync_targets(
     mut commands: Commands,
-    sim: Res<Sim>,
+    world: Res<ClientWorld>,
     mut meshes: ResMut<Assets<Mesh>>,
     feel: Res<CombatFeel>,
     origin: Res<RenderOrigin>,
@@ -726,10 +728,10 @@ pub(crate) fn sync_targets(
     let dt = if stop.frozen() { 0.0 } else { real_dt };
     let alpha = if stop.frozen() { 1.0 } else { fixed.overstep_fraction() };
     let TargetViews { views, models, .. } = &mut *state;
-    let mut live = Vec::with_capacity(sim.0.targets().len());
-    for target in sim.0.targets().iter() {
+    let mut live = Vec::with_capacity(world.targets().len());
+    for target in world.targets().iter() {
         live.push(target.id);
-        let def = sim.0.target_def(target.kind);
+        let def = world.target_def(target.kind);
         let Some(model) = models.get(&def.model) else {
             continue;
         };
@@ -802,9 +804,9 @@ pub(crate) fn sync_targets(
                 view.squash = (0.0, (impact * feel.landing_squash).min(0.6), coords::to_render(ZVec3::Z));
             }
             if impact >= feel.dust_speed
-                && let Some(color) = block_color(&sim.0, target.pos.translate(ZVec3::Z * -0.05))
+                && let Some(color) = block_color(&world, target.pos.translate(ZVec3::Z * -0.05))
             {
-                let dust = Burst { seed: target.id ^ sim.0.tick(), center: target.pos, push: ZVec3::ZERO, count: feel.dust, speed: 2.0, size: 0.06 };
+                let dust = Burst { seed: target.id ^ world.tick(), center: target.pos, push: ZVec3::ZERO, count: feel.dust, speed: 2.0, size: 0.06 };
                 dust.spawn(&mut commands, &[color], &origin, &mut meshes, &mut materials);
             }
         }
@@ -944,7 +946,7 @@ const POSE_RATE: f32 = 18.0;
 /// between rest and guard otherwise, with the recoil spring on top.
 #[allow(clippy::type_complexity)]
 pub(crate) fn animate_weapon(
-    sim: Res<Sim>,
+    world: Res<ClientWorld>,
     palette: Res<Palette>,
     feel: Res<CombatFeel>,
     time: Res<Time>,
@@ -953,7 +955,7 @@ pub(crate) fn animate_weapon(
     mut weapon: Single<(&mut Transform, &mut Visibility), With<WeaponView>>,
 ) {
     let (transform, visibility) = &mut *weapon;
-    let held = matches!(palette.held(&sim.0), Held::Tool(_));
+    let held = matches!(palette.held(&world), Held::Tool(_));
     visibility.set_if_neq(if held { Visibility::Inherited } else { Visibility::Hidden });
     if !held {
         state.pose = None;
@@ -971,7 +973,7 @@ pub(crate) fn animate_weapon(
         state.recoil += state.recoil_velocity * h;
     }
 
-    let swing = sim.0.swing().map(|s| (s.stage, s.progress(sim.0.tool(s.tool))));
+    let swing = world.swing().map(|s| (s.stage, s.progress(world.tool(s.tool))));
     let base = match swing {
         Some((SwingStage::Windup, p)) => {
             state.pose = None;
@@ -985,7 +987,7 @@ pub(crate) fn animate_weapon(
             blend(end, pose::rest(), smooth(back))
         }
         None => {
-            let wanted = if sim.0.guarding() { pose::guard() } else { pose::rest() };
+            let wanted = if world.guarding() { pose::guard() } else { pose::rest() };
             let current = state.pose.unwrap_or(wanted);
             let eased = blend(current, wanted, 1.0 - (-POSE_RATE * dt).exp());
             state.pose = Some(eased);
@@ -1040,7 +1042,7 @@ pub(crate) fn update_readout(
 
 /// While the tuning panel is open and dev text is shown, outlines every target's hit boxes, head-hit boxes in gold.
 pub(crate) fn draw_hit_boxes(
-    sim: Res<Sim>,
+    world: Res<ClientWorld>,
     panel: Res<crate::tuning::TuningPanel>,
     dev: Res<crate::dev::DevMode>,
     origin: Res<RenderOrigin>,
@@ -1049,8 +1051,8 @@ pub(crate) fn draw_hit_boxes(
     if !panel.open || !dev.show_text {
         return;
     }
-    for target in sim.0.targets().iter() {
-        let def = sim.0.target_def(target.kind);
+    for target in world.targets().iter() {
+        let def = world.target_def(target.kind);
         let turn = facing(target.yaw);
         for b in &def.hit_boxes {
             let (min, max) = (ZVec3::from(b.min), ZVec3::from(b.max));

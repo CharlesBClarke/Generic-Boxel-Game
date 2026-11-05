@@ -9,7 +9,8 @@ use api::{Tunable, Tunables, Vec3 as ZVec3, WorldPos};
 use bevy::prelude::*;
 
 use crate::controls::Controls;
-use crate::{RenderOrigin, Sim, coords};
+use crate::world::ClientWorld;
+use crate::{RenderOrigin, coords};
 
 /// Waypoint name prefix that marks a landmark.
 pub const LANDMARK_PREFIX: &str = "landmark:";
@@ -330,40 +331,40 @@ pub(crate) fn setup_drill(
     ));
 }
 
-fn player_center(sim: &Sim) -> Option<WorldPos> {
-    let player = sim.0.player()?;
+fn player_center(world: &ClientWorld) -> Option<WorldPos> {
+    let player = world.player()?;
     Some(player.pos().translate(ZVec3::Z * player.height() * 0.5))
 }
 
-pub(crate) fn drill_keys(keys: Res<ButtonInput<KeyCode>>, controls: Res<Controls>, sim: Res<Sim>, mut drill: ResMut<Drill>) {
+pub(crate) fn drill_keys(keys: Res<ButtonInput<KeyCode>>, controls: Res<Controls>, world: Res<ClientWorld>, mut drill: ResMut<Drill>) {
     if !keys.just_pressed(controls.drill) {
         return;
     }
     drill.active = !drill.active;
     if drill.active
-        && let Some(center) = player_center(&sim)
+        && let Some(center) = player_center(&world)
     {
-        let marks = landmarks(sim.0.waypoints(), center);
+        let marks = landmarks(world.waypoints(), center);
         drill.start(center, &marks);
     }
 }
 
-pub(crate) fn drill_tick(sim: Res<Sim>, mut drill: ResMut<Drill>) {
+pub(crate) fn drill_tick(world: Res<ClientWorld>, mut drill: ResMut<Drill>) {
     if !drill.active {
         return;
     }
-    let Some(center) = player_center(&sim) else {
+    let Some(center) = player_center(&world) else {
         return;
     };
-    let marks = landmarks(sim.0.waypoints(), center);
-    if let Some(event) = drill.tick(center, &marks, sim::Simulation::TICK_SECONDS) {
+    let marks = landmarks(world.waypoints(), center);
+    if let Some(event) = drill.tick(center, &marks, protocol::TICK_SECONDS) {
         info!("chase drill: {event:?}, score {} (best {})", drill.score(), drill.best());
     }
 }
 
 #[allow(clippy::type_complexity, clippy::too_many_arguments)]
 pub(crate) fn draw_drill(
-    sim: Res<Sim>,
+    world: Res<ClientWorld>,
     mut drill: ResMut<Drill>,
     fixed: Res<Time<Fixed>>,
     time: Res<Time>,
@@ -393,7 +394,7 @@ pub(crate) fn draw_drill(
             material.base_color = wanted;
         }
     }
-    let center = player_center(&sim);
+    let center = player_center(&world);
     let distance = |pos: WorldPos| center.map_or(0.0, |c| c.delta_to(pos).length());
     let dazed = if drill.dazed() { " (dazed)" } else { "" };
     let mut line = format!("CHASE  score {}  best {}\nghost {:.0} m{dazed}", drill.score(), drill.best(), distance(ghost_pos));

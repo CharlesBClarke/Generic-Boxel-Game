@@ -8,10 +8,12 @@ publish.workspace = true
 [dependencies]
 api.workspace = true
 sim.workspace = true
+protocol.workspace = true
 bevy.workspace = true
 bevy_egui.workspace = true
 
 [dev-dependencies]
+server.workspace = true
 base.workspace = true
 data_mods.workspace = true
 base_movement.workspace = true

@@ -1,0 +1,16 @@
+[package]
+name = "server"
+description = "The server: owns the simulation and talks to clients only through protocol messages. Never depends on rendering."
+edition.workspace = true
+version.workspace = true
+publish.workspace = true
+
+[dependencies]
+api.workspace = true
+sim.workspace = true
+protocol.workspace = true
+
+[dev-dependencies]
+base.workspace = true
+data_mods.workspace = true
+base_movement.workspace = true
