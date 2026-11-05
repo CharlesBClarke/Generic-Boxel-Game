@@ -112,7 +112,7 @@ A run of small toy slices. Each one takes a single game-feel feature that doesn'
 
 #### Local server seam
 
-**Stage:** Implement (branch `seam-local-server`, started 2026-11-05). Taken ahead of WebAssembly behavior: it pays down more of the API debt list, and client-to-simulation coupling grows with every toy.
+**Stage:** Verify (branch `seam-local-server`, started 2026-11-05; implemented and tested 2026-11-05, waiting for a play check). Taken ahead of WebAssembly behavior: it pays down more of the API debt list, and client-to-simulation coupling grows with every toy.
 
 **Goal:** the client never touches `Simulation`. Same process, no networking: the simulation sits behind a message boundary (inputs and commands in, snapshots and events out). The game plays as before.
 
@@ -134,6 +134,15 @@ A run of small toy slices. Each one takes a single game-feel feature that doesn'
 3. Hit-stop is client-side: the simulation never pauses.
 4. The server runs headless in tests, including on its own thread.
 5. `cargo test` and `cargo clippy` are clean; API debt list updated.
+
+**Implementation notes**
+- `sim::Player` is now a plain-data `Body` (cloned into snapshots) plus its controller; it derefs to the body, so sim code reads the same.
+- `sim::View` holds the queries both sides ask (targeting, placement, `is_table`, `craft_plan`, capacity); `Simulation` delegates to it. Chunks travel as `ChunkData` (`Grid::export_chunk`/`import_chunk`).
+- Crafting a new shape resends the whole block registry (rare, small). Any command answers with the full `Defs`, tuning sections included.
+- Removed with the trainer: its control action (and its line in the user's controls file) and `Simulation::last_place`.
+- Hit-stop: held buttons keep acting while the view is frozen (a held swing can start its next wind-up during the freeze); before, the whole simulation paused.
+
+**Test:** `cargo test --workspace` all pass (server 5 new: input moves the player, the client copy matches the server through 200 ticks of edits and a craft, every tuning section tunes by name plus the debug commands, bit-for-bit against a direct `Simulation`, a server on its own thread says the same as a local one; client 4 new in `world`/`tuning`; client tests moved to the connection). Clippy clean, and the `Simulation` ban was checked to fire.
 
 ### Toy backlog
 
@@ -175,7 +184,7 @@ Ideas that come up while playing get added here.
 
 - ~~**Data mods.**~~ Done (2026-10-27), see Done toys.
 - **WebAssembly behavior.** *Suggested next.* Sandbox the cow's brain as WebAssembly (a `brain.wit` like `movement.wit`; it already takes plain data in and out), then block behavior once a toy has some. Also: move the movement controller's own state into the engine, and test giving freed mod pages back. Notes: `docs/notes/wasm-behavior.md`.
-- **Local server.** *Suggested after WebAssembly behavior.* The simulation behind a message boundary in the same process (inputs in, snapshots and events out, tuning by command, hit-stop client-side), before more client-to-simulation coupling piles up. Networking comes much later. Notes: `docs/notes/local-server.md`.
+- **Local server.** *In progress (2026-11-05), see Current toy.* The simulation behind a message boundary in the same process (inputs in, snapshots and events out, tuning by command, hit-stop client-side), before more client-to-simulation coupling piles up. Networking comes much later. Notes: `docs/notes/local-server.md`.
 - **Sub-grid trial.** A rotating platform the player can stand on and be carried by, to test collision with moving, rotated grids before more physics piles up. Whenever a toy wants something that moves. Notes: `docs/notes/sub-grid-trial.md`.
 - ~~**Sandbox limits.**~~ Done (2026-10-28), see Done toys.
 - **Seed a modder.** Once a few seam slices are done, have an outside modder build a small toy on the API and fix what blocks them.
@@ -185,8 +194,7 @@ Ideas that come up while playing get added here.
 Shortcuts taken around the API, each with the toy that needed it. Paid down in seam slices.
 
 - **Fixed input actions** (movement toy; break, place and palette slots added by the block editing toy, crouch by the advanced movement toy, placement mode by the block shapes toy, drop and shape by the inventory toy; shape replaced by interact, and turn_part added, by the emergent shapes toy). Move, jump, sprint, crouch, use, second use, drop, shape, the palette slots and the debug keys are a fixed engine set in `sim::PlayerInput` and `client::controls`. Mods can't define their own actions. API version: mods register named actions with default bindings, and controllers read actions by name.
-- **Chase drill in the client** (advanced movement toy, temporary; ghost hits added by the combat feel toy). The ghost and objectives in `client::drill` are game logic living in the client, and it finds landmarks by the `landmark:` prefix on waypoint names. Remove the drill rather than moving it into the API, unless a later toy wants real enemies, which would need entities and a game-rules hook in the API.
-- **Block-jump trainer in the client** (block-jump trainer toy, temporary). `client::trainer` judges attempts from read-only diagnostics, `Player::last_step` and `Simulation::last_place`. Remove it with the chase drill, or once Advanced movement revisited makes block-jumping consistent.
+- **Chase drill in the client** (advanced movement toy, temporary; ghost hits added by the combat feel toy). The ghost and objectives in `client::drill` are game logic living in the client, and it finds landmarks by the `landmark:` prefix on waypoint names. Kept by the local server seam (2026-11-05) as a good game for feeling the movement; it reads the client's copy of the world. Remove the drill rather than moving it into the API, unless a later toy wants real enemies, which would need entities and a game-rules hook in the API.
 - **Tool look in the client** (combat feel toy). Every tool is drawn as the same club, posed by `client::combat`; mods can't give a tool its own model or swing poses. API version: a tool names a model and its poses.
 - **Crafting menu in the client** (emergent shapes toy). The table's menu, its strokes and the turn and flip controls live in `client::crafting`; mods can't change how crafting is presented. The rule itself is in `api::crafting`. API version: a client-side mod API for menus, or a data description of the table's grid.
 - **Health bar in the client** (fighting cow toy). `client::hurt` draws the player's health and the hurt flash; mods can't change how health is shown. API version: a client-side mod API for the HUD.
