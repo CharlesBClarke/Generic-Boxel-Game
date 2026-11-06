@@ -12,6 +12,7 @@ pub mod player;
 pub mod raycast;
 pub mod registry;
 pub mod simulation;
+pub mod terrain;
 pub mod view;
 pub mod world;
 
@@ -25,5 +26,6 @@ pub use player::{Body, Player, PlayerInput, PushOut, Shape, StepReport, Terrain}
 pub use raycast::{Hit, raycast};
 pub use registry::{BlockId, BlockRegistry, Drop, FULL_VOLUME, LookRegistry, MaterialId, volume};
 pub use simulation::{BlockEdit, PlayerHurt, SimError, Simulation};
+pub use terrain::{GenerationStats, WorldSettings};
 pub use view::{FACE_CENTER, PlaceTarget, View, face_region};
 pub use world::{Chunk, ChunkData, Grid, GridId, Universe};

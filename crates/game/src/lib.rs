@@ -16,12 +16,14 @@ pub enum Movement {
     Native,
 }
 
-/// The engine with the base mod loaded from the source tree and the player spawned.
+/// The engine with the base mod loaded from the source tree, the player spawned and the terrain
+/// generated.
 pub fn load(movement: Movement) -> Result<Simulation, Box<dyn Error>> {
     load_from(Path::new(base::DATA_DIR), movement)
 }
 
-/// The engine with the base mod's data half read from `data` and the player spawned.
+/// The engine with the base mod's data half read from `data`, the player spawned and the
+/// terrain generated.
 pub fn load_from(data: &Path, movement: Movement) -> Result<Simulation, Box<dyn Error>> {
     let data = data_mods::load(data)?;
     let mut sim = match movement {
@@ -34,5 +36,7 @@ pub fn load_from(data: &Path, movement: Movement) -> Result<Simulation, Box<dyn 
         }
     };
     sim.spawn_player()?;
+    let stats = sim.generate_terrain()?;
+    eprintln!("terrain: {} chunks ({} of one block all through) in {:.2} s", stats.chunks, stats.uniform, stats.seconds);
     Ok(sim)
 }

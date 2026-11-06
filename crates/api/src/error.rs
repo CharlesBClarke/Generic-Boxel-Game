@@ -24,6 +24,8 @@ pub enum ApiError {
     UnknownTarget(String),
     /// No block names this material.
     UnknownMaterial(String),
+    /// No terrain generator is registered under this name.
+    UnknownGenerator(String),
     /// A player definition is already registered.
     DuplicatePlayerDef,
     /// An interaction definition is already registered.
@@ -59,6 +61,7 @@ impl fmt::Display for ApiError {
             ApiError::UnknownSound(name) => write!(f, "no sound named {name:?}"),
             ApiError::UnknownTarget(name) => write!(f, "no target named {name:?}"),
             ApiError::UnknownMaterial(name) => write!(f, "no block is made of a material named {name:?}"),
+            ApiError::UnknownGenerator(name) => write!(f, "no terrain generator named {name:?}"),
             ApiError::DuplicatePlayerDef => write!(f, "a player definition is already registered"),
             ApiError::DuplicateInteractionDef => write!(f, "an interaction definition is already registered"),
             ApiError::DuplicatePushOutDef => write!(f, "a push-out definition is already registered"),

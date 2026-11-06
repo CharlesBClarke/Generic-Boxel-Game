@@ -10,8 +10,8 @@ use api::{
     SoundDef, TargetDef, ToolDef, Tunable, WorldPos,
 };
 use sim::{
-    BlockEdit, Body, BlockRegistry, ChunkData, CraftRefusal, Inventory, Item, LookRegistry, MaterialId, PlayerHurt, PlayerInput,
-    Slam, Strike, Swing, Target,
+    BlockEdit, Body, BlockRegistry, ChunkData, CraftRefusal, GenerationStats, Inventory, Item, LookRegistry, MaterialId, PlayerHurt,
+    PlayerInput, Slam, Strike, Swing, Target,
 };
 
 /// Ticks per second.
@@ -41,6 +41,9 @@ pub enum Command {
     TeleportPlayer(WorldPos),
     /// Puts every creature back at its spot, whole.
     RespawnTargets,
+    /// Generates the terrain again with the current tuning (the `world` section and each
+    /// generator's). The new chunks come with the next tick.
+    RegenerateTerrain,
     /// Reads the sounds again, for trying sound files without a restart. The server answers
     /// with [`ServerMsg::Sounds`].
     ReloadSounds,
@@ -103,6 +106,8 @@ pub struct Defs {
     pub tuning: Vec<TuningSection>,
     pub brains_on: bool,
     pub unkillable: bool,
+    /// How the last terrain generation went, or why it failed.
+    pub generation: Option<Result<GenerationStats, String>>,
 }
 
 /// One tuning section: the movement controller, a definition, a tool, a target or a brain.

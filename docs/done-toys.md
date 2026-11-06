@@ -3,6 +3,45 @@
 Moved out of `SLICES.md` on 2026-11-03 so the roadmap stays short. Each toy's full write-up, newest first, as it stood when it closed. `SLICES.md` keeps a one-line summary of each.
 
 
+#### Generated terrain (branch `toy-generated-terrain`)
+
+**Stage:** Done (2026-11-05). Verified by the user in play ("both things work"); the shape isn't Tectonic's, which went to the backlog. Asked for by the user: "can we do bigger".
+
+**Goal:** A big generated landscape to roam, to see how far the user's machine (8 cores, 16 GB, Iris Xe) can push render and simulation distance with no LOD.
+
+*Deviation (2026-11-05):* world generation is infrastructure arriving because the user asked for more room, not because a toy needed it. The notes allowed this "if the pasture gets tiresome."
+
+**Plan** (approved 2026-11-05)
+- **API** (`api::terrain`): `Generator` (`Tunables + Send + Sync`, like `Brain`) fills one chunk from its origin relative to the terrain's center into a `ChunkFill` (plain data: a palette of block names and a `u16` per boxel), so the same chunk comes out whatever order chunks are filled in. `Registrar::register_generator(name, generator)`; `WorldEdit::add_terrain(TerrainDef { generator, center })`. WebAssembly-friendly: plain data in and out.
+- **Engine** (`sim::terrain`): records terrain placements; `Simulation::generate_terrain()` fills a box of chunks around each center (size and height in chunks from the engine's `world` tuning section, default 16×16×16, which is 512³) on every core with scoped threads, then imports them. Called by `game::load`, not `with_mods`, so tests stay fast. Afterwards bodies (player, targets, their spots) inside solid ground are lifted out. `Command::RegenerateTerrain` regenerates with the current tuning and sends the changed chunks. Generation time and chunk count go to the client for the readout.
+- **Simulation distance** (`world` section, `sim_distance` in meters): targets and loose items farther than it from the player don't step (held still, no interpolation drift).
+- **Base mod** (`base::terrain`): Tectonic-inspired height map (MIT, credited in `mods/base/CREDITS.md`; ideas only, no Mojang files): slow continent, erosion and ridge fields; curves turn them into base height, mountain height and jaggedness; folded ridged noise with domain warp for ranges, a weathering mask breaking them up; small detail noise. Grass, then dirt, then stone; steep slopes bare stone; gravel under ice. Ice fills hollows below an ice level. Stone boulders on a jittered grid, partly buried. Every scale, height and the seed are tunables in a `terrain base:hills` section. Placed far north of the test area with a `terrain` waypoint; 2–3 cow herds on it. Spawn stays at the test area.
+- **Client**: chunks meshed in parallel at startup and for big remeshes; a mesher fast path for buried solid chunks; a `view` tuning section with `render_distance` (chunks beyond it hidden, camera far plane following it); a Regenerate button in the terrain section, and saved terrain or world tuning regenerates once at load; dev readout: chunks loaded and drawn, triangles drawn, generation and meshing times, memory.
+- **Tests**: same seed gives identical chunks; a chunk is the same filled alone or among others; ice sits level; rocks across chunk borders match; regenerate replaces chunks and lifts bodies out of ground; targets and items beyond the simulation distance don't move; render distance hides the right chunks; the mesher fast path agrees with the full mesher.
+- **Out of scope:** streaming, LOD, saving, caves and overhangs, pathfinding, fixing cows on hills (only noted).
+
+**Done when**
+- The game starts with a 512×512×512 generated terrain reachable by teleport, with hills, rocks and ice.
+- Render distance and simulation distance are live sliders, and the readout shows what they cost.
+- Terrain values are live-tunable with a regenerate, and saved tuning applies at load.
+- Tests above pass; `cargo clippy` is clean.
+
+**Verify**
+- *Round 1 (2026-11-05):* at 32×32 chunks wide and 32 high (1024³) with render distance at its max (4096 m), about 25 fps on the user's Iris Xe: 32,830 chunks loaded, 4,364 with faces, 4,302 drawn, 9.85M triangles, 2,092 MB, meshing 32,768 chunks at startup 19.85 s. Startup meshing is the first limit, not the GPU.
+- *Shape:* not Tectonic's; it has pointy mountains the user doesn't normally see there. The user is fine with it for now. Backlogged as Tectonic-like terrain shape, at the user's request.
+- *Round 2 (2026-11-05):* the simulation distance holds far herds still, and regenerating, saving and restarting brings the tuned terrain back. All criteria met.
+
+*Implemented:* `api::terrain` (`Generator`, `ChunkFill`, `TerrainDef`; `UnknownGenerator`), `Registrar::register_generator`, `WorldEdit::add_terrain`. `sim::terrain` (`WorldSettings` as the `world` tuning section, `fill_chunks` on scoped threads, `to_chunk` storing one-block chunks as one value), `Simulation::generate_terrain` (drops chunks no longer reached, marks every chunk changed, lifts the player, creatures and spots out of full blocks), teleports lift out of the ground too, `Simulation::keep_targets` (for tests: drop creatures by spot), `StepContext.awake` and the items' `awake` for the simulation distance. `protocol::Command::RegenerateTerrain`, `Defs.generation`. `base::terrain::Hills` (`base:hills`, 22 tunables, own gradient, ridged and value noise in f64) placed at `TERRAIN_CENTER` (0, 4096, 0) with a `terrain` waypoint and three herds (`TERRAIN_HERDS`). Client: `mesher::mesh_chunks` (all cores, parts of 16 handed out as threads free up), a `buried` shortcut, `client::view` (`render_distance`, far plane, `ViewStats`), the panel's View section and Regenerate button, the readout line (`world_cost`). Tests: terrain unit tests in api (2), sim (5) and base (8), `sim/tests/terrain.rs` (6, plus an ignored timing), view (1), mesher (2), panel (1), plus an ignored client timing of generating and meshing the full terrain; the combat tests keep only the test area's cows. All pass; clippy clean.
+
+*Measured:* default 512³: generating 0.9 s on 8 cores, meshing 4.2 s, 1,083 chunks with faces, 2.6M triangles. 1024³: meshing 19.85 s, 9.85M triangles at about 25 fps, 2.1 GB.
+
+*Decisions:* generators are pure, per chunk, plain data in and out, and see positions relative to their terrain's center; the engine owns how much to generate (`world` section) and generates it explicitly (`game::load`), not inside `with_mods`. Generated terrain replaces what was there; regenerating loses edits in it. Bodies left inside full blocks after generating or teleporting are lifted straight up. Simulation distance holds creatures and loose items still beyond it (no stepping, no blend). The terrain is a separate place from the test area, reached by teleport. Ideas from Tectonic (MIT, credited), no files or numbers copied.
+
+*Deferred:* streaming chunks in and out (startup meshing grows with area: 20 s at 1024³ is the first limit), greedy meshing, LOD, saving, caves and overhangs, a shape closer to Tectonic's (backlog), cows on hills (the creatures-on-terrain checklist in `docs/notes/world-generation.md`), waypoints and creature spots follow the default tuning, so a tuned terrain can leave them high in the air (lifting only handles buried ones), and the readout reads memory and counts chunks every frame.
+
+*API debt:* none new.
+
+
 #### Cow tweaks (branch `toy-cow-tweaks`)
 
 **Stage:** Done (2026-11-05). Verified by the user in play ("ok it works, I like it"), then engaged the close. Asked for by the user as a small toy of cow tweaks.

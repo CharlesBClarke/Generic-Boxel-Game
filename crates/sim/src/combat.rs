@@ -316,6 +316,45 @@ impl Targets {
         }
     }
 
+    /// Drops every spot `keep` refuses, by where the spot is, and its target with it.
+    pub fn keep_spots(&mut self, keep: impl Fn(WorldPos) -> bool) {
+        let kept: Vec<bool> = self.spots.iter().map(|s| keep(s.pos)).collect();
+        // Each kept spot's new index.
+        let mut index = Vec::with_capacity(kept.len());
+        let mut next = 0;
+        for &k in &kept {
+            index.push(next);
+            next += k as usize;
+        }
+        let mut i = 0;
+        while i < self.list.len() {
+            if kept[self.homes[i]] {
+                self.homes[i] = index[self.homes[i]];
+                i += 1;
+            } else {
+                self.remove(i);
+            }
+        }
+        let mut k = kept.iter();
+        self.spots.retain(|_| *k.next().unwrap());
+    }
+
+    /// Moves every live target and every spot to where `to` says, leaving each at rest where it
+    /// lands (no blend from where it was).
+    pub fn move_all(&mut self, to: impl Fn(WorldPos) -> WorldPos) {
+        for spot in &mut self.spots {
+            spot.pos = to(spot.pos);
+        }
+        for target in &mut self.list {
+            let pos = to(target.pos);
+            if pos != target.pos {
+                target.pos = pos;
+                target.prev_pos = pos;
+                target.velocity = Vec3::ZERO;
+            }
+        }
+    }
+
     /// Attacks that hit the player since the last call, oldest first.
     pub fn take_blows(&mut self) -> Vec<Blow> {
         std::mem::take(&mut self.blows)
@@ -332,13 +371,20 @@ impl Targets {
     /// `player` is the player's feet and velocity, if there is a player, and `tick` the tick
     /// being run, for the brains' random numbers.
     pub fn step(&mut self, ctx: StepContext<'_>, terrain: &impl Terrain) {
-        let StepContext { defs, brains, crowd, player, tick, dt } = ctx;
+        let StepContext { defs, brains, crowd, player, tick, dt, awake } = ctx;
+        let asleep: Vec<bool> = self.list.iter().map(|t| !is_awake(awake, t.pos)).collect();
         let seen = player.as_ref().map(|p| (p.pos(), p.velocity()));
         let body = player.as_ref().map(|p| (p.pos(), p.shape().width * 0.5, p.height()));
         let mut others = crowd.map_or_else(Vec::new, |c| self.neighbors(defs, c.sight));
         for (i, target) in self.list.iter_mut().enumerate() {
             let def = &defs[target.kind.index()];
             target.prev_yaw = target.yaw;
+            if asleep[i] {
+                // Held still: no blend from an old position, and nothing carried over.
+                target.prev_pos = target.pos;
+                target.attack = None;
+                continue;
+            }
             match brains.get(target.kind.index()).copied().flatten() {
                 Some(brain) => {
                     let others = others.get_mut(i).map(std::mem::take).unwrap_or_default();
@@ -367,6 +413,9 @@ impl Targets {
         }
         let mut broken = Vec::new();
         for (i, target) in self.list.iter_mut().enumerate() {
+            if asleep[i] {
+                continue;
+            }
             let def = &defs[target.kind.index()];
             let Some(into) = step_target(target, def, dt, terrain) else {
                 continue;
@@ -659,6 +708,14 @@ pub struct StepContext<'a> {
     pub player: Option<&'a mut Player>,
     pub tick: u64,
     pub dt: f32,
+    /// Only targets within this many meters of this spot (the player) move; the rest hold still
+    /// where they are. `None` moves them all.
+    pub awake: Option<(WorldPos, f32)>,
+}
+
+/// Whether `pos` is within `awake`'s reach (see [`StepContext::awake`]).
+pub fn is_awake(awake: Option<(WorldPos, f32)>, pos: WorldPos) -> bool {
+    awake.is_none_or(|(center, reach)| center.delta_to(pos).length() <= reach)
 }
 
 /// Records something hurting `target`, coming from the level direction `from`. Hurts before its
@@ -926,7 +983,7 @@ mod tests {
 
     fn run(targets: &mut Targets, defs: &[TargetDef], terrain: &impl Terrain, seconds: f32) {
         for _ in 0..(seconds / DT) as usize {
-            targets.step(StepContext { defs, brains: &[], crowd: None, player: None, tick: 0, dt: DT }, terrain);
+            targets.step(StepContext { defs, brains: &[], crowd: None, player: None, tick: 0, dt: DT, awake: None }, terrain);
         }
     }
 
@@ -1334,7 +1391,7 @@ mod tests {
         let brains: [Option<&dyn Brain>; 1] = [Some(brain)];
         let mut player = standing_player(at(-3.0, 0.5, 0.0));
         for tick in 0..(seconds / DT).round() as u64 {
-            let ctx = StepContext { defs, brains: &brains, crowd: None, player: Some(&mut player), tick, dt: DT };
+            let ctx = StepContext { defs, brains: &brains, crowd: None, player: Some(&mut player), tick, dt: DT, awake: None };
             targets.step(ctx, terrain);
         }
     }
@@ -1509,7 +1566,7 @@ mod tests {
             if let Some(p) = player.as_deref_mut() {
                 p.step(&crate::PlayerInput::default(), DT, terrain);
             }
-            let ctx = StepContext { defs, brains, crowd: Some(&crowd), player: player.as_deref_mut(), tick, dt: DT };
+            let ctx = StepContext { defs, brains, crowd: Some(&crowd), player: player.as_deref_mut(), tick, dt: DT, awake: None };
             targets.step(ctx, terrain);
         }
     }
@@ -1611,7 +1668,7 @@ mod tests {
         let mut player = standing_player(at(0.6, 0.5, 2.0));
         let terrain = Room { wall_x: 1000, ice_y: 1000 };
         let crowd = crowd();
-        let ctx = StepContext { defs: &defs, brains: &[], crowd: Some(&crowd), player: Some(&mut player), tick: 0, dt: DT };
+        let ctx = StepContext { defs: &defs, brains: &[], crowd: Some(&crowd), player: Some(&mut player), tick: 0, dt: DT, awake: None };
         targets.step(ctx, &terrain);
         assert_eq!(targets.iter().next().unwrap().shove, Vec2::ZERO);
     }
@@ -1649,7 +1706,7 @@ mod tests {
         let brains: [Option<&dyn Brain>; 1] = [Some(&walker)];
         let (mut targets, defs) = many(&[(0.5, 0.5), (0.7, 0.5)], walker_def());
         for tick in 0..30 {
-            targets.step(StepContext { defs: &defs, brains: &brains, crowd: None, player: None, tick, dt: DT }, &room());
+            targets.step(StepContext { defs: &defs, brains: &brains, crowd: None, player: None, tick, dt: DT, awake: None }, &room());
         }
         let t: Vec<&Target> = targets.iter().collect();
         assert_eq!(t[0].signal, "seen 0");

@@ -61,6 +61,12 @@ impl ChangedChunks {
         }
     }
 
+    /// Records a change to a whole chunk, such as one generated again. Its neighbors aren't
+    /// marked: a box of chunks generated together marks all of its own.
+    pub fn mark_chunk(&mut self, pos: ChunkPos) {
+        self.0.insert(pos);
+    }
+
     /// Every chunk changed since the last call, in no particular order.
     pub fn take(&mut self) -> Vec<ChunkPos> {
         self.0.drain().collect()

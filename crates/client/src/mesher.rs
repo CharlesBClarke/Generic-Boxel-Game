@@ -169,6 +169,49 @@ fn occupants_at<'a>(grid: &'a Grid, chunk: &'a Chunk, pos: ChunkPos, local: I64V
     }
 }
 
+/// Whether the chunk at `pos` and its six neighbors are each one full block all through, so
+/// none of its faces can show. Most of a generated terrain's underground is.
+fn buried(grid: &Grid, pos: ChunkPos, blocks: &BlockRegistry) -> bool {
+    let solid = |p: ChunkPos| {
+        let Some(id) = grid.chunk(p).and_then(|c| c.cells.uniform()) else {
+            return false;
+        };
+        grid.occupants(id).iter().any(|o| blocks.get(o.block).is_some_and(|d| d.is_full()))
+    };
+    let sides = [I64Vec3::X, I64Vec3::NEG_X, I64Vec3::Y, I64Vec3::NEG_Y, I64Vec3::Z, I64Vec3::NEG_Z];
+    solid(pos) && sides.iter().all(|&d| solid(ChunkPos(pos.0 + d)))
+}
+
+/// Meshes every chunk in `positions`, spread over every core. Comes back in the same order.
+pub fn mesh_chunks(grid: &Grid, positions: &[ChunkPos], blocks: &BlockRegistry, volumes: &Volumes, ao: &AoTuning) -> Vec<MeshData> {
+    if positions.len() < 8 {
+        return positions.iter().map(|&p| mesh_chunk(grid, p, blocks, volumes, ao)).collect();
+    }
+    let threads = std::thread::available_parallelism().map_or(1, |n| n.get());
+    // Small parts, handed out as threads free up, since chunks differ a lot in cost.
+    let parts: Vec<&[ChunkPos]> = positions.chunks(16).collect();
+    let next = std::sync::atomic::AtomicUsize::new(0);
+    let mut done: Vec<(usize, Vec<MeshData>)> = std::thread::scope(|scope| {
+        let handles: Vec<_> = (0..threads.min(parts.len()))
+            .map(|_| {
+                scope.spawn(|| {
+                    let mut out = Vec::new();
+                    loop {
+                        let i = next.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                        let Some(part) = parts.get(i) else {
+                            break out;
+                        };
+                        out.push((i, part.iter().map(|&p| mesh_chunk(grid, p, blocks, volumes, ao)).collect()));
+                    }
+                })
+            })
+            .collect();
+        handles.into_iter().flat_map(|h| h.join().expect("a meshing thread panicked")).collect()
+    });
+    done.sort_by_key(|(i, _)| *i);
+    done.into_iter().flat_map(|(_, meshes)| meshes).collect()
+}
+
 /// Meshes the chunk at `pos`. Neighbors are read through `grid`, so faces on chunk borders
 /// are culled and occluded against the next chunk. Unloaded neighbors count as empty.
 pub fn mesh_chunk(grid: &Grid, pos: ChunkPos, blocks: &BlockRegistry, volumes: &Volumes, ao: &AoTuning) -> MeshData {
@@ -176,7 +219,7 @@ pub fn mesh_chunk(grid: &Grid, pos: ChunkPos, blocks: &BlockRegistry, volumes: &
     let Some(chunk) = grid.chunk(pos) else {
         return mesh;
     };
-    if chunk.cells.uniform() == Some(CellId::EMPTY) {
+    if chunk.cells.uniform() == Some(CellId::EMPTY) || buried(grid, pos, blocks) {
         return mesh;
     }
 
@@ -385,6 +428,46 @@ mod tests {
     /// Meshed without ambient occlusion, so colors are just the face shading.
     fn mesh_chunk(grid: &Grid, pos: ChunkPos, blocks: &BlockRegistry) -> MeshData {
         super::mesh_chunk(grid, pos, blocks, &flat(blocks), &AoTuning::OFF)
+    }
+
+    /// Fills the chunk at `c` with `id` all through, stored as one value as generated terrain is.
+    fn fill_chunk(grid: &mut Grid, c: I64Vec3, id: BlockId) {
+        let lists = vec![Vec::new(), vec![Occupant::new(id)]];
+        grid.import_chunk(&sim::ChunkData { pos: ChunkPos(c), lists, cells: sim::Layer::Uniform(1) });
+    }
+
+    #[test]
+    fn a_buried_chunk_has_no_faces_until_a_neighbor_opens() {
+        let (mut grid, blocks, stone) = setup();
+        let sides = [I64Vec3::X, I64Vec3::NEG_X, I64Vec3::Y, I64Vec3::NEG_Y, I64Vec3::Z, I64Vec3::NEG_Z];
+        for c in std::iter::once(I64Vec3::ZERO).chain(sides) {
+            fill_chunk(&mut grid, c, stone);
+        }
+        assert!(grid.chunk(ChunkPos(I64Vec3::ZERO)).unwrap().cells.uniform().is_some(), "stored as one value");
+        assert!(buried(&grid, ChunkPos(I64Vec3::ZERO), &blocks));
+        assert!(mesh_chunk(&grid, ChunkPos(I64Vec3::ZERO), &blocks).is_empty());
+        // Hollow out one boxel of the neighbor above: the face under it shows.
+        grid.set_block(BoxelPos::new(4, 4, 32), BlockId::EMPTY);
+        assert!(!buried(&grid, ChunkPos(I64Vec3::ZERO), &blocks));
+        assert_eq!(mesh_chunk(&grid, ChunkPos(I64Vec3::ZERO), &blocks).quad_count(), 1);
+    }
+
+    #[test]
+    fn meshing_many_at_once_matches_one_at_a_time() {
+        let (mut grid, blocks, stone) = setup();
+        let mut positions = Vec::new();
+        for i in 0..40i64 {
+            let c = I64Vec3::new(i % 5, i / 5, 0);
+            grid.set_block(ChunkPos(c).origin().offset(I64Vec3::new(i % 32, (i * 7) % 32, (i * 3) % 32)), stone);
+            grid.set_block(ChunkPos(c).origin().offset(I64Vec3::new(31, 31, 0)), stone);
+            positions.push(ChunkPos(c));
+        }
+        let volumes = flat(&blocks);
+        let together = mesh_chunks(&grid, &positions, &blocks, &volumes, &AoTuning::default());
+        for (pos, mesh) in positions.iter().zip(&together) {
+            let alone = super::mesh_chunk(&grid, *pos, &blocks, &volumes, &AoTuning::default());
+            assert_eq!((alone.positions.clone(), alone.indices.clone()), (mesh.positions.clone(), mesh.indices.clone()), "{:?}", pos.0);
+        }
     }
 
     #[test]

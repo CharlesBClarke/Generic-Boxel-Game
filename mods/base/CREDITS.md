@@ -45,3 +45,31 @@ fetches.
 `printer.wav` is cut by `tools/make_sounds.sh` from a downloaded 3D printer recording
 (`hammy01-3d-printer-283745.mp3`, in the packs folder; apparently from Pixabay, whose license
 isn't CC0). It's here to try the sound out only. If it stays, replace it with our own recording.
+
+## Terrain
+
+The terrain generator (`crates/base/src/terrain.rs`) takes its approach from Tectonic, a terrain
+mod and datapack for Minecraft by Apollo (https://github.com/Apollounknowndev/tectonic,
+https://modrinth.com/datapack/tectonic), MIT licensed: slow noise fields for how inland, how worn
+down and how ridged the land is, turned into heights by curves, with ridged mountain ranges broken
+up by a weathering mask. No files, code or numbers were copied; the generator and its values are
+written for this game.
+
+    MIT License
+
+    Copyright (c) 2024 Apollo
+
+    Permission is hereby granted, free of charge, to any person obtaining a copy of this software
+    and associated documentation files (the "Software"), to deal in the Software without
+    restriction, including without limitation the rights to use, copy, modify, merge, publish,
+    distribute, sublicense, and/or sell copies of the Software, and to permit persons to whom the
+    Software is furnished to do so, subject to the following conditions:
+
+    The above copyright notice and this permission notice shall be included in all copies or
+    substantial portions of the Software.
+
+    THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING
+    BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND
+    NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM,
+    DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+    OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.

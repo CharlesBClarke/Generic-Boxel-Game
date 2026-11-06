@@ -2,12 +2,13 @@
 //! and their looks are a data mod in `mods/base`, loaded by the engine alongside it.
 
 use api::{
-    ApiError, BoxelPos, CrowdDef, HealthDef, I64Vec3, InteractionDef, ItemDropDef, Mod, Orientation, PlayerDef, PlayerSounds, PushOutDef, Registrar, ToolDef,
-    ToolSounds, Vec3, WorldEdit, WorldPos,
+    ApiError, BoxelPos, CrowdDef, HealthDef, I64Vec3, InteractionDef, ItemDropDef, Mod, Orientation, PlayerDef, PlayerSounds, PushOutDef, Registrar,
+    TerrainDef, ToolDef, ToolSounds, Vec3, WorldEdit, WorldPos,
 };
 
 pub mod cow;
 pub mod shapes;
+pub mod terrain;
 
 /// The base game's data half, in the source tree. Both halves share the `base` namespace.
 pub const DATA_DIR: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../../mods/base");
@@ -65,6 +66,14 @@ pub const TABLE_SPOT: (i64, i64, i64) = (-2, 3, 0);
 /// Where the far copy of the test area sits, for checking that play is the same in the millions.
 pub const FAR_ORIGIN: BoxelPos = BoxelPos::new(3_000_000, -2_000_000, 1_000);
 
+/// The generated terrain's center, far north of the test area so the two never meet. The
+/// terrain's height map is measured from here.
+pub const TERRAIN_CENTER: BoxelPos = BoxelPos::new(0, 4096, 0);
+
+/// Cow herds on the terrain: where each herd gathers, relative to the terrain's center, and
+/// how many cows it has.
+pub const TERRAIN_HERDS: &[(i64, i64, usize)] = &[(24, 18, 5), (-140, 95, 4), (160, -130, 6)];
+
 /// Half the width of the square test area floor.
 pub const AREA_HALF: i64 = 64;
 
@@ -93,6 +102,7 @@ impl Mod for BaseMod {
     fn register(&self, r: &mut dyn Registrar) -> Result<(), ApiError> {
         // Blocks and their looks are data, in `mods/base`; see `DATA_DIR`.
         r.register_brain(cow::COW_BRAIN, Box::new(cow::CowBrain::default()))?;
+        r.register_generator(terrain::HILLS, Box::new(terrain::Hills::default()))?;
         r.register_player(PlayerDef {
             width: 0.6,
             height: 1.8,
@@ -189,6 +199,7 @@ impl Mod for BaseMod {
         for &(x, y, facing) in COWS {
             w.add_target(COW, WorldPos::new(origin.0 + I64Vec3::new(x, y, 0), Vec3::new(0.5, 0.5, 0.0)), facing.to_radians())?;
         }
+        build_terrain(w)?;
         for o in [origin, FAR_ORIGIN] {
             for (name, x, y, z) in LANDMARKS {
                 w.add_waypoint(&format!("landmark:{name}"), WorldPos::new(o.0 + I64Vec3::new(*x, *y, *z), Vec3::new(0.5, 0.5, 0.0)));
@@ -196,6 +207,24 @@ impl Mod for BaseMod {
         }
         Ok(())
     }
+}
+
+/// Places the generated terrain, a waypoint at its center and the herds on it. Feet go where
+/// the default tuning puts the ground; the engine lifts anything that ends up buried.
+fn build_terrain(w: &mut dyn WorldEdit) -> Result<(), ApiError> {
+    w.add_terrain(TerrainDef { generator: terrain::HILLS.into(), center: TERRAIN_CENTER })?;
+    let hills = terrain::Hills::default();
+    let feet = |x: i64, y: i64| WorldPos::new(TERRAIN_CENTER.0 + I64Vec3::new(x, y, hills.surface(x, y)), Vec3::new(0.5, 0.5, 0.0));
+    w.add_waypoint("terrain", feet(0, 0));
+    for (h, &(x, y, count)) in TERRAIN_HERDS.iter().enumerate() {
+        for i in 0..count as i64 {
+            // Loosely bunched: a little ring around the herd's spot.
+            let (dx, dy) = [(0, 0), (3, 1), (-2, 3), (1, -3), (-3, -1), (4, -2)][i as usize % 6];
+            let yaw = ((h as i64 * 97 + i * 61) % 360) as f32;
+            w.add_target(COW, feet(x + dx, y + dy), yaw.to_radians())?;
+        }
+    }
+    Ok(())
 }
 
 /// A flat floor with steps, walls, a low tunnel, a pit and a tall tower. The floor's top

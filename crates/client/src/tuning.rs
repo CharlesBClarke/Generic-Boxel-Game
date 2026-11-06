@@ -1,7 +1,8 @@
 //! The live tuning panel: sliders for every value the server lets a client tune (the player's
 //! movement controller, the interaction, push-out, crowd, health, item drop and inventory
 //! definitions, tools, targets and brains, whichever mod they come from) and the client's own:
-//! sound, the camera feel, the combat feel, the animation, ambient occlusion and the chase drill. Save
+//! sound, the camera feel, the combat feel, the animation, ambient occlusion, the view and the chase
+//! drill. Terrain values take effect when the terrain is generated again. Save
 //! keeps them in the tuning file (see `tuning_file`), which is applied at startup.
 //!
 //! The server's values are edited as copies and each change is sent back as a command; the
@@ -19,6 +20,7 @@ use crate::feel::CameraFeel;
 use crate::mesher::AoTuning;
 use crate::sound::{Kind, Pick, Picks, SoundPicks, SoundPreview, SoundTuning};
 use crate::tuning_file;
+use crate::view::ViewTuning;
 use crate::world::{ClientWorld, Link};
 
 #[derive(Resource, Default)]
@@ -49,6 +51,7 @@ pub fn tuning_panel(
     mut sound: ResMut<SoundTuning>,
     mut preview_sound: ResMut<SoundPreview>,
     mut picks: ResMut<SoundPicks>,
+    mut view: ResMut<ViewTuning>,
 ) -> Result {
     // The saved file is applied once, on the first frame there is a player, open or not.
     if world.player().is_none() {
@@ -83,6 +86,8 @@ pub fn tuning_panel(
     let mut playing = animation.clone();
     let mut camera = feel.clone();
     let mut shading = *ao;
+    let mut seeing = *view;
+    let mut regenerate = false;
     let mut drill_tuning = drill.tuning.clone();
     let mut hearing = sound.clone();
     let mut trying = picks.clone();
@@ -114,6 +119,7 @@ pub fn tuning_panel(
             s.push(("animation".to_owned(), &mut playing));
             s.push(("camera".to_owned(), &mut camera));
             s.push(("ao".to_owned(), &mut shading));
+            s.push(("view".to_owned(), &mut seeing));
             s.push(("drill".to_owned(), &mut drill_tuning));
             s.push(("sound".to_owned(), &mut hearing));
             s
@@ -178,7 +184,16 @@ pub fn tuning_panel(
                         });
                     }
                     sliders(ui, name, values);
+                    if name == "world" || name.starts_with("terrain ") {
+                        ui.horizontal(|ui| {
+                            regenerate |= ui.button("Regenerate terrain").clicked();
+                            ui.label("terrain values take effect here (edits in it are lost)");
+                        });
+                    }
                 }
+                ui.separator();
+                ui.heading("View");
+                sliders(ui, "view", &mut seeing);
                 ui.separator();
                 ui.heading("Sound");
                 sliders(ui, "sound", &mut hearing);
@@ -254,6 +269,7 @@ pub fn tuning_panel(
                     brains_on = true;
                     camera = CameraFeel::default();
                     shading = AoTuning::default();
+                    seeing = ViewTuning::default();
                     juice = CombatFeel::default();
                     playing = AnimationTuning::default();
                     preview.clip = None;
@@ -299,8 +315,14 @@ pub fn tuning_panel(
             info!("{}", panel.note);
         }
     }
-    for command in changes(&before, &server) {
+    let sent = changes(&before, &server);
+    // Saved terrain values only show once the terrain is made again with them.
+    regenerate |= load && sent.iter().any(shapes_terrain);
+    for command in sent {
         link.command(command, &mut world);
+    }
+    if regenerate {
+        link.command(Command::RegenerateTerrain, &mut world);
     }
     if unkillable != world.defs().unkillable {
         link.command(Command::Unkillable(unkillable), &mut world);
@@ -321,6 +343,7 @@ pub fn tuning_panel(
         *feel = camera;
     }
     ao.set_if_neq(shading);
+    view.set_if_neq(seeing);
     if trying != *picks {
         *picks = trying;
     }
@@ -389,9 +412,11 @@ fn heading(section: &str) -> String {
         "health" => "Player health".into(),
         "item_drops" => "Item drops".into(),
         "inventory" => "Inventory".into(),
+        "world" => "World".into(),
         _ => match section.split_once(' ') {
             Some(("tool", name)) => format!("Tool: {name}"),
             Some(("target", name)) => format!("Target: {name}"),
+            Some(("terrain", name)) => format!("Terrain: {name}"),
             _ => section.into(),
         },
     }
@@ -409,6 +434,15 @@ fn changes(before: &[TuningSection], edited: &[(String, Values)]) -> Vec<Command
         }
     }
     out
+}
+
+/// Whether a command changes what generating the terrain makes: a generator's value, or the
+/// terrain's size. The simulation distance doesn't.
+fn shapes_terrain(command: &Command) -> bool {
+    match command {
+        Command::Tune { section, name, .. } => section.starts_with("terrain ") || (section == "world" && name.starts_with("terrain_")),
+        _ => false,
+    }
 }
 
 /// Writes the values to the tuning file, making its folder if needed.
@@ -470,6 +504,15 @@ mod tests {
             changes(&before, &edited),
             [Command::Tune { section: "health".into(), name: "health".into(), value: 20.0 }]
         );
+    }
+
+    #[test]
+    fn only_terrain_values_and_its_size_need_generating_again() {
+        let tune = |section: &str, name: &str| Command::Tune { section: section.into(), name: name.into(), value: 1.0 };
+        assert!(shapes_terrain(&tune("terrain base:hills", "seed")));
+        assert!(shapes_terrain(&tune("world", "terrain_width")));
+        assert!(!shapes_terrain(&tune("world", "sim_distance")));
+        assert!(!shapes_terrain(&tune("health", "regen")));
     }
 
     #[test]

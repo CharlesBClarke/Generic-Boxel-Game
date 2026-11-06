@@ -161,6 +161,7 @@ impl Items {
         dt: f32,
         terrain: &impl Terrain,
         collector: Option<Collector>,
+        awake: Option<(WorldPos, f32)>,
     ) -> Vec<Drop> {
         let mut picked = Vec::new();
         let mut collector = collector;
@@ -179,6 +180,11 @@ impl Items {
             item.drop.amount > 0
         });
         for item in &mut self.list {
+            if !crate::combat::is_awake(awake, item.pos) {
+                // Held still where it is, with no blend from an older position.
+                item.prev_pos = item.pos;
+                continue;
+            }
             item.wait = (item.wait - dt).max(0.0);
             let unit = blocks.unit(item.drop.material);
             step_item(item, def, dt, terrain, collector.filter(|c| c.room >= unit.max(1)));
@@ -343,7 +349,7 @@ mod tests {
         }
 
         fn step(&self, items: &mut Items, terrain: &impl Terrain, collector: Option<Collector>) -> Vec<Drop> {
-            items.step(&def(), &self.blocks, DT, terrain, collector)
+            items.step(&def(), &self.blocks, DT, terrain, collector, None)
         }
     }
 
