@@ -111,20 +111,9 @@ A run of small toy slices. Each one takes a single game-feel feature that doesn'
 - Cow herd (1): a cow shoved well away from the herd walks back to it on its own.
 - Cow herd (3): a moving cow that runs into the player pushes them back, with no jitter or sticking.
 
-#### Cow pathfinding (`toy-cow-pathfinding`)
+- Cow pathfinding (low priority, 2026-11-06): the user called the toy "really good" without going through the five course checks one by one; note any that misbehave: cows through the pen's gap and up its terraces, up the mesa's steps, a charge baited off the mesa's cliff (landing hurt), waiting below the pillar (orange route), climbing hills on the generated terrain.
 
-**Stage:** Verify
-
-**Goal:** Cows find their way around walls, through gaps and up one-block ledges (with a hop) when chasing, running off and walking back to the herd. A charge stays a straight line and can go over a cliff, and a fall hurts, so a cow can be baited off a cliff.
-
-**Plan** (approved 2026-11-06)
-- *API.* `BrainOutput.go_to` (where the brain wants to get, from its feet) and `BrainOutput.hop`. `BrainContext.route` answers a request one tick or more later: `next` (where to steer: the furthest path point with a clear walk), `end` (where the path ends), `length`, `reaches` (all the way, or only as close as it gets) and `hop` (the next step is a hop up). `TargetDef` gains `hop_speed`, `max_drop`, `fall_speed` and `fall_damage`, read from `targets.toml` and tunable.
-- *Engine, `sim::path`.* A* over standing spots (one per boxel column at a floor height). Moves to the 8 neighbors are tested with the real collision sweeps (`sweep_stepping`, `clamp_axis`), so shaped cells work: walk (stepping up to `step_height`, down up to `max_drop`), or hop up when the hop clears it. Diagonals need both sides clear. Each search has a node budget and range, and the closest spot is returned when the goal can't be reached. `Targets::step` keeps each creature's plan, replans when the goal moves, the plan ages or the creature is knocked off it, and runs at most a few searches a tick, oldest request first.
-- *Hops and falls.* A hop gives a creature on the ground `hop_speed` up and its walking velocity. A landing faster than `fall_speed` hurts like a slam (`Slam` event straight down).
-- *Cow brain.* Chasing (angry, closing in) follows the route when it can't charge straight. With no full path it goes as close as it can and waits there, facing the player, until its anger runs out. Running away heads for a point ahead along its heading by route. A strayed cow walks back to the herd's middle by route. A charge drops its edge guard so it can run off a cliff.
-- *Debug.* `Target.route` (the path left) reaches the client in the snapshot. The `show_routes` key (F7) draws every cow's route: green when it reaches, orange when not, hops marked.
-- *Pasture course.* Inside the pasture: a wall with a one-block gap, a one-block terrace with a second tier, a 3-high pillar (unreachable for cows) and a 5-high mesa with one-block hop steps and a cliff edge for baiting charges.
-- *Tests.* `sim::path` on handmade terrains: around a wall, through a 1-wide gap, a hop up, refusing a drop too deep, no path to a pillar (closest spot), the budget respected, slabs walked without hops. Engine tests for hops, fall damage and replanning; brain tests for following a route, waiting below and charging without an edge guard. Then play in the pasture and on the terrain.
+None. Plan the next toy in a new session.
 
 ### Toy backlog
 
@@ -192,7 +181,7 @@ Shortcuts taken around the API, each with the toy that needed it. Paid down in s
 - **A robotic player** (tentative, 2026-10-25): the user wants movement and camera feel to read as a robot. Landings are a shock absorber: soft landings compress smoothly, damaging ones bottom out hard. Later feel work (combat, damage) should keep to it.
 - **Skyrim-style controls** (2026-10-31, from Combat feel; clarified 2026-11-03): whatever is held has a main use on left click and a second use on right click. Blocks break and place; a tool swings and guards. Part of the answer to the ambiguous-interactions gripe; the Interaction controls toy builds on it. *Only half of Skyrim's system is built:* the one-item case. In Skyrim, holding two things (one per hand) gives each button that hand's main use, and alt uses go unreachable; that half is the backlog's Two hands.
 - **Sound** (2026-11-05, from Sound): the simulation is silent; the client hears what the server sends (events and snapshots), so new sounds need events, not sim audio. Sounds are data in `sounds.toml`, named by kind prefix (`step_`, `swing_`, `hit_`, `kill_`, `hurt_`, `knockout_`, `hardland_`, `pickup_`), and the mod keeps only used files; candidates live in `~/Projects/boxel-sound-packs/`. Loops are WAV. `kira` stays at 0.10 until Bevy is upgraded (ALSA clash). espeak, if used, is rendered offline.
-- **Creature navigation** (2026-11-05, from Cow tweaks): no pathfinding yet; brains see a clear straight run to the player (`Seen.clear_run`). Pathfinding is wanted eventually, as an engine service beside it, once terrain needs it.
+- **Creature navigation** (2026-11-05, from Cow tweaks; revised 2026-11-06, Cow pathfinding): pathfinding is an engine service. A brain asks with `BrainOutput.go_to` and gets `BrainContext.route` a tick or more later; the engine searches standing spots with the real collision sweeps (so shaped cells work), hops one-block ledges for creatures with a `hop_speed`, drops at most `max_drop`, and runs one search a tick. Brains still see `Seen.clear_run` for straight lines like charges, which keep no edge guard and can go off cliffs; creatures take fall damage.
 - **Generated terrain** (2026-11-05, from Generated terrain): generators are pure per-chunk functions through `api::terrain`, plain data, positions relative to their terrain's center; the engine decides how much to fill (`world` section) and fills it explicitly in `game::load`. Regenerating replaces the terrain (edits lost) and lifts buried bodies out. Beyond the simulation distance creatures and items hold still.
 - **Signature feature:** not decided yet. Choose it once the block interaction and crafting toys have been played, and record the choice and why in the design doc.
 
@@ -206,6 +195,7 @@ Bugs found in already-merged code, each fixed on its own `fix-` branch (see the 
 ### Done toys
 
 Full write-ups (plans, implementation notes, verify rounds, decisions) are in `docs/done-toys.md`. One line each, newest first:
+- **Cow pathfinding** (2026-11-06, `toy-cow-pathfinding`). Cows find paths round walls, through gaps and up block-high ledges with a hop when chasing, running off and regrouping; with no way up they wait below; charges run off cliffs and falls hurt. F7 shows the routes; the pasture has a course (pen with a gap and terraces, pillar, mesa).
 - **Health bar under the hotbar** (2026-11-06, `toy-health-bar-bottom`). The health bar moved from the top of the screen to the bottom, under the hotbar, which sits higher to make room.
 - **Shading** (2026-11-05, `toy-shading`). Crisp crease and ridge lines per texel from what's past each quad's edges, an AO curve with an Apply button, light from a movable sun and the sky instead of fixed brightness per face, a sheen per look (ice), a gradient sky with a sun and fog that fades the far world into it. About 2.7 ms a frame at 10M triangles. Also an F9 frame rate recorder (on `master` via `dev-perf-recorder`).
 - **Generated terrain** (2026-11-05, `toy-generated-terrain`). A 512³ seeded terrain of hills, ranges, frozen lakes and boulders (Tectonic-inspired), its own place reached by teleport, with herds; live render and simulation distances, a regenerate, and a cost readout. 1024³ runs at about 25 fps; startup meshing (20 s) is the first limit.
