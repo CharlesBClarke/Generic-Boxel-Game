@@ -274,6 +274,7 @@ pub fn build_test_area(w: &mut dyn WorldEdit, o: BoxelPos) -> Result<(), ApiErro
     w.fill(at(x0, y0, 0), at(x0, y1, top), WOOD)?;
     w.fill(at(x1, y0, 0), at(x1, y1, top), WOOD)?;
     w.clear(at(x1, PASTURE_DOOR_Y - 1, 1), at(x1, PASTURE_DOOR_Y + 1, top));
+    build_cow_course(w, o)?;
 
     // A tunnel with exactly 2 boxels of headroom.
     w.fill(at(-3, -20, 0), at(-3, -8, 2), STONE)?;
@@ -292,6 +293,30 @@ pub fn build_test_area(w: &mut dyn WorldEdit, o: BoxelPos) -> Result<(), ApiErro
 
     build_shapes_corner(w, o)?;
     build_movement_course(w, o)
+}
+
+/// Things for cows to find their way round, inside the pasture away from the herd: a pen in the
+/// north-west corner whose only way in is a gap one block wide, with a terrace inside one block
+/// up and a second tier above it; a pillar 3 high no cow can get up; and a mesa 5 high in the
+/// south-west corner, climbed by block-high steps on its east side, whose cliffs a charge can
+/// be baited off.
+fn build_cow_course(w: &mut dyn WorldEdit, o: BoxelPos) -> Result<(), ApiError> {
+    let at = |x: i64, y: i64, z: i64| o.offset(I64Vec3::new(x, y, z));
+    // The pen: walls 3 high, the gap at x = -56.
+    w.fill(at(-61, -38, 0), at(-51, -38, 2), BRICK)?;
+    w.fill(at(-51, -38, 0), at(-51, -33, 2), BRICK)?;
+    w.clear(at(-56, -38, 0), at(-56, -38, 2));
+    // Its terrace, and the tier above.
+    w.fill(at(-61, -37, 0), at(-57, -33, 0), STONE)?;
+    w.fill(at(-61, -35, 1), at(-59, -33, 1), STONE)?;
+    // The pillar.
+    w.fill(at(-40, -36, 0), at(-40, -36, 2), STONE)?;
+    // The mesa and its steps, against the south wall.
+    w.fill(at(-61, -61, 0), at(-56, -56, 4), STONE)?;
+    for (i, x) in (-55..=-52).enumerate() {
+        w.fill(at(x, -61, 0), at(x, -59, 3 - i as i64), STONE)?;
+    }
+    Ok(())
 }
 
 /// Blocks that aren't full cubes, west of spawn: a staircase rising west, a slab path with

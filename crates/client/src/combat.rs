@@ -1041,6 +1041,32 @@ pub(crate) fn draw_hit_boxes(
     }
 }
 
+/// While the `show_routes` key has them on, draws every creature's path from where it stands:
+/// green when the path gets to its goal, orange when it only gets as near as it can, with a
+/// ring at each hop.
+pub(crate) fn draw_routes(world: Res<ClientWorld>, dev: Res<crate::dev::DevMode>, origin: Res<RenderOrigin>, mut gizmos: Gizmos) {
+    if !dev.show_routes {
+        return;
+    }
+    // A little above the ground, so the line isn't hidden in it.
+    let lift = ZVec3::Z * 0.15;
+    for target in world.targets().iter() {
+        let Some(plan) = &target.plan else {
+            continue;
+        };
+        let color = if plan.path.reaches { Color::srgb(0.2, 0.9, 0.3) } else { Color::srgb(1.0, 0.55, 0.1) };
+        let point = |p: api::WorldPos| coords::render_translation(p.translate(lift), origin.cell);
+        let rest = &plan.path.points[plan.at..];
+        gizmos.linestrip(std::iter::once(point(target.pos)).chain(rest.iter().map(|(p, _)| point(*p))), color);
+        for (p, step) in rest {
+            if *step == sim::path::Step::Hop {
+                let ring = Isometry3d::new(point(*p), Quat::from_rotation_arc(Vec3::Z, Vec3::Y));
+                gizmos.circle(ring, 0.3, Color::srgb(1.0, 1.0, 0.3));
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

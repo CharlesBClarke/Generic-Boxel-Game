@@ -11,8 +11,9 @@
 //! Like the player, each target does its collision math relative to its own cell, so it behaves
 //! the same at any distance from zero.
 
-use api::{Attack, Brain, BrainContext, CrowdDef, Hurt, MAX_NEIGHBORS, Neighbor, Seen, TargetDef, ToolDef, Vec2, Vec3, WorldPos};
+use api::{Attack, Brain, BrainContext, CrowdDef, Hurt, MAX_NEIGHBORS, Neighbor, Route, Seen, TargetDef, ToolDef, Vec2, Vec3, WorldPos};
 
+use crate::path::{self, Path, Step, Walker};
 use crate::player::{Terrain, clamp_axis, guard_edges, sweep_stepping};
 use crate::raycast::ray_box;
 use crate::{CellBox, Player};
@@ -26,6 +27,29 @@ const MIN_BOUNCE_SPEED: f32 = 1.5;
 const LOST_DEPTH: f32 = 200.0;
 /// Bodies overlapping by less than this, in meters, aren't pushed, so ones just touching rest.
 const PUSH_SLACK: f32 = 0.01;
+/// The most paths found in one tick, across every target; the rest wait their turn, longest
+/// waiting first.
+const PATHS_PER_TICK: usize = 1;
+/// A path is found again when its goal has moved this far, meters, or this share of the way
+/// to it if that's more, so far goals aren't chased for every step they take.
+const REPLAN_SHIFT: f32 = 1.0;
+const REPLAN_SHARE: f32 = 0.2;
+/// A path older than this, seconds, is found again, in case the world changed; one that
+/// doesn't reach, whose searches cost the most, less often.
+const REPLAN_AGE: f32 = 2.0;
+const REPLAN_AGE_SHORT: f32 = 4.0;
+/// A path whose goal has moved this far, meters, or this share of the way to it if more, is
+/// for somewhere else: it isn't shown to the brain while it waits for a new one.
+const WRONG_SHIFT: f32 = 4.0;
+const WRONG_SHARE: f32 = 0.5;
+/// Knocked further than this, meters, from the point it was heading for, it needs a new path.
+const OFF_PATH: f32 = 2.5;
+/// Within this of a path's point, level in meters, it has got there and heads for the next.
+const PASSED: f32 = 0.75;
+/// How many points ahead a path's steering looks for one it can walk straight to.
+const LOOK_AHEAD: usize = 6;
+/// Within this of a hop's point, level in meters, the route tells the brain to hop.
+const HOP_NEAR: f32 = 1.5;
 
 /// A runtime target definition ID, in registration order. Names are the identity.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -90,6 +114,74 @@ pub struct Target {
     spent: bool,
     /// Its attack hit since its brain last thought.
     landed: bool,
+    /// The way to where its brain last asked to go, once found.
+    pub plan: Option<Plan>,
+    /// Where its brain wants to go, if anywhere.
+    want: Option<WorldPos>,
+    /// Seconds it has needed a new path without getting one.
+    waiting: f32,
+    /// Its brain asked to hop this tick.
+    hop: bool,
+    /// In the air from a hop: it keeps walking where its brain wants, so it carries on over the
+    /// ledge after brushing its face.
+    hopping: bool,
+}
+
+/// A target's path and how far along it is.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Plan {
+    /// Where it was asked to go when this path was found.
+    pub goal: WorldPos,
+    pub path: Path,
+    /// The point of the path it's heading for: the ones before are behind it.
+    pub at: usize,
+    /// Seconds since it was found.
+    pub age: f32,
+}
+
+impl Plan {
+    /// Moves on past the points `feet` has reached, then works out the brain's view of the rest.
+    fn follow(&mut self, feet: WorldPos, walker: &Walker, terrain: &impl Terrain) -> Route {
+        let points = &self.path.points;
+        let last = points.len() - 1;
+        let level = |i: usize| feet.delta_to(points[i].0).truncate().length();
+        // The nearest of the next few points; once there, it's past it and everything before.
+        let ahead = (self.at..points.len().min(self.at + LOOK_AHEAD)).min_by(|&a, &b| level(a).total_cmp(&level(b)));
+        if let Some(near) = ahead.filter(|&i| level(i) < PASSED && feet.delta_to(points[i].0).z.abs() < 1.0) {
+            self.at = (near + 1).min(last);
+        }
+        let at = self.at;
+        // Steer for the furthest point it can walk straight to, stopping before a hop.
+        let mut steer = at;
+        for (j, &(point, step)) in points.iter().enumerate().take(at + LOOK_AHEAD).skip(at + 1) {
+            if step == Step::Hop || !walker.walks_straight(feet, point, terrain) {
+                break;
+            }
+            steer = j;
+        }
+        let length = level(steer) + points[steer..].windows(2).map(|w| w[0].0.delta_to(w[1].0).length()).sum::<f32>();
+        Route {
+            next: feet.delta_to(points[steer].0),
+            end: feet.delta_to(points[last].0),
+            length,
+            reaches: self.path.reaches,
+            hop: points[at].1 == Step::Hop && level(at) < HOP_NEAR,
+        }
+    }
+
+    /// Whether this path, for `feet` asked to go to `goal`, leads somewhere else altogether.
+    fn wrong(&self, feet: WorldPos, goal: WorldPos) -> bool {
+        self.goal.delta_to(goal).length() > WRONG_SHIFT.max(WRONG_SHARE * feet.delta_to(goal).length())
+    }
+
+    /// Whether `feet`, asked to go to `goal`, needs a new path.
+    fn stale(&self, feet: WorldPos, goal: WorldPos) -> bool {
+        let shift = self.goal.delta_to(goal).length();
+        let far = feet.delta_to(goal).length();
+        shift > REPLAN_SHIFT.max(REPLAN_SHARE * far)
+            || self.age > if self.path.reaches { REPLAN_AGE } else { REPLAN_AGE_SHORT }
+            || feet.delta_to(self.path.points[self.at].0).length() > OFF_PATH
+    }
 }
 
 impl Target {
@@ -284,6 +376,11 @@ impl Targets {
             attack: None,
             spent: false,
             landed: false,
+            plan: None,
+            want: None,
+            waiting: 0.0,
+            hop: false,
+            hopping: false,
         });
         self.homes.push(spot);
         self.next_id += 1;
@@ -392,7 +489,10 @@ impl Targets {
                         let offset = target.pos.delta_to(feet);
                         Seen { offset, velocity, clear_run: clear_run(target, def, offset.truncate(), terrain) }
                     });
-                    think(target, def, brain, seen, others, tick, dt);
+                    let (pos, want) = (target.pos, target.want);
+                    let plan = target.plan.as_mut().filter(|p| want.is_some_and(|w| !p.wrong(pos, w)));
+                    let route = plan.map(|p| p.follow(pos, &Walker::of(def), terrain));
+                    think(target, def, brain, Thought { player: seen, others, route, tick, dt });
                 }
                 None => {
                     target.walk = Vec2::ZERO;
@@ -402,9 +502,12 @@ impl Targets {
                     target.signal.clear();
                     target.hurt = None;
                     target.attack = None;
+                    target.want = None;
+                    target.hop = false;
                 }
             }
         }
+        self.plan_paths(defs, &asleep, dt, terrain);
         for target in &mut self.list {
             target.shove = Vec2::ZERO;
         }
@@ -417,7 +520,19 @@ impl Targets {
                 continue;
             }
             let def = &defs[target.kind.index()];
-            let Some(into) = step_target(target, def, dt, terrain) else {
+            let impact = step_target(target, def, dt, terrain);
+            if impact.fall > def.fall_speed && def.fall_damage > 0.0 {
+                let damage = (impact.fall - def.fall_speed) * def.fall_damage;
+                target.health -= damage;
+                hurt(target, Vec3::ZERO, damage);
+                let broke = target.health <= 0.0;
+                self.slams.push(Slam { target: target.id, kind: target.kind, pos: target.pos, into: -Vec3::Z, speed: impact.fall, damage, broke });
+                if broke {
+                    broken.push(i);
+                    continue;
+                }
+            }
+            let Some(into) = impact.into else {
                 continue;
             };
             let speed = into.length();
@@ -456,6 +571,43 @@ impl Targets {
                 let kind = self.spots[spot].kind;
                 self.spawn(spot, &defs[kind.index()]);
             }
+        }
+    }
+
+    /// Finds paths for the targets that need one, at most [`PATHS_PER_TICK`], longest waiting
+    /// first, and ages the rest. `asleep` is alongside the list.
+    fn plan_paths(&mut self, defs: &[TargetDef], asleep: &[bool], dt: f32, terrain: &impl Terrain) {
+        let mut needy = Vec::new();
+        for (i, target) in self.list.iter_mut().enumerate() {
+            if asleep[i] {
+                continue;
+            }
+            let Some(goal) = target.want else {
+                target.plan = None;
+                target.waiting = 0.0;
+                continue;
+            };
+            if let Some(plan) = &mut target.plan {
+                plan.age += dt;
+            }
+            if target.plan.as_ref().is_none_or(|p| p.stale(target.pos, goal)) {
+                target.waiting += dt;
+                needy.push(i);
+            } else {
+                target.waiting = 0.0;
+            }
+        }
+        needy.sort_by(|&a, &b| self.list[b].waiting.total_cmp(&self.list[a].waiting).then(a.cmp(&b)));
+        for &i in needy.iter().take(PATHS_PER_TICK) {
+            let target = &mut self.list[i];
+            let Some(goal) = target.want else {
+                continue;
+            };
+            let walker = Walker::of(&defs[target.kind.index()]);
+            target.plan = path::find(target.pos, goal, &walker, path::SEARCH_SPOTS, terrain)
+                .filter(|p| p.points.len() > 1 || p.reaches)
+                .map(|path| Plan { goal, at: if path.points.len() > 1 { 1 } else { 0 }, path, age: 0.0 });
+            target.waiting = 0.0;
         }
     }
 
@@ -664,6 +816,8 @@ impl Targets {
         // Lift starts from rest, not from a fall, so a target can be juggled.
         target.velocity.z = target.velocity.z.max(0.0) + push.z.max(0.0);
         target.on_ground = false;
+        // Knocked out of a hop: it flies where the hit sends it.
+        target.hopping = false;
         let zone_damage = zone.map_or(1.0, |z| def.hit_boxes[z].damage);
         let damage = tool.damage * zone_damage + carried * tool.momentum_damage;
         target.health -= damage;
@@ -726,16 +880,18 @@ fn hurt(target: &mut Target, from: Vec3, damage: f32) {
     target.hurt = Some(Hurt { from, damage: before + damage });
 }
 
-/// Lets `brain` decide what `target` wants this tick.
-fn think(
-    target: &mut Target,
-    def: &TargetDef,
-    brain: &dyn Brain,
+/// What a brain is shown besides the target itself.
+struct Thought {
     player: Option<Seen>,
     others: Vec<Neighbor>,
+    route: Option<Route>,
     tick: u64,
     dt: f32,
-) {
+}
+
+/// Lets `brain` decide what `target` wants this tick.
+fn think(target: &mut Target, def: &TargetDef, brain: &dyn Brain, thought: Thought) {
+    let Thought { player, others, route, tick, dt } = thought;
     let ctx = BrainContext {
         dt,
         id: target.id,
@@ -750,6 +906,7 @@ fn think(
         attack_landed: std::mem::take(&mut target.landed),
         others,
         random: tick.wrapping_mul(0x9e37_79b9_7f4a_7c15) ^ target.id.rotate_left(32),
+        route,
         memory: std::mem::take(&mut target.memory),
     };
     let out = brain.think(&ctx);
@@ -765,6 +922,8 @@ fn think(
         a.min.iter().chain(&a.max).chain(&[a.damage, a.push, a.lift, a.guarded_damage, a.guarded_push]).all(|v| v.is_finite())
     });
     target.memory = out.memory;
+    target.want = out.go_to.filter(|g| g.is_finite()).map(|g| target.pos.translate(g));
+    target.hop = out.hop;
 }
 
 /// The furthest a clear run is measured, meters: further off, a brain sees the run stop here.
@@ -850,10 +1009,26 @@ fn unturn(v: Vec3, angle: f32) -> Vec3 {
 /// Moves a target one tick: on the ground it eases toward the velocity its brain wants, steps
 /// up ledges and keeps to its edge guard. Returns its velocity into a wall it hit sideways this
 /// tick, beyond what it was walking at, if any.
-fn step_target(target: &mut Target, def: &TargetDef, dt: f32, terrain: &impl Terrain) -> Option<Vec3> {
+/// What a target ran into on a step.
+struct Impact {
+    /// Its speed into a wall, beyond its walking, if it hit one.
+    into: Option<Vec3>,
+    /// The speed it landed at, meters per second; 0 if it didn't land.
+    fall: f32,
+}
+
+fn step_target(target: &mut Target, def: &TargetDef, dt: f32, terrain: &impl Terrain) -> Impact {
     target.prev_pos = target.pos;
+    if std::mem::take(&mut target.hop) && target.on_ground && def.hop_speed > 0.0 {
+        target.velocity = target.walk.extend(def.hop_speed);
+        target.on_ground = false;
+        target.hopping = true;
+    }
     target.velocity.z -= def.gravity * dt;
-    if !target.on_ground {
+    if target.hopping {
+        target.velocity.x = target.walk.x;
+        target.velocity.y = target.walk.y;
+    } else if !target.on_ground {
         let keep = (-def.air_drag * dt).exp();
         target.velocity.x *= keep;
         target.velocity.y *= keep;
@@ -880,6 +1055,7 @@ fn step_target(target: &mut Target, def: &TargetDef, dt: f32, terrain: &impl Ter
         _ => swept,
     };
     let mut into = Vec3::ZERO;
+    let fall = if swept.z != delta.z && delta.z < 0.0 { -target.velocity.z } else { 0.0 };
     for axis in 0..3 {
         if swept[axis] != delta[axis] {
             if axis != 2 {
@@ -896,7 +1072,8 @@ fn step_target(target: &mut Target, def: &TargetDef, dt: f32, terrain: &impl Ter
     target.pos = target.pos.translate(moved);
     let (min, max) = (min + moved, max + moved);
     target.on_ground = target.velocity.z <= 0.0 && clamp_axis(2, -GROUND_PROBE, min, max, cell, terrain) > -GROUND_PROBE;
-    (into != Vec3::ZERO).then_some(into)
+    target.hopping &= !target.on_ground;
+    Impact { into: (into != Vec3::ZERO).then_some(into), fall }
 }
 
 #[cfg(test)]
@@ -926,6 +1103,10 @@ mod tests {
             // Off unless a test turns it on.
             slam_speed: 1000.0,
             slam_damage: 1.0,
+            hop_speed: 0.0,
+            max_drop: 0.0,
+            fall_speed: 1000.0,
+            fall_damage: 0.0,
             respawns: true,
         }
     }
@@ -1344,6 +1525,8 @@ mod tests {
                 clip_speed: 2.0,
                 signal: format!("seen {}", ctx.others.len()),
                 attack: None,
+                go_to: None,
+                hop: false,
                 memory,
             }
         }
@@ -1721,5 +1904,115 @@ mod tests {
         assert_eq!((p, q), (Vec2::ZERO, Vec2::Y), "a point and a segment");
         let (p, q) = closest_points(Vec2::ZERO, Vec2::X, Vec2::new(3.0, 0.0), Vec2::new(5.0, 0.0));
         assert_eq!((p, q), (Vec2::X, Vec2::new(3.0, 0.0)), "in line");
+    }
+
+    /// A brain that walks its route toward the player, hopping when the route says to.
+    struct Chaser;
+
+    impl api::Tunables for Chaser {
+        fn tunables(&self) -> Vec<api::Tunable> {
+            Vec::new()
+        }
+
+        fn set_tunable(&mut self, _: &str, _: f32) -> bool {
+            false
+        }
+    }
+
+    impl Brain for Chaser {
+        fn think(&self, ctx: &BrainContext) -> api::BrainOutput {
+            let route = ctx.route.as_ref();
+            let walk = route.map_or(Vec2::ZERO, |r| r.next.truncate().normalize_or_zero() * 3.0);
+            api::BrainOutput {
+                walk,
+                yaw: 0.0,
+                go_to: ctx.player.as_ref().map(|p| p.offset),
+                hop: route.is_some_and(|r| r.hop) && ctx.blocked,
+                ..Default::default()
+            }
+        }
+    }
+
+    /// A floor below z = 0, with a wall 3 high at x = 3 from y = -3 to 3, and a block-high
+    /// step from x >= `step_x`.
+    struct Yard {
+        step_x: i64,
+    }
+
+    impl Terrain for Yard {
+        fn boxes(&self, pos: BoxelPos, out: &mut Vec<CellBox>) {
+            let p = pos.0;
+            let wall = p.x == 3 && (-3..=3).contains(&p.y) && p.z < 3;
+            if p.z < 0 || wall || (p.x >= self.step_x && p.z < 1) {
+                out.push(CellBox::FULL);
+            }
+        }
+
+        fn friction(&self, _: BoxelPos) -> f32 {
+            1.0
+        }
+    }
+
+    fn chase(def: TargetDef, terrain: &impl Terrain, player: WorldPos, seconds: f32) -> Targets {
+        let (mut targets, defs) = (one(at(0.5, 0.5, 0.0)).0, vec![def]);
+        let brains: [Option<&dyn Brain>; 1] = [Some(&Chaser)];
+        let mut player = standing_player(player);
+        for tick in 0..(seconds / DT).round() as u64 {
+            let ctx = StepContext { defs: &defs, brains: &brains, crowd: None, player: Some(&mut player), tick, dt: DT, awake: None };
+            targets.step(ctx, terrain);
+        }
+        targets
+    }
+
+    #[test]
+    fn a_creature_follows_its_route_round_a_wall() {
+        let goal = at(8.5, 0.5, 0.0);
+        let targets = chase(walker_def(), &Yard { step_x: 1000 }, goal, 8.0);
+        let t = targets.iter().next().unwrap();
+        assert!(t.pos.delta_to(goal).truncate().length() < 1.6, "got there: {:?}", t.pos);
+        assert!(t.plan.as_ref().is_some_and(|p| p.path.reaches));
+    }
+
+    #[test]
+    fn a_creature_hops_up_a_block_its_route_needs() {
+        let goal = at(7.5, 0.5, 1.0);
+        let hopper = TargetDef { hop_speed: 9.0, max_drop: 2.0, ..walker_def() };
+        let t = chase(hopper.clone(), &Yard { step_x: 5 }, goal, 8.0).as_slice()[0].clone();
+        assert!(t.pos.delta_to(goal).length() < 1.6, "up and there: {:?}", t.pos);
+        let t = chase(TargetDef { hop_speed: 0.0, ..hopper }, &Yard { step_x: 5 }, goal, 8.0).as_slice()[0].clone();
+        assert!(t.pos.offset().z < 0.01 && t.pos.cell().z == 0, "can't get up without hopping: {:?}", t.pos);
+    }
+
+    #[test]
+    fn a_hard_landing_hurts_and_a_soft_one_does_not() {
+        let def = TargetDef { fall_speed: 10.0, fall_damage: 0.5, ..def() };
+        let drop = |height: f32| {
+            let (mut targets, _) = one(at(0.5, 0.5, height));
+            let defs = vec![def.clone()];
+            run(&mut targets, &defs, &room(), 2.0);
+            (targets.as_slice()[0].health, targets.take_slams())
+        };
+        let (health, slams) = drop(1.5);
+        assert_eq!((health, slams.len()), (20.0, 0), "a short drop is soft");
+        let (health, slams) = drop(8.0);
+        // 8 m at gravity 25 lands at 20 m/s: 10 over, at 0.5 each.
+        assert!((health - 15.0).abs() < 0.3, "{health}");
+        assert_eq!(slams.len(), 1);
+        assert_eq!(slams[0].into, -Vec3::Z);
+    }
+
+    #[test]
+    fn a_path_is_found_again_when_its_goal_moves_it_ages_or_it_is_knocked_off_it() {
+        let goal = at(10.5, 0.5, 0.0);
+        let points = (0..10).map(|x| (at(x as f32 + 0.5, 0.5, 0.0), Step::Walk)).collect();
+        let plan = Plan { goal, path: Path { points, reaches: true }, at: 1, age: 0.0 };
+        let feet = at(0.6, 0.5, 0.0);
+        assert!(!plan.stale(feet, goal));
+        assert!(!plan.stale(feet, goal.translate(Vec3::Y * 0.5)), "a small shift keeps it");
+        assert!(plan.stale(feet, goal.translate(Vec3::Y * 3.0)), "the goal moved");
+        assert!(!plan.wrong(feet, goal.translate(Vec3::Y * 3.0)), "but it still shows the way meanwhile");
+        assert!(plan.wrong(feet, goal.translate(Vec3::new(-20.0, 0.0, 0.0))), "not toward somewhere else altogether");
+        assert!(Plan { age: REPLAN_AGE + 0.1, ..plan.clone() }.stale(feet, goal), "old");
+        assert!(plan.stale(at(0.6, 5.0, 0.0), goal), "knocked off it");
     }
 }

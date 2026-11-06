@@ -3,6 +3,36 @@
 Moved out of `SLICES.md` on 2026-11-03 so the roadmap stays short. Each toy's full write-up, newest first, as it stood when it closed. `SLICES.md` keeps a one-line summary of each.
 
 
+#### Cow pathfinding (branch `toy-cow-pathfinding`)
+
+**Stage:** Done (2026-11-06). Verified by the user in play ("ITS REALLY GOOD"); the five course checks weren't confirmed one by one, so they sit under low-priority play checks.
+
+**Goal:** cows find their way around walls, through gaps and up one-block ledges (with a hop) when chasing, running off and walking back to the herd. A charge stays a straight line and can go over a cliff, and a fall hurts, so a cow can be baited off a cliff.
+
+**Plan** (approved 2026-11-06; the user picked hops, paths for all three behaviors, a debug view and a pasture course, and added cliff baiting and fall damage)
+- *API.* `BrainOutput.go_to` and `BrainOutput.hop`; `BrainContext.route` (`api::Route`: `next`, `end`, `length`, `reaches`, `hop`). `TargetDef` gains `hop_speed`, `max_drop`, `fall_speed`, `fall_damage`, read from `targets.toml` (optional) and tunable.
+- *Engine, `sim::path`.* A* over standing spots, one per boxel column and floor, moves to the 8 neighbors tested with `sweep_stepping` and `clamp_axis`; walk (step up to `step_height`, down to `max_drop`) or hop; diagonals need both sides walkable; a spot budget and range; the nearest spot when out of reach.
+- *Hops and falls, cow brain, F7 debug view, pasture course, tests:* as built, below.
+
+**Built**
+- `sim::path`: `Walker` (from a `TargetDef`; hop height is `hop_speed²/2g` × 0.9), `find`, `Path` of `(WorldPos, Step)`, `Walker::walks_straight` (0.5 m pieces, settling at most `max_drop`). Budget 1000 spots, range 48 m. A search that uses its whole budget takes about 3.5 ms in release (5.5 ms at 1500), so `Targets::step` runs **one search a tick**, longest waiting first (the plan said "a few").
+- `combat::Plan` per target (public as `Target.plan`, which is how the client sees routes; the plan called it `Target.route`). `Plan::follow` moves past reached points and steers for the furthest of the next 6 it can walk straight to, stopping before a hop. Replans when the goal shifts more than max(1 m, 20% of the way), every 2 s (4 s for a path that doesn't reach) or when knocked 2.5 m off. A plan whose goal moved more than max(4 m, 50%) is hidden from the brain until replaced, so a cow switching from chasing to fleeing never follows the old way.
+- Hops: a hopping target keeps its walking velocity in the air until it lands (`Target.hopping`), since bouncing off the ledge's face killed its forward speed; a strike knocks it out of the hop.
+- Fall damage: a landing faster than `fall_speed` deals `fall_damage` per m/s over and records a `Slam` with `into = -Z` (the client's dust and squash work unchanged). Cow: `hop_speed` 10, `max_drop` 2.2, `fall_speed` 14, `fall_damage` 4 (the 5 m mesa costs about 24 of 130).
+- Cow brain: fighting always sends `go_to` = the player. Without a clear straight run (or in toss reach) it follows the route; with a route that doesn't reach and its end within 1.2 m it waits, facing the player, and the give-up clock stops, so it waits until its anger runs out. Moving along a reaching route counts as getting somewhere (the old "best distance" rule made cows give up chasing a player who had walked away). Charges send no edge guard; other walking widens the guard to step down where the route goes down. Fleeing aims 12 m ahead along its heading; a strayed wanderer aims for the herd's middle (`Herd::middle`); the random turn on a blocked flee or wander only applies without a route.
+- Client: `combat::draw_routes`, toggled by `show_routes` (F7, in `DevMode`), in the HUD's controls line and the user's controls file.
+- Pasture course (`base::build_cow_course`): a pen in the north-west corner with a one-wide gap, a block-high terrace and a second tier; a 3-high pillar at (-40, -36); a 5-high mesa in the south-west corner with block-high steps on its east side.
+- Tests: `sim::path` (9: straight, round a wall, through a gap, hop and no hop, slabs stepped, too deep, pillar's nearest spot, budget, straight walk); `combat` (hop up a block, follow round a wall, fall damage, replanning rules); cow brain (closing in by route and hopping, waiting below, no edge guard while charging, fleeing and regrouping by path); world (`a_cow_comes_round_through_the_doorway…` replaced `a_cow_never_charges_a_player_behind_the_wall_and_gives_up_and_runs`, and an angry cow climbs the mesa). 564 workspace tests pass; clippy clean.
+
+**Decisions**
+- Pathfinding is an engine service answering a brain's request with plain data, a tick or more late; brains steer themselves (see Phase 2 decisions, Creature navigation).
+- Angry cows now follow the player out of the pasture by hopping the doorway's sill; calm ones stay in, since wandering doesn't path. A missed charge can run a cow off the edge of the test area; it comes back at its spot.
+
+**Deferred**
+- Searches are whole per tick; an incremental search (a budget of spots per tick) would bound the cost if many creatures path at once. Cache cell boxes within a search if it shows up in a profile.
+- A waiting cow stands still; pacing or circling below is a feel option.
+- Diagonal hops and hops across gaps aren't planned.
+
 #### Shading (branch `toy-shading`)
 
 **Stage:** Done (2026-11-05). Verified by the user in play ("what I see looks good", "I like the ice sheen", fog "looks right"); the frame rate cost was judged "very reasonable".

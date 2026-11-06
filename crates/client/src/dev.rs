@@ -9,11 +9,13 @@ use crate::controls::Controls;
 pub struct DevMode {
     /// Whether dev text and dev outlines are drawn.
     pub show_text: bool,
+    /// Whether creatures' paths are drawn.
+    pub show_routes: bool,
 }
 
 impl Default for DevMode {
     fn default() -> Self {
-        Self { show_text: cfg!(debug_assertions) }
+        Self { show_text: cfg!(debug_assertions), show_routes: false }
     }
 }
 
@@ -24,6 +26,9 @@ pub struct DevText;
 pub(crate) fn dev_keys(keys: Res<ButtonInput<KeyCode>>, controls: Res<Controls>, mut dev: ResMut<DevMode>) {
     if keys.just_pressed(controls.dev_text) {
         dev.show_text = !dev.show_text;
+    }
+    if keys.just_pressed(controls.show_routes) {
+        dev.show_routes = !dev.show_routes;
     }
 }
 
@@ -48,7 +53,7 @@ mod tests {
         let mut app = App::new();
         app.init_resource::<ButtonInput<KeyCode>>()
             .insert_resource(Controls::default())
-            .insert_resource(DevMode { show_text: true })
+            .insert_resource(DevMode { show_text: true, show_routes: false })
             .add_systems(Update, (dev_keys, show_dev_text).chain());
         let dev = app.world_mut().spawn((Visibility::Inherited, DevText)).id();
         let game = app.world_mut().spawn(Visibility::Inherited).id();

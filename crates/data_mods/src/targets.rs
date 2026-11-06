@@ -28,6 +28,10 @@
 //! respawns = false              # optional, true if left out: comes back on its own
 //! slam_speed = 4
 //! slam_damage = 2
+//! hop_speed = 10                # optional, 0 (never hops) if left out
+//! max_drop = 2.2                # optional, step_height if left out
+//! fall_speed = 14               # optional, both 0 (falls never hurt) if left out
+//! fall_damage = 4
 //!
 //! [[target.hit_box]]            # optional: the parts a strike can hit, in the model's space
 //! name = "head"
@@ -93,6 +97,13 @@ struct TargetEntry {
     respawns: bool,
     slam_speed: f32,
     slam_damage: f32,
+    #[serde(default)]
+    hop_speed: f32,
+    max_drop: Option<f32>,
+    #[serde(default)]
+    fall_speed: f32,
+    #[serde(default)]
+    fall_damage: f32,
     #[serde(default)]
     hit_box: Vec<HitBoxEntry>,
 }
@@ -201,6 +212,10 @@ pub(crate) fn load(dir: &Path, namespace: &str, sounds: &[SoundDef]) -> Result<M
             respawn_time: entry.respawn_time,
             slam_speed: entry.slam_speed,
             slam_damage: entry.slam_damage,
+            hop_speed: entry.hop_speed,
+            max_drop: entry.max_drop.unwrap_or(entry.step_height),
+            fall_speed: entry.fall_speed,
+            fall_damage: entry.fall_damage,
             respawns: entry.respawns,
         };
         def.validate().map_err(|why| file.error_at(&entry.name, format!("target {short:?}: {why}")))?;

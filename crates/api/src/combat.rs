@@ -35,6 +35,10 @@ pub struct TargetDef {
     pub height: f32,
     /// How high a ledge it walks up without jumping, in meters.
     pub step_height: f32,
+    /// Upward speed of a hop, meters per second, for ledges too high to step; 0 never hops.
+    pub hop_speed: f32,
+    /// The deepest drop its paths walk off, meters.
+    pub max_drop: f32,
     /// The parts strikes can hit. Empty uses the collision box, at full damage. Terrain only
     /// ever meets the collision box.
     pub hit_boxes: Vec<HitBox>,
@@ -62,6 +66,10 @@ pub struct TargetDef {
     pub slam_speed: f32,
     /// Damage a slam deals for each meter per second over `slam_speed`.
     pub slam_damage: f32,
+    /// Landing faster than this, meters per second, hurts: `fall_damage` for each meter per
+    /// second over.
+    pub fall_speed: f32,
+    pub fall_damage: f32,
 }
 
 impl TargetDef {
@@ -78,6 +86,10 @@ impl TargetDef {
             ("respawn_time", self.respawn_time),
             ("slam_speed", self.slam_speed),
             ("slam_damage", self.slam_damage),
+            ("hop_speed", self.hop_speed),
+            ("max_drop", self.max_drop),
+            ("fall_speed", self.fall_speed),
+            ("fall_damage", self.fall_damage),
         ];
         if let Some((name, value)) = at_least_zero.iter().find(|(_, v)| !(v.is_finite() && *v >= 0.0)) {
             return Err(format!("{name} must be at least 0, got {value}"));
@@ -114,6 +126,10 @@ impl Tunables for TargetDef {
             Tunable::new("respawn_time", self.respawn_time, 0.0, 30.0),
             Tunable::new("slam_speed", self.slam_speed, 0.0, 20.0),
             Tunable::new("slam_damage", self.slam_damage, 0.0, 10.0),
+            Tunable::new("hop_speed", self.hop_speed, 0.0, 20.0),
+            Tunable::new("max_drop", self.max_drop, 0.0, 10.0),
+            Tunable::new("fall_speed", self.fall_speed, 0.0, 60.0),
+            Tunable::new("fall_damage", self.fall_damage, 0.0, 10.0),
         ]
     }
 
@@ -129,6 +145,10 @@ impl Tunables for TargetDef {
             "respawn_time" => &mut self.respawn_time,
             "slam_speed" => &mut self.slam_speed,
             "slam_damage" => &mut self.slam_damage,
+            "hop_speed" => &mut self.hop_speed,
+            "max_drop" => &mut self.max_drop,
+            "fall_speed" => &mut self.fall_speed,
+            "fall_damage" => &mut self.fall_damage,
             _ => return false,
         };
         *field = value;
@@ -258,6 +278,10 @@ mod tests {
             respawn_time: 3.0,
             slam_speed: 4.0,
             slam_damage: 1.0,
+            hop_speed: 0.0,
+            max_drop: 0.0,
+            fall_speed: 1000.0,
+            fall_damage: 0.0,
             respawns: true,
         }
     }
