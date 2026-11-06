@@ -14,12 +14,13 @@ fn base_sim() -> Simulation {
     sim
 }
 
-/// The base game with cows that run when hit, or when another is, instead of fighting.
+/// The base game with cows that run when hit, or when another is, or when they hold a grudge,
+/// instead of fighting.
 fn timid_sim() -> Simulation {
     let mut sim = base_sim();
     let cow = sim.brain_names().position(|n| n == base::cow::COW_BRAIN).unwrap();
     let brain = sim.brain_mut(cow).unwrap();
-    for name in ["fight_share", "defend_chance", "courage", "injury_pull"] {
+    for name in ["fight_share", "defend_chance", "courage", "injury_pull", "grudge_fight"] {
         assert!(brain.set_tunable(name, 0.0), "{name}");
     }
     sim
@@ -270,10 +271,12 @@ fn a_straying_cow_comes_back_to_the_herd() {
     let mut sim = timid_sim();
     // A short, slow stampede, as before Fighting cow's tuning: at the base's run speed of 8 and
     // spook time of 5.3 the herd scatters into groups further apart than they can see, and each
-    // group keeps to itself, which isn't what this test is about.
+    // group keeps to itself, which isn't what this test is about. Nor are grudges: the herd
+    // would run from the player knocking the cow about.
     let brain = sim.brain_names().position(|n| n == base::cow::COW_BRAIN).unwrap();
     let brain = sim.brain_mut(brain).unwrap();
     assert!(brain.set_tunable("run_speed", 3.0) && brain.set_tunable("spook_time", 2.0));
+    assert!(brain.set_tunable("grudge_range", 0.0) && brain.set_tunable("corner_range", 0.0));
     let (middle, _) = herd_spread(&sim);
     // Carry one cow off toward the fence, out of the others' way, by knocking it there.
     let cow = sim.targets().iter().next().unwrap().id;
@@ -634,13 +637,22 @@ fn a_hit_cow_charges_a_player_far_off_for_big_damage_and_knockback() {
     assert!(charge.push.truncate().length() > 10.0, "thrown hard: {}", charge.push);
 }
 
+fn cow_pos(sim: &Simulation, id: u64) -> WorldPos {
+    sim.targets().iter().find(|t| t.id == id).expect("not broken").pos
+}
+
+fn mode_is(sim: &Simulation, id: u64, mode: base::cow::Mode) -> bool {
+    cow_mode(sim, id) == Some(mode as usize as f32)
+}
+
 #[test]
-fn a_cow_charging_into_the_fence_is_stunned_and_then_gives_up() {
+fn a_cow_never_charges_a_player_behind_the_wall_and_gives_up_and_runs() {
+    use base::cow::Mode;
     let mut sim = base_sim();
     let cow = anger_a_cow(&mut sim);
-    // Lure it over to the east fence, standing just inside it until it gets there.
-    let (_, out) = sim.waypoints().iter().find(|(n, _)| n == "pasture").unwrap().clone();
-    let inside = out.translate(Vec3::new(-3.5, 0.0, 0.0));
+    // Lure it over to the east wall, standing just inside it until it gets there.
+    let (_, door) = sim.waypoints().iter().find(|(n, _)| n == "pasture").unwrap().clone();
+    let inside = door.translate(Vec3::new(-3.5, -6.0, 0.0));
     assert!(in_pasture(inside));
     for _ in 0..10 * 60 {
         sim.teleport_player(inside);
@@ -649,37 +661,100 @@ fn a_cow_charging_into_the_fence_is_stunned_and_then_gives_up() {
             break;
         }
     }
-    // Then step out over it, 8 m past the fence: far enough off that it charges, into the
-    // fence, and still wants to after.
-    sim.teleport_player(out.translate(Vec3::new(6.0, 0.0, 0.0)));
-    // Charges at the fence until it gives up, staying far enough out that it never stops
-    // wanting to charge.
-    let far = |sim: &Simulation| {
-        let cow = sim.targets().iter().find(|t| t.id == cow).map(|t| t.pos);
-        cow.map(|c| c.delta_to(sim.player().unwrap().pos()).truncate().length())
-    };
-    let stunned = base::cow::Mode::Stunned as usize as f32;
-    let mut was_stunned = false;
+    // Then stand outside the wall, 6 m past it and clear of the doorway: far enough off to
+    // charge, if there were a way through.
+    sim.teleport_player(door.translate(Vec3::new(4.0, -6.0, 0.0)));
+    let mut charged = false;
+    let mut ran = false;
     let mut hurts = Vec::new();
-    let mut nearest = f32::MAX;
     for _ in 0..12 * 60 {
         sim.step(&PlayerInput::default());
         hurts.extend(sim.take_player_hurts());
-        was_stunned |= cow_mode(&sim, cow) == Some(stunned);
-        if was_stunned {
-            nearest = nearest.min(far(&sim).unwrap_or(f32::MAX));
-        }
+        charged |= mode_is(&sim, cow, Mode::ChargeUp) || mode_is(&sim, cow, Mode::Charge);
+        ran |= mode_is(&sim, cow, Mode::Flee);
     }
-    let brain = base::cow::CowBrain::default();
-    assert!(nearest >= brain.charge_range, "still far enough to charge after the stun: {nearest} m");
-    assert!(was_stunned, "ran into the fence");
+    assert!(!charged, "no charge at a wall");
+    assert!(ran, "gave up and ran");
     assert!(hurts.is_empty(), "never reached the player");
-    let mode = cow_mode(&sim, cow).expect("not broken") as usize;
-    assert!(mode < base::cow::Mode::Angry as usize, "gave up well before its anger ran out: mode {mode}");
-    let calm = sim.targets().iter().find(|t| t.id == cow).unwrap();
-    assert!(in_pasture(calm.pos), "still in the pasture");
+    assert!(in_pasture(cow_pos(&sim, cow)), "still in the pasture");
 }
 
+#[test]
+fn a_charge_dodged_into_the_wall_stuns_the_cow() {
+    use base::cow::Mode;
+    let mut sim = base_sim();
+    let cow = anger_a_cow(&mut sim);
+    // Stand just inside the east wall, level with the cow, until it charges; then step aside.
+    let ((_, y0), (x1, y1)) = base::PASTURE;
+    let y = cow_pos(&sim, cow).cell().y;
+    let bait = WorldPos::at_boxel(BoxelPos::new(x1 - 2, y, 0)).translate(Vec3::new(0.5, 0.5, 0.0));
+    let aside = if y < (y0 + y1) / 2 { 7 } else { -7 };
+    let dodge = WorldPos::at_boxel(BoxelPos::new(x1 - 6, y + aside, 0)).translate(Vec3::new(0.5, 0.5, 0.0));
+    assert!(in_pasture(bait) && in_pasture(dodge));
+    let mut charging = false;
+    for _ in 0..10 * 60 {
+        sim.teleport_player(bait);
+        sim.step(&PlayerInput::default());
+        if mode_is(&sim, cow, Mode::Charge) {
+            charging = true;
+            break;
+        }
+    }
+    assert!(charging, "charged at the player by the wall");
+    sim.teleport_player(dodge);
+    let mut stunned = false;
+    for _ in 0..4 * 60 {
+        sim.step(&PlayerInput::default());
+        stunned |= mode_is(&sim, cow, Mode::Stunned);
+    }
+    assert!(stunned, "ran on past into the wall");
+    assert!(sim.take_player_hurts().iter().all(|h| h.attacker.map(|a| a.0) != Some(cow)), "dodged");
+}
+
+#[test]
+fn a_hurt_cow_calms_down_but_fights_or_runs_when_the_player_comes_back() {
+    use base::cow::Mode;
+    let mut sim = base_sim();
+    let cow = anger_a_cow(&mut sim);
+    // Well away, past its chase range, long enough for it and the herd to settle.
+    sim.teleport_player(WorldPos::at_boxel(BoxelPos::new(0, 0, 0)));
+    idle(&mut sim, 15 * 60);
+    assert!(!cow_mode(&sim, cow).is_some_and(|m| m as usize >= Mode::Flee as usize), "calmed down");
+    // Back, 5 m off: it remembers.
+    let at = cow_pos(&sim, cow);
+    let ((x0, _), (x1, _)) = base::PASTURE;
+    let toward = if (at.cell().x as f32) < (x0 + x1) as f32 * 0.5 { 5.0 } else { -5.0 };
+    sim.teleport_player(at.translate(Vec3::new(toward, 0.0, 0.0)));
+    let mut reacted = false;
+    for _ in 0..60 {
+        sim.step(&PlayerInput::default());
+        reacted |= mode_is(&sim, cow, Mode::Angry) || mode_is(&sim, cow, Mode::Flee);
+    }
+    assert!(reacted, "fought or ran");
+}
+
+#[test]
+fn the_herd_holds_a_grudge_for_a_hurt_herdmate() {
+    let mut sim = base_sim();
+    let hit = anger_a_cow(&mut sim);
+    // Well away until it all settles.
+    sim.teleport_player(WorldPos::at_boxel(BoxelPos::new(0, 0, 0)));
+    idle(&mut sim, 15 * 60);
+    let grudges: Vec<u64> = sim.targets().iter().filter(|t| t.id != hit && t.memory.get(7) == Some(&1.0)).map(|t| t.id).collect();
+    assert!(grudges.len() >= 3, "the herd remembers: {grudges:?}");
+    // Back beside one that was never touched: it fights or runs.
+    let other = grudges[0];
+    let at = cow_pos(&sim, other);
+    let ((x0, _), (x1, _)) = base::PASTURE;
+    let toward = if (at.cell().x as f32) < (x0 + x1) as f32 * 0.5 { 5.0 } else { -5.0 };
+    sim.teleport_player(at.translate(Vec3::new(toward, 0.0, 0.0)));
+    let mut reacted = false;
+    for _ in 0..60 {
+        sim.step(&PlayerInput::default());
+        reacted |= mode_is(&sim, other, base::cow::Mode::Angry) || mode_is(&sim, other, base::cow::Mode::Flee);
+    }
+    assert!(reacted, "fought or ran");
+}
 
 #[test]
 fn hitting_one_cow_brings_some_of_the_herd_to_its_side_and_scatters_the_rest() {

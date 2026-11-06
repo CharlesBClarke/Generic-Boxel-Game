@@ -16,6 +16,11 @@ pub struct Seen {
     /// From the creature's feet to the player's, meters, Z-up.
     pub offset: Vec3,
     pub velocity: Vec3,
+    /// How far, level in meters, the creature's body could walk straight toward the player,
+    /// stepping up what it can step, before terrain stops it: at most the level distance to
+    /// them. Short of that distance, a wall (or the block they stand on) is in the way. A clear
+    /// straight run, not a path: there's no pathfinding yet.
+    pub clear_run: f32,
 }
 
 /// How many other creatures a brain is shown at most, nearest first.

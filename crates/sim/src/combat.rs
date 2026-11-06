@@ -342,6 +342,10 @@ impl Targets {
             match brains.get(target.kind.index()).copied().flatten() {
                 Some(brain) => {
                     let others = others.get_mut(i).map(std::mem::take).unwrap_or_default();
+                    let seen = seen.map(|(feet, velocity)| {
+                        let offset = target.pos.delta_to(feet);
+                        Seen { offset, velocity, clear_run: clear_run(target, def, offset.truncate(), terrain) }
+                    });
                     think(target, def, brain, seen, others, tick, dt);
                 }
                 None => {
@@ -670,7 +674,7 @@ fn think(
     target: &mut Target,
     def: &TargetDef,
     brain: &dyn Brain,
-    player: Option<(WorldPos, Vec3)>,
+    player: Option<Seen>,
     others: Vec<Neighbor>,
     tick: u64,
     dt: f32,
@@ -684,7 +688,7 @@ fn think(
         blocked: target.blocked,
         health: target.health,
         full_health: def.health,
-        player: player.map(|(feet, velocity)| Seen { offset: target.pos.delta_to(feet), velocity }),
+        player,
         hurt: target.hurt.take(),
         attack_landed: std::mem::take(&mut target.landed),
         others,
@@ -704,6 +708,41 @@ fn think(
         a.min.iter().chain(&a.max).chain(&[a.damage, a.push, a.lift, a.guarded_damage, a.guarded_push]).all(|v| v.is_finite())
     });
     target.memory = out.memory;
+}
+
+/// The furthest a clear run is measured, meters: further off, a brain sees the run stop here.
+const CLEAR_RUN_REACH: f32 = 32.0;
+/// How far each piece of a clear run's sweep goes, meters, settling onto the ground after each.
+const CLEAR_RUN_STRIDE: f32 = 1.0;
+/// How far a clear run's sweep settles down after each piece, meters: it follows the ground down
+/// steps and slopes, and floats over deeper drops.
+const CLEAR_RUN_SETTLE: f32 = 1.5;
+
+/// How far, level, `target`'s body could walk straight along `to` (level, from its feet),
+/// stepping up what it can step, before terrain stops it: at most `to`'s length, and at most
+/// [`CLEAR_RUN_REACH`]. See [`Seen::clear_run`].
+fn clear_run(target: &Target, def: &TargetDef, to: Vec2, terrain: &impl Terrain) -> f32 {
+    let goal = to.length().min(CLEAR_RUN_REACH);
+    if goal <= 0.0 {
+        return 0.0;
+    }
+    let dir = to.normalize().extend(0.0);
+    let (min, max) = Target::bounds(def);
+    let cell = target.pos.cell();
+    let mut at = target.pos.offset();
+    let mut run = 0.0;
+    while run < goal {
+        let stride = CLEAR_RUN_STRIDE.min(goal - run);
+        let (moved, _) = sweep_stepping(min + at, max + at, dir * stride, def.step_height, cell, terrain);
+        let went = moved.truncate().length();
+        run += went;
+        if went < stride - 1e-3 {
+            break;
+        }
+        at += moved;
+        at.z += clamp_axis(2, -CLEAR_RUN_SETTLE, min + at, max + at, cell, terrain);
+    }
+    run.min(goal)
 }
 
 /// The part of the speed `v` along one axis beyond the walking speed `w` the same way.
@@ -892,6 +931,45 @@ mod tests {
     fn strike_east(targets: &mut Targets, defs: &[TargetDef]) -> Option<TargetHit> {
         let t = targets.iter().next().unwrap().pos;
         targets.strike(defs, &tool(), t.translate(Vec3::new(-1.5, 0.0, 1.0)), Vec3::X, tool().reach, Vec3::ZERO)
+    }
+
+    /// A floor below z = 0 and a block `high` boxels high filling x = 5, along y.
+    struct Ledge {
+        high: i64,
+    }
+
+    impl Terrain for Ledge {
+        fn boxes(&self, pos: BoxelPos, out: &mut Vec<CellBox>) {
+            if pos.0.z < 0 || (pos.0.x == 5 && pos.0.z < self.high) {
+                out.push(CellBox::FULL);
+            }
+        }
+
+        fn friction(&self, _: BoxelPos) -> f32 {
+            1.0
+        }
+    }
+
+    #[test]
+    fn a_clear_run_stops_at_a_wall_and_steps_what_it_can() {
+        let (targets, defs) = one(at(0.5, 0.5, 0.0));
+        let t = targets.iter().next().unwrap();
+        let half = defs[0].width * 0.5;
+        // Open ground: all the way, and no further than the player.
+        assert!((clear_run(t, &defs[0], Vec2::new(4.0, 0.0), &room()) - 4.0).abs() < 1e-4);
+        assert!((clear_run(t, &defs[0], Vec2::new(0.0, -3.0), &Ledge { high: 2 }) - 3.0).abs() < 1e-4, "not that way");
+        // A wall, or the block the player stands on: stops at its face.
+        let wall = clear_run(t, &defs[0], Vec2::new(10.0, 0.0), &Room { wall_x: 5, ice_y: 1000 });
+        assert!((wall - (4.5 - half)).abs() < 1e-3, "{wall}");
+        let on_block = clear_run(t, &defs[0], Vec2::new(5.0, 0.0), &Ledge { high: 2 });
+        assert!((on_block - (4.5 - half)).abs() < 1e-3, "{on_block}");
+        // A ledge low enough to step goes on, up and over.
+        let stepper = TargetDef { step_height: 1.1, ..def() };
+        let over = clear_run(t, &stepper, Vec2::new(10.0, 0.0), &Ledge { high: 1 });
+        assert!((over - 10.0).abs() < 1e-3, "{over}");
+        assert!(clear_run(t, &stepper, Vec2::new(10.0, 0.0), &Ledge { high: 2 }) < 4.5);
+        // Far off, it's measured only so far.
+        assert!((clear_run(t, &defs[0], Vec2::new(100.0, 0.0), &room()) - CLEAR_RUN_REACH).abs() < 1e-3);
     }
 
     #[test]

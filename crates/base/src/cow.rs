@@ -8,9 +8,15 @@
 //!
 //! A cow that fights back squares up to the player. Close in it tosses its head: down, then flung
 //! up, throwing the player up and away for a little damage. From further off it lowers its head
-//! and charges in a line it can only bend a little, for big damage and knockback; dodged into
-//! a wall, it's stunned for a moment. It has no pathfinding: if it gets no closer for a while,
-//! because the player stands on a block or over a fence, it gives up.
+//! and charges in a line it can only bend a little, running well past, for big damage and
+//! knockback; dodged into a wall, it's stunned for a moment. It only charges with a clear run
+//! at the player. It has no pathfinding: if it gets no closer for a while, because the player
+//! stands on a block or behind a wall, it gives up and runs.
+//!
+//! A hurt cow holds a grudge until the herd is reset, and so does one that sees a hurt herdmate
+//! or one fighting the player. It goes back to its routine, but when the
+//! player comes near again it fights or runs, likelier to fight the healthier it is. Run down
+//! while it runs from the player, it turns and fights, however hurt.
 //!
 //! Each cow has a boldness, fixed by its ID. A cow that sees another in trouble (fighting, or
 //! hurt and alarmed) chooses once whether to stand up for it or run: bold cows, cows seeing
@@ -23,7 +29,7 @@
 
 use std::f32::consts::{PI, TAU};
 
-use api::{Attack, Brain, BrainContext, BrainOutput, Neighbor, Tunable, Tunables, Vec2};
+use api::{Attack, Brain, BrainContext, BrainOutput, Neighbor, Seen, Tunable, Tunables, Vec2};
 
 use crate::COW;
 
@@ -114,9 +120,17 @@ enum Slot {
     Stuck,
     /// How near it was to the player when it last got [`PROGRESS`] closer, meters.
     Best,
+    /// 1 once it has been hurt: it holds a grudge against the player.
+    Grudge,
+    /// Seconds the player has been within `corner_range` of it while it runs from them.
+    Cornered,
+    /// 1 while it fights because it was cornered: it doesn't break off for being badly hurt.
+    Desperate,
+    /// How far off the player was when its charge started, meters.
+    Start,
 }
 
-const MEMORY: usize = 7;
+const MEMORY: usize = 11;
 
 /// How much closer, in meters, counts as getting closer when deciding to give up.
 const PROGRESS: f32 = 0.5;
@@ -133,8 +147,10 @@ const PUNCH_UP: f32 = 0.25;
 const CHARGE_GRACE: f32 = 0.15;
 /// How fast the `die` clip plays for a stun: it crumples in about half a second.
 const STUN_FALL: f32 = 1.5;
-/// How far past the player, in meters along its run, a charge goes before giving up.
-const OVERSHOOT: f32 = 1.5;
+/// How much shorter than the distance to the player, in meters, a clear run can be and still
+/// count as reaching them: a wall right behind the player stops the cow's wider body a little
+/// short of their feet.
+const RUN_SLACK: f32 = 0.5;
 /// Where the toss and the charge hit, in the cow's own space: in front of the head.
 const TOSS_BOX: ([f32; 3], [f32; 3]) = ([-0.6, 0.9, 0.0], [0.6, 2.4, 1.9]);
 const CHARGE_BOX: ([f32; 3], [f32; 3]) = ([-0.6, 0.5, 0.0], [0.6, 2.1, 1.8]);
@@ -222,8 +238,12 @@ pub struct CowBrain {
     /// What a facing guard lets through of the toss: shares of the damage and the knockback.
     pub toss_guarded_damage: f32,
     pub toss_guarded_push: f32,
-    /// It charges with the player at least this far, level, in meters.
+    /// It charges with the player at least this far, level, in meters, with a clear run at them
+    /// and their feet no higher or lower than `toss_height`.
     pub charge_range: f32,
+    /// How far past the player a charge runs before stopping, as a share of how far off they
+    /// were when it started.
+    pub charge_overshoot: f32,
     /// Seconds with its head down before the charge.
     pub charge_windup: f32,
     /// Meters per second while charging.
@@ -241,6 +261,15 @@ pub struct CowBrain {
     pub stun_time: f32,
     /// Seconds it catches its breath after a charge.
     pub charge_recover: f32,
+    /// How near, in meters, the player has to come for a cow holding a grudge to fight or run.
+    pub grudge_range: f32,
+    /// The chance a cow holding a grudge fights rather than runs, when whole; times its share
+    /// of health when hurt.
+    pub grudge_fight: f32,
+    /// Running from the player with them this near, in meters, for `corner_time` seconds, it
+    /// turns and fights.
+    pub corner_range: f32,
+    pub corner_time: f32,
 }
 
 impl Default for CowBrain {
@@ -287,6 +316,7 @@ impl Default for CowBrain {
             toss_guarded_damage: 0.3,
             toss_guarded_push: 0.82,
             charge_range: 6.0,
+            charge_overshoot: 1.5,
             charge_windup: 0.9,
             charge_speed: 15.0,
             charge_turn: 0.8,
@@ -298,6 +328,10 @@ impl Default for CowBrain {
             charge_guarded_push: 0.9,
             stun_time: 2.0,
             charge_recover: 1.2,
+            grudge_range: 7.5,
+            grudge_fight: 0.8,
+            corner_range: 3.0,
+            corner_time: 1.5,
         }
     }
 }
@@ -346,6 +380,7 @@ impl Tunables for CowBrain {
             Tunable::new("toss_guarded_damage", self.toss_guarded_damage, 0.0, 1.0),
             Tunable::new("toss_guarded_push", self.toss_guarded_push, 0.0, 1.0),
             Tunable::new("charge_range", self.charge_range, 0.0, 20.0),
+            Tunable::new("charge_overshoot", self.charge_overshoot, 0.0, 4.0),
             Tunable::new("charge_windup", self.charge_windup, 0.0, 3.0),
             Tunable::new("charge_speed", self.charge_speed, 0.0, 15.0),
             Tunable::new("charge_turn", self.charge_turn, 0.0, 6.0),
@@ -357,6 +392,10 @@ impl Tunables for CowBrain {
             Tunable::new("charge_guarded_push", self.charge_guarded_push, 0.0, 1.0),
             Tunable::new("stun_time", self.stun_time, 0.0, 6.0),
             Tunable::new("charge_recover", self.charge_recover, 0.0, 5.0),
+            Tunable::new("grudge_range", self.grudge_range, 0.0, 20.0),
+            Tunable::new("grudge_fight", self.grudge_fight, 0.0, 1.0),
+            Tunable::new("corner_range", self.corner_range, 0.0, 10.0),
+            Tunable::new("corner_time", self.corner_time, 0.0, 10.0),
         ]
     }
 
@@ -403,6 +442,7 @@ impl Tunables for CowBrain {
             "toss_guarded_damage" => &mut self.toss_guarded_damage,
             "toss_guarded_push" => &mut self.toss_guarded_push,
             "charge_range" => &mut self.charge_range,
+            "charge_overshoot" => &mut self.charge_overshoot,
             "charge_windup" => &mut self.charge_windup,
             "charge_speed" => &mut self.charge_speed,
             "charge_turn" => &mut self.charge_turn,
@@ -414,6 +454,10 @@ impl Tunables for CowBrain {
             "charge_guarded_push" => &mut self.charge_guarded_push,
             "stun_time" => &mut self.stun_time,
             "charge_recover" => &mut self.charge_recover,
+            "grudge_range" => &mut self.grudge_range,
+            "grudge_fight" => &mut self.grudge_fight,
+            "corner_range" => &mut self.corner_range,
+            "corner_time" => &mut self.corner_time,
             _ => return false,
         };
         *field = value;
@@ -427,7 +471,6 @@ impl Brain for CowBrain {
         let fresh = memory.len() != MEMORY;
         memory.resize(MEMORY, 0.0);
         let get = |m: &[f32], s: Slot| m[s as usize];
-        let set = |m: &mut [f32], s: Slot, v: f32| m[s as usize] = v;
         let mut mode = Mode::from_memory(get(&memory, Slot::Mode));
         let mut left = get(&memory, Slot::Left) - ctx.dt;
         let mut heading = get(&memory, Slot::Heading);
@@ -436,29 +479,51 @@ impl Brain for CowBrain {
             anger: (get(&memory, Slot::Anger) - ctx.dt).max(0.0),
             stuck: get(&memory, Slot::Stuck),
             best: get(&memory, Slot::Best),
+            desperate: get(&memory, Slot::Desperate) > 0.5,
+            start: get(&memory, Slot::Start),
+            gave_up: false,
         };
+        let mut grudge = get(&memory, Slot::Grudge) > 0.5;
+        let mut cornered = get(&memory, Slot::Cornered);
         if fresh {
             // Newly spawned: stand a random while first, so cows don't all move at once.
             mode = Mode::Idle;
             left = self.idle_min * ctx.random_unit(1) + self.idle_spread * ctx.random_unit(2);
             calm = 0.0;
+            fight = Fight::calm();
+            grudge = false;
+            cornered = 0.0;
         }
         let herd = Herd::seen(ctx);
 
         let player = ctx.player.as_ref().map(|p| Vec2::new(p.offset.x, p.offset.y));
         let near = player.map(|p| p.length());
+        // Hurt, or seeing a herdmate hurt or fighting: it holds it against the player. It acts on
+        // a grudge from the next tick, so a cow seeing a herdmate hit still first chooses
+        // between standing up for it and running.
+        let held = grudge;
+        grudge |= ctx.hurt.is_some() || herd.wronged();
+        // Running from the player and run down, the clock runs; getting clear, it runs back.
+        cornered = if mode == Mode::Flee && grudge && near.is_some_and(|d| d <= self.corner_range) {
+            cornered + ctx.dt
+        } else if mode == Mode::Flee {
+            (cornered - ctx.dt).max(0.0)
+        } else {
+            0.0
+        };
         let settled = calm <= 0.0 && mode != Mode::Flee && !mode.fighting();
         let alarm = herd.alarm(self.alarm_range).filter(|_| settled);
         let trouble = herd.trouble(self.defend_range).filter(|_| settled && player.is_some());
-        // Badly hurt with nobody fighting beside it, it loses its nerve.
+        // Badly hurt with nobody fighting beside it, it loses its nerve, unless it's cornered.
         let own = ctx.health / ctx.full_health.max(1e-6);
-        let nerve = own >= self.flee_health || herd.fighters(self.defend_range) > 0;
+        let nerve = own >= self.flee_health || herd.fighters(self.defend_range) > 0 || fight.desperate;
+        let away_from_player = || angle(-player.filter(|p| *p != Vec2::ZERO).unwrap_or(Vec2::X));
         if ctx.hurt.is_some() && mode.fighting() && nerve {
             fight.anger = self.anger_time;
         } else if ctx.hurt.is_some() && !mode.fighting() && player.is_some() && nerve && self.fights(ctx.id) {
             mode = Mode::Angry;
             left = SQUARE_UP;
-            fight = Fight { anger: self.anger_time, stuck: 0.0, best: f32::MAX };
+            fight = Fight::new(self.anger_time, false);
         } else if let Some(hurt) = &ctx.hurt {
             mode = Mode::Flee;
             left = self.flee_time;
@@ -466,17 +531,23 @@ impl Brain for CowBrain {
             // Away from the hit; straight up hits give no direction, so away from the player.
             let away = if hurt.from.truncate() != Vec2::ZERO { -hurt.from.truncate() } else { -player.unwrap_or(Vec2::X) };
             heading = angle(away);
+        } else if mode == Mode::Flee && cornered >= self.corner_time {
+            // Running isn't working: it turns and fights, however hurt.
+            mode = Mode::Angry;
+            left = SQUARE_UP;
+            fight = Fight::new(self.anger_time, true);
+            cornered = 0.0;
         } else if mode.fighting() && !nerve {
             // Breaks off, away from the player.
             mode = Mode::Flee;
             left = self.flee_time;
-            fight = Fight { anger: 0.0, stuck: 0.0, best: f32::MAX };
-            heading = angle(-player.filter(|p| *p != Vec2::ZERO).unwrap_or(Vec2::X));
+            fight = Fight::calm();
+            heading = away_from_player();
         } else if trouble.is_some_and(|t| ctx.random_unit(11) < self.defend_odds(ctx, &herd, t)) {
             // Stands up for it.
             mode = Mode::Angry;
             left = SQUARE_UP;
-            fight = Fight { anger: self.anger_time, stuck: 0.0, best: f32::MAX };
+            fight = Fight::new(self.anger_time, false);
         } else if let Some(other) = trouble.or(alarm) {
             // Run the way it runs, and away from it.
             mode = Mode::Flee;
@@ -484,6 +555,18 @@ impl Brain for CowBrain {
             let at = level(other.offset);
             let away = level(other.velocity).normalize_or_zero() - at.normalize_or_zero() * 0.5;
             heading = if away != Vec2::ZERO { angle(away) } else { TAU * ctx.random_unit(8) };
+        } else if held && settled && near.is_some_and(|d| d <= self.grudge_range) {
+            // It remembers: fights if it can get at the player and has the heart for it, or runs.
+            let reachable = ctx.player.as_ref().is_some_and(|p| self.reachable(p));
+            if reachable && nerve && ctx.random_unit(12) < self.grudge_fight * own {
+                mode = Mode::Angry;
+                left = SQUARE_UP;
+                fight = Fight::new(self.anger_time, false);
+            } else {
+                mode = Mode::Flee;
+                left = self.flee_time;
+                heading = away_from_player();
+            }
         } else if mode != Mode::Flee && !mode.fighting() {
             match (mode, near) {
                 (Mode::Watch, Some(d)) if d <= self.notice_range + LOSE_RANGE => {}
@@ -498,25 +581,30 @@ impl Brain for CowBrain {
 
         if mode.fighting() {
             if let Some(out) = self.fight(ctx, &mut mode, &mut left, &mut heading, &mut fight) {
-                set(&mut memory, Slot::Mode, mode as usize as f32);
-                set(&mut memory, Slot::Left, left);
-                set(&mut memory, Slot::Heading, heading);
-                set(&mut memory, Slot::Calm, calm);
-                set(&mut memory, Slot::Anger, fight.anger);
-                set(&mut memory, Slot::Stuck, fight.stuck);
-                set(&mut memory, Slot::Best, fight.best);
+                remember(&mut memory, Remembered { mode, left, heading, calm, fight: &fight, grudge, cornered });
                 return BrainOutput { edge_guard: Some(self.edge_drop), memory, ..out };
             }
-            // Calmed down, or gave up.
-            mode = Mode::Idle;
-            left = self.idle_time(ctx);
-            calm = self.calm_time;
-            fight = Fight { anger: 0.0, stuck: 0.0, best: f32::MAX };
+            if fight.gave_up {
+                // Got nowhere: runs from the player.
+                mode = Mode::Flee;
+                left = self.flee_time;
+                heading = away_from_player();
+            } else {
+                // Calmed down, or lost interest.
+                mode = Mode::Idle;
+                left = self.idle_time(ctx);
+                calm = self.calm_time;
+            }
+            fight = Fight::calm();
         }
 
         if matches!(mode, Mode::Wander | Mode::Flee) && ctx.blocked && ctx.on_ground {
             // Turn away from what's in the way, by a quarter to three quarters of a turn.
             heading = ctx.yaw + PI * (0.5 + ctx.random_unit(3));
+        } else if mode == Mode::Flee && grudge && near.is_some_and(|d| d <= self.grudge_range) {
+            // Keeps running away from the player it remembers, while they're near; further off
+            // it runs with the herd.
+            heading = away_from_player();
         }
         if mode != Mode::Watch && left <= 0.0 {
             if mode == Mode::Flee {
@@ -582,13 +670,7 @@ impl Brain for CowBrain {
             _ => "",
         };
 
-        set(&mut memory, Slot::Mode, mode as usize as f32);
-        set(&mut memory, Slot::Left, left);
-        set(&mut memory, Slot::Heading, heading);
-        set(&mut memory, Slot::Calm, calm);
-        set(&mut memory, Slot::Anger, fight.anger);
-        set(&mut memory, Slot::Stuck, fight.stuck);
-        set(&mut memory, Slot::Best, fight.best);
+        remember(&mut memory, Remembered { mode, left, heading, calm, fight: &fight, grudge, cornered });
         BrainOutput {
             walk,
             yaw,
@@ -605,6 +687,12 @@ impl Brain for CowBrain {
 impl CowBrain {
     fn idle_time(&self, ctx: &BrainContext) -> f32 {
         self.idle_min + self.idle_spread * ctx.random_unit(7)
+    }
+
+    /// Whether it could charge straight at the player: a clear run that reaches them, and their
+    /// feet no higher or lower than its head toss reaches.
+    fn reachable(&self, seen: &Seen) -> bool {
+        seen.clear_run >= level(seen.offset).length() - RUN_SLACK && seen.offset.z.abs() <= self.toss_height
     }
 
     /// Whether the cow with this ID fights back when hit, rather than running.
@@ -653,10 +741,11 @@ impl CowBrain {
                 *mode = Mode::Charge;
                 *left = self.charge_time;
                 *heading = toward;
+                fight.start = distance;
             }
             Mode::Charge => {
                 let (sin, cos) = libm::sincosf(*heading);
-                let passed = to.dot(Vec2::new(cos, sin)) < -OVERSHOOT;
+                let passed = to.dot(Vec2::new(cos, sin)) < -self.charge_overshoot * fight.start;
                 if ctx.blocked && ctx.on_ground && self.charge_time - *left > CHARGE_GRACE {
                     *mode = Mode::Stunned;
                     *left = self.stun_time;
@@ -673,12 +762,13 @@ impl CowBrain {
                 return None;
             }
             if fight.stuck >= self.give_up_time {
+                fight.gave_up = true;
                 return None;
             }
             if distance <= self.toss_range && rise <= self.toss_height && rise >= -self.toss_height {
                 *mode = Mode::Toss;
                 *left = self.toss_windup + PUNCH_UP + self.toss_recover;
-            } else if distance >= self.charge_range {
+            } else if distance >= self.charge_range && self.reachable(seen) {
                 *mode = Mode::ChargeUp;
                 *left = self.charge_windup;
             }
@@ -769,6 +859,48 @@ struct Fight {
     anger: f32,
     stuck: f32,
     best: f32,
+    desperate: bool,
+    start: f32,
+    /// Gave up this tick for getting nowhere; not remembered.
+    gave_up: bool,
+}
+
+impl Fight {
+    /// A fight just starting, with `anger` seconds of anger; `desperate` when cornered.
+    fn new(anger: f32, desperate: bool) -> Self {
+        Fight { anger, stuck: 0.0, best: f32::MAX, desperate, start: 0.0, gave_up: false }
+    }
+
+    /// No fight.
+    fn calm() -> Self {
+        Fight::new(0.0, false)
+    }
+}
+
+/// Everything a cow keeps between ticks; see [`Slot`].
+struct Remembered<'a> {
+    mode: Mode,
+    left: f32,
+    heading: f32,
+    calm: f32,
+    fight: &'a Fight,
+    grudge: bool,
+    cornered: f32,
+}
+
+fn remember(memory: &mut [f32], r: Remembered<'_>) {
+    let mut set = |s: Slot, v: f32| memory[s as usize] = v;
+    set(Slot::Mode, r.mode as usize as f32);
+    set(Slot::Left, r.left);
+    set(Slot::Heading, r.heading);
+    set(Slot::Calm, r.calm);
+    set(Slot::Anger, r.fight.anger);
+    set(Slot::Stuck, r.fight.stuck);
+    set(Slot::Best, r.fight.best);
+    set(Slot::Grudge, if r.grudge { 1.0 } else { 0.0 });
+    set(Slot::Cornered, r.cornered);
+    set(Slot::Desperate, if r.fight.desperate { 1.0 } else { 0.0 });
+    set(Slot::Start, r.fight.start);
 }
 
 /// The other cows one cow sees.
@@ -810,6 +942,11 @@ impl<'a> Herd<'a> {
             .find(|n| (n.signal == ANGRY || (n.signal == ALARMED && n.health < 1.0)) && level(n.offset).length() <= range)
     }
 
+    /// Whether it sees a cow the player has wronged: hurt, or fighting them.
+    fn wronged(&self) -> bool {
+        self.cows.iter().any(|n| n.health < 1.0 || n.signal == ANGRY)
+    }
+
     /// How many cows within `range` are fighting.
     fn fighters(&self, range: f32) -> usize {
         self.cows.iter().filter(|n| n.signal == ANGRY && level(n.offset).length() <= range).count()
@@ -838,7 +975,7 @@ fn turn_toward(from: f32, to: f32, step: f32) -> f32 {
 
 #[cfg(test)]
 mod tests {
-    use api::{Hurt, Seen, Vec3};
+    use api::{Hurt, Vec3};
 
     use super::*;
 
@@ -942,7 +1079,7 @@ mod tests {
     #[test]
     fn it_watches_the_player_in_range_and_ignores_them_out_of_range() {
         let brain = CowBrain::default();
-        let north = |d: f32| Some(Seen { offset: Vec3::new(0.0, d, 0.0), velocity: Vec3::ZERO });
+        let north = |d: f32| Some(seen(Vec3::new(0.0, d, 0.0)));
         let out = brain.think(&BrainContext { player: north(brain.notice_range - 0.5), ..remembering(Mode::Wander, 5.0, 0.0) });
         assert_eq!(mode(&out), Mode::Watch);
         assert_eq!((out.walk, out.clip.as_str()), (Vec2::ZERO, "stand"));
@@ -964,8 +1101,8 @@ mod tests {
     #[test]
     fn a_hit_cow_runs_away_from_the_hit_for_the_flee_time_then_calms_down() {
         let brain = CowBrain { fight_share: 0.0, ..CowBrain::default() };
-        // Hit from the west, while watching the player there.
-        let player = Some(Seen { offset: Vec3::new(-2.0, 0.0, 0.0), velocity: Vec3::ZERO });
+        // Hit from the west, while watching the player there, out of cornering range.
+        let player = Some(seen(Vec3::new(-brain.corner_range - 1.0, 0.0, 0.0)));
         let hit = BrainContext {
             hurt: Some(Hurt { from: -Vec3::X, damage: 5.0 }),
             player: player.clone(),
@@ -1129,7 +1266,12 @@ mod tests {
 
     /// A player `x` meters east and `z` up.
     fn player_at(x: f32, z: f32) -> Option<Seen> {
-        Some(Seen { offset: Vec3::new(x, 0.0, z), velocity: Vec3::ZERO })
+        Some(seen(Vec3::new(x, 0.0, z)))
+    }
+
+    /// The player at `offset`, standing still, with a clear run all the way.
+    fn seen(offset: Vec3) -> Seen {
+        Seen { offset, velocity: Vec3::ZERO, clear_run: level(offset).length() }
     }
 
     /// A cow fighting the player `x` meters east, in `mode` with `left` seconds of it and
@@ -1227,7 +1369,7 @@ mod tests {
         let brain = CowBrain::default();
         let start = fighting(Mode::Charge, brain.charge_time, 10.0, 5.0);
         // The player steps well off to the side.
-        let dodged = BrainContext { player: Some(Seen { offset: Vec3::new(3.0, 3.0, 0.0), velocity: Vec3::ZERO }), ..start };
+        let dodged = BrainContext { player: Some(seen(Vec3::new(3.0, 3.0, 0.0))), ..start };
         let outs = run(&brain, dodged, 0.5);
         let turned = outs.last().unwrap().memory[Slot::Heading as usize];
         assert!((turned - brain.charge_turn * 0.5).abs() < 0.05, "turned {turned} rad in half a second");
@@ -1266,8 +1408,21 @@ mod tests {
         let trying = (brain.give_up_time / DT) as usize - 2;
         assert!(outs[..trying].iter().all(|o| mode(o) == Mode::Angry && o.walk.length() > 0.0), "walks at them");
         let last = outs.last().unwrap();
-        assert!(!mode(last).fighting(), "gave up: {:?}", mode(last));
+        assert_eq!(mode(last), Mode::Flee, "gave up, and runs");
+        assert!(near_angle(heading(last), PI, 1e-3), "west, away from them: {}", heading(last));
+        // Then calms down for a while.
+        let c = BrainContext { memory: last.memory.clone(), yaw: last.yaw, ..stuck_far(&brain) };
+        let outs = run(&brain, c, brain.flee_time + 0.5);
+        let last = outs.last().unwrap();
+        assert!(!mode(last).fighting() && mode(last) != Mode::Flee, "{:?}", mode(last));
         assert!(last.memory[Slot::Calm as usize] > brain.calm_time - 1.0, "calm for a while");
+    }
+
+    /// The player well off, east, with no clear run to them.
+    fn stuck_far(brain: &CowBrain) -> BrainContext {
+        let mut p = seen(Vec3::new(brain.grudge_range + 3.0, 0.0, 0.0));
+        p.clear_run = 1.0;
+        BrainContext { player: Some(p), ..ctx() }
     }
 
     #[test]
@@ -1281,6 +1436,144 @@ mod tests {
         assert!(modes.iter().all(|&m| m == Mode::Angry), "never gives up while gaining: {modes:?}");
         let outs = run(&brain, fighting(Mode::Angry, 0.0, 0.2, 4.0), 0.3);
         assert!(!mode(outs.last().unwrap()).fighting(), "calmed down");
+    }
+
+    #[test]
+    fn it_only_charges_with_a_clear_run_at_the_player() {
+        let brain = CowBrain::default();
+        let far = 10.0;
+        let charges = |player: Seen| {
+            let c = BrainContext { player: Some(player), ..fighting(Mode::Angry, 0.0, 15.0, far) };
+            run(&brain, c, 0.5).iter().any(|o| mode(o) == Mode::ChargeUp)
+        };
+        assert!(charges(seen(Vec3::new(far, 0.0, 0.0))), "open ground");
+        let walled = Seen { clear_run: 4.0, ..seen(Vec3::new(far, 0.0, 0.0)) };
+        assert!(!charges(walled.clone()), "a wall in the way");
+        let c = BrainContext { player: Some(walled), ..fighting(Mode::Angry, 0.0, 15.0, far) };
+        assert!(run(&brain, c, 0.5).iter().all(|o| mode(o) == Mode::Angry && o.walk.length() > 0.0), "walks at them instead");
+        // A wall right behind them stops its wider body a little short: still a run at them.
+        assert!(charges(Seen { clear_run: far - 0.2, ..seen(Vec3::new(far, 0.0, 0.0)) }));
+        // Up on a block 2 high, the run reaches the block but they're out of the charge's way.
+        assert!(!charges(seen(Vec3::new(far, 0.0, 2.0))), "too high");
+    }
+
+    #[test]
+    fn a_charge_runs_past_the_player_by_its_share_of_the_start_distance() {
+        let brain = CowBrain::default();
+        let charge = |behind: f32| {
+            let mut c = fighting(Mode::Charge, brain.charge_time, 10.0, -behind);
+            c.memory[Slot::Start as usize] = 10.0;
+            mode(&brain.think(&c))
+        };
+        assert_eq!(charge(10.0 * brain.charge_overshoot - 1.0), Mode::Charge, "still running past");
+        assert_eq!(charge(10.0 * brain.charge_overshoot + 1.0), Mode::Angry, "far enough past");
+        // The start is measured when the run begins.
+        let mut c = fighting(Mode::ChargeUp, 0.0, 10.0, 8.0);
+        c.memory[Slot::Start as usize] = 0.0;
+        let out = brain.think(&c);
+        assert_eq!(mode(&out), Mode::Charge);
+        assert!((out.memory[Slot::Start as usize] - 8.0).abs() < 1e-4);
+    }
+
+    /// A cow standing about, calm, holding a grudge, with the player `x` meters east.
+    fn grudging(x: f32) -> BrainContext {
+        let mut c = remembering(Mode::Idle, 3.0, 0.0);
+        c.memory[Slot::Grudge as usize] = 1.0;
+        BrainContext { player: player_at(x, 0.0), ..c }
+    }
+
+    /// Of 400 tries, how many times a grudging cow fights rather than runs.
+    fn grudge_fights(brain: &CowBrain, start: &BrainContext) -> usize {
+        (0..400u64)
+            .filter(|&r| {
+                let out = brain.think(&BrainContext { random: r * 7919 + 3, ..start.clone() });
+                assert!(matches!(mode(&out), Mode::Angry | Mode::Flee), "fights or runs: {:?}", mode(&out));
+                mode(&out) == Mode::Angry
+            })
+            .count()
+    }
+
+    #[test]
+    fn a_hurt_cow_holds_a_grudge_for_good() {
+        let brain = CowBrain { fight_share: 0.0, ..CowBrain::default() };
+        let hit = BrainContext { hurt: Some(Hurt { from: Vec3::X, damage: 1.0 }), ..ctx() };
+        let out = brain.think(&hit);
+        assert_eq!(out.memory[Slot::Grudge as usize], 1.0);
+        // A long while later, with the player gone, it still remembers.
+        let later = run(&brain, BrainContext { memory: out.memory, ..ctx() }, 120.0);
+        assert!(later.iter().all(|o| o.memory[Slot::Grudge as usize] == 1.0));
+        // A cow never hurt doesn't.
+        assert!(run(&brain, ctx(), 5.0).iter().all(|o| o.memory[Slot::Grudge as usize] == 0.0));
+    }
+
+    #[test]
+    fn a_grudging_cow_fights_or_runs_when_the_player_comes_near_likelier_to_fight_when_healthy() {
+        let brain = CowBrain::default();
+        let whole = grudge_fights(&brain, &grudging(5.0));
+        let hurt = grudge_fights(&brain, &BrainContext { health: 10.0, ..grudging(5.0) });
+        assert!((whole as f32 / 400.0 - brain.grudge_fight).abs() < 0.08, "whole: {whole}");
+        assert!((hurt as f32 / 400.0 - brain.grudge_fight * 0.5).abs() < 0.08, "half health: {hurt}");
+        // With no clear run at them, it always runs, away from them.
+        let walled = BrainContext { player: Some(Seen { clear_run: 1.0, ..seen(Vec3::new(5.0, 0.0, 0.0)) }), ..grudging(5.0) };
+        assert_eq!(grudge_fights(&brain, &walled), 0);
+        assert!(near_angle(heading(&brain.think(&walled)), PI, 1e-3));
+        // Further off, it carries on; just after a scare, it ignores them.
+        assert_eq!(mode(&brain.think(&grudging(brain.grudge_range + 3.0))), Mode::Idle);
+        let mut calm = grudging(5.0);
+        calm.memory[Slot::Calm as usize] = 2.0;
+        assert_eq!(mode(&brain.think(&calm)), Mode::Watch);
+        // Without a grudge, it only watches.
+        let mut never = grudging(5.0);
+        never.memory[Slot::Grudge as usize] = 0.0;
+        assert_eq!(mode(&brain.think(&never)), Mode::Watch);
+    }
+
+    #[test]
+    fn seeing_a_herdmate_hurt_or_fighting_it_holds_a_grudge_too() {
+        let brain = CowBrain::default();
+        let grudge = |others: Vec<Neighbor>| brain.think(&seeing(others, ctx())).memory[Slot::Grudge as usize];
+        let hurt = Neighbor { health: 0.7, ..cow(5.0, 0.0, 1, "") };
+        assert_eq!(grudge(vec![hurt]), 1.0, "a hurt one");
+        assert_eq!(grudge(vec![cow(5.0, 0.0, 1, ANGRY)]), 1.0, "one fighting");
+        assert_eq!(grudge(vec![cow(5.0, 0.0, 1, ""), cow(3.0, 0.0, 2, GRAZING), cow(4.0, 0.0, 3, ALARMED)]), 0.0, "calm, or only scared");
+        // From the next tick, it reacts to the player like one that was hurt.
+        let mut c = seeing(vec![Neighbor { health: 0.7, ..cow(5.0, 0.0, 1, "") }], remembering(Mode::Idle, 3.0, 0.0));
+        c.player = player_at(5.0, 0.0);
+        let first = brain.think(&c);
+        assert_eq!(mode(&first), Mode::Watch, "not yet");
+        let next = brain.think(&BrainContext { memory: first.memory, ..c });
+        assert!(matches!(mode(&next), Mode::Angry | Mode::Flee));
+    }
+
+    /// A cow holding a grudge, running west from the player `x` meters east, with `health`.
+    fn running_from(x: f32, health: f32) -> BrainContext {
+        let mut c = remembering(Mode::Flee, 5.0, PI);
+        c.memory[Slot::Grudge as usize] = 1.0;
+        BrainContext { player: player_at(x, 0.0), health, yaw: PI, ..c }
+    }
+
+    #[test]
+    fn run_down_while_running_it_turns_and_fights_however_hurt() {
+        let brain = CowBrain::default();
+        // The player keeps up, 2 m behind, every tick.
+        let outs = run(&brain, running_from(2.0, 2.0), brain.corner_time + 3.0);
+        let turned = outs.iter().position(|o| mode(o) == Mode::Angry).expect("turned to fight");
+        assert!((turned as f32 * DT - brain.corner_time).abs() < 0.05, "after {} s", turned as f32 * DT);
+        assert!(outs[turned..].iter().all(|o| mode(o).fighting()), "and doesn't break off, badly hurt and alone");
+        // Kept further off, it keeps running.
+        let outs = run(&brain, running_from(brain.corner_range + 1.0, 2.0), brain.corner_time + 1.0);
+        assert!(outs.iter().all(|o| mode(o) == Mode::Flee));
+    }
+
+    #[test]
+    fn a_grudging_cow_steers_away_from_the_player_as_it_runs() {
+        let brain = CowBrain::default();
+        // Running east, with the player to the north.
+        let mut c = running_from(0.0, 20.0);
+        c.memory[Slot::Heading as usize] = 0.0;
+        c.player = Some(seen(Vec3::new(0.0, 6.0, 0.0)));
+        let out = brain.think(&c);
+        assert!(near_angle(heading(&out), -PI / 2.0, 1e-3), "south: {}", heading(&out));
     }
 
     #[test]
