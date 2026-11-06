@@ -18,6 +18,7 @@ pub mod solid;
 pub mod sound;
 pub mod tuning;
 pub mod tuning_file;
+pub mod view;
 pub mod volumes;
 pub mod world;
 
@@ -74,6 +75,8 @@ pub fn run(connection: Box<dyn Connection>) {
         .init_resource::<WaypointCursor>()
         .init_resource::<CameraFeel>()
         .init_resource::<mesher::AoTuning>()
+        .init_resource::<view::ViewTuning>()
+        .init_resource::<view::ViewStats>()
         .init_resource::<FeelState>()
         .init_resource::<TuningPanel>()
         .init_resource::<dev::DevMode>()
@@ -124,7 +127,7 @@ pub fn run(connection: Box<dyn Connection>) {
                 editing::remesh_changed_chunks,
                 // Strikes first: a broken target bursts from where its view was drawn.
                 (combat::play_strikes, combat::play_slams, hurt::play_player_hurts, combat::update_hit_stop).chain(),
-                (update_camera, sync_chunk_transforms, sound::play_sounds).chain(),
+                (update_camera, sync_chunk_transforms, view::apply_render_distance, sound::play_sounds).chain(),
                 editing::draw_outline,
                 editing::update_ghost,
                 items::sync_items,
@@ -243,14 +246,20 @@ fn spawn_chunk_meshes(
     commands.insert_resource(ghost);
     let grid = world.universe().main();
     let mut entities = std::collections::HashMap::new();
-    for (pos, _) in grid.chunks() {
-        let data = mesher::mesh_chunk(grid, pos, world.blocks(), &volumes, &ao);
+    let mut quads = std::collections::HashMap::new();
+    let start = Instant::now();
+    let positions: Vec<ChunkPos> = grid.chunks().map(|(pos, _)| pos).collect();
+    let meshed = mesher::mesh_chunks(grid, &positions, world.blocks(), &volumes, &ao);
+    let last_meshing = Some((positions.len(), start.elapsed().as_secs_f32()));
+    for (pos, data) in positions.into_iter().zip(meshed) {
         if data.is_empty() {
             continue;
         }
+        quads.insert(pos, data.quad_count());
         entities.insert(pos, spawn_chunk(&mut commands, &mut meshes, material.clone(), pos, data, origin.cell));
     }
-    commands.insert_resource(ChunkMeshes { material, volumes, entities });
+    info!("meshed {} chunks in {:.2} s", grid.chunks().count(), last_meshing.map_or(0.0, |(_, s)| s));
+    commands.insert_resource(ChunkMeshes { material, volumes, entities, quads, last_meshing });
 }
 
 pub(crate) fn spawn_chunk(
@@ -517,6 +526,7 @@ fn sync_chunk_transforms(origin: Res<RenderOrigin>, mut chunks: Query<(&ChunkMes
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn update_hud(
     world: Res<ClientWorld>,
     origin: Res<RenderOrigin>,
@@ -524,16 +534,19 @@ fn update_hud(
     controls: Res<Controls>,
     feel: Res<CameraFeel>,
     time: Res<Time>,
+    chunk_meshes: Option<Res<ChunkMeshes>>,
+    (view, drawn): (Res<view::ViewTuning>, Res<view::ViewStats>),
     mut text: Single<&mut Text, With<Hud>>,
 ) {
     let Some(player) = world.player() else {
         return;
     };
+    let cost = world_cost(&world, chunk_meshes.as_deref(), &view, &drawn);
     let pos = player.pos();
     let precise = pos.cell().as_dvec3() + pos.offset().as_dvec3();
     let fps = 1.0 / time.delta_secs().max(1e-6);
     text.0 = format!(
-        "pos {:.2}, {:.2}, {:.2}  speed {:.1} m/s  last landing {:.1} m/s ({})\norigin {}, {}, {}\n{} | {:.0} fps | cap {} ({})\n{}{}{}{} move, {} jump, {} toggle sprint (or double-tap forward), {} crouch, {} down, {} fly, {} teleport, {} tuning, {} hide dev text, Esc release mouse\n{} use (break, swing), {} second use (place, guard), 1-9 or scroll pick, {} craft at a table, {} respawn targets, {} reload sounds",
+        "pos {:.2}, {:.2}, {:.2}  speed {:.1} m/s  last landing {:.1} m/s ({})\norigin {}, {}, {}\n{cost}\n{} | {:.0} fps | cap {} ({})\n{}{}{}{} move, {} jump, {} toggle sprint (or double-tap forward), {} crouch, {} down, {} fly, {} teleport, {} tuning, {} hide dev text, Esc release mouse\n{} use (break, swing), {} second use (place, guard), 1-9 or scroll pick, {} craft at a table, {} respawn targets, {} reload sounds",
         precise.x,
         precise.y,
         precise.z,
@@ -565,6 +578,40 @@ fn update_hud(
         label(controls.respawn_targets),
         label(controls.reload_sounds),
     );
+}
+
+/// What the world costs to hold and draw: terrain generation, meshing, chunks loaded and
+/// drawn, triangles, memory, and the render and simulation distances.
+fn world_cost(world: &ClientWorld, meshes: Option<&ChunkMeshes>, view: &view::ViewTuning, drawn: &view::ViewStats) -> String {
+    let generation = match &world.defs().generation {
+        Some(Ok(g)) => format!("terrain {} chunks in {:.2} s", g.chunks, g.seconds),
+        Some(Err(e)) => format!("terrain failed: {e}"),
+        None => "no terrain".into(),
+    };
+    let meshing = meshes.and_then(|m| m.last_meshing).map_or(String::new(), |(n, s)| format!(" | meshed {n} in {s:.2} s"));
+    let meshed = meshes.map_or(0, |m| m.entities.len());
+    let sim_distance = world
+        .defs()
+        .tuning
+        .iter()
+        .find(|s| s.name == "world")
+        .and_then(|s| s.values.iter().find(|t| t.name == "sim_distance"))
+        .map_or(String::from("?"), |t| format!("{:.0}", t.value));
+    format!(
+        "{generation}{meshing} | chunks {} loaded, {meshed} with faces, {} drawn | {:.2}M triangles | {} | render {:.0} m, sim {sim_distance} m",
+        world.universe().main().chunks().count(),
+        drawn.drawn,
+        drawn.triangles as f64 / 1e6,
+        memory_used().map_or("memory ?".into(), |b| format!("{:.0} MB", b as f64 / 1e6)),
+        view.render_distance,
+    )
+}
+
+/// The game's resident memory in bytes, where the system says (Linux).
+fn memory_used() -> Option<u64> {
+    let statm = std::fs::read_to_string("/proc/self/statm").ok()?;
+    let pages: u64 = statm.split_whitespace().nth(1)?.parse().ok()?;
+    Some(pages * 4096)
 }
 
 #[derive(Clone, Copy, Default, PartialEq, Debug)]

@@ -1,13 +1,13 @@
 //! The simulation: loads mods, owns the world and advances it at a fixed rate.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fmt;
 
 use api::block::is_valid_name;
 use api::{
-    ApiError, BlockDef, BoxelPos, Brain, ChunkPos, CraftingDef, CrowdDef, HealthDef, InteractionDef, InventoryDef, ItemDropDef, LookDef,
-    ModelDef, Mod, MovementController, Orientation, PlayerDef, PushOutDef, Registrar, ShapeGrid, SoundDef,
-    TargetDef, ToolDef, Vec2, Vec3, WorldEdit, WorldPos, look_direction,
+    ApiError, BlockDef, BoxelPos, Brain, ChunkPos, CraftingDef, CrowdDef, Generator, HealthDef, InteractionDef, InventoryDef, ItemDropDef,
+    LookDef, ModelDef, Mod, MovementController, Orientation, PlayerDef, PushOutDef, Registrar, ShapeGrid, SoundDef,
+    TargetDef, TerrainDef, ToolDef, Vec2, Vec3, WorldEdit, WorldPos, look_direction,
 };
 
 use crate::combat::{StepContext, Strike, Swing, SwingStage, TargetKind, Targets, ToolId};
@@ -15,6 +15,7 @@ use crate::crafting::{Craft, CraftPlan, CraftRefusal};
 use crate::edit::{ChangedChunks, Repeater};
 use crate::inventory::{Inventory, capacity_units};
 use crate::items::{Collector, Items, pop_velocity};
+use crate::terrain::{GenerationStats, WorldSettings};
 use crate::view::{GridTerrain, PlaceTarget, View};
 use crate::{
     BlockId, BlockRegistry, CellBox, Grid, Hit, MaterialId, Occupant, Player, PlayerInput, LookRegistry, Universe, can_share,
@@ -87,6 +88,15 @@ pub struct Simulation {
     target_brains: Vec<Option<usize>>,
     /// Targets stand still as dummies, whatever their brains would do.
     brains_off: bool,
+    /// Terrain generators by name, in registration order.
+    generators: Vec<(String, Box<dyn Generator>)>,
+    /// Where generated terrain goes, as the mods placed it.
+    terrains: Vec<TerrainDef>,
+    /// Every chunk generated last time, so generating again can drop the ones no longer reached.
+    generated: HashSet<ChunkPos>,
+    /// How the last generation went.
+    generation: Option<GenerationStats>,
+    world: WorldSettings,
     player_def: Option<PlayerDef>,
     interaction_def: Option<InteractionDef>,
     push_out_def: Option<PushOutDef>,
@@ -151,6 +161,7 @@ impl Simulation {
                 blocks: &mut sim.blocks,
                 controllers: &mut sim.controllers,
                 brains: &mut sim.brains,
+                generators: &mut sim.generators,
                 player: &mut sim.player_def,
                 interaction: &mut sim.interaction_def,
                 push_out: &mut sim.push_out_def,
@@ -199,6 +210,8 @@ impl Simulation {
                 waypoints: &mut sim.waypoints,
                 target_defs: &sim.target_defs,
                 targets: &mut sim.targets,
+                generators: &sim.generators,
+                terrains: &mut sim.terrains,
             })?;
         }
         Ok(sim)
@@ -248,6 +261,83 @@ impl Simulation {
         add_controller(&mut self.controllers, name, controller)
     }
 
+    /// Fills every terrain the mods placed, at the size the world settings give, replacing what
+    /// was generated before (edits in it are lost) and dropping chunks it no longer reaches.
+    /// Then anything left inside the ground (the player, creatures and their spots) is lifted
+    /// out. Every chunk touched is marked changed.
+    pub fn generate_terrain(&mut self) -> Result<GenerationStats, ApiError> {
+        let mut total = GenerationStats::default();
+        let mut now = HashSet::new();
+        for def in &self.terrains {
+            let generator = self.generators.iter().find(|(n, _)| *n == def.generator).map(|(_, g)| &**g);
+            let generator = generator.ok_or_else(|| ApiError::UnknownGenerator(def.generator.clone()))?;
+            let (data, stats) = crate::terrain::generate(generator, def, &self.world, &self.blocks)?;
+            let grid = self.universe.main_mut();
+            for chunk in &data {
+                grid.import_chunk(chunk);
+                now.insert(chunk.pos);
+                self.changed.mark_chunk(chunk.pos);
+            }
+            total.chunks += stats.chunks;
+            total.uniform += stats.uniform;
+            total.seconds += stats.seconds;
+        }
+        let grid = self.universe.main_mut();
+        for &gone in self.generated.difference(&now) {
+            grid.remove_chunk(gone);
+            self.changed.mark_chunk(gone);
+        }
+        self.generated = now;
+        self.generation = Some(total);
+        self.lift_out_of_ground();
+        Ok(total)
+    }
+
+    /// Moves the player, every creature and every creature's spot straight up until the boxels
+    /// at their feet and just above are clear, so a teleport or new terrain never leaves them
+    /// buried.
+    fn lift_out_of_ground(&mut self) {
+        let (grid, blocks) = (self.universe.main(), &self.blocks);
+        let lifted = |pos: WorldPos| lift_out(grid, blocks, pos);
+        if let Some(player) = &mut self.player {
+            let pos = player.pos();
+            let up = lifted(pos);
+            if up != pos {
+                player.teleport(up);
+            }
+        }
+        self.targets.move_all(lifted);
+    }
+
+    /// Drops every creature whose spot `keep` refuses, for good: for tests and tools that want
+    /// only some of what the mods placed.
+    pub fn keep_targets(&mut self, keep: impl Fn(WorldPos) -> bool) {
+        self.targets.keep_spots(keep);
+    }
+
+    /// How the last terrain generation went, if there was one.
+    pub fn generation(&self) -> Option<GenerationStats> {
+        self.generation
+    }
+
+    pub fn world_settings(&self) -> &WorldSettings {
+        &self.world
+    }
+
+    pub fn world_settings_mut(&mut self) -> &mut WorldSettings {
+        &mut self.world
+    }
+
+    /// Registered terrain generators' names, in registration order.
+    pub fn generator_names(&self) -> impl Iterator<Item = &str> {
+        self.generators.iter().map(|(name, _)| name.as_str())
+    }
+
+    /// The generator at `index`, in registration order, for tuning.
+    pub fn generator_mut(&mut self, index: usize) -> Option<&mut dyn Generator> {
+        self.generators.get_mut(index).map(|(_, g)| &mut **g as &mut dyn Generator)
+    }
+
     /// Puts the player at the spawn point. Needs a mod to have registered a player definition,
     /// and the movement controller it names.
     pub fn spawn_player(&mut self) -> Result<(), SimError> {
@@ -276,6 +366,7 @@ impl Simulation {
         self.use_tool(input);
         self.throw(input);
         let capacity = self.capacity();
+        let awake = self.player.as_ref().map(|p| (p.pos(), self.world.sim_distance));
         let Self { blocks, universe, player, items, item_drop_def, inventory, targets, target_defs, crowd_def, .. } = self;
         let terrain = GridTerrain { grid: universe.main(), blocks };
         if let Some(player) = player {
@@ -293,13 +384,14 @@ impl Simulation {
             player: player.as_mut(),
             tick: self.tick,
             dt: Self::TICK_SECONDS,
+            awake,
         };
         targets.step(ctx, &terrain);
         if let Some(def) = item_drop_def {
             let room = inventory.room(capacity);
             let collector =
                 player.as_ref().map(|p| Collector { feet: p.pos(), width: p.shape().width, height: p.height(), room });
-            for drop in items.step(def, blocks, Self::TICK_SECONDS, &terrain, collector) {
+            for drop in items.step(def, blocks, Self::TICK_SECONDS, &terrain, collector, awake) {
                 inventory.add(drop.material, drop.amount, capacity);
             }
         }
@@ -644,7 +736,9 @@ impl Simulation {
         self.blocks.shaped(material, shape)
     }
 
+    /// Moves the player to `pos`, lifted out of the ground if it's buried there.
     pub fn teleport_player(&mut self, pos: WorldPos) {
+        let pos = lift_out(self.universe.main(), &self.blocks, pos);
         if let Some(player) = &mut self.player {
             player.teleport(pos);
         }
@@ -917,6 +1011,7 @@ struct ContentRegistrar<'a> {
     blocks: &'a mut BlockRegistry,
     controllers: &'a mut HashMap<String, Box<dyn MovementController>>,
     brains: &'a mut Vec<(String, Box<dyn Brain>)>,
+    generators: &'a mut Vec<(String, Box<dyn Generator>)>,
     player: &'a mut Option<PlayerDef>,
     interaction: &'a mut Option<InteractionDef>,
     push_out: &'a mut Option<PushOutDef>,
@@ -962,6 +1057,12 @@ impl Registrar for ContentRegistrar<'_> {
     fn register_brain(&mut self, name: &str, brain: Box<dyn Brain>) -> Result<(), ApiError> {
         check_new_name(name, self.brains.iter().map(|(n, _)| n.clone()))?;
         self.brains.push((name.into(), brain));
+        Ok(())
+    }
+
+    fn register_generator(&mut self, name: &str, generator: Box<dyn Generator>) -> Result<(), ApiError> {
+        check_new_name(name, self.generators.iter().map(|(n, _)| n.clone()))?;
+        self.generators.push((name.into(), generator));
         Ok(())
     }
 
@@ -1075,6 +1176,8 @@ struct WorldEditor<'a> {
     waypoints: &'a mut Vec<(String, WorldPos)>,
     target_defs: &'a [TargetDef],
     targets: &'a mut Targets,
+    generators: &'a [(String, Box<dyn Generator>)],
+    terrains: &'a mut Vec<TerrainDef>,
 }
 
 impl WorldEditor<'_> {
@@ -1132,4 +1235,29 @@ impl WorldEdit for WorldEditor<'_> {
         self.targets.add_spot(TargetKind(index as u16), pos, yaw, &self.target_defs[index]);
         Ok(())
     }
+
+    fn add_terrain(&mut self, def: TerrainDef) -> Result<(), ApiError> {
+        def.validate().map_err(ApiError::InvalidDef)?;
+        if !self.generators.iter().any(|(n, _)| *n == def.generator) {
+            return Err(ApiError::UnknownGenerator(def.generator));
+        }
+        self.terrains.push(def);
+        Ok(())
+    }
+}
+
+/// How far [`lift_out`] looks up before giving up, in boxels.
+const MAX_LIFT: i64 = 2048;
+
+/// `pos` moved straight up by whole boxels until the boxels at its feet and just above hold no
+/// full block, or `pos` itself if they already don't (or no clear spot is near enough). Only
+/// full blocks count, so standing on a slab or among posts isn't being buried.
+fn lift_out(grid: &Grid, blocks: &BlockRegistry, pos: WorldPos) -> WorldPos {
+    let full = |p: BoxelPos| grid.cell(p).iter().any(|o| blocks.get(o.block).is_some_and(|d| d.is_full()));
+    let clear = |p: BoxelPos| !full(p) && !full(p.offset(api::I64Vec3::Z));
+    let feet = pos.boxel();
+    (0..MAX_LIFT)
+        .find(|&up| clear(feet.offset(api::I64Vec3::new(0, 0, up))))
+        .filter(|&up| up > 0)
+        .map_or(pos, |up| WorldPos::new(pos.cell() + api::I64Vec3::new(0, 0, up), Vec3::new(pos.offset().x, pos.offset().y, 0.0)))
 }

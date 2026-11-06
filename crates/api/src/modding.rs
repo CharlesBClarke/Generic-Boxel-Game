@@ -2,7 +2,8 @@
 
 use crate::{
     ApiError, BlockDef, Brain, BoxelPos, CraftingDef, CrowdDef, HealthDef, InteractionDef, InventoryDef, ItemDropDef, LookDef, ModelDef,
-    MovementController, Orientation, PlayerDef, PushOutDef, ShapeGrid, SoundDef, TargetDef, ToolDef, WorldPos,
+    Generator, MovementController, Orientation, PlayerDef, PushOutDef, ShapeGrid, SoundDef, TargetDef, TerrainDef, ToolDef,
+    WorldPos,
 };
 
 /// A mod. The engine calls `register` on every mod first, then `build_world` on every mod.
@@ -37,6 +38,8 @@ pub trait Registrar {
     /// Registers a brain under a namespaced name, for target definitions to refer to. Checked
     /// once all mods have registered, so a target may name a brain another mod registers.
     fn register_brain(&mut self, name: &str, brain: Box<dyn Brain>) -> Result<(), ApiError>;
+    /// Registers a terrain generator under a namespaced name, for terrain placements to refer to.
+    fn register_generator(&mut self, name: &str, generator: Box<dyn Generator>) -> Result<(), ApiError>;
     fn register_player(&mut self, def: PlayerDef) -> Result<(), ApiError>;
     fn register_interaction(&mut self, def: InteractionDef) -> Result<(), ApiError>;
     fn register_push_out(&mut self, def: PushOutDef) -> Result<(), ApiError>;
@@ -91,6 +94,10 @@ pub trait WorldEdit {
     /// Places a registered target with its feet at `pos`, facing `yaw` (radians counterclockwise
     /// from +X around +Z). That's its spot: it comes back there after breaking.
     fn add_target(&mut self, name: &str, pos: WorldPos, yaw: f32) -> Result<(), ApiError>;
+
+    /// Places generated terrain. The engine fills it once every mod has built its world, so
+    /// blocks set here are covered where the terrain reaches.
+    fn add_terrain(&mut self, def: TerrainDef) -> Result<(), ApiError>;
 
     /// Fills the box from `min` to `max`, both inclusive.
     fn fill(&mut self, min: BoxelPos, max: BoxelPos, name: &str) -> Result<(), ApiError> {

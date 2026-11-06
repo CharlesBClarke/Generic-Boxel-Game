@@ -117,6 +117,11 @@ impl Grid {
         self.chunks.insert(data.pos, Chunk { cells });
     }
 
+    /// Drops the chunk at `pos`, leaving it empty.
+    pub fn remove_chunk(&mut self, pos: ChunkPos) {
+        self.chunks.remove(&pos);
+    }
+
     /// Fills the boxel at `pos` with just `id`, unturned, or empties it.
     pub fn set_block(&mut self, pos: BoxelPos, id: BlockId) {
         self.set_cell(pos, &[Occupant::new(id)]);

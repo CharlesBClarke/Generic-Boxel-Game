@@ -18,12 +18,14 @@ pub struct Server {
     blocks_sent: usize,
     /// Where [`Command::ReloadSounds`] reads from; without one it can't.
     sound_source: Option<SoundSource>,
+    /// Why the last regeneration failed, if it did.
+    generation_error: Option<String>,
 }
 
 impl Server {
     /// A server running `sim`, which must already have its mods loaded and its player spawned.
     pub fn new(sim: Simulation) -> Self {
-        Self { sim, blocks_sent: 0, sound_source: None }
+        Self { sim, blocks_sent: 0, sound_source: None, generation_error: None }
     }
 
     /// Lets clients have the sounds read again from `source` while the game runs.
@@ -128,6 +130,12 @@ impl Server {
             Command::BrainsOn(on) => sim.set_brains_on(on),
             Command::TeleportPlayer(pos) => sim.teleport_player(pos),
             Command::RespawnTargets => sim.respawn_targets(),
+            Command::RegenerateTerrain => {
+                self.generation_error = sim.generate_terrain().err().map(|e| e.to_string());
+                if let Some(e) = &self.generation_error {
+                    eprintln!("server: generating the terrain failed: {e}");
+                }
+            }
             Command::ReloadSounds => {}
         }
     }
@@ -149,6 +157,10 @@ impl Server {
             tuning,
             brains_on: sim.brains_on(),
             unkillable: sim.unkillable(),
+            generation: match &self.generation_error {
+                Some(e) => Some(Err(e.clone())),
+                None => sim.generation().map(Ok),
+            },
         }
     }
 
@@ -194,6 +206,12 @@ fn sections(sim: &mut Simulation) -> Vec<TuningSection> {
         let values = sim.brain_mut(i).map_or_else(Vec::new, |b| b.tunables());
         add(format!("brain {name}"), values);
     }
+    add("world".into(), sim.world_settings().tunables());
+    let names: Vec<String> = sim.generator_names().map(String::from).collect();
+    for (i, name) in names.into_iter().enumerate() {
+        let values = sim.generator_mut(i).map_or_else(Vec::new, |g| g.tunables());
+        add(format!("terrain {name}"), values);
+    }
     out
 }
 
@@ -210,6 +228,7 @@ fn tune(sim: &mut Simulation, section: &str, name: &str, value: f32) -> bool {
         "health" => set(sim.health_def_mut().map(|d| d as &mut dyn Tunables), name, value),
         "item_drops" => set(sim.item_drop_def_mut().map(|d| d as &mut dyn Tunables), name, value),
         "inventory" => set(sim.inventory_def_mut().map(|d| d as &mut dyn Tunables), name, value),
+        "world" => sim.world_settings_mut().set_tunable(name, value),
         _ => {
             if let Some(tool) = section.strip_prefix("tool ") {
                 let found = sim.tools_mut().iter_mut().find(|t| t.name == tool);
@@ -220,6 +239,9 @@ fn tune(sim: &mut Simulation, section: &str, name: &str, value: f32) -> bool {
             } else if let Some(brain) = section.strip_prefix("brain ") {
                 let index = sim.brain_names().position(|n| n == brain);
                 set(index.and_then(|i| sim.brain_mut(i)).map(|b| b as &mut dyn Tunables), name, value)
+            } else if let Some(generator) = section.strip_prefix("terrain ") {
+                let index = sim.generator_names().position(|n| n == generator);
+                set(index.and_then(|i| sim.generator_mut(i)).map(|g| g as &mut dyn Tunables), name, value)
             } else {
                 false
             }

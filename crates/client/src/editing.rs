@@ -134,6 +134,11 @@ pub(crate) struct ChunkMeshes {
     pub material: Handle<SolidMaterial>,
     pub volumes: Volumes,
     pub entities: HashMap<ChunkPos, Entity>,
+    /// How many quads each chunk's mesh has, for the readout.
+    pub quads: HashMap<ChunkPos, usize>,
+    /// How long the last big meshing took (the startup's, or a remesh of many chunks), and of
+    /// how many chunks.
+    pub last_meshing: Option<(usize, f32)>,
 }
 
 /// Whether the mouse is captured for playing. Clicks only edit while it is, so the click
@@ -326,6 +331,9 @@ pub(crate) fn update_ghost(
         .with_scale(Vec3::splat(GHOST_SCALE));
 }
 
+/// Remeshing at least this many chunks at once is timed for the readout.
+const BIG_REMESH: usize = 64;
+
 /// Rebuilds the meshes of chunks the simulation changed, and of every chunk when the ambient
 /// occlusion tuning changes.
 pub(crate) fn remesh_changed_chunks(
@@ -344,8 +352,17 @@ pub(crate) fn remesh_changed_chunks(
     if ao.is_changed() && !ao.is_added() {
         changed = grid.chunks().map(|(pos, _)| pos).collect();
     }
-    for pos in changed {
-        let data = mesher::mesh_chunk(grid, pos, world.blocks(), &chunk_meshes.volumes, &ao);
+    let start = std::time::Instant::now();
+    let meshed = mesher::mesh_chunks(grid, &changed, world.blocks(), &chunk_meshes.volumes, &ao);
+    if changed.len() >= BIG_REMESH {
+        chunk_meshes.last_meshing = Some((changed.len(), start.elapsed().as_secs_f32()));
+    }
+    for (pos, data) in changed.into_iter().zip(meshed) {
+        if data.is_empty() {
+            chunk_meshes.quads.remove(&pos);
+        } else {
+            chunk_meshes.quads.insert(pos, data.quad_count());
+        }
         match chunk_meshes.entities.get(&pos).copied() {
             Some(entity) if data.is_empty() => {
                 commands.entity(entity).despawn();
@@ -764,5 +781,31 @@ mod remesh_timing {
             best = best.min(start.elapsed());
         }
         println!("{} chunks, {quads} quads, best of 5: {best:?}", chunks.len());
+    }
+
+    /// Times meshing the base game's whole world with its terrain generated, on every core, as
+    /// at startup. Run with `--ignored --nocapture`.
+    #[test]
+    #[ignore]
+    fn time_meshing_the_terrain() {
+        let mut sim = base_sim();
+        sim.spawn_player().unwrap();
+        let generated = sim.generate_terrain().unwrap();
+        let (_, world) = connect(sim);
+        let volumes = Volumes::build(world.looks(), world.blocks());
+        let ao = mesher::AoTuning::default();
+        let grid = world.universe().main();
+        let chunks: Vec<_> = grid.chunks().map(|(pos, _)| pos).collect();
+        let start = std::time::Instant::now();
+        let meshes = mesher::mesh_chunks(grid, &chunks, world.blocks(), &volumes, &ao);
+        let took = start.elapsed();
+        let with_faces = meshes.iter().filter(|m| !m.is_empty()).count();
+        let quads: usize = meshes.iter().map(|m| m.quad_count()).sum();
+        println!(
+            "generated {} chunks in {:.2} s; meshed {} ({with_faces} with faces, {quads} quads) in {took:?}",
+            generated.chunks,
+            generated.seconds,
+            chunks.len()
+        );
     }
 }

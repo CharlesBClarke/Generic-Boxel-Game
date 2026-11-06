@@ -11,6 +11,10 @@ fn base_sim() -> Simulation {
     let data = data_mods::load(std::path::Path::new(base::DATA_DIR)).unwrap();
     let mut sim = Simulation::with_mods(&[&data, &base::BaseMod, &base_movement::BaseMovementMod]).expect("base mod loads");
     sim.spawn_player().unwrap();
+    // Only the test area's cows: the terrain's herds are far off, with no ground under them
+    // until the terrain is generated.
+    let near = sim.spawn();
+    sim.keep_targets(|pos| near.delta_to(pos).length() < 1000.0);
     sim
 }
 
