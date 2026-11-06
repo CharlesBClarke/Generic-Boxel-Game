@@ -561,7 +561,7 @@ fn update_hud(
     let precise = pos.cell().as_dvec3() + pos.offset().as_dvec3();
     let fps = 1.0 / time.delta_secs().max(1e-6);
     text.0 = format!(
-        "pos {:.2}, {:.2}, {:.2}  speed {:.1} m/s  last landing {:.1} m/s ({})\norigin {}, {}, {}\n{cost}\n{} | {:.0} fps | cap {} ({})\n{}{}{}{} move, {} jump, {} toggle sprint (or double-tap forward), {} crouch, {} down, {} fly, {} teleport, {} tuning, {} hide dev text, Esc release mouse\n{} use (break, swing), {} second use (place, guard), 1-9 or scroll pick, {} craft at a table, {} respawn targets, {} reload sounds, {} show cow paths",
+        "pos {:.2}, {:.2}, {:.2}  speed {:.1} m/s  last landing {:.1} m/s ({})\norigin {}, {}, {}\n{cost}\n{} | {:.0} fps | cap {} ({})\n{}",
         precise.x,
         precise.y,
         precise.z,
@@ -575,24 +575,7 @@ fn update_hud(
         fps,
         cap.mode.label(),
         label(controls.frame_cap),
-        label(controls.forward),
-        label(controls.left),
-        label(controls.back),
-        label(controls.right),
-        label(controls.jump),
-        label(controls.sprint),
-        label(controls.crouch),
-        label(controls.down),
-        label(controls.fly),
-        label(controls.teleport),
-        label(controls.tuning),
-        label(controls.dev_text),
-        controls.use_main.label(),
-        controls.use_alt.label(),
-        label(controls.interact),
-        label(controls.respawn_targets),
-        label(controls.reload_sounds),
-        label(controls.show_routes),
+        controls.hint(),
     );
 }
 
