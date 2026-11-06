@@ -113,26 +113,7 @@ A run of small toy slices. Each one takes a single game-feel feature that doesn'
 
 - Cow pathfinding (low priority, 2026-11-06): the user called the toy "really good" without going through the five course checks one by one; note any that misbehave: cows through the pen's gap and up its terraces, up the mesa's steps, a charge baited off the mesa's cliff (landing hurt), waiting below the pillar (orange route), climbing hills on the generated terrain.
 
-#### WebAssembly behavior seam (`seam-wasm-behavior`)
-
-**Stage:** Verify (plan approved 2026-11-06; implemented and tested the same day).
-
-*Implemented:* `crates/base_cow` (the brain, `BaseCowMod`, exported on `wasm32`); `api/wit/brain.wit` and `api::guest::{brain, movement}` (both export macros hold one instance, made on first call); `wasm_host` split into a shared `Sandbox` plus `movement` and `brain` (`WasmBrain`, cloneable; loading makes the controller or brain, so one stuck in its constructor fails to load); `game::Code { movement, brain }` with `--native-brain`; the WebAssembly brain comes in through a small mod, since target kinds look up brains while mods register. Movement: `MoveContext.memory`/`MoveOutput.memory`, no `spawn`, `step(&self)`; the Quake timers are two memory slots; the simulation keeps one controller per name and the player only its memory, so tuning goes through `Simulation::player_controller_mut`. The hostile movement fixture lost its `spawn` loop (behavior 4); new fixture `test_mods/hostile_brain`.
-*Tests:* 573 pass (3 ignored, as before), clippy clean natively and for `wasm32`. New `game/tests/wasm_brain.rs` (7): 20,000 seeded thinks over a dozen cows' memories match bit for bit with random retuning; the whole game for a minute with the player swinging into the herd, every cow every tick, native against WebAssembly; tunables round trip; a well-behaved hostile brain counts in engine memory; trap and loop stop it (standing still, memory kept); the game carries on when the cows' brain stops mid-run. Movement tests ported: each body keeps its own memory under one controller; every body shares the mod's memory limit. A think costs about 7,600 fuel (budget 10M) and 3 µs in WebAssembly against 0.3 µs native (release), so neighbor kinds stay strings. The game starts with both as WebAssembly and runs cleanly.
-
-**Goal:** the cow's brain runs as a sandboxed WebAssembly component, bit for bit the same as native, and the movement controller keeps no state in the mod.
-
-**Plan**
-- *Brain in WebAssembly:* `api/wit/brain.wit` (records for every brain type; exports `name`, `think`, `tunables`, `set-tunable`; no resource, a brain is stateless) and an `export_brain!` macro in `api::guest`. New crate `base_cow`: `base::cow` moves there (like `base_movement`), with a `BaseCowMod` registering it natively. `wasm_host`: the sandbox (store, fuel per call, limits, stopping) shared by movement and brains; a `WasmBrain` implementing `Brain`, which stands still once stopped. `game`: `build.rs` builds `base_cow`; `load` registers the WebAssembly brain; `--native-brain` like `--native-movement`.
-- *Movement state into the engine:* `MoveContext.memory` in, `MoveOutput.memory` out, like brains; `MovementController` loses `spawn()` and steps with `&self`; the WIT resource becomes plain functions.
-- *Tests:* brain equivalence over seeded contexts and a base world run both ways (every cow every tick, bit for bit); movement equivalence still passes; a misbehaving brain fixture stops and the game carries on; fuel per think measured.
-- *Deferred:* giving freed pages back (mod memory stays small once state is in the engine); block behavior (no toy has any yet). Neighbor kinds stay strings unless the cost shows otherwise.
-
-**Done when**
-- The game runs the cow brain as WebAssembly by default and cows play as before (play check).
-- Brain and movement equivalence tests match bit for bit.
-- The movement controller keeps no state in the mod.
-- A misbehaving brain is stopped without stopping the game.
+None. Plan the next toy in a new session.
 
 ### Toy backlog
 
@@ -177,7 +158,7 @@ Ideas that come up while playing get added here.
 ### Seam backlog (added when the game is ready for them)
 
 - ~~**Data mods.**~~ Done (2026-10-27), see Done toys.
-- **WebAssembly behavior.** *Suggested next.* Sandbox the cow's brain as WebAssembly (a `brain.wit` like `movement.wit`; it already takes plain data in and out), then block behavior once a toy has some. Also: move the movement controller's own state into the engine, and test giving freed mod pages back. Notes: `docs/notes/wasm-behavior.md`.
+- **WebAssembly behavior.** *First part done (2026-11-06), see Done toys: the cow brain runs as WebAssembly and movement keeps its state in the engine.* Left: block behavior once a toy has some, and giving freed mod pages back once a mod grows big. Notes: `docs/notes/wasm-behavior.md`.
 - ~~**Local server.**~~ Done (2026-11-05), see Done toys. Next steps toward multiplayer are in its Deferred list.
 - **Sub-grid trial.** A rotating platform the player can stand on and be carried by, to test collision with moving, rotated grids before more physics piles up. Whenever a toy wants something that moves. Notes: `docs/notes/sub-grid-trial.md`.
 - ~~**Sandbox limits.**~~ Done (2026-10-28), see Done toys.
@@ -215,6 +196,7 @@ Bugs found in already-merged code, each fixed on its own `fix-` branch (see the 
 ### Done toys
 
 Full write-ups (plans, implementation notes, verify rounds, decisions) are in `docs/done-toys.md`. One line each, newest first:
+- **WebAssembly behavior seam** (2026-11-06, `seam-wasm-behavior`). The cow brain runs as a sandboxed WebAssembly component (`base_cow`), bit for bit the same as native; movement controllers keep their state in the engine; `--native-brain`.
 - **Cow pathfinding** (2026-11-06, `toy-cow-pathfinding`). Cows find paths round walls, through gaps and up block-high ledges with a hop when chasing, running off and regrouping; with no way up they wait below; charges run off cliffs and falls hurt. F7 shows the routes; the pasture has a course (pen with a gap and terraces, pillar, mesa).
 - **Health bar under the hotbar** (2026-11-06, `toy-health-bar-bottom`). The health bar moved from the top of the screen to the bottom, under the hotbar, which sits higher to make room.
 - **Shading** (2026-11-05, `toy-shading`). Crisp crease and ridge lines per texel from what's past each quad's edges, an AO curve with an Apply button, light from a movable sun and the sky instead of fixed brightness per face, a sheen per look (ice), a gradient sky with a sun and fog that fades the far world into it. About 2.7 ms a frame at 10M triangles. Also an F9 frame rate recorder (on `master` via `dev-perf-recorder`).

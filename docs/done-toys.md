@@ -3,6 +3,39 @@
 Moved out of `SLICES.md` on 2026-11-03 so the roadmap stays short. Each toy's full write-up, newest first, as it stood when it closed. `SLICES.md` keeps a one-line summary of each.
 
 
+#### WebAssembly behavior seam (`seam-wasm-behavior`)
+
+**Stage:** Done (2026-11-06). Verified by the user in play ("cows feel good here anyway I don't notice any difference"); equivalence rests on the bit-for-bit tests.
+
+*Implemented:* `crates/base_cow` (the brain, `BaseCowMod`, exported on `wasm32`); `api/wit/brain.wit` and `api::guest::{brain, movement}` (both export macros hold one instance, made on first call); `wasm_host` split into a shared `Sandbox` plus `movement` and `brain` (`WasmBrain`, cloneable; loading makes the controller or brain, so one stuck in its constructor fails to load); `game::Code { movement, brain }` with `--native-brain`; the WebAssembly brain comes in through a small mod, since target kinds look up brains while mods register. Movement: `MoveContext.memory`/`MoveOutput.memory`, no `spawn`, `step(&self)`; the Quake timers are two memory slots; the simulation keeps one controller per name and the player only its memory, so tuning goes through `Simulation::player_controller_mut`. The hostile movement fixture lost its `spawn` loop (behavior 4); new fixture `test_mods/hostile_brain`.
+*Tests:* 573 pass (3 ignored, as before), clippy clean natively and for `wasm32`. New `game/tests/wasm_brain.rs` (7): 20,000 seeded thinks over a dozen cows' memories match bit for bit with random retuning; the whole game for a minute with the player swinging into the herd, every cow every tick, native against WebAssembly; tunables round trip; a well-behaved hostile brain counts in engine memory; trap and loop stop it (standing still, memory kept); the game carries on when the cows' brain stops mid-run. Movement tests ported: each body keeps its own memory under one controller; every body shares the mod's memory limit. A think costs about 7,600 fuel (budget 10M) and 3 µs in WebAssembly against 0.3 µs native (release), so neighbor kinds stay strings. The game starts with both as WebAssembly and runs cleanly.
+
+**Goal:** the cow's brain runs as a sandboxed WebAssembly component, bit for bit the same as native, and the movement controller keeps no state in the mod.
+
+**Plan**
+- *Brain in WebAssembly:* `api/wit/brain.wit` (records for every brain type; exports `name`, `think`, `tunables`, `set-tunable`; no resource, a brain is stateless) and an `export_brain!` macro in `api::guest`. New crate `base_cow`: `base::cow` moves there (like `base_movement`), with a `BaseCowMod` registering it natively. `wasm_host`: the sandbox (store, fuel per call, limits, stopping) shared by movement and brains; a `WasmBrain` implementing `Brain`, which stands still once stopped. `game`: `build.rs` builds `base_cow`; `load` registers the WebAssembly brain; `--native-brain` like `--native-movement`.
+- *Movement state into the engine:* `MoveContext.memory` in, `MoveOutput.memory` out, like brains; `MovementController` loses `spawn()` and steps with `&self`; the WIT resource becomes plain functions.
+- *Tests:* brain equivalence over seeded contexts and a base world run both ways (every cow every tick, bit for bit); movement equivalence still passes; a misbehaving brain fixture stops and the game carries on; fuel per think measured.
+- *Deferred:* giving freed pages back (mod memory stays small once state is in the engine); block behavior (no toy has any yet). Neighbor kinds stay strings unless the cost shows otherwise.
+
+**Done when**
+- The game runs the cow brain as WebAssembly by default and cows play as before (play check).
+- Brain and movement equivalence tests match bit for bit.
+- The movement controller keeps no state in the mod.
+- A misbehaving brain is stopped without stopping the game.
+
+**Decisions**
+- Mod code keeps no state between calls: movement controllers now follow the design doc's "state lives in the engine" rule like brains do. One controller per kind; tuning applies to every body it moves.
+- A component's export is made on its first call; loading makes one call, so a constructor that hangs fails the load.
+- Brains loaded by the engine come in through a mod (target kinds look up brains while mods register), unlike movement controllers, which are found when the player spawns.
+
+**Deferred**
+- Giving freed mod pages back to the OS: nothing grows yet, since mods hold no state. Build it once a mod uses big temporary memory (worldgen, pathfinding scratch).
+- Block behavior: sandbox it the same way (WIT, export macro, host wrapper) once a toy has blocks that run code.
+- Neighbor kinds cross as strings; switch to numbers only if many creatures make it cost.
+
+**API debt:** none new, none paid down.
+
 #### Cow pathfinding (branch `toy-cow-pathfinding`)
 
 **Stage:** Done (2026-11-06). Verified by the user in play ("ITS REALLY GOOD"); the five course checks weren't confirmed one by one, so they sit under low-priority play checks.
