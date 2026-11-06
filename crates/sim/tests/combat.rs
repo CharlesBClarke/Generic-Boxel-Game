@@ -442,7 +442,7 @@ fn dummy() -> TargetDef {
     TargetDef {
         name: "room:dummy".into(),
         model: "room:box".into(),
-        hit_sound: None,
+        sounds: Default::default(),
         brain: None,
         width: 0.8,
         height: 1.2,
@@ -472,7 +472,7 @@ impl Mod for Room {
 
     fn register(&self, r: &mut dyn Registrar) -> Result<(), ApiError> {
         r.register_block(api::BlockDef::new("room:stone", true, [128; 3]))?;
-        r.register_player(PlayerDef { width: 0.6, height: 1.8, eye_height: 1.6, step_height: 0.0, controller: "base:quake".into() })?;
+        r.register_player(PlayerDef { width: 0.6, height: 1.8, eye_height: 1.6, step_height: 0.0, controller: "base:quake".into(), sounds: Default::default() })?;
         r.register_interaction(InteractionDef { reach: 4.5, repeat_rate: 4.0 })?;
         r.register_model(ModelDef {
             name: "room:box".into(),
@@ -496,6 +496,7 @@ impl Mod for Room {
             recoil_bounce: 0.0,
             windup: 0.05,
             recover: 0.2,
+            sounds: Default::default(),
         })
     }
 

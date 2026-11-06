@@ -15,6 +15,7 @@ pub mod hurt;
 pub mod items;
 pub mod mesher;
 pub mod solid;
+pub mod sound;
 pub mod tuning;
 pub mod tuning_file;
 pub mod volumes;
@@ -92,6 +93,10 @@ pub fn run(connection: Box<dyn Connection>) {
         .init_resource::<combat::WeaponState>()
         .init_resource::<combat::HitReadout>()
         .init_resource::<hurt::HurtFlash>()
+        .init_resource::<sound::SoundTuning>()
+        .init_resource::<sound::Hearing>()
+        .init_resource::<sound::SoundPreview>()
+        .init_resource::<sound::SoundPicks>()
         .add_systems(
             Startup,
             (
@@ -102,6 +107,7 @@ pub fn run(connection: Box<dyn Connection>) {
                 combat::setup_weapon.after(setup_scene),
                 combat::setup_readout,
                 hurt::setup_health,
+                sound::setup_audio,
             ),
         )
         .add_systems(FixedUpdate, (tick_simulation, drill::drill_tick).chain())
@@ -118,7 +124,7 @@ pub fn run(connection: Box<dyn Connection>) {
                 editing::remesh_changed_chunks,
                 // Strikes first: a broken target bursts from where its view was drawn.
                 (combat::play_strikes, combat::play_slams, hurt::play_player_hurts, combat::update_hit_stop).chain(),
-                (update_camera, sync_chunk_transforms).chain(),
+                (update_camera, sync_chunk_transforms, sound::play_sounds).chain(),
                 editing::draw_outline,
                 editing::update_ghost,
                 items::sync_items,
@@ -427,6 +433,9 @@ fn debug_keys(
     if keys.just_pressed(controls.respawn_targets) {
         link.command(Command::RespawnTargets, &mut world);
     }
+    if keys.just_pressed(controls.reload_sounds) {
+        link.command(Command::ReloadSounds, &mut world);
+    }
     if keys.just_pressed(controls.teleport) && !world.waypoints().is_empty() {
         waypoint.0 = (waypoint.0 + 1) % world.waypoints().len();
         let target = world.waypoints()[waypoint.0].1;
@@ -494,7 +503,7 @@ fn update_camera(
 
 /// The camera feel, with landings bottoming out from the speed at which falls start to hurt
 /// when there is fall damage, so the camera says when a fall hurt.
-fn landing_feel(feel: &CameraFeel, world: &ClientWorld) -> CameraFeel {
+pub(crate) fn landing_feel(feel: &CameraFeel, world: &ClientWorld) -> CameraFeel {
     let hard_landing_speed = world.health_def().filter(|h| h.fall_damage > 0.0).map_or(feel.hard_landing_speed, |h| h.fall_speed);
     CameraFeel { hard_landing_speed, ..feel.clone() }
 }
@@ -524,7 +533,7 @@ fn update_hud(
     let precise = pos.cell().as_dvec3() + pos.offset().as_dvec3();
     let fps = 1.0 / time.delta_secs().max(1e-6);
     text.0 = format!(
-        "pos {:.2}, {:.2}, {:.2}  speed {:.1} m/s  last landing {:.1} m/s ({})\norigin {}, {}, {}\n{} | {:.0} fps | cap {} ({})\n{}{}{}{} move, {} jump, {} toggle sprint (or double-tap forward), {} crouch, {} down, {} fly, {} teleport, {} tuning, {} hide dev text, Esc release mouse\n{} use (break, swing), {} second use (place, guard), 1-9 or scroll pick, {} craft at a table, {} respawn targets",
+        "pos {:.2}, {:.2}, {:.2}  speed {:.1} m/s  last landing {:.1} m/s ({})\norigin {}, {}, {}\n{} | {:.0} fps | cap {} ({})\n{}{}{}{} move, {} jump, {} toggle sprint (or double-tap forward), {} crouch, {} down, {} fly, {} teleport, {} tuning, {} hide dev text, Esc release mouse\n{} use (break, swing), {} second use (place, guard), 1-9 or scroll pick, {} craft at a table, {} respawn targets, {} reload sounds",
         precise.x,
         precise.y,
         precise.z,
@@ -554,6 +563,7 @@ fn update_hud(
         controls.use_alt.label(),
         label(controls.interact),
         label(controls.respawn_targets),
+        label(controls.reload_sounds),
     );
 }
 

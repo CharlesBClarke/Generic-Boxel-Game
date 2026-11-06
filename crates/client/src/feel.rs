@@ -237,6 +237,12 @@ impl FeelState {
         self.dip + self.step + self.crouch - self.bob_phase.sin().abs() * feel.bob_amount * self.bob_weight
     }
 
+    /// Strides of the head bob so far: one more each time the bob reaches its lowest point,
+    /// where a foot comes down.
+    pub fn strides(&self) -> i64 {
+        (self.bob_phase / std::f32::consts::PI + 0.5).floor() as i64
+    }
+
     /// Downward pitch offset this frame, radians.
     pub fn nod(&self) -> f32 {
         self.nod.to_radians()

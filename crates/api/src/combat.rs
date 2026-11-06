@@ -1,7 +1,7 @@
 //! Hitting things: targets that take hits, and the melee tools that deal them. The engine owns
 //! the bodies, the swing and the hit rules; the mod supplies the numbers.
 
-use crate::{Tunable, Tunables};
+use crate::{TargetSounds, ToolSounds, Tunable, Tunables};
 
 /// A part of a target a strike can hit, as a box in its model's space: meters, +Z up, feet at
 /// the origin, front facing +Y. It turns with the target's facing.
@@ -24,8 +24,8 @@ pub struct TargetDef {
     pub name: String,
     /// The registered model it's drawn as.
     pub model: String,
-    /// A registered sound it makes when hit, if any.
-    pub hit_sound: Option<String>,
+    /// What it sounds like: its voice, its steps and being slammed.
+    pub sounds: TargetSounds,
     /// The registered [`crate::Brain`] that decides where it walks and what it plays. `None`
     /// is a dummy that only moves when hit.
     pub brain: Option<String>,
@@ -169,6 +169,8 @@ pub struct ToolDef {
     pub windup: f32,
     /// Seconds after the strike before the next swing can start.
     pub recover: f32,
+    /// What swinging it and hitting with it sound like.
+    pub sounds: ToolSounds,
 }
 
 impl ToolDef {
@@ -241,7 +243,7 @@ mod tests {
         TargetDef {
             name: "test:dummy".into(),
             model: "test:dummy".into(),
-            hit_sound: None,
+            sounds: TargetSounds::default(),
             brain: None,
             width: 0.9,
             height: 1.3,
@@ -274,6 +276,7 @@ mod tests {
             recoil_bounce: 0.0,
             windup: 0.08,
             recover: 0.3,
+            sounds: ToolSounds::default(),
         }
     }
 

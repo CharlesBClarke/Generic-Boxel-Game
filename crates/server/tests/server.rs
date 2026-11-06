@@ -46,7 +46,7 @@ impl Copy {
             }
             ServerMsg::Chunk(chunk) => self.universe.main_mut().import_chunk(chunk),
             ServerMsg::Blocks(blocks) => self.blocks = blocks.len(),
-            ServerMsg::Tick(_) | ServerMsg::Defs(_) => {}
+            ServerMsg::Tick(_) | ServerMsg::Defs(_) | ServerMsg::Sounds(_) => {}
         }
     }
 }
@@ -240,4 +240,43 @@ fn a_server_on_its_own_thread_says_the_same() {
     }
     assert_eq!(from_local.len(), script.len() + 1);
     assert_eq!(from_local, from_thread);
+}
+
+/// The sound reply to a reload.
+fn reload(server: &mut Server) -> Result<Vec<api::SoundDef>, String> {
+    let msgs = server.handle(ClientMsg::Command(Command::ReloadSounds));
+    match msgs.into_iter().next() {
+        Some(ServerMsg::Sounds(result)) => result,
+        _ => panic!("a reload answers with the sounds"),
+    }
+}
+
+#[test]
+fn sounds_read_again_replace_the_old_ones_by_name() {
+    let sim = base_sim();
+    let moo = sim.sounds().iter().find(|s| s.name == "base:moo").unwrap().clone();
+    let louder = api::SoundDef { volume: 0.25, ..moo.clone() };
+    let fresh = api::SoundDef::new("base:new_one", b"OggS".to_vec());
+    let reloaded = vec![louder.clone(), fresh.clone()];
+    let mut server = Server::new(sim).with_sound_source(Box::new(move || Ok(reloaded.clone())));
+    let sounds = reload(&mut server).expect("reloads");
+    assert!(sounds.contains(&louder) && sounds.contains(&fresh), "replaced and added");
+    assert!(!sounds.contains(&moo), "the old moo is gone");
+    assert_eq!(server.simulation().sounds(), &sounds[..], "the server keeps what it sent");
+}
+
+#[test]
+fn a_failed_reload_keeps_the_old_sounds() {
+    let before = base_sim().sounds().to_vec();
+    let mut server = Server::new(base_sim()).with_sound_source(Box::new(|| Err("sounds.toml:3: bad".into())));
+    assert_eq!(reload(&mut server), Err("sounds.toml:3: bad".into()));
+    assert_eq!(server.simulation().sounds(), &before[..]);
+
+    let silent = api::SoundDef { variations: Vec::new(), ..before[0].clone() };
+    let mut server = Server::new(base_sim()).with_sound_source(Box::new(move || Ok(vec![silent.clone()])));
+    assert!(reload(&mut server).unwrap_err().contains("no audio"), "an invalid sound changes nothing");
+    assert_eq!(server.simulation().sounds(), &before[..]);
+
+    let mut server = Server::new(base_sim());
+    assert!(reload(&mut server).is_err(), "no source to read from");
 }

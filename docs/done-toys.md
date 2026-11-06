@@ -3,6 +3,68 @@
 Moved out of `SLICES.md` on 2026-11-03 so the roadmap stays short. Each toy's full write-up, newest first, as it stood when it closed. `SLICES.md` keeps a one-line summary of each.
 
 
+#### Sound (branch `toy-sound`)
+
+**Stage:** Done (2026-11-05). Verified by the user tuning every sound in play, one at a time ("sound goods, I like this"). Three checks deferred to a play check (see `SLICES.md`): footsteps quicken when sprinting and cows' hooves are heard; breaking and placing sound like the block; sounds pan and fade with distance.
+
+**Goal:** the world is heard, from where things happen: footsteps by material, landings, combat, block break and place, a servo on fast pans, volume sliders.
+
+**Plan** (approved 2026-11-05)
+- *Library:* `kira` 0.12 directly (not `bevy_kira_audio`, which hides tracks and effects that Acoustics needs). Bevy's `AudioPlugin` disabled; the moo moves over. One sub-track per group (movement, blocks, combat, creatures, robot) under a master.
+- *API:* `SoundDef` gets several variations (one picked at random), `volume`, `pitch_spread`, `looping`. Optional sound names on `BlockDef` (step, break, place; shaped parts use their block's), `ToolDef` (swing, hit), `TargetDef` (step, slam; `hit_sound` stays the creature's voice) and `PlayerDef` (step fallback, land, hard land, hurt, guard, servo, pickup, craft, craft refused). Names checked at load (`UnknownSound`).
+- *Protocol:* `Event::BlockBroken` / `BlockPlaced` (where, which block). Everything else the client derives from snapshots and existing events (landings from the body's landing count and speed, swings from the stage, pickups from the inventory, steps from distance on the ground). The simulation stays silent.
+- *Client:* new `client::sound`. A pure function turns a frame's changes into cues (sound, where, pitch, volume); a thin system plays them. The listener follows the camera; Y-up conversion in `client::coords`. Player steps at the bottom of each head-bob stride, material from the block underfoot; cow steps by distance. Landing volume by speed, a clunk at `hard_landing_speed`. Servo: one always-running loop, volume and pitch from turn speed, silent below a threshold, ~30 ms in, ~120 ms out. A Sound section in the tuning panel (master, groups, steps, servo, 3D strength), saved with Save.
+- *Media:* chosen Kenney Impact and Sci-fi files (CC0) copied into `mods/base/sounds/` and credited; a whoosh generated with `ffmpeg` by a `tools/` script (espeak lines later go through it too, baked to files so the game never links GPL code). Every pairing is a TOML line.
+- *Defaults for the open questions* (engaged without answers): ice steps use glass impacts; the servo follows camera pans only; the cow still moos on every hit.
+- *Tests:* data parsing and errors, sound name checks, break/place events, cue logic (stride steps and material, landing loudness and clunk, combat cues, servo envelope, coordinate conversion). Feel is verified by play.
+
+**How it was built** (differences from the plan)
+- *`kira` 0.10.8, not 0.12:* 0.11 and later use a newer `cpal` than Bevy 0.18's, and only one crate may link ALSA (Cargo checks this even for switched-off features). Same API: listener, spatial tracks, filter, reverb. Move to the newest once Bevy is upgraded. Bevy's defaults are listed without `audio` in the workspace `Cargo.toml`.
+- *Where sounds are named:* blocks and the cow in TOML; a new `sounds.toml` holds every sound (`files` with `*` patterns, `volume`, `pitch`, `pitch_spread`, `looping`). The player's and the club's sounds are named in the base crate's code, next to the rest of their definitions, since both are registered from code.
+- *One event:* `Event::BlockEdit { pos, block, placed }` rather than two.
+- *Whoosh on every `Strike` event,* hit or miss, rather than watching the swing's stage.
+- *Combat feel's `pitch_spread` slider is gone:* each sound has its own spread. A saved tuning file still naming it logs one warning until the next Save.
+- Untested by code: the mixer itself (needs an audio device). Checked by running: the device opens and every sound decodes.
+
+**Verify rounds** (one sound at a time, at the user's request)
+- *Servo:* the sci-fi engine was too low and a "cartoon engine" where the user wanted a 3D printer. A generated stepper (`stepper.wav`) was too pure; a real printer recording won: `printer.wav`, a 2 s equal-power crossfaded loop from a downloaded clip's steady opening, **temporary, not licensed to ship**. Loops became WAV: Vorbis trims a few samples and clicks at the seam. The user's values became the defaults (volume 0.06, start 0, full 11, pitch 0.75 to 1.8, attack 0.02, release 0.03).
+- *Tools for trying sounds (three scope additions, each engaged):* `tools/audition.sh <folder>` plays files one by one and keeps the picks; F5 (`reload_sounds`) re-reads `sounds.toml` and its files through the server (`Command::ReloadSounds`, `ServerMsg::Sounds`; the game binary gives the server a `SoundSource`), keeping the old sounds on a mistake; Play buttons; pick lists in the Sound panel: Footsteps (per surface; crafted shapes follow their material's block, `sound::surface`), Body sounds (hard land, pick up) and Combat sounds (swing, hit creature, kill creature, hit player, knock out), each with volume, pitch and Play, offering every sound with the row's prefix first (`step_`, `hardland_`, `pickup_`, `swing_`, `hit_`, `kill_`, `hurt_`, `knockout_`). Picks save in the tuning file as text sections `[footsteps]` and `[combat sounds]`. Picks were baked into separately named sounds (`step_on_<surface>`, `swing_club`, `hit_club`, `kill_cow`, `hurt_robot`, `knockout_robot`, `hardland_robot`, `pickup_robot`), then cleared from the user's tuning file (with the game closed: a running game saves its picks back).
+- *Footsteps:* grass sounded like a snare, ice like a xylophone. Picked: stone and marker Kenney concrete, wood, log and table Kenney wood, dirt and grass OpenGameArt leather, gravel snow-covered gravel, ice gravel-and-ice, brick unchanged (concrete), each with its own volume and pitch.
+- *Combat:* the generated swing whoosh was "really bad"; the RPG Sound Pack swing won. New slots `TargetSounds.death` and `PlayerSounds.knocked_out` (a generated power-down). A swing a block cuts short plays the block's footstep at the impact, `block_hit_volume` (12) times louder, with no sim change (a strike's reach already stops at blocks). Fix during verify: a pick row's Play ignored its volume and pitch.
+- *Dead air:* the downloaded hits started up to 280 ms late (MP3 padding), splats, swings and booms up to about 100 ms. `tools/trim_starts.sh` cuts each to 2 ms before its sound.
+- *Landing:* the Kenney thud is gone; a landing is the surface's footstep (through picks), `land_loudness` (3) times a step at full impact, with an optional `land_pitch_drop`; a hard landing adds the plate clunk.
+- *Pick-ups:* the RPG beads, with the material's place sound under it (`pickup_material` 0.5), at most one per `pickup_gap` (60 ms).
+- *Wind:* the hated whoosh's noise became a speed-driven loop (`wind.wav`, `PlayerSounds.wind`), silent below 10 m/s, full at 30, pitch 0.6 to 0.9. The servo's envelope is now a shared `Drive` and `Envelope`.
+- *Final defaults from the user's sliders:* creatures 1.6, `block_hit_volume` 12, wind as above.
+- *Close:* the mod keeps only used sounds (145 files, about 2 MB). The downloaded packs moved from `~/Downloads` to `~/Projects/boxel-sound-packs/downloads/`, and the converted, trimmed candidates not kept to its `converted/`; `tools/make_sounds.sh --extras <folder>` bakes the unused generated ones (whoosh, stepper, chirp).
+
+**Decisions** (binding ones are also in `SLICES.md`'s Phase 2 decisions)
+- The simulation is silent; the client hears events and snapshots. New sounds come from events the server already sends, or ones added to `protocol::Event` (as `BlockEdit` was).
+- Sounds are data: `sounds.toml` entries named by kind prefix, paired by name in blocks, targets and the base crate's player and tool. Loops are WAV, one-shots Ogg.
+- `kira` stays at 0.10 until Bevy is upgraded.
+- espeak, if used, renders lines to files offline: the game never links GPL code.
+
+**Deferred**
+- espeak voice lines for the robot (offline, through `tools/`).
+- A jump sound (the user mixed it up with landing; landing came first).
+- Sound juice (in the backlog): muffle when hurt, pitch drop in hit-stop, ducking, sub-thumps, saturation, reverb tails.
+- Replace `printer.wav` with our own recording before release.
+- Pick lists cover only the first tool and the first creature; per-tool and per-creature picks when there are more.
+- A playing spatial sound keeps its render position, so it shifts if the render origin recenters mid-sound (up to 256 m); rare, short sounds.
+- Saved picks naming a sound that's later changed multiply onto it; clear picks once baked.
+
+**API debt added:** sound kinds and pick lists are a fixed set in `client::sound` (`Kind`); mods can't add kinds of sound or hear their own events. See `SLICES.md`.
+
+**Done when**
+1. Footsteps differ by material and quicken when sprinting; cows have hooves. *Materials met; sprinting and hooves deferred to a play check.*
+2. Landings thud by weight; hard landings clunk. *Met.*
+3. Swings whoosh; hits, head hits, slams, guard and hurt each sound distinct, and the moo stays. *Met.*
+4. Breaking and placing a block makes its material's sound. *Deferred to a play check.*
+5. Sounds are positional: they pan as you turn and fade with distance. *Deferred to a play check.*
+6. Fast pans give a faint servo; normal aiming is silent. *Met (servo_start 0 by the user's choice).*
+7. Master and group volumes are in the panel and survive a restart. *Met.*
+
+
 #### Local server seam (branch `seam-local-server`)
 
 **Stage:** Done (2026-11-05). Verified: the user played it and every check passed (movement "feels good"; editing, crafting, items, cows, dev keys and the tuning panel work; hit-stop "has always been subtle, I think it works"). Taken ahead of WebAssembly behavior: it pays down more of the API debt list, and client-to-simulation coupling grows with every toy.

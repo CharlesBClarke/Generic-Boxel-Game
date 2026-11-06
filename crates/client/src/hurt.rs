@@ -2,12 +2,11 @@
 //! landing. The simulation decides what hits and how hard; this only shows it.
 //!
 //! A blow, or a fall that hurts, freezes the game for a moment, jolts and shakes the view, flashes the screen red
-//! (weaker when the guard caught it), plays an attacker's sound low and says what happened
-//! under the crosshair.
+//! (weaker when the guard caught it) and says what happened under the crosshair.
 
 use bevy::prelude::*;
 
-use crate::combat::{CombatFeel, HitReadout, HitStop, TargetViews, ViewKick, play_sound};
+use crate::combat::{CombatFeel, HitReadout, HitStop, ViewKick};
 use crate::world::ClientWorld;
 
 /// How strong the red flash is for a guarded blow, as a share of an unguarded one.
@@ -98,12 +97,9 @@ pub(crate) fn setup_health(mut commands: Commands) {
 }
 
 /// Plays the juice of every blow on the player since the last frame.
-#[allow(clippy::too_many_arguments)]
 pub(crate) fn play_player_hurts(
-    mut commands: Commands,
     mut world: ResMut<ClientWorld>,
     feel: Res<CombatFeel>,
-    views: Res<TargetViews>,
     mut stop: ResMut<HitStop>,
     mut kick: ResMut<ViewKick>,
     mut flash: ResMut<HurtFlash>,
@@ -116,10 +112,6 @@ pub(crate) fn play_player_hurts(
         kick.shake(feel.hurt_shake * share, feel.shake_time * 2.0);
         flash.flash(feel.hurt_flash, feel.hurt_flash_alpha * share);
         readout.show(hurt_words(hurt.damage, hurt.guarded, hurt.attacker.is_none(), hurt.died));
-        if let Some((target, kind)) = hurt.attacker {
-            let sound = world.target_def(kind).hit_sound.clone();
-            play_sound(&mut commands, &views, sound.as_deref(), 0.75, &feel, hurt.tick ^ target);
-        }
     }
 }
 

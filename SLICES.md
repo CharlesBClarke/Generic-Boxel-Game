@@ -104,7 +104,10 @@ A run of small toy slices. Each one takes a single game-feel feature that doesn'
 
 ### Current toy
 
-**Waiting for a play check** (remind the user at the start of every session, and at good moments during one, until they confirm; then delete the line): none.
+**Waiting for a play check** (remind the user at the start of every session, and at good moments during one, until they confirm; then delete the line):
+- Sound (1): footsteps quicken when sprinting, and a walking cow's hooves are heard.
+- Sound (4): breaking and placing a block sounds like that block.
+- Sound (5): sounds pan as you turn and fade with distance (turn away from a mooing cow, walk off).
 
 **Low-priority play checks** (don't remind every session; check only when a toy makes it convenient, such as one that puts the player among moving cows; delete the line once seen):
 - Cow herd (1): a cow shoved well away from the herd walks back to it on its own.
@@ -119,7 +122,8 @@ None. Plan the next toy in a new session.
 - **Lower contrast in the other looks.** Added 2026-11-02 at the user's request, from Wood and brick looks: the lower contrast given to bricks and wood "should eventually be added elsewhere" (stone, dirt, gravel, ice and so on). Mostly recipe numbers in `blocks.toml`; `noise` may want a speckle-like setting.
 - **Generated detail in looks.** Run look noise in the shader on the world texel position, so noisy looks (dirt, stone, gravel, ice) never repeat; then generated detail over baked looks (wood grain that follows each board, per-brick speckle), then a large-scale patch tint. Notes: `docs/notes/generated-detail.md`.
 - **Shading.** Shapes look flat and AO is weak even at strength 1. An AO curve (the user likes this), crease and ridge shading per texel, and a sun and sky direction instead of fixed brightness per face. Client only, all tunable. Stored light, dynamic lights and shadows come later. Notes: `docs/notes/shading.md`.
-- **Sound.** The game is nearly silent (one moo). Positional sound, footsteps and landings by material, combat sounds, a faint servo on quick pans, volume sliders. Pick the audio library (`kira` or `fundsp`) first; sourcing (CC0, generated, or a mix) is open. Notes: `docs/notes/sound.md`.
+- **Robot voice and jump sound.** Deferred from Sound (2026-11-05): espeak lines for the robot (knocked out, back up, low health; rendered to files offline by `tools/`, so the game never links GPL code), and a jump sound (a push-off of the surface plus a pickable `jump_` sound). Notes: `docs/notes/sound.md`.
+- **Sound juice.** Added 2026-11-05 at the user's request, during Sound: the standard game-audio juicing effects, on `kira`'s tracks and effects. Candidates: muffle everything (low-pass) for a moment when hurt and while health is low; drop pitch and slow sounds during hit-stop; duck other sounds under a big hit; a low sub-thump layer under heavy hits and slams; a little saturation on head hits; short reverb tails on big impacts; louder and brighter the faster you're moving. All tunable, each worth playing with on its own.
 - **Acoustics.** After Sound: muffling behind walls and room feel (reverb from rays cast out from the ear) on the boxel grid; sound around corners later; full acoustic ray tracing skipped. Notes: `docs/notes/acoustics.md`.
 - **Plank board ends.** *2026-11-02:* Wood and brick looks' woven planks may settle this, since east and west faces now show boards too; check once played. Added 2026-10-31, from Solid materials. Planks stay lined up with the world, so a wood panel or stair facing east or west shows a grid of board ends instead of boards. The user dislikes it but accepted it as a compromise for now. Options: a pattern that reads as boards along both level axes, letting a material turn only about the up axis, or picking the board direction per block when placed.
 - **Items inside placed blocks.** Added 2026-10-30, from Loose items. A block placed over a resting item hides it inside the block; it can still be picked up. Push items out the shortest way, or refuse the placement, once it gets in the way.
@@ -166,12 +170,14 @@ Shortcuts taken around the API, each with the toy that needed it. Paid down in s
 - **Tool look in the client** (combat feel toy). Every tool is drawn as the same club, posed by `client::combat`; mods can't give a tool its own model or swing poses. API version: a tool names a model and its poses.
 - **Crafting menu in the client** (emergent shapes toy). The table's menu, its strokes and the turn and flip controls live in `client::crafting`; mods can't change how crafting is presented. The rule itself is in `api::crafting`. API version: a client-side mod API for menus, or a data description of the table's grid.
 - **Health bar in the client** (fighting cow toy). `client::hurt` draws the player's health and the hurt flash; mods can't change how health is shown. API version: a client-side mod API for the HUD.
+- **Sound kinds in the client** (sound toy). What makes a sound (steps, landings, swings, hits, kills, hurts, knock-outs, pick-ups, the servo and wind loops) and the tuning panel's pick lists are a fixed set in `client::sound` (`Kind`, `Hearing`); mods name sounds for these slots but can't add kinds or play sounds for their own events. API version: mods attach sounds to named events, or a client-side mod API for sound.
 - **Camera feel in the client** (movement toy; hit-stop, view kick and shake added by the combat feel toy in `client::combat`). FOV widening, head bob, landing dip and step smoothing live in `client::feel`, so mods can't change them. API version: a client-side mod API for camera effects, presumably driven by the same tunables.
 
 ### Phase 2 decisions
 
 - **A robotic player** (tentative, 2026-10-25): the user wants movement and camera feel to read as a robot. Landings are a shock absorber: soft landings compress smoothly, damaging ones bottom out hard. Later feel work (combat, damage) should keep to it.
 - **Skyrim-style controls** (2026-10-31, from Combat feel; clarified 2026-11-03): whatever is held has a main use on left click and a second use on right click. Blocks break and place; a tool swings and guards. Part of the answer to the ambiguous-interactions gripe; the Interaction controls toy builds on it. *Only half of Skyrim's system is built:* the one-item case. In Skyrim, holding two things (one per hand) gives each button that hand's main use, and alt uses go unreachable; that half is the backlog's Two hands.
+- **Sound** (2026-11-05, from Sound): the simulation is silent; the client hears what the server sends (events and snapshots), so new sounds need events, not sim audio. Sounds are data in `sounds.toml`, named by kind prefix (`step_`, `swing_`, `hit_`, `kill_`, `hurt_`, `knockout_`, `hardland_`, `pickup_`), and the mod keeps only used files; candidates live in `~/Projects/boxel-sound-packs/`. Loops are WAV. `kira` stays at 0.10 until Bevy is upgraded (ALSA clash). espeak, if used, is rendered offline.
 - **Signature feature:** not decided yet. Choose it once the block interaction and crafting toys have been played, and record the choice and why in the design doc.
 
 ### Fixes
@@ -183,6 +189,7 @@ Bugs found in already-merged code, each fixed on its own `fix-` branch (see the 
 ### Done toys
 
 Full write-ups (plans, implementation notes, verify rounds, decisions) are in `docs/done-toys.md`. One line each, newest first:
+- **Sound** (2026-11-05, `toy-sound`). Positional sound through `kira`: footsteps and landings by surface, combat, block break and place, pick-ups, a printer-like servo on fast pans and wind at speed, with group volumes and in-game pick lists (and F5 reload) for trying sounds.
 - **Local server seam** (2026-11-05, `seam-local-server`). The client talks to the simulation only through `protocol` messages and keeps its own copy of the world; single-player runs a local server; hit-stop freezes only the view; the block-jump trainer is gone.
 - **Sprint toggle** (2026-11-04, `toy-sprint-toggle`). Sprint is a toggle (off on a second press or letting go of forward); default keys swapped so Shift sprints and Ctrl crouches and flies down.
 - **Release mode and saved tuning** (2026-11-03, `toy-release-mode`). Release builds hide dev text (F1 flips it); the tuning panel saves its sliders to `~/.config/boxel/tuning.txt`, loaded at startup.

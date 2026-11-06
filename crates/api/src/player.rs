@@ -1,6 +1,8 @@
 //! Player definitions. The engine owns the body and collisions; the mod supplies its shape
 //! and names the controller that decides how it moves.
 
+use crate::PlayerSounds;
+
 #[derive(Clone, Debug, PartialEq)]
 pub struct PlayerDef {
     /// Width and depth of the collision box, in meters. One boxel is one meter.
@@ -13,6 +15,8 @@ pub struct PlayerDef {
     pub step_height: f32,
     /// The registered movement controller's name, such as `"base:quake"`.
     pub controller: String,
+    /// What the body sounds like.
+    pub sounds: PlayerSounds,
 }
 
 impl PlayerDef {

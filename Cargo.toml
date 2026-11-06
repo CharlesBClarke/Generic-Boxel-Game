@@ -33,8 +33,14 @@ wasm_host = { path = "crates/wasm_host" }
 data_mods = { path = "crates/data_mods" }
 # Pinned to the glam version Bevy 0.18 uses, so math types cross the render boundary without conversion.
 glam = "0.30.7"
-bevy = "0.18.1"
+# Bevy's defaults (the 2d, 3d and ui sets) without its audio: sound goes through kira instead.
+bevy = { version = "0.18.1", default-features = false, features = [
+    "default_app", "default_platform", "2d_bevy_render", "3d_bevy_render", "ui", "scene", "picking",
+] }
 bevy_egui = "0.39.1"
+# Sound: a mixer with tracks, spatial sound and effects, so muffling and reverb can come later.
+# 0.10 for now: later versions use a newer cpal than Bevy 0.18's, and only one may link ALSA.
+kira = { version = "0.10.8", default-features = false, features = ["cpal", "ogg", "wav"] }
 # Trig that gives the same bits natively and in WebAssembly.
 libm = "0.2.16"
 # Data mods: TOML definitions and PNG textures.

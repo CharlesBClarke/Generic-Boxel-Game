@@ -2,7 +2,7 @@
 #
 # Models are OBJ files, or glTF binaries with a skeleton and animations; Z up, in meters, with
 # the feet at the origin and the front facing +Y. Textures are PNGs, drawn with hard pixel
-# edges. Sounds are Ogg Vorbis. Where they came from is in CREDITS.md.
+# edges. Where they came from is in CREDITS.md. Sounds are in sounds.toml.
 
 [models.cow]
 mesh = "models/cow.glb"
@@ -10,16 +10,13 @@ texture = "textures/cow.png"
 # The rest loop.
 play_once = ["eat", "punch", "die"]
 
-[sounds.moo]
-file = "sounds/moo.ogg"
-
 # A cow. It wanders, grazes, watches the player and runs off when hit; its brain is code, in
 # the base crate's cow module. Its collision box covers the middle of the body; strikes hit its
 # hit boxes, which follow the model.
 [[target]]
 name = "cow"
 model = "cow"
-hit_sound = "moo"
+sounds = { hit = "moo", step = "hoof", slam = "slam", death = "kill_cow" }
 brain = "cow"
 width = 0.9
 height = 1.3

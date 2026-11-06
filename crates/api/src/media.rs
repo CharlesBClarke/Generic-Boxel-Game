@@ -251,17 +251,164 @@ fn sample<T: Copy>(keys: &[(f32, T)], time: f32, blend: impl Fn(T, T, f32) -> T)
     Some(if span > 0.0 { blend(a, b, (time - t0) / span) } else { b })
 }
 
-/// A sound, as the bytes of an Ogg Vorbis file.
+/// A sound: one or more variations of it, each the bytes of an Ogg Vorbis or WAV file. Every time it
+/// plays, one variation is picked at random, so a sound heard often doesn't repeat exactly.
 #[derive(Clone, Debug, PartialEq)]
 pub struct SoundDef {
     /// Namespaced, such as `"base:moo"`.
     pub name: String,
-    pub ogg: Vec<u8>,
+    pub variations: Vec<Vec<u8>>,
+    /// Loudness as a gain: 1 plays the file as recorded.
+    pub volume: f32,
+    /// Playback speed, which is also pitch: 1 as recorded, 0.5 an octave down and slower.
+    pub pitch: f32,
+    /// How much its pitch varies from one play to the next, as a share either way.
+    pub pitch_spread: f32,
+    /// Whether it repeats until stopped, such as a motor's hum.
+    pub looping: bool,
+}
+
+impl SoundDef {
+    /// One file played as recorded, once.
+    pub fn new(name: impl Into<String>, ogg: Vec<u8>) -> Self {
+        Self { name: name.into(), variations: vec![ogg], volume: 1.0, pitch: 1.0, pitch_spread: 0.0, looping: false }
+    }
+
+    /// Checks it has something to play and its numbers make sense.
+    pub fn validate(&self) -> Result<(), String> {
+        if self.variations.is_empty() || self.variations.iter().any(Vec::is_empty) {
+            return Err(format!("sound {:?} has no audio", self.name));
+        }
+        if !(self.volume.is_finite() && self.volume >= 0.0) {
+            return Err(format!("sound {:?}: volume must be at least 0, got {}", self.name, self.volume));
+        }
+        if !(self.pitch.is_finite() && self.pitch > 0.0) {
+            return Err(format!("sound {:?}: pitch must be positive, got {}", self.name, self.pitch));
+        }
+        if !(0.0..1.0).contains(&self.pitch_spread) {
+            return Err(format!("sound {:?}: pitch_spread must be from 0 to below 1, got {}", self.name, self.pitch_spread));
+        }
+        Ok(())
+    }
+}
+
+/// The sounds a block makes, by registered sound name. Blocks crafted into other shapes make
+/// their material's full block's sounds.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct BlockSounds {
+    /// A footstep on it.
+    pub step: Option<String>,
+    /// Breaking it.
+    pub broken: Option<String>,
+    /// Placing it.
+    pub placed: Option<String>,
+}
+
+/// The sounds a melee tool makes.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct ToolSounds {
+    /// Swinging it, at the strike.
+    pub swing: Option<String>,
+    /// It landing on a target.
+    pub hit: Option<String>,
+}
+
+/// The sounds a creature makes.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct TargetSounds {
+    /// Its voice when hit or slammed, and when its blow lands on the player.
+    pub hit: Option<String>,
+    /// A footstep, every stride it walks or runs.
+    pub step: Option<String>,
+    /// Being slammed into a wall.
+    pub slam: Option<String>,
+    /// Breaking: a blow or a slam that takes the last of its health.
+    pub death: Option<String>,
+}
+
+/// The sounds the player's body makes. Clients play them from what they see happen.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct PlayerSounds {
+    /// A footstep on a block that has no step sound of its own.
+    pub step: Option<String>,
+    /// Landing, louder for a harder landing.
+    pub land: Option<String>,
+    /// A landing hard enough to bottom out, played over `land`.
+    pub hard_land: Option<String>,
+    /// Being hurt by a blow or a fall.
+    pub hurt: Option<String>,
+    /// Being knocked out: a blow or a fall that takes the last of its health.
+    pub knocked_out: Option<String>,
+    /// A blow caught by a raised guard.
+    pub guard: Option<String>,
+    /// A loop whose loudness and pitch follow how fast the view turns: the neck's motor.
+    pub servo: Option<String>,
+    /// A loop whose loudness and pitch follow how fast the body moves: rushing air.
+    pub wind: Option<String>,
+    /// Picking up loose items.
+    pub pickup: Option<String>,
+    /// Crafting a part.
+    pub craft: Option<String>,
+    /// A craft that made nothing.
+    pub craft_refused: Option<String>,
+}
+
+impl BlockSounds {
+    /// Every sound named.
+    pub fn names(&self) -> impl Iterator<Item = &String> {
+        [&self.step, &self.broken, &self.placed].into_iter().flatten()
+    }
+}
+
+impl ToolSounds {
+    /// Every sound named.
+    pub fn names(&self) -> impl Iterator<Item = &String> {
+        [&self.swing, &self.hit].into_iter().flatten()
+    }
+}
+
+impl TargetSounds {
+    /// Every sound named.
+    pub fn names(&self) -> impl Iterator<Item = &String> {
+        [&self.hit, &self.step, &self.slam, &self.death].into_iter().flatten()
+    }
+}
+
+impl PlayerSounds {
+    /// Every sound named.
+    pub fn names(&self) -> impl Iterator<Item = &String> {
+        [
+            &self.step,
+            &self.land,
+            &self.hard_land,
+            &self.hurt,
+            &self.knocked_out,
+            &self.guard,
+            &self.servo,
+            &self.wind,
+            &self.pickup,
+            &self.craft,
+            &self.craft_refused,
+        ]
+        .into_iter()
+        .flatten()
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_sound_checks_its_values() {
+        let sound = SoundDef::new("test:thud", b"OggS".to_vec());
+        assert_eq!(sound.validate(), Ok(()));
+        assert!(SoundDef { variations: Vec::new(), ..sound.clone() }.validate().is_err());
+        assert!(SoundDef { variations: vec![Vec::new()], ..sound.clone() }.validate().is_err());
+        assert!(SoundDef { volume: -1.0, ..sound.clone() }.validate().is_err());
+        assert!(SoundDef { pitch: 0.0, ..sound.clone() }.validate().is_err());
+        assert!(SoundDef { pitch_spread: 1.0, ..sound }.validate().is_err());
+    }
 
     fn triangle() -> ModelDef {
         ModelDef {

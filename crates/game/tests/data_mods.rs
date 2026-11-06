@@ -101,7 +101,8 @@ fn the_cow_is_data_and_its_numbers_can_be_edited() {
     for clip in ["stand", "eat", "walk", "run", "punch", "die"] {
         assert!(skin.clip(clip).is_some(), "and its {clip} clip");
     }
-    assert!(cow.hit_sound.as_ref().is_some_and(|s| sim.sounds().iter().any(|d| &d.name == s)), "and its moo");
+    let known = |s: &Option<String>| s.as_ref().is_some_and(|s| sim.sounds().iter().any(|d| &d.name == s));
+    assert!(known(&cow.sounds.hit) && known(&cow.sounds.step) && known(&cow.sounds.slam) && known(&cow.sounds.death), "and its moo, hooves, slam and death");
     assert_eq!(cow.brain.as_deref(), Some(base::cow::COW_BRAIN), "and the base crate's brain");
     assert_eq!(cow.step_height, 0.6);
 
@@ -122,4 +123,35 @@ fn a_cow_naming_a_brain_no_mod_has_is_an_error() {
     copy.edit("targets.toml", "brain = \"cow\"", "brain = \"sheep\"");
     let error = game::load_from(&copy.0, Movement::Native).err().unwrap().to_string();
     assert!(error.contains("base:sheep"), "{error}");
+}
+
+#[test]
+fn every_block_the_player_and_the_club_make_sounds() {
+    let sim = game::load(Movement::Native).unwrap();
+    for (_, def) in sim.blocks().iter() {
+        let s = &def.sounds;
+        assert!(s.step.is_some() && s.broken.is_some() && s.placed.is_some(), "{} is heard", def.name);
+    }
+    assert_eq!(sim.player_def().unwrap().sounds.names().count(), 10, "every sound the player makes but a landing, which is the surface's");
+    assert_eq!(sim.tools()[0].sounds.names().count(), 2, "the club swings and hits");
+}
+
+#[test]
+fn naming_a_sound_no_mod_has_is_an_error() {
+    let copy = Copy::new("sound_missing");
+    copy.edit("blocks.toml", "step = \"step_on_ice\"", "step = \"other:skate\"");
+    let error = game::load_from(&copy.0, Movement::Native).err().unwrap().to_string();
+    assert!(error.contains("other:skate"), "{error}");
+
+    let copy = Copy::new("sound_typo");
+    copy.edit("blocks.toml", "step = \"step_on_ice\"", "step = \"step_on_ise\"");
+    let error = game::load_from(&copy.0, Movement::Native).err().unwrap().to_string();
+    assert!(error.contains("blocks.toml") && error.contains("no sound \"step_on_ise\""), "{error}");
+}
+
+#[test]
+fn the_sounds_alone_read_the_same_as_a_full_load() {
+    let full = data_mods::load(std::path::Path::new(base::DATA_DIR)).unwrap();
+    let sounds = data_mods::load_sounds(std::path::Path::new(base::DATA_DIR)).unwrap();
+    assert_eq!(full.sounds(), &sounds[..]);
 }

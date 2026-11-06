@@ -27,6 +27,7 @@ impl Mod for Quarry {
             eye_height: 1.62,
             step_height: 0.6,
             controller: base_movement::QUAKE.into(),
+            sounds: Default::default(),
         })?;
         r.register_interaction(InteractionDef { reach: 5.0, repeat_rate: 4.0 })?;
         if self.drops {
