@@ -41,6 +41,8 @@ pub struct CraftingMenu {
     pub discard: Option<MaterialId>,
     /// The part being renamed, and the name typed so far.
     renaming: Option<(MaterialId, String)>,
+    /// Where the grid's column, the carried list and the result's column were drawn last frame.
+    columns: [Option<egui::Rect>; 3],
 }
 
 impl CraftingMenu {
@@ -121,6 +123,10 @@ const CELL: f32 = 52.0;
 const PREVIEW: f32 = 170.0;
 /// The size of a part's picture in the list.
 const ICON: f32 = 28.0;
+/// The grid's width: four cells and the gaps between them.
+const GRID_WIDTH: f32 = 4.0 * CELL + 3.0 * 2.0;
+/// The carried list's width. Fixed, like every column, so what's carried never moves the grid.
+const LIST_WIDTH: f32 = 340.0;
 /// How many "craft many" makes when there's no carrying limit.
 const MANY: u32 = 64;
 
@@ -137,7 +143,19 @@ pub(crate) fn crafting_menu(
         return Ok(());
     }
     let ctx = contexts.ctx_mut()?;
-    let world = &world;
+    show_menu(ctx, &world, &controls, &mut menu, &mut palette, &mut names);
+    Ok(())
+}
+
+/// The menu's window, drawn into `ctx`.
+fn show_menu(
+    ctx: &egui::Context,
+    world: &ClientWorld,
+    controls: &Controls,
+    menu: &mut CraftingMenu,
+    palette: &mut Palette,
+    names: &mut PartNames,
+) {
     let blocks = world.blocks();
     let shift = ctx.input(|i| i.modifiers.shift);
     let most = if world.capacity().is_some() { u32::MAX } else { MANY };
@@ -154,15 +172,20 @@ pub(crate) fn crafting_menu(
         .resizable(false)
         .anchor(egui::Align2::CENTER_CENTER, [0.0, -40.0])
         .show(ctx, |ui| {
+            // Columns have fixed widths, and text wraps to them, so the window never changes
+            // width (it stays centered, so a wider window would move the grid).
+            let gaps = 2.0 * (2.0 * ui.spacing().item_spacing.x + 6.0);
+            ui.set_max_width(GRID_WIDTH + LIST_WIDTH + PREVIEW + gaps);
             ui.label(
                 "Build on the table top, seen from its front. Stacks rise from the table, and nothing may float. \
                  Placed, the far side points the way you look.",
             );
             ui.horizontal_top(|ui| {
-                ui.vertical(|ui| {
+                let grid_column = ui.vertical(|ui| {
+                    ui.set_width(GRID_WIDTH);
                     ui.label("Click to add a layer, hold to level a row; right button takes one off");
                     let CraftingMenu { cells, brush, stroke, .. } = &mut *menu;
-                    grid(ui, blocks, &names, cells, *brush, stroke, bad);
+                    grid(ui, blocks, names, cells, *brush, stroke, bad);
                     ui.horizontal(|ui| {
                         if ui.button("Clear").clicked() {
                             menu.cells = Default::default();
@@ -175,18 +198,28 @@ pub(crate) fn crafting_menu(
                             brush.turns = (brush.turns + 1) % 4;
                         }
                     });
-                    brush_line(ui, blocks, &names, menu.brush);
+                    brush_line(ui, blocks, names, menu.brush);
                 });
                 ui.separator();
+                // The tallest column's bottom: the result's is last frame's, as it comes after.
+                let result_bottom = menu.columns[2].map_or(f32::MIN, |r| r.bottom());
+                let bottom = grid_column.response.rect.bottom().max(result_bottom);
                 ui.vertical(|ui| {
+                    ui.set_width(LIST_WIDTH);
                     ui.label("Carried: press to pick, hold to paint");
-                    carried(ui, world, &mut palette, &mut names, &mut menu);
+                    // Down to the bottom of the tallest column.
+                    let height = (bottom - ui.cursor().top()).max(CELL);
+                    carried(ui, world, palette, names, menu, height);
                 });
+                menu.columns[0] = Some(grid_column.response.rect);
                 ui.separator();
-                ui.vertical(|ui| result(ui, world, &mut menu, &mut palette, &names, plan, shift));
+                let result_column = ui.vertical(|ui| {
+                    ui.set_width(PREVIEW);
+                    result(ui, world, menu, palette, names, plan, shift);
+                });
+                menu.columns[2] = Some(result_column.response.rect);
             });
         });
-    Ok(())
 }
 
 /// What the brush is, and how it's turned.
@@ -297,16 +330,23 @@ fn grid(
     });
 }
 
-/// Everything carried. Pressing one picks it as the brush and starts a stroke, so holding on
+/// Everything carried, in a list `height` tall. Pressing one picks it as the brush and starts a stroke, so holding on
 /// the way to the grid paints; right-clicking drops the brush. A part also has buttons to hold
 /// it, rename it and throw all of it away.
-fn carried(ui: &mut egui::Ui, world: &ClientWorld, palette: &mut Palette, names: &mut PartNames, menu: &mut CraftingMenu) {
+fn carried(
+    ui: &mut egui::Ui,
+    world: &ClientWorld,
+    palette: &mut Palette,
+    names: &mut PartNames,
+    menu: &mut CraftingMenu,
+    height: f32,
+) {
     let blocks = world.blocks();
     let things: Vec<(MaterialId, u32)> = world.inventory().iter().collect();
     if things.is_empty() {
         ui.label("nothing");
     }
-    egui::ScrollArea::vertical().max_height(4.0 * CELL + 30.0).show(ui, |ui| {
+    let list = egui::ScrollArea::vertical().auto_shrink([false, false]).max_height(height).show(ui, |ui| {
         for (id, amount) in things {
             ui.horizontal(|ui| {
                 let amount = match blocks.part_of(id) {
@@ -366,6 +406,7 @@ fn carried(ui: &mut egui::Ui, world: &ClientWorld, palette: &mut Palette, names:
             });
         }
     });
+    menu.columns[1] = Some(list.inner_rect);
 }
 
 /// The picture of what the stacks make, the flip switch, and the craft buttons.
@@ -525,6 +566,7 @@ pub(crate) fn paint_shape(painter: &egui::Painter, rect: egui::Rect, shape: &Sha
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::world::Link;
     use api::BlockBox;
 
     #[test]
@@ -570,6 +612,68 @@ mod tests {
         let mut full = [Some(stone); GRID];
         paint(&mut Some(Stroke::Add(Some(GRID))), Some(stone), &mut full);
         assert_eq!(height(&full), GRID);
+    }
+
+    /// The menu at the base game's table, the player standing in front of it.
+    fn at_table() -> (Link, ClientWorld, CraftingMenu) {
+        use crate::world::testing::{base_sim, connect};
+        let mut sim = base_sim();
+        sim.spawn_player().unwrap();
+        let (x, y, z) = base::TABLE_SPOT;
+        sim.teleport_player(api::WorldPos::new(api::I64Vec3::new(x, y - 2, z), ZVec3::new(0.5, 0.5, 0.0)));
+        let (link, world) = connect(sim);
+        let menu = CraftingMenu { open: Some(BoxelPos::new(x, y, z)), ..Default::default() };
+        (link, world, menu)
+    }
+
+    /// Draws the menu for a few frames in `ctx`, as egui sizes a window over its first ones,
+    /// and gives where the window went.
+    fn draw(ctx: &egui::Context, world: &ClientWorld, menu: &mut CraftingMenu) -> egui::Rect {
+        let (mut palette, mut names) = (Palette::default(), PartNames::default());
+        let input = || egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1600.0, 1000.0))),
+            ..Default::default()
+        };
+        for _ in 0..4 {
+            let _ = ctx.run(input(), |ctx| show_menu(ctx, world, &Controls::default(), menu, &mut palette, &mut names));
+        }
+        ctx.memory(|m| m.area_rect(egui::Id::new("Crafting"))).expect("the window is drawn")
+    }
+
+    #[test]
+    fn the_window_stays_put_when_the_preview_appears_or_a_part_is_made() {
+        use crate::world::testing::step;
+        let (link, world, mut menu) = at_table();
+        let ctx = egui::Context::default();
+        let empty = draw(&ctx, &world, &mut menu);
+        let brick = world.blocks().material(base::BRICK).unwrap();
+        for row in &mut menu.cells {
+            for stack in row {
+                stack[0] = Some(Piece::new(brick));
+                stack[1] = Some(Piece::new(brick));
+            }
+        }
+        assert!(matches!(menu.request(1).map(|c| world.craft_plan(&c)), Some(Ok(_))), "a slab to preview");
+        let slab = draw(&ctx, &world, &mut menu);
+        assert_eq!((slab.min.x, slab.width()), (empty.min.x, empty.width()), "the grid doesn't move");
+        // A crafted part's row, with its buttons, is wider than a material's: it used to widen
+        // the window and push the grid aside.
+        let (mut link, mut world) = (link, world);
+        let craft = menu.request(1);
+        step(&mut link, &mut world, &sim::PlayerInput { craft, ..Default::default() });
+        menu.result = world.take_craft();
+        assert!(matches!(menu.result, Some(Ok(_))), "crafted");
+        let crafted = draw(&ctx, &world, &mut menu);
+        assert_eq!((crafted.min.x, crafted.width()), (empty.min.x, empty.width()), "the grid still doesn't move");
+    }
+
+    #[test]
+    fn the_carried_list_fills_its_column() {
+        let (_, world, mut menu) = at_table();
+        draw(&egui::Context::default(), &world, &mut menu);
+        let [Some(grid), Some(list), Some(result)] = menu.columns else { panic!("drawn") };
+        let bottom = grid.max.y.max(result.max.y);
+        assert!((list.max.y - bottom).abs() < 2.0, "the list ends with the tallest column: {list:?} {grid:?} {result:?}");
     }
 
     #[test]
