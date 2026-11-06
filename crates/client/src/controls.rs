@@ -24,46 +24,89 @@ use std::path::PathBuf;
 
 use bevy::prelude::*;
 
-#[derive(Resource, Clone, Debug, PartialEq)]
-pub struct Controls {
-    pub forward: KeyCode,
-    pub back: KeyCode,
-    pub left: KeyCode,
-    pub right: KeyCode,
-    pub jump: KeyCode,
+/// Declares the plain key actions: one row each, giving the name (the field and the config
+/// file name), the default key, and the HUD hint text (`None` for keys shown elsewhere or not
+/// at all). Everything else about a key action comes from its row.
+macro_rules! key_actions {
+    ($( $(#[$doc:meta])* $name:ident = $key:ident, $hud:expr; )*) => {
+        /// The actions bound to a single key each. `Controls` derefs to these, so they read as
+        /// `controls.fly`.
+        #[derive(Clone, Debug, PartialEq)]
+        pub struct Keys {
+            $( $(#[$doc])* pub $name: KeyCode, )*
+        }
+
+        impl Default for Keys {
+            fn default() -> Self {
+                Self { $( $name: KeyCode::$key, )* }
+            }
+        }
+
+        impl Keys {
+            /// The key bound to the action with this config name.
+            pub fn get_mut(&mut self, name: &str) -> Option<&mut KeyCode> {
+                match name {
+                    $( stringify!($name) => Some(&mut self.$name), )*
+                    _ => None,
+                }
+            }
+
+            /// Every key action with its key and HUD hint text, in table order.
+            pub fn all(&self) -> Vec<(&'static str, KeyCode, Option<&'static str>)> {
+                vec![ $( (stringify!($name), self.$name, $hud), )* ]
+            }
+        }
+    };
+}
+
+key_actions! {
+    forward = KeyW, None;
+    back = KeyS, None;
+    left = KeyA, None;
+    right = KeyD, None;
+    jump = Space, Some("jump");
     /// Sprint. A press turns sprinting on until it's pressed again or forward is let go.
-    pub sprint: KeyCode,
+    sprint = ShiftLeft, Some("toggle sprint (or double-tap forward)");
     /// Crouch. Shares left Ctrl with fly-down by default; flying ignores crouch.
-    pub crouch: KeyCode,
+    crouch = ControlLeft, Some("crouch");
     /// Fly mode: down. Fly up shares the jump key.
-    pub down: KeyCode,
-    pub fly: KeyCode,
-    pub teleport: KeyCode,
-    pub frame_cap: KeyCode,
+    down = ControlLeft, Some("down");
+    fly = KeyF, Some("fly");
+    teleport = KeyT, Some("teleport");
+    /// Cycles the frame cap; its key shows beside the cap readout.
+    frame_cap = F3, None;
     /// Opens the live tuning panel.
-    pub tuning: KeyCode,
-    /// Starts and stops the chase drill.
-    pub drill: KeyCode,
+    tuning = Tab, Some("tuning");
+    /// Starts and stops the chase drill; the drill shows its own key.
+    drill = F4, None;
     /// Puts every target back at its spot, whole.
-    pub respawn_targets: KeyCode,
+    respawn_targets = F6, Some("respawn targets");
     /// Reads the sounds again (`sounds.toml` and its files), to try sound files without a
     /// restart.
-    pub reload_sounds: KeyCode,
+    reload_sounds = F5, Some("reload sounds");
     /// Shows and hides the dev text (readouts, coordinates, controls). Hidden by default in
     /// release builds.
-    pub dev_text: KeyCode,
+    dev_text = F1, Some("hide dev text");
     /// Shows and hides every creature's path (see `crate::combat::draw_routes`).
-    pub show_routes: KeyCode,
-    /// Throws a block's worth of the held material. Held, it keeps throwing.
-    pub drop: KeyCode,
+    show_routes = F7, Some("show cow paths");
+    /// Throws a block's worth of the held material. Held, it keeps throwing. Shown in the held
+    /// item line.
+    drop = KeyQ, None;
     /// Opens the crafting menu at a crafting table aimed at, and closes it.
-    pub interact: KeyCode,
+    interact = KeyE, Some("craft at a table");
     /// Measures the frame rate for a few seconds and writes it down (see `crate::perf`).
-    pub record_perf: KeyCode,
+    record_perf = F9, None;
     /// Goes back to where the last frame rate recording was made, looking the same way.
-    pub perf_spot: KeyCode,
+    perf_spot = F10, None;
     /// In the crafting menu: turns the part being painted with a quarter turn.
-    pub turn_part: KeyCode,
+    turn_part = KeyR, None;
+}
+
+/// All bindings. Plain key actions live in [`Keys`] (one table above); the rest are the ones
+/// that take a mouse button, a number, or come as a set.
+#[derive(Resource, Clone, Debug, PartialEq)]
+pub struct Controls {
+    pub keys: Keys,
     /// Tapping forward twice within this many seconds sprints until forward is released.
     /// 0 turns it off. The sprint key works either way.
     pub double_tap_window: f32,
@@ -75,6 +118,19 @@ pub struct Controls {
     pub placement_mode: Binding,
     /// Picks a tool or material from the palette, first to ninth. The scroll wheel also cycles it.
     pub slots: [KeyCode; 9],
+}
+
+impl std::ops::Deref for Controls {
+    type Target = Keys;
+    fn deref(&self) -> &Keys {
+        &self.keys
+    }
+}
+
+impl std::ops::DerefMut for Controls {
+    fn deref_mut(&mut self) -> &mut Keys {
+        &mut self.keys
+    }
 }
 
 /// A key or a mouse button.
@@ -114,28 +170,7 @@ impl Binding {
 impl Default for Controls {
     fn default() -> Self {
         Self {
-            forward: KeyCode::KeyW,
-            back: KeyCode::KeyS,
-            left: KeyCode::KeyA,
-            right: KeyCode::KeyD,
-            jump: KeyCode::Space,
-            sprint: KeyCode::ShiftLeft,
-            crouch: KeyCode::ControlLeft,
-            down: KeyCode::ControlLeft,
-            fly: KeyCode::KeyF,
-            teleport: KeyCode::KeyT,
-            frame_cap: KeyCode::F3,
-            tuning: KeyCode::Tab,
-            drill: KeyCode::F4,
-            respawn_targets: KeyCode::F6,
-            reload_sounds: KeyCode::F5,
-            dev_text: KeyCode::F1,
-            show_routes: KeyCode::F7,
-            drop: KeyCode::KeyQ,
-            interact: KeyCode::KeyE,
-            record_perf: KeyCode::F9,
-            perf_spot: KeyCode::F10,
-            turn_part: KeyCode::KeyR,
+            keys: Keys::default(),
             double_tap_window: 0.3,
             use_main: Binding::Mouse(MouseButton::Left),
             use_alt: Binding::Mouse(MouseButton::Right),
@@ -155,9 +190,24 @@ impl Default for Controls {
     }
 }
 
+/// Splits config text into `(line number, action, value)`, skipping blanks and comments.
+/// A line without `=` comes back with `None` for the value.
+fn entries(text: &str) -> impl Iterator<Item = (usize, &str, Option<&str>)> {
+    text.lines().enumerate().filter_map(|(number, line)| {
+        let line = line.split('#').next().unwrap_or("").trim();
+        if line.is_empty() {
+            return None;
+        }
+        Some(match line.split_once('=') {
+            Some((action, value)) => (number + 1, action.trim(), Some(value.trim())),
+            None => (number + 1, line, None),
+        })
+    })
+}
+
 impl Controls {
     /// The defaults with the personal file's overrides applied. A missing file is fine; bad
-    /// lines are reported and skipped.
+    /// lines are reported and skipped, and actions the file doesn't list are named.
     pub fn load() -> Self {
         let mut controls = Self::default();
         let Some(path) = config_path() else {
@@ -169,32 +219,69 @@ impl Controls {
         for problem in controls.apply(&text) {
             warn!("{}: {problem}", path.display());
         }
+        let unlisted = Self::unlisted(&text);
+        if !unlisted.is_empty() {
+            warn!("{} doesn't list: {}", path.display(), unlisted.join(", "));
+        }
         info!("loaded controls from {}", path.display());
         controls
+    }
+
+    /// Every action name the config file takes, under its current name.
+    pub fn action_names() -> Vec<String> {
+        let mut names: Vec<String> = Keys::default().all().iter().map(|(name, _, _)| name.to_string()).collect();
+        names.extend(["use", "alt_use", "placement_mode", "double_tap_window"].map(String::from));
+        names.extend((1..=9).map(|n| format!("slot_{n}")));
+        names
+    }
+
+    /// The actions config text doesn't name, each with its default, such as `show_routes (F7)`.
+    /// Old names count for the new ones.
+    pub fn unlisted(text: &str) -> Vec<String> {
+        let named: Vec<&str> = entries(text)
+            .map(|(_, action, _)| match action {
+                "break" => "use",
+                "place" => "alt_use",
+                other => other,
+            })
+            .collect();
+        let defaults = Self::default();
+        Self::action_names()
+            .into_iter()
+            .filter(|name| !named.contains(&name.as_str()))
+            .map(|name| {
+                let default = match name.as_str() {
+                    "use" => defaults.use_main.label(),
+                    "alt_use" => defaults.use_alt.label(),
+                    "placement_mode" => defaults.placement_mode.label(),
+                    "double_tap_window" => defaults.double_tap_window.to_string(),
+                    _ => match name.strip_prefix("slot_").and_then(|n| n.parse::<usize>().ok()) {
+                        Some(n) => format!("{:?}", defaults.slots[n - 1]),
+                        None => defaults.keys.all().iter().find(|(n, _, _)| *n == name).map_or(String::new(), |(_, key, _)| format!("{key:?}")),
+                    },
+                };
+                format!("{name} ({default})")
+            })
+            .collect()
     }
 
     /// Applies overrides from config text. Returns a description of each line it skipped.
     pub fn apply(&mut self, text: &str) -> Vec<String> {
         let mut problems = Vec::new();
-        for (number, line) in text.lines().enumerate() {
-            let line = line.split('#').next().unwrap_or("").trim();
-            if line.is_empty() {
-                continue;
-            }
-            let Some((action, key)) = line.split_once('=') else {
-                problems.push(format!("line {}: expected `action = Key`", number + 1));
+        for (number, action, key) in entries(text) {
+            let Some(key) = key else {
+                problems.push(format!("line {number}: expected `action = Key`"));
                 continue;
             };
-            let (action, key) = (action.trim(), key.trim());
             if action == "double_tap_window" {
                 match key.parse::<f32>() {
                     Ok(seconds) if seconds.is_finite() && seconds >= 0.0 => self.double_tap_window = seconds,
-                    _ => problems.push(format!("line {}: expected seconds, at least 0, got {key:?}", number + 1)),
+                    _ => problems.push(format!("line {number}: expected seconds, at least 0, got {key:?}")),
                 }
                 continue;
             }
             let Some(binding) = parse_binding(key) else {
-                problems.push(format!("line {}: unknown key {key:?}", number + 1));
+                problems.push(format!("line {number}: unknown key {key:?}"));
                 continue;
             };
             match action {
@@ -213,7 +300,7 @@ impl Controls {
                 _ => {}
             }
             let Binding::Key(code) = binding else {
-                problems.push(format!("line {}: {action} needs a key, not a mouse button", number + 1));
+                problems.push(format!("line {number}: {action} needs a key, not a mouse button"));
                 continue;
             };
             let slot_index = action.strip_prefix("slot_").and_then(|n| n.parse::<usize>().ok());
@@ -221,37 +308,38 @@ impl Controls {
                 self.slots[n - 1] = code;
                 continue;
             }
-            let slot = match action {
-                "forward" => &mut self.forward,
-                "back" => &mut self.back,
-                "left" => &mut self.left,
-                "right" => &mut self.right,
-                "jump" => &mut self.jump,
-                "sprint" => &mut self.sprint,
-                "crouch" => &mut self.crouch,
-                "down" => &mut self.down,
-                "fly" => &mut self.fly,
-                "teleport" => &mut self.teleport,
-                "frame_cap" => &mut self.frame_cap,
-                "tuning" => &mut self.tuning,
-                "drill" => &mut self.drill,
-                "respawn_targets" => &mut self.respawn_targets,
-                "reload_sounds" => &mut self.reload_sounds,
-                "dev_text" => &mut self.dev_text,
-                "show_routes" => &mut self.show_routes,
-                "drop" => &mut self.drop,
-                "interact" => &mut self.interact,
-                "record_perf" => &mut self.record_perf,
-                "perf_spot" => &mut self.perf_spot,
-                "turn_part" => &mut self.turn_part,
-                _ => {
-                    problems.push(format!("line {}: unknown action {action:?}", number + 1));
-                    continue;
-                }
-            };
-            *slot = code;
+            match self.keys.get_mut(action) {
+                Some(slot) => *slot = code,
+                None => problems.push(format!("line {number}: unknown action {action:?}")),
+            }
         }
         problems
+    }
+
+    /// The controls hint for the HUD: movement and the uses, then every key action that has
+    /// hint text, wrapped into lines.
+    pub fn hint(&self) -> String {
+        let mut parts = vec![
+            format!("{}{}{}{} move", label(self.forward), label(self.left), label(self.back), label(self.right)),
+            "Esc release mouse".into(),
+            format!("{} use (break, swing)", self.use_main.label()),
+            format!("{} second use (place, guard)", self.use_alt.label()),
+            "1-9 or scroll pick".into(),
+        ];
+        parts.extend(self.keys.all().into_iter().filter_map(|(_, key, hud)| Some(format!("{} {}", label(key), hud?))));
+        let mut lines = vec![String::new()];
+        for part in parts {
+            let line = lines.last_mut().expect("starts with one line");
+            if !line.is_empty() && line.len() + part.len() > 110 {
+                lines.push(part);
+            } else {
+                if !line.is_empty() {
+                    *line += ", ";
+                }
+                *line += &part;
+            }
+        }
+        lines.join("\n")
     }
 }
 
@@ -506,19 +594,45 @@ mod tests {
     }
 
     #[test]
-    fn turn_part_is_bound() {
-        let mut controls = Controls::default();
-        assert_eq!(controls.turn_part, KeyCode::KeyR);
-        assert!(controls.apply("turn_part = KeyG\n").is_empty());
-        assert_eq!(controls.turn_part, KeyCode::KeyG);
+    fn every_key_action_parses_into_its_own_field() {
+        for (name, _, _) in Keys::default().all() {
+            let mut controls = Controls::default();
+            assert!(controls.apply(&format!("{name} = Backquote\n")).is_empty(), "{name}");
+            let changed: Vec<_> = controls.keys.all().into_iter().filter(|(_, key, _)| *key == KeyCode::Backquote).map(|(n, _, _)| n).collect();
+            assert_eq!(changed, [name]);
+        }
     }
 
     #[test]
-    fn dev_text_is_bound() {
-        let mut controls = Controls::default();
-        assert_eq!(controls.dev_text, KeyCode::F1);
-        assert!(controls.apply("dev_text = F2\n").is_empty());
-        assert_eq!(controls.dev_text, KeyCode::F2);
+    fn action_names_are_unique() {
+        let names = Controls::action_names();
+        let mut sorted = names.clone();
+        sorted.sort();
+        sorted.dedup();
+        assert_eq!(sorted.len(), names.len());
+    }
+
+    #[test]
+    fn the_hint_shows_every_key_action_with_hint_text() {
+        let hint = Controls::default().hint();
+        for (name, key, hud) in Keys::default().all() {
+            if let Some(hud) = hud {
+                assert!(hint.contains(&format!("{} {hud}", label(key))), "{name} missing from {hint}");
+            }
+        }
+        assert!(hint.contains("WASD move") && hint.contains("left click use"));
+        assert!(hint.lines().all(|line| line.len() <= 120), "{hint}");
+    }
+
+    #[test]
+    fn names_what_the_file_leaves_out() {
+        let unlisted = Controls::unlisted("forward = KeyF\nbreak = MouseLeft\nslot_1 = Digit1\n");
+        assert!(unlisted.contains(&"show_routes (F7)".to_string()), "{unlisted:?}");
+        assert!(unlisted.contains(&"alt_use (right click)".to_string()), "{unlisted:?}");
+        assert!(!unlisted.iter().any(|u| u.starts_with("forward ") || u.starts_with("use ") || u.starts_with("slot_1 ")), "{unlisted:?}");
+        assert!(unlisted.contains(&"slot_2 (Digit2)".to_string()));
+        let everything: String = Controls::action_names().iter().map(|n| format!("{n} = x\n")).collect();
+        assert!(Controls::unlisted(&everything).is_empty());
     }
 
     #[test]
