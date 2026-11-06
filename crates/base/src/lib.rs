@@ -41,10 +41,15 @@ pub const COWS: &[(i64, i64, f32)] = &[
     (-48, -41, 270.0),
     (-44, -41, 10.0),
 ];
-/// The pasture's fence, one block high, around the square between these corners (fence
-/// included), relative to the test area's origin. Cows can't step it; the player jumps it.
+/// The pasture's wall, [`PASTURE_WALL`] blocks high, around the square between these corners
+/// (wall included), relative to the test area's origin. A fight can't throw the player over it.
 pub const PASTURE: ((i64, i64), (i64, i64)) = ((-62, -62), (-32, -32));
-/// Just outside the pasture's east fence, looking in.
+/// How high the pasture's wall is, in blocks.
+pub const PASTURE_WALL: i64 = 8;
+/// The pasture's doorway, in its east wall: 3 wide, from y - 1 to y + 1, with a sill a block
+/// high that the player jumps and cows can't step.
+pub const PASTURE_DOOR_Y: i64 = -47;
+/// Just outside the pasture's east doorway, looking in.
 pub const PASTURE_SPOT: (i64, i64, i64) = (-30, -47, 0);
 /// Just outside the empty cow pen's doorway, looking in.
 pub const COW_PEN_SPOT: (i64, i64, i64) = (-6, 14, 0);
@@ -232,12 +237,14 @@ pub fn build_test_area(w: &mut dyn WorldEdit, o: BoxelPos) -> Result<(), ApiErro
         w.add_shaped(at(-15, y, 0), BRICK, &shapes::slab(), Orientation::IDENTITY)?;
     }
 
-    // The pasture: a square fence one block high.
+    // The pasture: a square of tall walls, with a doorway east whose sill keeps the cows in.
     let ((x0, y0), (x1, y1)) = PASTURE;
-    w.fill(at(x0, y0, 0), at(x1, y0, 0), WOOD)?;
-    w.fill(at(x0, y1, 0), at(x1, y1, 0), WOOD)?;
-    w.fill(at(x0, y0, 0), at(x0, y1, 0), WOOD)?;
-    w.fill(at(x1, y0, 0), at(x1, y1, 0), WOOD)?;
+    let top = PASTURE_WALL - 1;
+    w.fill(at(x0, y0, 0), at(x1, y0, top), WOOD)?;
+    w.fill(at(x0, y1, 0), at(x1, y1, top), WOOD)?;
+    w.fill(at(x0, y0, 0), at(x0, y1, top), WOOD)?;
+    w.fill(at(x1, y0, 0), at(x1, y1, top), WOOD)?;
+    w.clear(at(x1, PASTURE_DOOR_Y - 1, 1), at(x1, PASTURE_DOOR_Y + 1, top));
 
     // A tunnel with exactly 2 boxels of headroom.
     w.fill(at(-3, -20, 0), at(-3, -8, 2), STONE)?;

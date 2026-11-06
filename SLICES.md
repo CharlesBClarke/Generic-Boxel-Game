@@ -178,6 +178,7 @@ Shortcuts taken around the API, each with the toy that needed it. Paid down in s
 - **A robotic player** (tentative, 2026-10-25): the user wants movement and camera feel to read as a robot. Landings are a shock absorber: soft landings compress smoothly, damaging ones bottom out hard. Later feel work (combat, damage) should keep to it.
 - **Skyrim-style controls** (2026-10-31, from Combat feel; clarified 2026-11-03): whatever is held has a main use on left click and a second use on right click. Blocks break and place; a tool swings and guards. Part of the answer to the ambiguous-interactions gripe; the Interaction controls toy builds on it. *Only half of Skyrim's system is built:* the one-item case. In Skyrim, holding two things (one per hand) gives each button that hand's main use, and alt uses go unreachable; that half is the backlog's Two hands.
 - **Sound** (2026-11-05, from Sound): the simulation is silent; the client hears what the server sends (events and snapshots), so new sounds need events, not sim audio. Sounds are data in `sounds.toml`, named by kind prefix (`step_`, `swing_`, `hit_`, `kill_`, `hurt_`, `knockout_`, `hardland_`, `pickup_`), and the mod keeps only used files; candidates live in `~/Projects/boxel-sound-packs/`. Loops are WAV. `kira` stays at 0.10 until Bevy is upgraded (ALSA clash). espeak, if used, is rendered offline.
+- **Creature navigation** (2026-11-05, from Cow tweaks): no pathfinding yet; brains see a clear straight run to the player (`Seen.clear_run`). Pathfinding is wanted eventually, as an engine service beside it, once terrain needs it.
 - **Signature feature:** not decided yet. Choose it once the block interaction and crafting toys have been played, and record the choice and why in the design doc.
 
 ### Fixes
@@ -189,6 +190,7 @@ Bugs found in already-merged code, each fixed on its own `fix-` branch (see the 
 ### Done toys
 
 Full write-ups (plans, implementation notes, verify rounds, decisions) are in `docs/done-toys.md`. One line each, newest first:
+- **Cow tweaks** (2026-11-05, `toy-cow-tweaks`). Cows charge only with a clear straight run (`Seen.clear_run`) and run well past; hurting a cow gives it and its herdmates a grudge until a knock-out (fight or run when you come near); giving up means running, and a cow run down turns and fights; the pasture is walled 8 high.
 - **Sound** (2026-11-05, `toy-sound`). Positional sound through `kira`: footsteps and landings by surface, combat, block break and place, pick-ups, a printer-like servo on fast pans and wind at speed, with group volumes and in-game pick lists (and F5 reload) for trying sounds.
 - **Local server seam** (2026-11-05, `seam-local-server`). The client talks to the simulation only through `protocol` messages and keeps its own copy of the world; single-player runs a local server; hit-stop freezes only the view; the block-jump trainer is gone.
 - **Sprint toggle** (2026-11-04, `toy-sprint-toggle`). Sprint is a toggle (off on a second press or letting go of forward); default keys swapped so Shift sprints and Ctrl crouches and flies down.

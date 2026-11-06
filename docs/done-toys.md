@@ -3,6 +3,35 @@
 Moved out of `SLICES.md` on 2026-11-03 so the roadmap stays short. Each toy's full write-up, newest first, as it stood when it closed. `SLICES.md` keeps a one-line summary of each.
 
 
+#### Cow tweaks (branch `toy-cow-tweaks`)
+
+**Stage:** Done (2026-11-05). Verified by the user in play ("ok it works, I like it"), then engaged the close. Asked for by the user as a small toy of cow tweaks.
+
+*Done when:* (1) a cow never charges at a player behind a wall or up on a block, and closes in on foot instead; (2) charges run well past a dodge, often into the wall for a stun; (3) a hurt cow, and its herdmates, go back to their routine but fight or run when the player comes near again, until a knock-out; (4) a cow that gives up runs, and one run down while running turns and fights; (5) the pasture's walls keep the player in during a fight, and the doorway works; (6) tests pass and clippy is clean.
+
+*Implemented:* `Seen.clear_run` in `api::brain`, filled in by `sim::combat::clear_run` (sweeps the body in 1 m pieces with the movement sweep, stepping, settling up to 1.5 m down, out to 32 m). `base::cow`: four memory slots (grudge, cornered, desperate, charge start), five tunables (`charge_overshoot` 1.5, `grudge_range` 7.5, `grudge_fight` 0.8, `corner_range` 3, `corner_time` 1.5); a charge also needs the player's feet within `toss_height` of its own. The pasture wall is 8 high (`PASTURE_WALL`) with a 3-wide doorway at `PASTURE_DOOR_Y`. Tests: 507 pass (1 ignored, as before); new: clear run (sim, 1), brain (7), base world (4, the herd's grudge among them; replacing the fence-charge test, which no longer fits: that cow now won't charge through the wall; checked that the no-charge test fails without the rule). Clippy clean natively and for `wasm32`; the game starts and runs cleanly.
+
+**Goal:** fights with cows read better: no charges at a player they can't reach, charges that run well past, cows that hold a grudge, and a pasture you can't be thrown out of.
+
+**Plan** (approved 2026-11-05, with the user's answers: no pathfinding yet but it's wanted eventually; the grudge lasts until a knock-out; boldness dropped for the grudge choice in favour of chance by health; a cornered badly hurt cow fights; overshoot 1.5 × the starting distance)
+- *A clear run, not pathfinding* (the user: pathfinding is needed eventually, not in this toy). `api::Seen.clear_run`: how far, level, the creature's body could walk straight toward the player (stepping what it can step) before terrain stops it, at most the distance to them. The engine fills it in (`sim::combat`, with the movement sweep). A cow only starts a charge when the run reaches the player; otherwise it closes in on foot and the give-up timer takes over. A later pathfinding service can sit beside it.
+- *Overshoot more.* A charge runs on past the player by `charge_overshoot` × its starting distance (1.5, tunable; was a fixed 1.5 m).
+- *A grudge, forever until a knock-out* (a knock-out respawns the herd, clearing memory). Set when the cow is hurt. Afterwards it goes back to its routine, but when the player comes within `grudge_range` (7.5 m) and it isn't in its after-scare calm, it fights or flees, by chance weighted by its health (`grudge_fight` × its health share fights; boldness dropped for this, at the user's call). It flees rather than fights a player it has no clear run to.
+- *Flee on giving up; fight when fleeing fails.* A fight given up for getting no closer becomes a flee from the player (losing interest at `chase_range`, or anger fading, still just calms down). A grudged cow fleeing steers away from the player; with the player within `corner_range` (3 m) for `corner_time` (1.5 s) it turns and fights, even when badly hurt (cornered: no breaking off for low health).
+- *The herd holds it too* (added 2026-11-05 at the user's request, engaged): a cow that sees a herdmate hurt (below full health) or fighting the player takes up the grudge. It acts on a grudge from the next tick, so a cow seeing a herdmate hit still first chooses between helping and running. A grudged cow steers away from the player only while they're within `grudge_range`; further off it runs with the herd, so a scare doesn't scatter it outward.
+- *A walled pasture.* The fence becomes an 8-high wall with a doorway on the east side, its sill a block high (the player jumps it, cows can't step it), so the player can't be thrown out.
+- *Tests:* brain tests for each rule; a sim test for `clear_run` against a wall and a raised block; base world tests: no charge at a player behind the wall (gives up, then flees), a dodged charge into the wall stuns, a calmed grudged cow reacts when the player comes back.
+
+*Decisions:* creatures get a clear straight run (`Seen.clear_run`), not a path; real pathfinding is still wanted later, as an engine service beside it. A cow charges only with a clear run and the player's feet about level. Charges run past by a share of the starting distance. Being hurt, or seeing a herdmate hurt or fighting, gives a grudge that lasts until a knock-out; a grudged cow near the player fights (chance `grudge_fight` × health share, only with a clear run) or runs; it acts on a grudge from the tick after taking it up, so the help-or-run choice for a herdmate comes first. Giving up becomes running; run down while running, it fights, however hurt. The pasture is walled 8 high with a sill doorway east.
+
+*Found while testing the herd grudge:* acting on a fresh grudge the same tick skipped the help-or-run choice (nearly the whole herd attacked at once), and steering away from a far-off player scattered a stampede outward; both fixed in the toy (act from the next tick; steer only within `grudge_range`). Test herds that aren't about grudges turn them off (`timid_sim` sets `grudge_fight` 0; the straying test sets `grudge_range` and `corner_range` 0).
+
+*Deferred:* dropping boldness from `fight_share` and from defending too (asked, not answered); pathfinding (an engine service, once terrain needs it); clear runs ignore drops (a charge can run into a pit).
+
+*API debt:* none new. `Seen.clear_run` is API.
+
+
+
 #### Sound (branch `toy-sound`)
 
 **Stage:** Done (2026-11-05). Verified by the user tuning every sound in play, one at a time ("sound goods, I like this"). Three checks deferred to a play check (see `SLICES.md`): footsteps quicken when sprinting and cows' hooves are heard; breaking and placing sound like the block; sounds pan and fade with distance.
