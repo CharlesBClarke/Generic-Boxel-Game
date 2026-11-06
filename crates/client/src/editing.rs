@@ -318,7 +318,10 @@ pub(crate) fn update_ghost(
     if ghost.shown != Some(place.occupant) {
         let mut data = mesher::MeshData::default();
         // Built around the boxel's center, so scaling shrinks it in place.
-        mesher::mesh_occupant(&mut data, place.occupant, [-0.5; 3], blocks, &chunk_meshes.volumes, |_| false, &mesher::unlit, &mut Vec::new());
+        let boxes = mesher::alone(place.occupant, blocks);
+        let around = || boxes.as_slice();
+        let (volumes, off) = (&chunk_meshes.volumes, &mesher::AoTuning::OFF);
+        mesher::mesh_occupant(&mut data, place.occupant, [-0.5; 3], blocks, volumes, |_| false, &around, off, &mut Vec::new());
         mesh.0 = meshes.add(crate::to_bevy_mesh(data));
         ghost.shown = Some(place.occupant);
     }

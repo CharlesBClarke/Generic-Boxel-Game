@@ -78,6 +78,7 @@ top = { colors = [[76, 124, 44], [88, 140, 50], [101, 156, 58]], depth = 2, ragg
 bricks = { pattern = "staggered", length = 8, height = 4, colors = [[150, 66, 52], [188, 94, 72], [112, 46, 36], [158, 104, 80]], speckle = 0.06, seed = 4 }
 
 [looks.ice]
+sheen = { strength = 0.6, sharpness = 48 }
 noise = { colors = [[158, 198, 234], [172, 210, 241], [188, 221, 247]], scale = 4, seed = 5 }
 
 [looks.wood]

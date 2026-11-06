@@ -25,7 +25,7 @@ pub mod shape;
 pub mod terrain;
 pub mod tuning;
 
-pub use block::{BlockBox, BlockDef, LookDef, Turning};
+pub use block::{BlockBox, BlockDef, LookDef, Sheen, Turning};
 pub use brain::{Attack, Brain, BrainContext, BrainOutput, Hurt, MAX_NEIGHBORS, Neighbor, Seen};
 pub use combat::{HitBox, TargetDef, ToolDef};
 pub use crafting::{CraftError, CraftingDef, Layer, Stack, Stacks, craft_shape};

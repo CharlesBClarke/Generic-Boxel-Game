@@ -1,5 +1,6 @@
-//! The material every block is drawn with: unlit, each fragment colored from its block's look
-//! volume (see `solid.wgsl`), times the vertex color and a tint.
+//! The material every block is drawn with: each fragment colored from its block's look volume
+//! (see `solid.wgsl`), times the vertex color and a tint, then lit and fogged from the
+//! atmosphere (see `crate::shading`).
 
 use bevy::asset::{AssetPath, RenderAssetUsages, embedded_asset, embedded_path};
 use bevy::image::ImageSampler;
@@ -14,10 +15,15 @@ use bevy::shader::ShaderRef;
 
 use api::LookDef;
 
+use crate::shading::Atmosphere;
 use crate::volumes::Volumes;
 
 /// Where in its look a vertex sits, in texels, and which volume: `MeshData::solid`.
 pub const ATTRIBUTE_SOLID: MeshVertexAttribute = MeshVertexAttribute::new("Solid", 517_093_611, VertexFormat::Float32x4);
+/// What lies past each edge of the vertex's quad: `MeshData::edges`.
+pub const ATTRIBUTE_EDGES: MeshVertexAttribute = MeshVertexAttribute::new("Edges", 517_093_612, VertexFormat::Uint32x4);
+/// Where on its quad a vertex sits, and the quad's size: `MeshData::face`.
+pub const ATTRIBUTE_FACE: MeshVertexAttribute = MeshVertexAttribute::new("Face", 517_093_613, VertexFormat::Unorm16x4);
 
 #[derive(Asset, TypePath, AsBindGroup, Clone, Debug)]
 pub struct SolidMaterial {
@@ -26,6 +32,12 @@ pub struct SolidMaterial {
     pub tint: LinearRgba,
     #[texture(1, dimension = "3d", sample_type = "float", filterable = false)]
     pub volumes: Handle<Image>,
+    /// Kept up to date by `crate::shading`.
+    #[uniform(2)]
+    pub atmosphere: Atmosphere,
+    /// Each volume's sheen: see [`sheen_image`].
+    #[texture(3, sample_type = "float", filterable = false)]
+    pub sheens: Handle<Image>,
     pub alpha_mode: AlphaMode,
 }
 
@@ -52,6 +64,9 @@ impl Material for SolidMaterial {
             Mesh::ATTRIBUTE_POSITION.at_shader_location(0),
             Mesh::ATTRIBUTE_COLOR.at_shader_location(1),
             ATTRIBUTE_SOLID.at_shader_location(2),
+            Mesh::ATTRIBUTE_NORMAL.at_shader_location(3),
+            ATTRIBUTE_EDGES.at_shader_location(4),
+            ATTRIBUTE_FACE.at_shader_location(5),
         ])?;
         descriptor.vertex.buffers = vec![vertex_layout];
         Ok(())
@@ -84,6 +99,20 @@ pub fn volume_image(volumes: &Volumes) -> Image {
         RenderAssetUsages::RENDER_WORLD,
     );
     // The shader loads exact texels; nothing is ever filtered or mipmapped.
+    image.sampler = ImageSampler::nearest();
+    image
+}
+
+/// Each volume's sheen as one texel: strength, then sharpness.
+pub fn sheen_image(volumes: &Volumes) -> Image {
+    let data: Vec<u8> = volumes.sheens.iter().flat_map(|&[s, k]| [s, k, 0.0, 0.0]).flat_map(f32::to_le_bytes).collect();
+    let mut image = Image::new(
+        Extent3d { width: volumes.sheens.len() as u32, height: 1, depth_or_array_layers: 1 },
+        TextureDimension::D2,
+        data,
+        TextureFormat::Rgba32Float,
+        RenderAssetUsages::RENDER_WORLD,
+    );
     image.sampler = ImageSampler::nearest();
     image
 }
