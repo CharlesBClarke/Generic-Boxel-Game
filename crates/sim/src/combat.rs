@@ -717,6 +717,9 @@ const CLEAR_RUN_STRIDE: f32 = 1.0;
 /// How far a clear run's sweep settles down after each piece, meters: it follows the ground down
 /// steps and slopes, and floats over deeper drops.
 const CLEAR_RUN_SETTLE: f32 = 1.5;
+/// How close a clear run has to get, meters: within this of the goal, it's there. Keeps every
+/// piece long enough that one that barely moves counts as blocked, so the sweep always ends.
+const CLEAR_RUN_HAIR: f32 = 1e-3;
 
 /// How far, level, `target`'s body could walk straight along `to` (level, from its feet),
 /// stepping up what it can step, before terrain stops it: at most `to`'s length, and at most
@@ -731,18 +734,18 @@ fn clear_run(target: &Target, def: &TargetDef, to: Vec2, terrain: &impl Terrain)
     let cell = target.pos.cell();
     let mut at = target.pos.offset();
     let mut run = 0.0;
-    while run < goal {
+    while goal - run > CLEAR_RUN_HAIR {
         let stride = CLEAR_RUN_STRIDE.min(goal - run);
         let (moved, _) = sweep_stepping(min + at, max + at, dir * stride, def.step_height, cell, terrain);
         let went = moved.truncate().length();
         run += went;
-        if went < stride - 1e-3 {
-            break;
+        if went < stride - CLEAR_RUN_HAIR * 0.1 {
+            return run.min(goal);
         }
         at += moved;
         at.z += clamp_axis(2, -CLEAR_RUN_SETTLE, min + at, max + at, cell, terrain);
     }
-    run.min(goal)
+    goal
 }
 
 /// The part of the speed `v` along one axis beyond the walking speed `w` the same way.
@@ -970,6 +973,28 @@ mod tests {
         assert!(clear_run(t, &stepper, Vec2::new(10.0, 0.0), &Ledge { high: 2 }) < 4.5);
         // Far off, it's measured only so far.
         assert!((clear_run(t, &defs[0], Vec2::new(100.0, 0.0), &room()) - CLEAR_RUN_REACH).abs() < 1e-3);
+    }
+
+    /// Runs `clear_run` on its own thread, failing if it hasn't finished in a second.
+    fn clear_run_in_time(pos: WorldPos, to: Vec2, terrain: impl Terrain + Send + 'static) -> f32 {
+        let (send, receive) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let (targets, defs) = one(pos);
+            let _ = send.send(clear_run(targets.iter().next().unwrap(), &defs[0], to, &terrain));
+        });
+        receive.recv_timeout(std::time::Duration::from_secs(1)).expect("clear_run never finished")
+    }
+
+    #[test]
+    fn a_clear_run_ends_against_a_wall_with_the_player_a_hair_away() {
+        // Pressed against the wall at x = 5, with the player under a millimeter further east.
+        let x = 5.0 - def().width * 0.5;
+        let wall = || Room { wall_x: 5, ice_y: 1000 };
+        let run = clear_run_in_time(at(x, 0.5, 0.0), Vec2::new(5e-4, 0.0), wall());
+        assert!(run <= 5e-4, "{run}");
+        // The same, with the last piece of a longer run that short.
+        let run = clear_run_in_time(at(x - 2.0, 0.5, 0.0), Vec2::new(2.0 + 5e-4, 0.0), wall());
+        assert!((run - 2.0).abs() < 1e-3, "{run}");
     }
 
     #[test]
