@@ -72,10 +72,22 @@ fn fragment(in: VertexOutput) -> @location(0) vec4<f32> {
     let distance = length(to_eye_far);
     let to_eye = to_eye_far / max(distance, 0.0001);
 
-    let shine = textureLoad(sheens, vec2<i32>(volume, 0), 0);
-    var rgb = base.rgb * surface_light(atmosphere, normal) * edge_shade(atmosphere, in.edges, in.face);
-    rgb += sheen(atmosphere, normal, to_eye, shine.x, shine.y) * tint.rgb;
-    rgb = mix(rgb, sky(atmosphere, -to_eye, false), fog_amount(atmosphere, distance));
+    // Each part can be switched off, to measure what it costs.
+    let parts = atmosphere.parts;
+    var rgb = base.rgb;
+    if parts.w > 0.5 {
+        rgb *= surface_light(atmosphere, normal);
+    }
+    if parts.x > 0.5 {
+        rgb *= edge_shade(atmosphere, in.edges, in.face);
+    }
+    if parts.z > 0.5 {
+        let shine = textureLoad(sheens, vec2<i32>(volume, 0), 0);
+        rgb += sheen(atmosphere, normal, to_eye, shine.x, shine.y) * tint.rgb;
+    }
+    if parts.y > 0.5 {
+        rgb = mix(rgb, sky(atmosphere, -to_eye, false), fog_amount(atmosphere, distance));
+    }
 
     var color = vec4<f32>(rgb, base.a);
 #ifdef TONEMAP_IN_SHADER

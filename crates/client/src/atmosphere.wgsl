@@ -17,6 +17,8 @@ struct Atmosphere {
     fog: vec4<f32>,
     // Crease darkness, ridge brightness, width in texels.
     edges: vec4<f32>,
+    // Which parts are drawn, 1 or 0: edges, fog, sheen, light.
+    parts: vec4<f32>,
 };
 
 // The sky looking along `dir` (a unit vector), with the sun's disc drawn or not. Fog fades to

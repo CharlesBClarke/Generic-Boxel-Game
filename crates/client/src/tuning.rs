@@ -35,6 +35,9 @@ pub struct TuningPanel {
     loaded: bool,
     /// Where the last save went, or why it failed.
     note: String,
+    /// Ambient occlusion values moved but not applied yet: applying remeshes every chunk,
+    /// too slow to do on every slider step.
+    ao_draft: Option<AoTuning>,
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -87,7 +90,8 @@ pub fn tuning_panel(
     let mut juice = combat.clone();
     let mut playing = animation.clone();
     let mut camera = feel.clone();
-    let mut shading = *ao;
+    let mut shading = panel.ao_draft.unwrap_or(*ao);
+    let mut apply_ao = false;
     let mut seeing = *view;
     let mut lighting = *light;
     let mut regenerate = false;
@@ -201,6 +205,15 @@ pub fn tuning_panel(
                 ui.separator();
                 ui.heading("Shading");
                 ui.label("sun and sky light, the sky, fog, and the lines along creases and ridges");
+                ui.horizontal(|ui| {
+                    ui.label("draw:");
+                    let parts = &mut lighting.parts;
+                    ui.checkbox(&mut parts.light, "sun and sky light");
+                    ui.checkbox(&mut parts.edges, "edges");
+                    ui.checkbox(&mut parts.sheen, "sheen");
+                    ui.checkbox(&mut parts.fog, "fog");
+                    ui.checkbox(&mut parts.sky, "sky");
+                });
                 sliders(ui, "shading", &mut lighting);
                 ui.separator();
                 ui.heading("Sound");
@@ -259,8 +272,12 @@ pub fn tuning_panel(
                 sliders(ui, "camera", &mut camera);
                 ui.separator();
                 ui.heading("Ambient occlusion");
-                ui.label("changing these remeshes every chunk");
                 sliders(ui, "ao", &mut shading);
+                ui.horizontal(|ui| {
+                    let pending = shading != *ao;
+                    apply_ao = ui.add_enabled(pending, egui::Button::new("Apply")).clicked();
+                    ui.label(if pending { "changed: Apply remeshes every chunk" } else { "applied" });
+                });
                 ui.separator();
                 ui.heading("Chase drill");
                 sliders(ui, "drill", &mut drill_tuning);
@@ -278,6 +295,7 @@ pub fn tuning_panel(
                     brains_on = true;
                     camera = CameraFeel::default();
                     shading = AoTuning::default();
+                    apply_ao = true;
                     seeing = ViewTuning::default();
                     lighting = ShadingTuning::default();
                     juice = CombatFeel::default();
@@ -352,7 +370,11 @@ pub fn tuning_panel(
     if camera != *feel {
         *feel = camera;
     }
-    ao.set_if_neq(shading);
+    // Saved values apply as they load; moved sliders wait for Apply.
+    if load || apply_ao {
+        ao.set_if_neq(shading);
+    }
+    panel.ao_draft = (shading != *ao).then_some(shading);
     view.set_if_neq(seeing);
     light.set_if_neq(lighting);
     if trying != *picks {

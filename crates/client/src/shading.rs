@@ -50,6 +50,35 @@ pub struct ShadingTuning {
     pub ridge: f32,
     /// How many texels wide the crease and ridge lines are, fading off across them.
     pub edge_width: f32,
+    /// Which parts are drawn, to measure what each costs. Not saved.
+    pub parts: Parts,
+}
+
+/// Parts of the shading that can be switched off to see what they cost.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Parts {
+    /// Crease and ridge lines.
+    pub edges: bool,
+    pub fog: bool,
+    pub sheen: bool,
+    /// Sun and sky light; off, faces show their plain colors.
+    pub light: bool,
+    pub sky: bool,
+}
+
+impl Default for Parts {
+    fn default() -> Self {
+        Self { edges: true, fog: true, sheen: true, light: true, sky: true }
+    }
+}
+
+impl Parts {
+    /// The parts switched off, for a perf recording: `-` with all on.
+    pub fn off(&self) -> String {
+        let all = [("edges", self.edges), ("fog", self.fog), ("sheen", self.sheen), ("light", self.light), ("sky", self.sky)];
+        let off: Vec<&str> = all.iter().filter(|(_, on)| !on).map(|(name, _)| *name).collect();
+        if off.is_empty() { "shading all on".into() } else { format!("shading off: {}", off.join(", ")) }
+    }
 }
 
 impl Default for ShadingTuning {
@@ -72,6 +101,7 @@ impl Default for ShadingTuning {
             crease: 0.3,
             ridge: 0.12,
             edge_width: 2.0,
+            parts: Parts::default(),
         }
     }
 }
@@ -91,6 +121,7 @@ impl ShadingTuning {
         let sky_color = Vec3::ONE.lerp(zenith / zenith.max_element().max(1e-3), self.sky_tint.clamp(0.0, 1.0));
         let sun = coords::to_render(self.sun_direction());
         let fog_start = self.fog_start.min(self.fog_end) * render_distance;
+        let on = |b: bool| if b { 1.0 } else { 0.0 };
         Atmosphere {
             sun_direction: sun.extend(self.sun_size.to_radians().cos()),
             sun_color: (linear(self.sun_color) * self.sun_strength).extend(self.sun_glow),
@@ -100,6 +131,7 @@ impl ShadingTuning {
             horizon: linear(self.horizon).extend(0.0),
             fog: Vec4::new(fog_start, (self.fog_end * render_distance).max(fog_start + 1.0), self.fog, 0.0),
             edges: Vec4::new(self.crease, self.ridge, self.edge_width, 0.0),
+            parts: Vec4::new(on(self.parts.edges), on(self.parts.fog), on(self.parts.sheen), on(self.parts.light)),
         }
     }
 }
@@ -192,6 +224,8 @@ pub struct Atmosphere {
     pub fog: Vec4,
     /// Edges: crease darkness, ridge brightness, width in texels.
     pub edges: Vec4,
+    /// Which parts are drawn, 1 or 0: edges, fog, sheen, light.
+    pub parts: Vec4,
 }
 
 /// The sky: drawn over the whole screen at the far plane, so only where nothing else is.
@@ -245,7 +279,25 @@ impl Plugin for ShadingPlugin {
         app.add_plugins(MaterialPlugin::<SkyMaterial>::default())
             .init_resource::<ShadingTuning>()
             .add_systems(Startup, spawn_sky)
-            .add_systems(PostUpdate, sync_atmosphere);
+            .add_systems(PostUpdate, (sync_atmosphere, show_sky, tag_recordings));
+    }
+}
+
+/// Marks the sky.
+#[derive(Component)]
+struct Sky;
+
+fn show_sky(tuning: Res<ShadingTuning>, mut sky: Query<&mut Visibility, With<Sky>>) {
+    for mut visibility in &mut sky {
+        visibility.set_if_neq(if tuning.parts.sky { Visibility::Inherited } else { Visibility::Hidden });
+    }
+}
+
+/// Says in each perf recording which parts were off.
+fn tag_recordings(tuning: Res<ShadingTuning>, mut tags: ResMut<crate::perf::PerfTags>) {
+    let off = tuning.parts.off();
+    if tags.0 != off {
+        tags.0 = off;
     }
 }
 
@@ -254,6 +306,7 @@ fn spawn_sky(mut commands: Commands, mut meshes: ResMut<Assets<Mesh>>, mut mater
     let triangle = Mesh::new(PrimitiveTopology::TriangleList, RenderAssetUsages::RENDER_WORLD)
         .with_inserted_attribute(Mesh::ATTRIBUTE_POSITION, vec![[-1.0, -1.0, 0.0], [3.0, -1.0, 0.0], [-1.0, 3.0, 0.0]]);
     commands.spawn((
+        Sky,
         Mesh3d(meshes.add(triangle)),
         MeshMaterial3d(materials.add(SkyMaterial::default())),
         Transform::default(),
@@ -314,6 +367,14 @@ mod tests {
         let tinted = ShadingTuning { sky_tint: 1.0, ..default() }.atmosphere(400.0);
         assert!((tinted.sky_light.truncate().max_element() - tuning.sky_light).abs() < 1e-5);
         assert!(tinted.sky_light.z > tinted.sky_light.x, "blue, like the sky");
+    }
+
+    #[test]
+    fn switched_off_parts_are_named_for_recordings() {
+        assert_eq!(Parts::default().off(), "shading all on");
+        assert_eq!(Parts { fog: false, sky: false, ..default() }.off(), "shading off: fog, sky");
+        let a = ShadingTuning { parts: Parts { edges: false, ..default() }, ..default() }.atmosphere(100.0);
+        assert_eq!(a.parts, Vec4::new(0.0, 1.0, 1.0, 1.0));
     }
 
     #[test]
