@@ -646,7 +646,13 @@ mod tests {
         let (link, world, mut menu) = at_table();
         let ctx = egui::Context::default();
         let empty = draw(&ctx, &world, &mut menu);
+        let grid_at = menu.columns[0].unwrap().min;
         let brick = world.blocks().material(base::BRICK).unwrap();
+        // A refusal, a line or two longer than the empty table's.
+        menu.cells[0][0][1] = Some(Piece::new(brick));
+        draw(&ctx, &world, &mut menu);
+        assert_eq!(menu.columns[0].unwrap().min, grid_at, "a refusal doesn't move the grid");
+        menu.cells[0][0][1] = None;
         for row in &mut menu.cells {
             for stack in row {
                 stack[0] = Some(Piece::new(brick));
@@ -656,6 +662,7 @@ mod tests {
         assert!(matches!(menu.request(1).map(|c| world.craft_plan(&c)), Some(Ok(_))), "a slab to preview");
         let slab = draw(&ctx, &world, &mut menu);
         assert_eq!((slab.min.x, slab.width()), (empty.min.x, empty.width()), "the grid doesn't move");
+        assert_eq!(menu.columns[0].unwrap().min, grid_at, "nor up or down");
         // A crafted part's row, with its buttons, is wider than a material's: it used to widen
         // the window and push the grid aside.
         let (mut link, mut world) = (link, world);
@@ -665,6 +672,7 @@ mod tests {
         assert!(matches!(menu.result, Some(Ok(_))), "crafted");
         let crafted = draw(&ctx, &world, &mut menu);
         assert_eq!((crafted.min.x, crafted.width()), (empty.min.x, empty.width()), "the grid still doesn't move");
+        assert_eq!(menu.columns[0].unwrap().min, grid_at);
     }
 
     #[test]
