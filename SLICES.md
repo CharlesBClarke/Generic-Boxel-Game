@@ -186,6 +186,7 @@ Shortcuts taken around the API, each with the toy that needed it. Paid down in s
 Bugs found in already-merged code, each fixed on its own `fix-` branch (see the workflow in `CLAUDE.md`). One line each: date, branch, what was wrong.
 
 - 2026-10-28, `fix-step-smoothing`: a step-up moved the body but not its previous position, so the renderer blended the rise between ticks while the camera feel also eased it, making the view dip and snap when climbing. Latent until the block shapes toy gave the player a step height.
+- 2026-11-05, `fix-clear-run-hang`: a cow's clear-run sweep never counted a sub-millimeter last piece as blocked, so with the player a hair away and the cow against something it looped forever and locked up the game (the server runs in the client's tick).
 
 ### Done toys
 
