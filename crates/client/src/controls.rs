@@ -52,6 +52,8 @@ pub struct Controls {
     /// Shows and hides the dev text (readouts, coordinates, controls). Hidden by default in
     /// release builds.
     pub dev_text: KeyCode,
+    /// Shows and hides every creature's path (see `crate::combat::draw_routes`).
+    pub show_routes: KeyCode,
     /// Throws a block's worth of the held material. Held, it keeps throwing.
     pub drop: KeyCode,
     /// Opens the crafting menu at a crafting table aimed at, and closes it.
@@ -128,6 +130,7 @@ impl Default for Controls {
             respawn_targets: KeyCode::F6,
             reload_sounds: KeyCode::F5,
             dev_text: KeyCode::F1,
+            show_routes: KeyCode::F7,
             drop: KeyCode::KeyQ,
             interact: KeyCode::KeyE,
             record_perf: KeyCode::F9,
@@ -235,6 +238,7 @@ impl Controls {
                 "respawn_targets" => &mut self.respawn_targets,
                 "reload_sounds" => &mut self.reload_sounds,
                 "dev_text" => &mut self.dev_text,
+                "show_routes" => &mut self.show_routes,
                 "drop" => &mut self.drop,
                 "interact" => &mut self.interact,
                 "record_perf" => &mut self.record_perf,

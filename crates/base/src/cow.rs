@@ -10,8 +10,14 @@
 //! up, throwing the player up and away for a little damage. From further off it lowers its head
 //! and charges in a line it can only bend a little, running well past, for big damage and
 //! knockback; dodged into a wall, it's stunned for a moment. It only charges with a clear run
-//! at the player. It has no pathfinding: if it gets no closer for a while, because the player
-//! stands on a block or behind a wall, it gives up and runs.
+//! at the player, and a charge has no edge guard: baited along a cliff, it runs off. Without a
+//! clear run it closes in along the path the engine finds ([`api::Route`]), round walls and
+//! hopping up ledges. With no path all the way, it goes as near as it can and waits there, facing
+//! the player, until its anger runs out; if it gets no closer for a while with no path at all,
+//! it gives up and runs.
+//!
+//! A cow running away and one walking back to the herd go by path too, so walls and ledges
+//! don't trap them.
 //!
 //! A hurt cow holds a grudge until the herd is reset, and so does one that sees a hurt herdmate
 //! or one fighting the player. It goes back to its routine, but when the
@@ -29,7 +35,7 @@
 
 use std::f32::consts::{PI, TAU};
 
-use api::{Attack, Brain, BrainContext, BrainOutput, Neighbor, Seen, Tunable, Tunables, Vec2};
+use api::{Attack, Brain, BrainContext, BrainOutput, Neighbor, Route, Seen, Tunable, Tunables, Vec2, Vec3};
 
 use crate::COW;
 
@@ -158,6 +164,17 @@ const CHARGE_BOX: ([f32; 3], [f32; 3]) = ([-0.6, 0.5, 0.0], [0.6, 2.1, 1.8]);
 /// How much further than `notice_range` the player has to go before a watching cow loses
 /// interest, so it doesn't flicker at the edge.
 const LOSE_RANGE: f32 = 1.5;
+/// How far ahead along its heading a running cow aims its path, meters.
+const FLEE_AHEAD: f32 = 12.0;
+/// Within this of the end of a path that doesn't reach the player, level in meters, it's as
+/// near as it can get, and waits.
+const WAIT_NEAR: f32 = 1.2;
+/// How much further down than its edge guard a cow on a path lets itself step, meters, when
+/// the path goes down.
+const PATH_DROP_SLACK: f32 = 0.3;
+/// Moving at least this fast, meters per second, along a path that reaches the player, a
+/// fighting cow is getting somewhere.
+const ON_ITS_WAY: f32 = 0.5;
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct CowBrain {
@@ -582,7 +599,7 @@ impl Brain for CowBrain {
         if mode.fighting() {
             if let Some(out) = self.fight(ctx, &mut mode, &mut left, &mut heading, &mut fight) {
                 remember(&mut memory, Remembered { mode, left, heading, calm, fight: &fight, grudge, cornered });
-                return BrainOutput { edge_guard: Some(self.edge_drop), memory, ..out };
+                return BrainOutput { memory, ..out };
             }
             if fight.gave_up {
                 // Got nowhere: runs from the player.
@@ -598,7 +615,7 @@ impl Brain for CowBrain {
             fight = Fight::calm();
         }
 
-        if matches!(mode, Mode::Wander | Mode::Flee) && ctx.blocked && ctx.on_ground {
+        if matches!(mode, Mode::Wander | Mode::Flee) && ctx.blocked && ctx.on_ground && ctx.route.is_none() {
             // Turn away from what's in the way, by a quarter to three quarters of a turn.
             heading = ctx.yaw + PI * (0.5 + ctx.random_unit(3));
         } else if mode == Mode::Flee && grudge && near.is_some_and(|d| d <= self.grudge_range) {
@@ -648,9 +665,20 @@ impl Brain for CowBrain {
             }
         }
 
+        // Running, it heads for a point ahead; strayed, for the middle of the herd: by path.
+        let go_to = match mode {
+            Mode::Flee => {
+                let (sin, cos) = libm::sincosf(heading);
+                Some(Vec3::new(cos, sin, 0.0) * FLEE_AHEAD)
+            }
+            Mode::Wander => herd.strayed(self.stray_range).map(|_| herd.middle()),
+            _ => None,
+        };
+        let route = go_to.and(ctx.route.as_ref()).filter(|r| level(r.next) != Vec2::ZERO);
+        let way = route.map_or(heading, |r| angle(level(r.next)));
         let (face, speed, turn) = match mode {
-            Mode::Wander => (Some(heading), self.walk_speed, self.turn_speed),
-            Mode::Flee => (Some(heading), self.run_speed, self.turn_speed * 2.0),
+            Mode::Wander => (Some(way), self.walk_speed, self.turn_speed),
+            Mode::Flee => (Some(way), self.run_speed, self.turn_speed * 2.0),
             Mode::Watch => (player.filter(|p| *p != Vec2::ZERO).map(angle), 0.0, self.turn_speed),
             _ => (None, 0.0, 0.0),
         };
@@ -674,17 +702,24 @@ impl Brain for CowBrain {
         BrainOutput {
             walk,
             yaw,
-            edge_guard: Some(self.edge_drop),
+            edge_guard: Some(self.path_guard(route)),
             clip: mode.clip().into(),
             clip_speed,
             signal: signal.into(),
             attack: None,
+            go_to,
+            hop: hops(ctx, route),
             memory,
         }
     }
 }
 
 impl CowBrain {
+    /// Its edge guard: the usual one, or deep enough to step down where its path goes down.
+    fn path_guard(&self, route: Option<&Route>) -> f32 {
+        route.map_or(self.edge_drop, |r| self.edge_drop.max(-r.next.z + PATH_DROP_SLACK))
+    }
+
     fn idle_time(&self, ctx: &BrainContext) -> f32 {
         self.idle_min + self.idle_spread * ctx.random_unit(7)
     }
@@ -726,12 +761,21 @@ impl CowBrain {
         // Getting nowhere, the whole fight through: wind-ups, charges and stuns count too, so a
         // cow charging a fence again and again gives up. The player in reach, or a hit landing,
         // is getting somewhere.
-        let reach = seen.offset.length();
         let in_reach = distance <= self.toss_range && rise.abs() <= self.toss_height;
-        if ctx.attack_landed || in_reach || reach < fight.best - PROGRESS {
+        // No clear run at the player: it closes in by path, and with none all the way it waits
+        // at the nearest point it can get to.
+        let straight = self.reachable(seen);
+        let route = ctx.route.as_ref().filter(|_| !straight && !in_reach);
+        let waiting = route.is_some_and(|r| !r.reaches && level(r.end).length() < WAIT_NEAR);
+        let following = route.filter(|r| !waiting && level(r.next) != Vec2::ZERO);
+        // Getting closer is measured along the path when it has one that reaches, and moving
+        // along such a path is getting somewhere, however far the player has gone.
+        let reach = route.filter(|r| r.reaches).map_or(seen.offset.length(), |r| r.length);
+        let on_its_way = following.is_some_and(|r| r.reaches) && moving > ON_ITS_WAY;
+        if ctx.attack_landed || in_reach || on_its_way || reach < fight.best - PROGRESS {
             fight.best = reach;
             fight.stuck = 0.0;
-        } else {
+        } else if !waiting {
             fight.stuck += ctx.dt;
         }
         // A move running out leads back to squaring up.
@@ -776,7 +820,12 @@ impl CowBrain {
 
         let face = |turn: f32| libm::remainderf(turn_toward(ctx.yaw, toward, turn * ctx.dt), TAU);
         let (yaw, speed, clip_speed, attack) = match *mode {
-            Mode::Angry if *left > 0.0 => (face(self.turn_speed * 2.0), 0.0, 1.0, None),
+            Mode::Angry if *left > 0.0 || waiting => (face(self.turn_speed * 2.0), 0.0, 1.0, None),
+            Mode::Angry if following.is_some() => {
+                let way = following.map_or(toward, |r| angle(level(r.next)));
+                let yaw = libm::remainderf(turn_toward(ctx.yaw, way, self.turn_speed * 2.0 * ctx.dt), TAU);
+                (yaw, self.approach_speed, self.gait(moving), None)
+            }
             Mode::Angry => (face(self.turn_speed * 2.0), self.approach_speed, self.gait(moving), None),
             Mode::Toss => {
                 let into = self.toss_windup + PUNCH_UP + self.toss_recover - *left;
@@ -821,14 +870,18 @@ impl CowBrain {
         // angry from the start.
         let hit = ctx.health < ctx.full_health;
         let signal = if hit && self.anger_time - fight.anger < ALARM_FLASH { ALARMED } else { ANGRY };
+        let walking = *mode == Mode::Angry && speed > 0.0;
         Some(BrainOutput {
             walk: Vec2::new(cos, sin) * speed,
             yaw,
-            edge_guard: None,
+            // A charge runs off edges, so it can be baited off a cliff.
+            edge_guard: (*mode != Mode::Charge).then(|| self.path_guard(following)),
             clip: clip.into(),
             clip_speed,
             signal: signal.into(),
             attack,
+            go_to: Some(seen.offset),
+            hop: walking && hops(ctx, following),
             memory: Vec::new(),
         })
     }
@@ -922,6 +975,11 @@ impl<'a> Herd<'a> {
         (middle.length() > range).then_some(middle)
     }
 
+    /// The middle of the cows it sees, from its feet. Only for a cow that sees some.
+    fn middle(&self) -> Vec3 {
+        self.cows.iter().map(|n| n.offset).sum::<Vec3>() / self.cows.len().max(1) as f32
+    }
+
     /// The way away from the nearest cow, if it's nearer than `space`.
     fn crowding(&self, space: f32) -> Option<Vec2> {
         let nearest = self.cows.first()?;
@@ -958,6 +1016,11 @@ impl<'a> Herd<'a> {
     }
 }
 
+/// Whether a cow following `route` hops now: the route says so, and it's up against the ledge.
+fn hops(ctx: &BrainContext, route: Option<&Route>) -> bool {
+    route.is_some_and(|r| r.hop) && ctx.blocked && ctx.on_ground
+}
+
 fn level(v: api::Vec3) -> Vec2 {
     Vec2::new(v.x, v.y)
 }
@@ -975,7 +1038,7 @@ fn turn_toward(from: f32, to: f32, step: f32) -> f32 {
 
 #[cfg(test)]
 mod tests {
-    use api::{Hurt, Vec3};
+    use api::Hurt;
 
     use super::*;
 
@@ -996,6 +1059,7 @@ mod tests {
             attack_landed: false,
             others: Vec::new(),
             random: 1,
+            route: None,
             memory: Vec::new(),
         }
     }
@@ -1436,6 +1500,83 @@ mod tests {
         assert!(modes.iter().all(|&m| m == Mode::Angry), "never gives up while gaining: {modes:?}");
         let outs = run(&brain, fighting(Mode::Angry, 0.0, 0.2, 4.0), 0.3);
         assert!(!mode(outs.last().unwrap()).fighting(), "calmed down");
+    }
+
+    /// A route whose next point is `next` and whose end is `end`.
+    fn route(next: Vec3, end: Vec3, reaches: bool) -> Route {
+        Route { next, end, length: level(end).length() + 2.0, reaches, hop: false }
+    }
+
+    #[test]
+    fn with_no_clear_run_it_closes_in_by_its_route_and_hops_when_told() {
+        let brain = CowBrain::default();
+        // Behind a wall 2 m off; the way round goes north first.
+        let walled = Seen { clear_run: 2.0, ..seen(Vec3::new(10.0, 0.0, 0.0)) };
+        let round = route(Vec3::new(0.0, 4.0, 0.0), Vec3::new(9.0, 0.0, 0.0), true);
+        let c = BrainContext { player: Some(walled.clone()), route: Some(round.clone()), ..fighting(Mode::Angry, 0.0, 15.0, 10.0) };
+        let outs = run(&brain, c.clone(), 1.0);
+        let last = outs.last().unwrap();
+        assert_eq!(mode(last), Mode::Angry);
+        assert_eq!(last.go_to, Some(walled.offset), "asks the way to the player");
+        assert!(last.walk.y > last.walk.x.abs() * 3.0, "goes north, round the wall: {}", last.walk);
+        assert!(last.edge_guard.is_some());
+        // Against a ledge its route hops.
+        let ledge = Route { hop: true, ..round };
+        let out = brain.think(&BrainContext { route: Some(ledge.clone()), blocked: true, memory: last.memory.clone(), ..c.clone() });
+        assert!(out.hop);
+        let out = brain.think(&BrainContext { route: Some(ledge), blocked: false, memory: last.memory.clone(), ..c });
+        assert!(!out.hop, "only up against it");
+    }
+
+    #[test]
+    fn with_no_path_all_the_way_it_waits_as_near_as_it_gets_until_its_anger_runs_out() {
+        let brain = CowBrain::default();
+        // Up on a pillar 3 high, a meter off: its route ends at the foot of it.
+        let up = Seen { clear_run: 0.5, ..seen(Vec3::new(1.0, 0.0, 3.0)) };
+        let foot = route(Vec3::new(0.3, 0.0, 0.0), Vec3::new(0.3, 0.0, 0.0), false);
+        let anger = brain.give_up_time + 2.0;
+        let c = BrainContext { player: Some(up), route: Some(foot), ..fighting(Mode::Angry, 0.0, anger, 1.0) };
+        let outs = run(&brain, c.clone(), anger - 0.2);
+        assert!(outs.iter().all(|o| mode(o) == Mode::Angry && o.walk == Vec2::ZERO), "waits below, past its give-up time");
+        assert!(outs.iter().all(|o| o.go_to.is_some()), "still looking for a way up");
+        let outs = run(&brain, BrainContext { memory: outs.last().unwrap().memory.clone(), ..c }, 0.5);
+        assert!(!mode(outs.last().unwrap()).fighting(), "calmed down");
+    }
+
+    #[test]
+    fn a_charge_has_no_edge_guard_so_it_can_run_off_a_cliff() {
+        let brain = CowBrain::default();
+        let out = brain.think(&fighting(Mode::Charge, brain.charge_time, 10.0, 5.0));
+        assert_eq!(mode(&out), Mode::Charge);
+        assert_eq!(out.edge_guard, None);
+        let out = brain.think(&fighting(Mode::Angry, 0.0, 10.0, 4.0));
+        assert_eq!(out.edge_guard, Some(brain.edge_drop), "closing in, it keeps away from edges");
+        // Its route going down a block, it lets itself step down.
+        let down = route(Vec3::new(2.0, 0.0, -1.0), Vec3::new(5.0, 0.0, -1.0), true);
+        let walled = Seen { clear_run: 1.0, ..seen(Vec3::new(4.0, 0.0, -1.0)) };
+        let out = brain.think(&BrainContext { player: Some(walled), route: Some(down), ..fighting(Mode::Angry, 0.0, 10.0, 4.0) });
+        assert!(out.edge_guard.is_some_and(|g| g > 1.0), "{:?}", out.edge_guard);
+    }
+
+    #[test]
+    fn running_off_and_going_back_to_the_herd_go_by_path() {
+        let brain = CowBrain::default();
+        // Running east: it asks the way to a point ahead, and follows the route north round
+        // whatever is in the way.
+        let out = brain.think(&remembering(Mode::Flee, 2.0, 0.0));
+        let ahead = out.go_to.expect("a goal ahead");
+        assert!(ahead.x > 5.0 && ahead.y.abs() < 1e-3, "{ahead}");
+        let c = BrainContext { route: Some(route(Vec3::new(0.0, 3.0, 0.0), ahead, true)), ..remembering(Mode::Flee, 2.0, 0.0) };
+        let outs = run(&brain, c, 0.5);
+        assert!(outs.last().unwrap().walk.y > outs.last().unwrap().walk.x.abs(), "north by the route");
+        assert!(near_angle(outs.last().unwrap().memory[Slot::Heading as usize], 0.0, 1e-3), "still running east");
+        // Strayed, it asks the way to the middle of the herd.
+        let herd = vec![cow(-1.0, 8.0, 1, ""), cow(1.0, 9.0, 2, ""), cow(0.0, 10.0, 3, "")];
+        let out = brain.think(&seeing(herd, remembering(Mode::Wander, 5.0, 0.0)));
+        let middle = out.go_to.expect("the way home");
+        assert!((middle - Vec3::new(0.0, 9.0, 0.0)).length() < 1e-3, "{middle}");
+        // Otherwise wandering asks nothing.
+        assert_eq!(brain.think(&remembering(Mode::Wander, 5.0, 0.0)).go_to, None);
     }
 
     #[test]

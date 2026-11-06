@@ -136,7 +136,7 @@ pub fn run(connection: Box<dyn Connection>) {
                 editing::draw_outline,
                 editing::update_ghost,
                 items::sync_items,
-                (combat::sync_targets, combat::update_chunks, combat::animate_weapon, combat::draw_hit_boxes, combat::update_readout, hurt::update_health)
+                (combat::sync_targets, combat::update_chunks, combat::animate_weapon, combat::draw_hit_boxes, combat::draw_routes, combat::update_readout, hurt::update_health)
                     .chain(),
                 editing::draw_region_guide,
                 drill::draw_drill,
@@ -561,7 +561,7 @@ fn update_hud(
     let precise = pos.cell().as_dvec3() + pos.offset().as_dvec3();
     let fps = 1.0 / time.delta_secs().max(1e-6);
     text.0 = format!(
-        "pos {:.2}, {:.2}, {:.2}  speed {:.1} m/s  last landing {:.1} m/s ({})\norigin {}, {}, {}\n{cost}\n{} | {:.0} fps | cap {} ({})\n{}{}{}{} move, {} jump, {} toggle sprint (or double-tap forward), {} crouch, {} down, {} fly, {} teleport, {} tuning, {} hide dev text, Esc release mouse\n{} use (break, swing), {} second use (place, guard), 1-9 or scroll pick, {} craft at a table, {} respawn targets, {} reload sounds",
+        "pos {:.2}, {:.2}, {:.2}  speed {:.1} m/s  last landing {:.1} m/s ({})\norigin {}, {}, {}\n{cost}\n{} | {:.0} fps | cap {} ({})\n{}{}{}{} move, {} jump, {} toggle sprint (or double-tap forward), {} crouch, {} down, {} fly, {} teleport, {} tuning, {} hide dev text, Esc release mouse\n{} use (break, swing), {} second use (place, guard), 1-9 or scroll pick, {} craft at a table, {} respawn targets, {} reload sounds, {} show cow paths",
         precise.x,
         precise.y,
         precise.z,
@@ -592,6 +592,7 @@ fn update_hud(
         label(controls.interact),
         label(controls.respawn_targets),
         label(controls.reload_sounds),
+        label(controls.show_routes),
     );
 }
 

@@ -35,6 +35,13 @@ respawn_time = 3
 respawns = false
 slam_speed = 4
 slam_damage = 2
+# Hops up a full block (about 1.25 m at this gravity) where its path needs it.
+hop_speed = 10
+# Its paths walk off two blocks at most, which lands below fall_speed.
+max_drop = 2.2
+# A fall of about 2.5 m starts to hurt; one off a 10 m cliff takes near half its health.
+fall_speed = 14
+fall_damage = 4
 
 # Body and neck, legs included.
 [[target.hit_box]]

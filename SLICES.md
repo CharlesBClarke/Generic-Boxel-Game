@@ -111,7 +111,20 @@ A run of small toy slices. Each one takes a single game-feel feature that doesn'
 - Cow herd (1): a cow shoved well away from the herd walks back to it on its own.
 - Cow herd (3): a moving cow that runs into the player pushes them back, with no jitter or sticking.
 
-None. Plan the next toy in a new session.
+#### Cow pathfinding (`toy-cow-pathfinding`)
+
+**Stage:** Verify
+
+**Goal:** Cows find their way around walls, through gaps and up one-block ledges (with a hop) when chasing, running off and walking back to the herd. A charge stays a straight line and can go over a cliff, and a fall hurts, so a cow can be baited off a cliff.
+
+**Plan** (approved 2026-11-06)
+- *API.* `BrainOutput.go_to` (where the brain wants to get, from its feet) and `BrainOutput.hop`. `BrainContext.route` answers a request one tick or more later: `next` (where to steer: the furthest path point with a clear walk), `end` (where the path ends), `length`, `reaches` (all the way, or only as close as it gets) and `hop` (the next step is a hop up). `TargetDef` gains `hop_speed`, `max_drop`, `fall_speed` and `fall_damage`, read from `targets.toml` and tunable.
+- *Engine, `sim::path`.* A* over standing spots (one per boxel column at a floor height). Moves to the 8 neighbors are tested with the real collision sweeps (`sweep_stepping`, `clamp_axis`), so shaped cells work: walk (stepping up to `step_height`, down up to `max_drop`), or hop up when the hop clears it. Diagonals need both sides clear. Each search has a node budget and range, and the closest spot is returned when the goal can't be reached. `Targets::step` keeps each creature's plan, replans when the goal moves, the plan ages or the creature is knocked off it, and runs at most a few searches a tick, oldest request first.
+- *Hops and falls.* A hop gives a creature on the ground `hop_speed` up and its walking velocity. A landing faster than `fall_speed` hurts like a slam (`Slam` event straight down).
+- *Cow brain.* Chasing (angry, closing in) follows the route when it can't charge straight. With no full path it goes as close as it can and waits there, facing the player, until its anger runs out. Running away heads for a point ahead along its heading by route. A strayed cow walks back to the herd's middle by route. A charge drops its edge guard so it can run off a cliff.
+- *Debug.* `Target.route` (the path left) reaches the client in the snapshot. The `show_routes` key (F7) draws every cow's route: green when it reaches, orange when not, hops marked.
+- *Pasture course.* Inside the pasture: a wall with a one-block gap, a one-block terrace with a second tier, a 3-high pillar (unreachable for cows) and a 5-high mesa with one-block hop steps and a cliff edge for baiting charges.
+- *Tests.* `sim::path` on handmade terrains: around a wall, through a 1-wide gap, a hop up, refusing a drop too deep, no path to a pillar (closest spot), the budget respected, slabs walked without hops. Engine tests for hops, fall damage and replanning; brain tests for following a route, waiting below and charging without an edge guard. Then play in the pasture and on the terrain.
 
 ### Toy backlog
 

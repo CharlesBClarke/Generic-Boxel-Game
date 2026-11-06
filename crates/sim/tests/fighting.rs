@@ -114,6 +114,10 @@ impl Mod for Arena {
             respawn_time: 1.0,
             slam_speed: 1000.0,
             slam_damage: 0.0,
+            hop_speed: 0.0,
+            max_drop: 0.0,
+            fall_speed: 1000.0,
+            fall_damage: 0.0,
             respawns: true,
         })?;
         r.register_tool(ToolDef {

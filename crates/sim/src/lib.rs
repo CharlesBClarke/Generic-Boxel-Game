@@ -8,6 +8,7 @@ pub mod edit;
 pub mod inventory;
 pub mod items;
 pub mod layer;
+pub mod path;
 pub mod player;
 pub mod raycast;
 pub mod registry;

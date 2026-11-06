@@ -465,6 +465,10 @@ fn dummy() -> TargetDef {
         respawn_time: 1.0,
         slam_speed: 4.0,
         slam_damage: 1.0,
+        hop_speed: 0.0,
+        max_drop: 0.0,
+        fall_speed: 1000.0,
+        fall_damage: 0.0,
         respawns: true,
     }
 }
@@ -650,7 +654,7 @@ fn mode_is(sim: &Simulation, id: u64, mode: base::cow::Mode) -> bool {
 }
 
 #[test]
-fn a_cow_never_charges_a_player_behind_the_wall_and_gives_up_and_runs() {
+fn a_cow_comes_round_through_the_doorway_to_a_player_behind_the_wall() {
     use base::cow::Mode;
     let mut sim = base_sim();
     let cow = anger_a_cow(&mut sim);
@@ -665,22 +669,25 @@ fn a_cow_never_charges_a_player_behind_the_wall_and_gives_up_and_runs() {
             break;
         }
     }
-    // Then stand outside the wall, 6 m past it and clear of the doorway: far enough off to
-    // charge, if there were a way through.
+    // Then stand outside the wall, 6 m past it and clear of the doorway.
     sim.teleport_player(door.translate(Vec3::new(4.0, -6.0, 0.0)));
-    let mut charged = false;
-    let mut ran = false;
+    let mut charged_at_wall = false;
     let mut hurts = Vec::new();
-    for _ in 0..12 * 60 {
+    let mut out = false;
+    for _ in 0..15 * 60 {
         sim.step(&PlayerInput::default());
         hurts.extend(sim.take_player_hurts());
-        charged |= mode_is(&sim, cow, Mode::ChargeUp) || mode_is(&sim, cow, Mode::Charge);
-        ran |= mode_is(&sim, cow, Mode::Flee);
+        // A charge that misses can run it off the edge of the test area, and it's gone.
+        let Some(at) = sim.targets().iter().find(|t| t.id == cow).map(|t| t.pos) else {
+            break;
+        };
+        let inside = in_pasture(at);
+        charged_at_wall |= inside && (mode_is(&sim, cow, Mode::ChargeUp) || mode_is(&sim, cow, Mode::Charge));
+        out |= !inside;
     }
-    assert!(!charged, "no charge at a wall");
-    assert!(ran, "gave up and ran");
-    assert!(hurts.is_empty(), "never reached the player");
-    assert!(in_pasture(cow_pos(&sim, cow)), "still in the pasture");
+    assert!(!charged_at_wall, "no charge at the wall");
+    assert!(out, "it came out through the doorway, hopping the sill");
+    assert!(!hurts.is_empty(), "and got at the player");
 }
 
 #[test]
@@ -795,3 +802,28 @@ fn hitting_one_cow_brings_some_of_the_herd_to_its_side_and_scatters_the_rest() {
 }
 
 
+
+#[test]
+fn an_angry_cow_climbs_the_mesa_steps_to_the_player_on_top() {
+    let mut sim = base_sim();
+    let cow = anger_a_cow(&mut sim);
+    // On the mesa in the pasture's south-west corner, 5 blocks up, near its edge.
+    let top = WorldPos::at_boxel(BoxelPos::new(-57, -58, 5)).translate(Vec3::new(0.5, 0.5, 0.0));
+    sim.teleport_player(top);
+    let mut highest: f32 = 0.0;
+    let mut hurts = Vec::new();
+    for _ in 0..25 * 60 {
+        sim.step(&PlayerInput::default());
+        hurts.extend(sim.take_player_hurts());
+        let Some(at) = sim.targets().iter().find(|t| t.id == cow).map(|t| t.pos) else {
+            break;
+        };
+        highest = highest.max(at.cell().z as f32 + at.offset().z);
+        if !hurts.is_empty() {
+            break;
+        }
+    }
+    // The top step is 4 up: from there the player is in reach of a toss.
+    assert!(highest > 3.5, "it got up the steps: highest {highest}");
+    assert!(!hurts.is_empty(), "and got at the player");
+}

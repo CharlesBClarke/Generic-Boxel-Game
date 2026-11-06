@@ -19,8 +19,26 @@ pub struct Seen {
     /// How far, level in meters, the creature's body could walk straight toward the player,
     /// stepping up what it can step, before terrain stops it: at most the level distance to
     /// them. Short of that distance, a wall (or the block they stand on) is in the way. A clear
-    /// straight run, not a path: there's no pathfinding yet.
+    /// straight run, not a path: see [`Route`] for one.
     pub clear_run: f32,
+}
+
+/// The engine's answer to a brain's [`BrainOutput::go_to`]: a path over the terrain from where
+/// the creature stands, as far as the engine's search got. Positions are from the creature's
+/// feet, meters, Z-up.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Route {
+    /// Where to steer now: the furthest point ahead on the path it can walk straight to.
+    pub next: Vec3,
+    /// Where the path ends: the goal, or the nearest it could get to it.
+    pub end: Vec3,
+    /// How far the path is, meters, along the ground.
+    pub length: f32,
+    /// The path gets all the way to the goal. Without, `end` is as near as the creature can get.
+    pub reaches: bool,
+    /// The next step is a hop up a ledge too high to step: hop ([`BrainOutput::hop`]) once
+    /// against it.
+    pub hop: bool,
 }
 
 /// How many other creatures a brain is shown at most, nearest first.
@@ -79,6 +97,9 @@ pub struct BrainContext {
     /// A random number for this creature and tick. The same game gives the same numbers, so
     /// replays and multiplayer stay in step.
     pub random: u64,
+    /// The way to where it last asked to go ([`BrainOutput::go_to`]), once the engine has found
+    /// one. Paths take a tick or more to come, and are kept up as the goal moves.
+    pub route: Option<Route>,
     /// What the brain handed back last tick; empty for a newly spawned creature.
     pub memory: Vec<f32>,
 }
@@ -116,6 +137,11 @@ pub struct BrainOutput {
     pub signal: String,
     /// An attack under way this tick, if any. See [`Attack`].
     pub attack: Option<Attack>,
+    /// Where it wants to get to, from its feet, meters: the engine finds a path there over the
+    /// terrain and hands it back as [`BrainContext::route`]. `None` drops the path.
+    pub go_to: Option<Vec3>,
+    /// Hops, if it's on the ground: up at its definition's `hop_speed`, moving at `walk`.
+    pub hop: bool,
     /// Handed back on the next call.
     pub memory: Vec<f32>,
 }
@@ -164,6 +190,7 @@ mod tests {
             attack_landed: false,
             others: Vec::new(),
             random,
+            route: None,
             memory: Vec::new(),
         }
     }
