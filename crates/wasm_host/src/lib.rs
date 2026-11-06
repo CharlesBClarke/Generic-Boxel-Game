@@ -1,30 +1,30 @@
-//! The engine side of the WebAssembly boundary. Loads a mod's movement controller component
-//! and wraps it in the plain [`MovementController`] trait, so the simulation and the tuning
-//! panel can't tell it from a native one.
+//! The engine side of the WebAssembly boundary. Loads a mod's components and wraps each in the
+//! plain trait it exports ([`MovementController`](api::MovementController) in [`movement`],
+//! [`Brain`](api::Brain) in [`brain`]), so the simulation and the tuning panel can't tell them
+//! from native ones.
 //!
-//! The component imports nothing, so it can only compute: no files, no clock, no network.
+//! A component imports nothing, so it can only compute: no files, no clock, no network. It
+//! keeps no state between calls either; the engine passes each body's or creature's memory in.
 //! [`Limits`] keep it from hanging the game or taking all its memory.
 
 use std::fmt;
 use std::sync::{Arc, Mutex, MutexGuard};
 
-use api::{Ground, MoveContext, MoveInput, MoveOutput, MovementController, Tunable, Tunables, Vec2, Vec3};
-use wasmtime::component::{Component, Linker, ResourceAny};
+use wasmtime::component::{Component, Linker};
 use wasmtime::{Config, Engine, ResourceLimiter, Store, Trap};
 
-mod bindings {
-    wasmtime::component::bindgen!({ path: "../api/wit", world: "movement-controller" });
-}
+pub mod brain;
+pub mod movement;
 
-use bindings::MovementController as Bindings;
-use bindings::exports::boxel::api::movement as wit;
+pub use brain::{WasmBrain, load_brain, load_brain_with};
+pub use movement::{WasmController, load_movement, load_movement_with};
 
 /// The most table elements a mod may have. Tables hold function references, so real mods
 /// need few; this only stops a runaway.
 const TABLE_ELEMENTS: usize = 1 << 20;
 
-/// What a mod may use. A mod's controllers share one instance, so they share its memory;
-/// fuel is given afresh for every call, so one call's cost never depends on another's.
+/// What a mod may use. Fuel is given afresh for every call, so one call's cost never depends
+/// on another's.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Limits {
     /// Fuel for each call into the mod, about one unit per WebAssembly instruction. Counted,
@@ -67,6 +67,27 @@ impl fmt::Display for Stop {
     }
 }
 
+/// Why a component couldn't be loaded.
+#[derive(Debug)]
+pub struct LoadError {
+    /// What was being loaded, such as "movement controller".
+    pub what: &'static str,
+    /// Set when the component's own code failed or hit a limit while starting up.
+    pub stop: Option<Stop>,
+    pub source: wasmtime::Error,
+}
+
+impl fmt::Display for LoadError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self.stop {
+            Some(stop) => write!(f, "the {} {stop} while loading: {:?}", self.what, self.source),
+            None => write!(f, "the {} couldn't be loaded: {:?}", self.what, self.source),
+        }
+    }
+}
+
+impl std::error::Error for LoadError {}
+
 /// Per-store state: the memory limits, and whether a call tried to grow past them.
 struct Caps {
     memory: usize,
@@ -85,11 +106,12 @@ impl ResourceLimiter for Caps {
     }
 }
 
-/// One loaded component: its store and instance, shared by every controller spawned from it.
-struct Instance {
+/// One loaded component: its store and its bindings `B`, shared by every handle to it.
+struct Sandbox<B> {
     store: Store<Caps>,
-    bindings: Bindings,
-    /// The component's controller name, for messages.
+    bindings: B,
+    /// What it is and its registered name, for messages.
+    what: &'static str,
     name: String,
     fuel: u64,
     /// Fuel the most recent call used.
@@ -98,248 +120,116 @@ struct Instance {
     stopped: Option<Stop>,
 }
 
-impl Instance {
-    /// Stops the instance for good, printing why once.
-    fn stop(&mut self, stop: Stop, e: &wasmtime::Error) {
-        self.stopped = Some(stop);
-        eprintln!("movement controller {:?} {stop} and has stopped: {e:?}", self.name);
-    }
-
-    /// Runs one call into the component with a full tank of fuel, noting what it used and,
-    /// if it fails, why.
-    fn run<R>(
-        store: &mut Store<Caps>,
-        fuel: u64,
-        f: impl FnOnce(&mut Store<Caps>) -> wasmtime::Result<R>,
-    ) -> (Result<R, (Stop, wasmtime::Error)>, u64) {
-        store.data_mut().memory_refused = false;
-        store.set_fuel(fuel).expect("fuel is enabled");
-        let result = f(store);
-        let used = fuel - store.get_fuel().expect("fuel is enabled");
-        let result = result.map_err(|e| {
-            let stop = match e.downcast_ref::<Trap>() {
-                Some(Trap::OutOfFuel) => Stop::OutOfFuel,
-                Some(Trap::StackOverflow) => Stop::StackOverflow,
-                // A guest whose allocation is refused usually aborts with a trap of its own.
-                _ if store.data().memory_refused => Stop::OutOfMemory,
-                _ => Stop::Trap,
-            };
-            (stop, e)
-        });
-        (result, used)
-    }
+/// Runs one call into a component with a full tank of fuel, noting what it used and, if it
+/// fails, why.
+fn run<R>(
+    store: &mut Store<Caps>,
+    fuel: u64,
+    f: impl FnOnce(&mut Store<Caps>) -> wasmtime::Result<R>,
+) -> (Result<R, (Stop, wasmtime::Error)>, u64) {
+    store.data_mut().memory_refused = false;
+    store.set_fuel(fuel).expect("fuel is enabled");
+    let result = f(store);
+    let used = fuel - store.get_fuel().expect("fuel is enabled");
+    let result = result.map_err(|e| {
+        let stop = match e.downcast_ref::<Trap>() {
+            Some(Trap::OutOfFuel) => Stop::OutOfFuel,
+            Some(Trap::StackOverflow) => Stop::StackOverflow,
+            // A guest whose allocation is refused usually aborts with a trap of its own.
+            _ if store.data().memory_refused => Stop::OutOfMemory,
+            _ => Stop::Trap,
+        };
+        (stop, e)
+    });
+    (result, used)
 }
 
-/// A movement controller running inside a WebAssembly component. If the component traps or
-/// hits one of its [`Limits`], the reason is printed once and the controller stops steering:
-/// velocity passes through unchanged and its tunables disappear. The game carries on.
-pub struct WasmController {
-    instance: Arc<Mutex<Instance>>,
-    /// The controller resource inside the component; `None` once stopped.
-    handle: Option<ResourceAny>,
+/// How a kind of component starts up: instantiating it, asking its name, and one call that
+/// makes the thing it exports (its constructor runs on the first call), so a component that
+/// can't start fails to load rather than later.
+struct Startup<B> {
+    what: &'static str,
+    instantiate: fn(&mut Store<Caps>, &Component, &Linker<Caps>) -> wasmtime::Result<B>,
+    name: fn(&B, &mut Store<Caps>) -> wasmtime::Result<String>,
+    warm_up: fn(&B, &mut Store<Caps>) -> wasmtime::Result<()>,
 }
 
-/// Why a component couldn't be loaded.
-#[derive(Debug)]
-pub struct LoadError {
-    /// Set when the component's own code failed or hit a limit while starting up.
-    pub stop: Option<Stop>,
-    pub source: wasmtime::Error,
-}
-
-impl fmt::Display for LoadError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self.stop {
-            Some(stop) => write!(f, "the movement controller {stop} while loading: {:?}", self.source),
-            None => write!(f, "the movement controller couldn't be loaded: {:?}", self.source),
+impl<B> Sandbox<B> {
+    fn load(bytes: &[u8], limits: Limits, startup: Startup<B>) -> Result<Self, LoadError> {
+        let what = startup.what;
+        let fail = |stop, source| LoadError { what, stop, source };
+        let mut config = Config::new();
+        config.wasm_component_model(true);
+        // Floats must give the same bits on every machine, for replays and multiplayer.
+        config.cranelift_nan_canonicalization(true);
+        config.relaxed_simd_deterministic(true);
+        config.consume_fuel(true);
+        config.max_wasm_stack(limits.stack);
+        let engine = Engine::new(&config).map_err(|e| fail(None, e))?;
+        let component = Component::new(&engine, bytes).map_err(|e| fail(None, e))?;
+        let linker = Linker::new(&engine);
+        let mut store = Store::new(&engine, Caps { memory: limits.memory, memory_refused: false });
+        store.limiter(|caps| caps);
+        // Starting up runs the component's own code too, so each step gets fuel.
+        fn started<R>(what: &'static str, r: Result<R, (Stop, wasmtime::Error)>) -> Result<R, LoadError> {
+            r.map_err(|(stop, source)| LoadError { what, stop: Some(stop), source })
         }
-    }
-}
-
-impl std::error::Error for LoadError {}
-
-impl From<wasmtime::Error> for LoadError {
-    fn from(source: wasmtime::Error) -> Self {
-        LoadError { stop: None, source }
-    }
-}
-
-impl From<(Stop, wasmtime::Error)> for LoadError {
-    fn from((stop, source): (Stop, wasmtime::Error)) -> Self {
-        LoadError { stop: Some(stop), source }
-    }
-}
-
-/// Loads a movement controller component with the default [`Limits`]. Returns the name it
-/// registers under and the controller with its default settings; bodies get theirs from its
-/// `spawn`.
-pub fn load_movement(bytes: &[u8]) -> Result<(String, WasmController), LoadError> {
-    load_movement_with(bytes, Limits::default())
-}
-
-/// Loads a movement controller component with the given limits.
-pub fn load_movement_with(bytes: &[u8], limits: Limits) -> Result<(String, WasmController), LoadError> {
-    let mut config = Config::new();
-    config.wasm_component_model(true);
-    // Floats must give the same bits on every machine, for replays and multiplayer.
-    config.cranelift_nan_canonicalization(true);
-    config.relaxed_simd_deterministic(true);
-    config.consume_fuel(true);
-    config.max_wasm_stack(limits.stack);
-    let engine = Engine::new(&config)?;
-    let component = Component::new(&engine, bytes)?;
-    let linker = Linker::new(&engine);
-    let mut store = Store::new(&engine, Caps { memory: limits.memory, memory_refused: false });
-    store.limiter(|caps| caps);
-    // Starting up runs the component's own code too, so each step gets fuel.
-    let bindings = Instance::run(&mut store, limits.fuel, |s| Bindings::instantiate(s, &component, &linker)).0?;
-    let name = Instance::run(&mut store, limits.fuel, |s| bindings.boxel_api_movement().call_name(s)).0?;
-    let (handle, fuel_used) = Instance::run(&mut store, limits.fuel, |s| bindings.boxel_api_movement().call_create(s));
-    let handle = handle?;
-    let instance = Instance { store, bindings, name: name.clone(), fuel: limits.fuel, fuel_used, stopped: None };
-    Ok((name, WasmController { instance: Arc::new(Mutex::new(instance)), handle: Some(handle) }))
-}
-
-impl WasmController {
-    /// Why the component stopped, if it has. All controllers from one component stop together.
-    pub fn stopped(&self) -> Option<Stop> {
-        self.lock().stopped
+        let bindings = started(what, run(&mut store, limits.fuel, |s| (startup.instantiate)(s, &component, &linker)).0)?;
+        let name = started(what, run(&mut store, limits.fuel, |s| (startup.name)(&bindings, s)).0)?;
+        let (warm, fuel_used) = run(&mut store, limits.fuel, |s| (startup.warm_up)(&bindings, s));
+        started(what, warm)?;
+        Ok(Sandbox { store, bindings, what, name, fuel: limits.fuel, fuel_used, stopped: None })
     }
 
-    /// Fuel used by the most recent call into the component, by any of its controllers.
-    pub fn fuel_used(&self) -> u64 {
-        self.lock().fuel_used
-    }
-
-    fn lock(&self) -> MutexGuard<'_, Instance> {
-        // A panic while holding the lock can't leave the instance half-updated from our side;
-        // the component's own state is covered by `stopped`.
-        self.instance.lock().unwrap_or_else(|e| e.into_inner())
-    }
-
-    /// Calls into the component, unless it has stopped. A failure stops the whole instance
-    /// and is printed once.
-    fn call<R>(
-        &self,
-        f: impl FnOnce(&mut Store<Caps>, wit::GuestController<'_>, ResourceAny) -> wasmtime::Result<R>,
-    ) -> Option<R> {
-        let handle = self.handle?;
-        let mut guard = self.lock();
-        let instance = &mut *guard;
-        if instance.stopped.is_some() {
+    /// Calls into the component, unless it has stopped. A failure stops it for good and is
+    /// printed once.
+    fn call<R>(&mut self, f: impl FnOnce(&B, &mut Store<Caps>) -> wasmtime::Result<R>) -> Option<R> {
+        if self.stopped.is_some() {
             return None;
         }
-        let controller = instance.bindings.boxel_api_movement().controller();
-        let (result, used) = Instance::run(&mut instance.store, instance.fuel, |s| f(s, controller, handle));
-        instance.fuel_used = used;
+        let bindings = &self.bindings;
+        let (result, used) = run(&mut self.store, self.fuel, |s| f(bindings, s));
+        self.fuel_used = used;
         match result {
             Ok(r) => Some(r),
             Err((stop, e)) => {
-                instance.stop(stop, &e);
+                self.stopped = Some(stop);
+                eprintln!("{} {:?} {stop} and has stopped: {e:?}", self.what, self.name);
                 None
             }
         }
     }
 }
 
-impl MovementController for WasmController {
-    fn spawn(&self) -> Box<dyn MovementController> {
-        let handle = self.call(|store, c, handle| c.call_spawn(store, handle));
-        Box::new(WasmController { instance: self.instance.clone(), handle })
-    }
+/// A handle to a loaded component, shared by every copy.
+struct Shared<B>(Arc<Mutex<Sandbox<B>>>);
 
-    fn step(&mut self, ctx: &MoveContext) -> MoveOutput {
-        match self.call(|store, c, handle| c.call_step(store, handle, ctx.clone().into())) {
-            Some(out) => out.into(),
-            None => MoveOutput { velocity: ctx.velocity, ..Default::default() },
-        }
+impl<B> Clone for Shared<B> {
+    fn clone(&self) -> Self {
+        Self(self.0.clone())
     }
 }
 
-impl Tunables for WasmController {
-    fn tunables(&self) -> Vec<Tunable> {
-        let list = self.call(|store, c, handle| c.call_tunables(store, handle));
-        list.unwrap_or_default().into_iter().map(Into::into).collect()
+impl<B> Shared<B> {
+    fn new(sandbox: Sandbox<B>) -> Self {
+        Self(Arc::new(Mutex::new(sandbox)))
     }
 
-    fn set_tunable(&mut self, name: &str, value: f32) -> bool {
-        self.call(|store, c, handle| c.call_set_tunable(store, handle, name, value)).unwrap_or(false)
+    fn lock(&self) -> MutexGuard<'_, Sandbox<B>> {
+        // A panic while holding the lock can't leave the sandbox half-updated from our side;
+        // the component's own state is covered by `stopped`.
+        self.0.lock().unwrap_or_else(|e| e.into_inner())
     }
-}
 
-impl Drop for WasmController {
-    fn drop(&mut self) {
-        let Some(handle) = self.handle else { return };
-        let mut guard = self.lock();
-        let instance = &mut *guard;
-        if instance.stopped.is_none() {
-            // Freeing runs the component's own code, so it gets fuel like any other call.
-            // Failing only leaks the controller inside the component, but it still stops it.
-            let (result, _) = Instance::run(&mut instance.store, instance.fuel, |s| handle.resource_drop(s));
-            if let Err((stop, e)) = result {
-                instance.stop(stop, &e);
-            }
-        }
+    fn call<R>(&self, f: impl FnOnce(&B, &mut Store<Caps>) -> wasmtime::Result<R>) -> Option<R> {
+        self.lock().call(f)
     }
-}
 
-impl From<Vec3> for wit::Vec3 {
-    fn from(v: Vec3) -> Self {
-        wit::Vec3 { x: v.x, y: v.y, z: v.z }
+    fn stopped(&self) -> Option<Stop> {
+        self.lock().stopped
     }
-}
 
-impl From<wit::Vec3> for Vec3 {
-    fn from(v: wit::Vec3) -> Self {
-        Vec3::new(v.x, v.y, v.z)
-    }
-}
-
-impl From<Vec2> for wit::Vec2 {
-    fn from(v: Vec2) -> Self {
-        wit::Vec2 { x: v.x, y: v.y }
-    }
-}
-
-impl From<MoveInput> for wit::MoveInput {
-    fn from(i: MoveInput) -> Self {
-        wit::MoveInput {
-            movement: i.movement.into(),
-            yaw: i.yaw,
-            jump_pressed: i.jump_pressed,
-            jump_held: i.jump_held,
-            sprint: i.sprint,
-            crouch: i.crouch,
-        }
-    }
-}
-
-impl From<MoveContext> for wit::MoveContext {
-    fn from(c: MoveContext) -> Self {
-        wit::MoveContext {
-            dt: c.dt,
-            velocity: c.velocity.into(),
-            height: c.height,
-            standing_height: c.standing_height,
-            input: c.input.into(),
-            ground: c.ground.map(|Ground { friction }| wit::Ground { friction }),
-        }
-    }
-}
-
-impl From<wit::MoveOutput> for MoveOutput {
-    fn from(o: wit::MoveOutput) -> Self {
-        MoveOutput {
-            velocity: o.velocity.into(),
-            impulse: o.impulse.into(),
-            height: o.height,
-            edge_guard: o.edge_guard,
-        }
-    }
-}
-
-impl From<wit::Tunable> for Tunable {
-    fn from(t: wit::Tunable) -> Self {
-        Tunable { name: t.name, value: t.value, min: t.min, max: t.max }
+    fn fuel_used(&self) -> u64 {
+        self.lock().fuel_used
     }
 }

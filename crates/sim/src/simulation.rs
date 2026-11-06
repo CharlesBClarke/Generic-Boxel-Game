@@ -80,7 +80,8 @@ pub struct PlayerHurt {
 pub struct Simulation {
     blocks: BlockRegistry,
     looks: LookRegistry,
-    /// Movement controllers by name, as registered. Each body gets its own from `spawn`.
+    /// Movement controllers by name, as registered. One serves every body of its kind; each
+    /// body keeps its own memory.
     controllers: HashMap<String, Box<dyn MovementController>>,
     /// Brains by name, in registration order.
     brains: Vec<(String, Box<dyn Brain>)>,
@@ -342,11 +343,10 @@ impl Simulation {
     /// and the movement controller it names.
     pub fn spawn_player(&mut self) -> Result<(), SimError> {
         let def = self.player_def.as_ref().ok_or(SimError::NoPlayerDef)?;
-        let controller = self
-            .controllers
-            .get(&def.controller)
-            .ok_or_else(|| ApiError::UnknownController(def.controller.clone()))?;
-        self.player = Some(Player::new(def, controller.spawn(), self.spawn));
+        if !self.controllers.contains_key(&def.controller) {
+            return Err(ApiError::UnknownController(def.controller.clone()).into());
+        }
+        self.player = Some(Player::new(def, self.spawn));
         self.health = self.health_def.as_ref().map_or(0.0, |d| d.health);
         Ok(())
     }
@@ -367,10 +367,15 @@ impl Simulation {
         self.throw(input);
         let capacity = self.capacity();
         let awake = self.player.as_ref().map(|p| (p.pos(), self.world.sim_distance));
-        let Self { blocks, universe, player, items, item_drop_def, inventory, targets, target_defs, crowd_def, .. } = self;
+        let Self {
+            blocks, universe, player, items, item_drop_def, inventory, targets, target_defs, crowd_def, controllers, player_def, ..
+        } = self;
         let terrain = GridTerrain { grid: universe.main(), blocks };
-        if let Some(player) = player {
-            player.step(input, Self::TICK_SECONDS, &terrain);
+        // A player exists only once `spawn_player` found its controller.
+        if let (Some(player), Some(def)) = (player.as_mut(), player_def.as_ref())
+            && let Some(controller) = controllers.get(&def.controller)
+        {
+            player.step(controller.as_ref(), input, Self::TICK_SECONDS, &terrain);
         }
         let brains: Vec<Option<&dyn Brain>> = if self.brains_off {
             Vec::new()
@@ -975,6 +980,18 @@ impl Simulation {
     /// For engine tools such as the tuning panel.
     pub fn player_mut(&mut self) -> Option<&mut Player> {
         self.player.as_mut()
+    }
+
+    /// The movement controller the player definition names, shared by every body of its kind.
+    pub fn player_controller(&self) -> Option<&dyn MovementController> {
+        let def = self.player_def.as_ref()?;
+        self.controllers.get(&def.controller).map(|c| c.as_ref())
+    }
+
+    /// For engine tools such as the tuning panel: a change applies to every body it moves.
+    pub fn player_controller_mut(&mut self) -> Option<&mut dyn MovementController> {
+        let def = self.player_def.as_ref()?;
+        self.controllers.get_mut(&def.controller).map(|c| c.as_mut() as &mut dyn MovementController)
     }
 
     pub fn spawn(&self) -> WorldPos {

@@ -1,0 +1,89 @@
+package boxel:api@0.1.0;
+
+// The brain boundary: the same types as `api::brain` and `api::tuning`, as plain data. Z-up,
+// meters and seconds, like the rest of the API.
+
+interface brain {
+    record vec2 { x: f32, y: f32 }
+    record vec3 { x: f32, y: f32, z: f32 }
+
+    record seen {
+        offset: vec3,
+        velocity: vec3,
+        clear-run: f32,
+    }
+
+    record route {
+        next: vec3,
+        end: vec3,
+        length: f32,
+        reaches: bool,
+        hop: bool,
+    }
+
+    record neighbor {
+        offset: vec3,
+        velocity: vec3,
+        kind: string,
+        id: u64,
+        signal: string,
+        health: f32,
+    }
+
+    record hurt { %from: vec3, damage: f32 }
+
+    record brain-context {
+        dt: f32,
+        id: u64,
+        velocity: vec3,
+        yaw: f32,
+        on-ground: bool,
+        blocked: bool,
+        health: f32,
+        full-health: f32,
+        player: option<seen>,
+        hurt: option<hurt>,
+        attack-landed: bool,
+        others: list<neighbor>,
+        random: u64,
+        route: option<route>,
+        memory: list<f32>,
+    }
+
+    record attack {
+        min: vec3,
+        max: vec3,
+        damage: f32,
+        push: f32,
+        lift: f32,
+        guarded-damage: f32,
+        guarded-push: f32,
+    }
+
+    record brain-output {
+        walk: vec2,
+        yaw: f32,
+        edge-guard: option<f32>,
+        clip: string,
+        clip-speed: f32,
+        signal: string,
+        attack: option<attack>,
+        go-to: option<vec3>,
+        hop: bool,
+        memory: list<f32>,
+    }
+
+    record tunable { name: string, value: f32, min: f32, max: f32 }
+
+    /// The brain's registered name, such as `base:cow`.
+    name: func() -> string;
+    /// One creature's decision for one tick. The brain keeps nothing between calls: what it
+    /// needs goes in the output's memory, handed back in the next context.
+    think: func(ctx: brain-context) -> brain-output;
+    tunables: func() -> list<tunable>;
+    set-tunable: func(name: string, value: f32) -> bool;
+}
+
+world creature-brain {
+    export brain;
+}

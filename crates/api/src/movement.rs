@@ -55,6 +55,8 @@ pub struct MoveContext {
     pub input: MoveInput,
     /// `Some` while the body is standing on something solid.
     pub ground: Option<Ground>,
+    /// What the controller handed back last tick; empty for a newly spawned body.
+    pub memory: Vec<f32>,
 }
 
 /// A controller's decision for one tick.
@@ -73,14 +75,14 @@ pub struct MoveOutput {
     /// that would leave nothing solid under the feet within this many meters. `None` lets it
     /// walk off anything. Jumps aren't affected.
     pub edge_guard: Option<f32>,
+    /// Handed back on the next tick, as [`MoveContext::memory`].
+    pub memory: Vec<f32>,
 }
 
-/// Decides how one kind of body moves. One instance per body, so it can keep its own
-/// state between ticks (timers, for example).
+/// Decides how one kind of body moves. One per kind, shared by every body of it, so it keeps
+/// no state of its own: what it needs between ticks (timers, for example) goes in `memory`,
+/// which the engine keeps for each body.
 pub trait MovementController: Tunables + Send + Sync {
-    /// A fresh controller for a newly spawned body, with the same settings as this one.
-    fn spawn(&self) -> Box<dyn MovementController>;
-
     /// Advances one tick.
-    fn step(&mut self, ctx: &MoveContext) -> MoveOutput;
+    fn step(&self, ctx: &MoveContext) -> MoveOutput;
 }

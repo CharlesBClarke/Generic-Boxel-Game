@@ -1709,17 +1709,14 @@ mod tests {
     }
 
     impl api::MovementController for Standing {
-        fn spawn(&self) -> Box<dyn api::MovementController> {
-            Box::new(self.clone())
-        }
-        fn step(&mut self, ctx: &api::MoveContext) -> api::MoveOutput {
+        fn step(&self, ctx: &api::MoveContext) -> api::MoveOutput {
             api::MoveOutput { velocity: Vec3::new(0.0, 0.0, ctx.velocity.z - 25.0 * ctx.dt), ..Default::default() }
         }
     }
 
     fn standing_player(pos: WorldPos) -> Player {
         let shape = crate::Shape { width: 0.6, height: 1.8, eye_height: 1.6, step_height: 0.5 };
-        Player::with_controller(shape, Box::new(Standing), pos)
+        Player::with_shape(shape, pos)
     }
 
     fn crowd() -> CrowdDef {
@@ -1747,7 +1744,7 @@ mod tests {
         let crowd = crowd();
         for tick in 0..(seconds / DT).round() as u64 {
             if let Some(p) = player.as_deref_mut() {
-                p.step(&crate::PlayerInput::default(), DT, terrain);
+                p.step(&Standing, &crate::PlayerInput::default(), DT, terrain);
             }
             let ctx = StepContext { defs, brains, crowd: Some(&crowd), player: player.as_deref_mut(), tick, dt: DT, awake: None };
             targets.step(ctx, terrain);

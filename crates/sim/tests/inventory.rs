@@ -238,7 +238,7 @@ fn the_start_names_a_material_some_block_is_made_of() {
 #[test]
 fn the_base_game_starts_with_brick_and_wood_and_shapes_need_parts() {
     let data = data_mods::load(std::path::Path::new(base::DATA_DIR)).unwrap();
-    let mods: [&dyn Mod; 3] = [&data, &base::BaseMod, &base_movement::BaseMovementMod];
+    let mods: [&dyn Mod; 4] = [&data, &base::BaseMod, &base_cow::BaseCowMod, &base_movement::BaseMovementMod];
     let mut sim = Simulation::with_mods(&mods).unwrap();
     sim.spawn_player().unwrap();
     let blocks = sim.blocks();

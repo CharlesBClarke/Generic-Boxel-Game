@@ -403,7 +403,6 @@ name = "base"
 version = "0.1.0"
 dependencies = [
  "api",
- "libm",
 ]
 
 [[package]]
@@ -411,6 +410,14 @@ name = "base64"
 version = "0.22.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "72b3254f16251a8381aa12e40e3c4d2f0199f8c6508fbecb9d91f575e0fbb8c6"
+
+[[package]]
+name = "base_cow"
+version = "0.1.0"
+dependencies = [
+ "api",
+ "libm",
+]
 
 [[package]]
 name = "base_movement"
@@ -2006,6 +2013,7 @@ version = "0.1.0"
 dependencies = [
  "api",
  "base",
+ "base_cow",
  "base_movement",
  "bevy",
  "bevy_egui",
@@ -3080,6 +3088,7 @@ version = "0.1.0"
 dependencies = [
  "api",
  "base",
+ "base_cow",
  "base_movement",
  "client",
  "data_mods",
@@ -3441,6 +3450,13 @@ name = "hexf-parse"
 version = "0.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "dfa686283ad6dd069f105e5ab091b04c62850d3e4cf5d67debad1933f55023df"
+
+[[package]]
+name = "hostile_brain"
+version = "0.1.0"
+dependencies = [
+ "api",
+]
 
 [[package]]
 name = "hostile_movement"
@@ -5305,6 +5321,7 @@ version = "0.1.0"
 dependencies = [
  "api",
  "base",
+ "base_cow",
  "base_movement",
  "data_mods",
  "protocol",
@@ -5349,6 +5366,7 @@ version = "0.1.0"
 dependencies = [
  "api",
  "base",
+ "base_cow",
  "base_movement",
  "data_mods",
  "glam",

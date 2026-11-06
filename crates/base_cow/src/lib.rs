@@ -32,15 +32,37 @@
 //! Everything it remembers between ticks is in its memory (see [`Slot`]), which the engine
 //! keeps, so one brain serves every cow. Trig goes through `libm`, so it decides the same
 //! natively and in WebAssembly.
+//!
+//! The game runs this crate compiled to WebAssembly, as a component exporting the brain. It
+//! also builds natively, for its tests and the `--native-brain` flag.
 
 use std::f32::consts::{PI, TAU};
 
-use api::{Attack, Brain, BrainContext, BrainOutput, Neighbor, Route, Seen, Tunable, Tunables, Vec2, Vec3};
+use api::{
+    ApiError, Attack, Brain, BrainContext, BrainOutput, Mod, Neighbor, Registrar, Route, Seen, Tunable, Tunables, Vec2, Vec3,
+};
 
-use crate::COW;
+/// The cow's target kind, defined in `mods/base/targets.toml`, as other cows see it.
+pub const COW: &str = "base:cow";
 
 /// The registered name `targets.toml` refers to.
 pub const COW_BRAIN: &str = "base:cow";
+
+#[cfg(target_arch = "wasm32")]
+api::export_brain!(COW_BRAIN, CowBrain);
+
+/// Registers the brain natively, for running without WebAssembly.
+pub struct BaseCowMod;
+
+impl Mod for BaseCowMod {
+    fn name(&self) -> &str {
+        "base"
+    }
+
+    fn register(&self, r: &mut dyn Registrar) -> Result<(), ApiError> {
+        r.register_brain(COW_BRAIN, Box::new(CowBrain::default()))
+    }
+}
 
 /// What a fleeing cow shows other cows.
 pub const ALARMED: &str = "alarmed";

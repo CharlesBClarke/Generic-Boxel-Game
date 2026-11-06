@@ -2,9 +2,9 @@
 //! natively: every result must match bit for bit. Also checks that the sandbox limits stop
 //! mods that misbehave.
 
-use api::{Ground, MoveContext, MoveInput, MoveOutput, MovementController, Vec2, Vec3, WorldPos};
+use api::{Ground, MoveContext, MoveInput, MoveOutput, MovementController, Tunables, Vec2, Vec3, WorldPos};
 use base_movement::QuakeController;
-use game::{BASE_MOVEMENT_WASM, Movement};
+use game::{BASE_MOVEMENT_WASM, Code, Where};
 use sim::{PlayerInput, Simulation};
 use wasm_host::{Limits, Stop, WasmController, load_movement, load_movement_with};
 
@@ -39,9 +39,9 @@ impl Rng {
 }
 
 /// Every float in an output as raw bits, so -0.0 and 0.0 count as different.
-fn bits(o: &MoveOutput) -> [Option<u32>; 8] {
+fn bits(o: &MoveOutput) -> Vec<Option<u32>> {
     let v = |x: f32| Some(x.to_bits());
-    [
+    let mut out = vec![
         v(o.velocity.x),
         v(o.velocity.y),
         v(o.velocity.z),
@@ -50,7 +50,9 @@ fn bits(o: &MoveOutput) -> [Option<u32>; 8] {
         v(o.impulse.z),
         o.height.map(f32::to_bits),
         o.edge_guard.map(f32::to_bits),
-    ]
+    ];
+    out.extend(o.memory.iter().map(|&m| v(m)));
+    out
 }
 
 fn wasm_quake() -> WasmController {
@@ -95,14 +97,13 @@ impl Script {
 
 #[test]
 fn wasm_matches_native_bit_for_bit() {
-    let mut native: Box<dyn MovementController> = QuakeController::default().spawn();
-    let prototype = wasm_quake();
-    let mut wasm = prototype.spawn();
+    let mut native = QuakeController::default();
+    let mut wasm = wasm_quake();
     let mut heaviest = 0;
     assert_eq!(native.tunables(), wasm.tunables());
 
     let mut script = Script::new(0x5eed_cafe);
-    let (mut velocity, mut height) = (Vec3::ZERO, 1.8);
+    let (mut velocity, mut height, mut memory) = (Vec3::ZERO, 1.8, Vec::new());
     for tick in 0..10_000 {
         // Now and then the ground changes, and a value gets retuned on both.
         if script.rng.chance(0.01) {
@@ -126,10 +127,12 @@ fn wasm_matches_native_bit_for_bit() {
             standing_height: 1.8,
             input: script.next(),
             ground: script.ground.map(|friction| Ground { friction }),
+            memory: std::mem::take(&mut memory),
         };
         let (a, b) = (native.step(&ctx), wasm.step(&ctx));
         assert_eq!(bits(&a), bits(&b), "tick {tick}: native {a:?}, wasm {b:?}");
-        heaviest = heaviest.max(prototype.fuel_used());
+        heaviest = heaviest.max(wasm.fuel_used());
+        memory = a.memory.clone();
         // A rough stand-in for the engine: a floor while grounded, and the asked-for height.
         velocity = a.velocity + a.impulse;
         if ctx.ground.is_some() {
@@ -147,8 +150,8 @@ fn wasm_matches_native_bit_for_bit() {
 
 /// Runs the whole game for a scripted few minutes from `start`, returning where the player
 /// is after every tick.
-fn play(movement: Movement, start: WorldPos) -> Vec<WorldPos> {
-    let mut sim = game::load(movement).expect("the game loads");
+fn play(movement: Where, start: WorldPos) -> Vec<WorldPos> {
+    let mut sim = game::load(Code { movement, brain: Where::Native }).expect("the game loads");
     sim.teleport_player(start);
     let mut script = Script::new(0x00b0_c5e1);
     (0..6_000)
@@ -171,11 +174,11 @@ fn play(movement: Movement, start: WorldPos) -> Vec<WorldPos> {
 #[test]
 fn the_whole_game_moves_the_same_near_and_far() {
     let data = data_mods::load(std::path::Path::new(base::DATA_DIR)).unwrap();
-    let near = Simulation::with_mods(&[&data, &base::BaseMod]).unwrap().spawn();
+    let near = Simulation::with_mods(&[&data, &base::BaseMod, &base_cow::BaseCowMod]).unwrap().spawn();
     let offset = base::FAR_ORIGIN.0;
     let far = WorldPos::new(near.cell() + offset, near.offset());
     for start in [near, far] {
-        let (native, wasm) = (play(Movement::Native, start), play(Movement::Wasm, start));
+        let (native, wasm) = (play(Where::Native, start), play(Where::Wasm, start));
         for (tick, (a, b)) in native.iter().zip(&wasm).enumerate() {
             assert_eq!(a.cell(), b.cell(), "tick {tick}");
             let (a, b) = (a.offset().to_array().map(f32::to_bits), b.offset().to_array().map(f32::to_bits));
@@ -187,37 +190,37 @@ fn the_whole_game_moves_the_same_near_and_far() {
 }
 
 #[test]
-fn spawned_controllers_keep_their_own_state() {
-    let prototype = wasm_quake();
-    let (mut a, mut b) = (prototype.spawn(), prototype.spawn());
-    let grounded = |input| MoveContext {
+fn each_body_keeps_its_own_memory() {
+    let mut c = wasm_quake();
+    let grounded = |input, memory| MoveContext {
         dt: DT,
         velocity: Vec3::ZERO,
         height: 1.8,
         standing_height: 1.8,
         input,
         ground: Some(Ground { friction: 1.0 }),
+        memory,
     };
-    // `a` presses jump just before landing, so its buffer holds the press; `b` doesn't. On
-    // landing, only `a` jumps.
-    let airborne = |input| MoveContext { ground: None, ..grounded(input) };
+    // Body `a` presses jump just before landing, so its buffer holds the press; `b` doesn't.
+    // On landing, only `a` jumps, though one controller moves both.
+    let airborne = |input, memory| MoveContext { ground: None, ..grounded(input, memory) };
     let jump = MoveInput { jump_pressed: true, jump_held: false, ..Default::default() };
-    a.step(&airborne(jump));
-    b.step(&airborne(MoveInput::default()));
-    let (ja, jb) = (a.step(&grounded(MoveInput::default())).impulse.z, b.step(&grounded(MoveInput::default())).impulse.z);
+    let a = c.step(&airborne(jump, Vec::new())).memory;
+    let b = c.step(&airborne(MoveInput::default(), Vec::new())).memory;
+    let ja = c.step(&grounded(MoveInput::default(), a)).impulse.z;
+    let jb = c.step(&grounded(MoveInput::default(), b)).impulse.z;
     assert!(ja > 1.0 && jb == 0.0, "buffered {ja}, none {jb}");
 
-    // Settings are copied at spawn, then each controller's own.
-    assert!(a.set_tunable("walk_speed", 9.0));
+    // Settings belong to the controller, so every body it moves shares them.
+    assert!(c.set_tunable("walk_speed", 9.0));
     let walk = |c: &dyn MovementController| c.tunables().into_iter().find(|t| t.name == "walk_speed").unwrap().value;
-    assert_eq!(walk(a.as_ref()), 9.0);
-    assert_eq!(walk(b.as_ref()), 5.0);
-    assert_eq!(walk(a.spawn().as_ref()), 9.0);
+    assert_eq!(walk(&c), 9.0);
+    assert_eq!(walk(&c.clone()), 9.0, "copies share the component");
 }
 
 #[test]
 fn tunables_round_trip_through_wasm() {
-    let mut c = wasm_quake().spawn();
+    let mut c = wasm_quake();
     for t in c.tunables() {
         assert!(c.set_tunable(&t.name, t.min), "{}", t.name);
     }
@@ -227,9 +230,8 @@ fn tunables_round_trip_through_wasm() {
 
 #[test]
 fn a_trapping_controller_stops_without_crashing() {
-    let (name, prototype) = load_movement(PANICKY_WASM).expect("the component loads");
+    let (name, mut c) = load_movement(PANICKY_WASM).expect("the component loads");
     assert_eq!(name, "test:panicky");
-    let mut c = prototype.spawn();
     assert!(c.set_tunable("speed", 3.0), "works before the trap");
 
     let ctx = MoveContext {
@@ -239,50 +241,56 @@ fn a_trapping_controller_stops_without_crashing() {
         standing_height: 1.8,
         input: MoveInput::default(),
         ground: None,
+        memory: Vec::new(),
     };
     for _ in 0..3 {
         let out = c.step(&ctx);
         assert_eq!(out, MoveOutput { velocity: ctx.velocity, ..Default::default() }, "velocity passes through");
     }
-    assert_eq!(prototype.stopped(), Some(Stop::Trap));
+    assert_eq!(c.stopped(), Some(Stop::Trap));
     assert!(c.tunables().is_empty());
     assert!(!c.set_tunable("speed", 1.0));
-    drop(c.spawn());
 }
 
 #[test]
 fn a_player_naming_an_unknown_controller_cannot_spawn() {
     // The base mod alone names `base:quake` but doesn't provide it.
     let data = data_mods::load(std::path::Path::new(base::DATA_DIR)).unwrap();
-    let mut sim = Simulation::with_mods(&[&data, &base::BaseMod]).unwrap();
+    let mut sim = Simulation::with_mods(&[&data, &base::BaseMod, &base_cow::BaseCowMod]).unwrap();
     let err = sim.spawn_player().unwrap_err();
     assert_eq!(err.to_string(), "no movement controller named \"base:quake\"");
 }
 
 fn still(velocity: Vec3) -> MoveContext {
-    MoveContext { dt: DT, velocity, height: 1.8, standing_height: 1.8, input: MoveInput::default(), ground: None }
+    MoveContext {
+        dt: DT,
+        velocity,
+        height: 1.8,
+        standing_height: 1.8,
+        input: MoveInput::default(),
+        ground: None,
+        memory: Vec::new(),
+    }
 }
 
-/// Loads the hostile fixture with `limits` and spawns a controller set to `behavior`.
-fn hostile(limits: Limits, behavior: f32) -> (WasmController, Box<dyn MovementController>) {
-    let (name, prototype) = load_movement_with(HOSTILE_WASM, limits).expect("the component loads");
+/// Loads the hostile fixture with `limits`, set to `behavior`.
+fn hostile(limits: Limits, behavior: f32) -> WasmController {
+    let (name, mut c) = load_movement_with(HOSTILE_WASM, limits).expect("the component loads");
     assert_eq!(name, "test:hostile");
-    let mut c = prototype.spawn();
     assert!(c.set_tunable("behavior", behavior));
-    (prototype, c)
+    c
 }
 
 /// Steps a controller that misbehaves in `step` and checks it stops for the right reason,
 /// with velocity passing through and the instance never called again.
 fn stops_in_step(behavior: f32, reason: Stop) {
-    let (prototype, mut c) = hostile(Limits::default(), behavior);
+    let c = hostile(Limits::default(), behavior);
     let ctx = still(Vec3::new(1.0, 2.0, 3.0));
     for _ in 0..3 {
         assert_eq!(c.step(&ctx), MoveOutput { velocity: ctx.velocity, ..Default::default() });
     }
-    assert_eq!(prototype.stopped(), Some(reason));
+    assert_eq!(c.stopped(), Some(reason));
     assert!(c.tunables().is_empty());
-    drop(c.spawn());
 }
 
 #[test]
@@ -302,24 +310,18 @@ fn endless_recursion_overflows_the_stack() {
 
 #[test]
 fn a_well_behaved_hostile_controller_keeps_running() {
-    let (prototype, mut c) = hostile(Limits::default(), 0.0);
+    let c = hostile(Limits::default(), 0.0);
     let ctx = still(Vec3::X);
     assert_eq!(c.step(&ctx).velocity, Vec3::X);
-    assert_eq!(prototype.stopped(), None);
+    assert_eq!(c.stopped(), None);
 }
 
 #[test]
 fn loops_outside_step_are_stopped_too() {
-    // In `spawn`: the new controller comes back stopped.
-    let (prototype, c) = hostile(Limits::default(), 4.0);
-    let spawned = c.spawn();
-    assert_eq!(prototype.stopped(), Some(Stop::OutOfFuel));
-    assert!(spawned.tunables().is_empty());
-
     // In `tunables`.
-    let (prototype, c) = hostile(Limits::default(), 5.0);
+    let c = hostile(Limits::default(), 5.0);
     assert!(c.tunables().is_empty());
-    assert_eq!(prototype.stopped(), Some(Stop::OutOfFuel));
+    assert_eq!(c.stopped(), Some(Stop::OutOfFuel));
 }
 
 #[test]
@@ -329,42 +331,44 @@ fn a_component_stuck_while_loading_fails_to_load() {
 }
 
 #[test]
-fn controllers_from_one_mod_share_its_memory_limit() {
+fn every_body_shares_its_mods_memory_limit() {
     let limits = Limits { memory: 64 << 20, ..Limits::default() };
-    let (prototype, mut a) = hostile(limits, 6.0);
-    let mut b = a.spawn();
-    for c in [&mut a, &mut b] {
-        assert!(c.set_tunable("allocate_mib", 40.0));
-    }
-    // 40 MiB fits under 64 on its own; a second 40 from the same mod doesn't.
-    a.step(&still(Vec3::ZERO));
-    assert_eq!(prototype.stopped(), None);
-    b.step(&still(Vec3::ZERO));
-    assert_eq!(prototype.stopped(), Some(Stop::OutOfMemory));
-    assert!(a.tunables().is_empty(), "every controller from the mod stops");
+    let mut c = hostile(limits, 6.0);
+    assert!(c.set_tunable("allocate_mib", 40.0));
+    let copy = c.clone();
+    // 40 MiB fits under 64 for one body; a second body's 40 from the same mod doesn't.
+    c.step(&still(Vec3::ZERO));
+    assert_eq!(c.stopped(), None);
+    copy.step(&still(Vec3::ZERO));
+    assert_eq!(c.stopped(), Some(Stop::OutOfMemory));
+    assert!(c.tunables().is_empty(), "every copy of the controller stops");
 
     // A separate load of the same mod has its own memory.
-    let (other, mut c) = hostile(limits, 6.0);
-    assert!(c.set_tunable("allocate_mib", 40.0));
-    c.step(&still(Vec3::ZERO));
+    let mut other = hostile(limits, 6.0);
+    assert!(other.set_tunable("allocate_mib", 40.0));
+    other.step(&still(Vec3::ZERO));
     assert_eq!(other.stopped(), None);
 }
 
 #[test]
 fn fuel_use_is_the_same_every_run() {
     let run = || {
-        let prototype = wasm_quake();
-        let mut c = prototype.spawn();
+        let c = wasm_quake();
         let mut script = Script::new(0x0f0e_1000);
-        let mut velocity = Vec3::ZERO;
+        let (mut velocity, mut memory) = (Vec3::ZERO, Vec::new());
         (0..2_000)
             .map(|_| {
-                let ctx =
-                    MoveContext { input: script.next(), ground: Some(Ground { friction: 1.0 }), ..still(velocity) };
+                let ctx = MoveContext {
+                    input: script.next(),
+                    ground: Some(Ground { friction: 1.0 }),
+                    memory: std::mem::take(&mut memory),
+                    ..still(velocity)
+                };
                 let out = c.step(&ctx);
                 velocity = out.velocity + out.impulse;
                 velocity.z = velocity.z.max(0.0);
-                prototype.fuel_used()
+                memory = out.memory;
+                c.fuel_used()
             })
             .collect::<Vec<_>>()
     };

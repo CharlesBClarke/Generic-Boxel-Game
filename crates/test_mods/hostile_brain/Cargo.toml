@@ -1,0 +1,12 @@
+[package]
+name = "hostile_brain"
+description = "Test fixture: a brain that misbehaves on purpose (panics or loops forever), to check the engine stops it and carries on."
+edition.workspace = true
+version.workspace = true
+publish.workspace = true
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+api.workspace = true

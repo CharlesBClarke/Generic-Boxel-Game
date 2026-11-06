@@ -124,7 +124,7 @@ fn without_an_item_drop_definition_breaking_drops_nothing() {
 #[test]
 fn the_base_game_drops_dirt_from_grass_and_a_part_from_its_slab() {
     let data = data_mods::load(std::path::Path::new(base::DATA_DIR)).unwrap();
-    let mods: [&dyn Mod; 3] = [&data, &base::BaseMod, &base_movement::BaseMovementMod];
+    let mods: [&dyn Mod; 4] = [&data, &base::BaseMod, &base_cow::BaseCowMod, &base_movement::BaseMovementMod];
     let sim = Simulation::with_mods(&mods).unwrap();
     let blocks = sim.blocks();
     let drop = |name: &str| blocks.drop(blocks.id(name).unwrap()).map(|d| (blocks.material_name(d.material), d.amount));

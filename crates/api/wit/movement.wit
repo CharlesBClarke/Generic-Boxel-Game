@@ -24,6 +24,7 @@ interface movement {
         standing-height: f32,
         input: move-input,
         ground: option<ground>,
+        memory: list<f32>,
     }
 
     record move-output {
@@ -31,23 +32,18 @@ interface movement {
         impulse: vec3,
         height: option<f32>,
         edge-guard: option<f32>,
+        memory: list<f32>,
     }
 
     record tunable { name: string, value: f32, min: f32, max: f32 }
 
-    /// One body's controller, with its own state between ticks.
-    resource controller {
-        /// A fresh controller for a newly spawned body, with the same settings as this one.
-        spawn: func() -> controller;
-        step: func(ctx: move-context) -> move-output;
-        tunables: func() -> list<tunable>;
-        set-tunable: func(name: string, value: f32) -> bool;
-    }
-
     /// The controller's registered name, such as `base:quake`.
     name: func() -> string;
-    /// The controller with its default settings; bodies get theirs from its `spawn`.
-    create: func() -> controller;
+    /// One body's move for one tick. The controller keeps nothing between calls: what it
+    /// needs goes in the output's memory, handed back in the next context.
+    step: func(ctx: move-context) -> move-output;
+    tunables: func() -> list<tunable>;
+    set-tunable: func(name: string, value: f32) -> bool;
 }
 
 world movement-controller {

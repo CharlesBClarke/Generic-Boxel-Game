@@ -9,7 +9,7 @@ use sim::{PlayerInput, Simulation, Strike, SwingStage};
 
 fn base_sim() -> Simulation {
     let data = data_mods::load(std::path::Path::new(base::DATA_DIR)).unwrap();
-    let mut sim = Simulation::with_mods(&[&data, &base::BaseMod, &base_movement::BaseMovementMod]).expect("base mod loads");
+    let mut sim = Simulation::with_mods(&[&data, &base::BaseMod, &base_cow::BaseCowMod, &base_movement::BaseMovementMod]).expect("base mod loads");
     sim.spawn_player().unwrap();
     // Only the test area's cows: the terrain's herds are far off, with no ground under them
     // until the terrain is generated.
@@ -22,7 +22,7 @@ fn base_sim() -> Simulation {
 /// instead of fighting.
 fn timid_sim() -> Simulation {
     let mut sim = base_sim();
-    let cow = sim.brain_names().position(|n| n == base::cow::COW_BRAIN).unwrap();
+    let cow = sim.brain_names().position(|n| n == base_cow::COW_BRAIN).unwrap();
     let brain = sim.brain_mut(cow).unwrap();
     for name in ["fight_share", "defend_chance", "courage", "injury_pull", "grudge_fight"] {
         assert!(brain.set_tunable(name, 0.0), "{name}");
@@ -277,7 +277,7 @@ fn a_straying_cow_comes_back_to_the_herd() {
     // spook time of 5.3 the herd scatters into groups further apart than they can see, and each
     // group keeps to itself, which isn't what this test is about. Nor are grudges: the herd
     // would run from the player knocking the cow about.
-    let brain = sim.brain_names().position(|n| n == base::cow::COW_BRAIN).unwrap();
+    let brain = sim.brain_names().position(|n| n == base_cow::COW_BRAIN).unwrap();
     let brain = sim.brain_mut(brain).unwrap();
     assert!(brain.set_tunable("run_speed", 3.0) && brain.set_tunable("spook_time", 2.0));
     assert!(brain.set_tunable("grudge_range", 0.0) && brain.set_tunable("corner_range", 0.0));
@@ -619,7 +619,7 @@ fn a_hit_cow_tosses_a_player_up_close_throwing_them_up_and_away() {
     let cow = anger_a_cow(&mut sim);
     let hurts = blows(&mut sim, 5.0);
     let first = hurts.first().expect("tossed within 5 s");
-    let brain = base::cow::CowBrain::default();
+    let brain = base_cow::CowBrain::default();
     assert_eq!(first.attacker.map(|a| a.0), Some(cow));
     assert!((first.damage - brain.toss_damage).abs() < 1e-4, "a toss's damage: {}", first.damage);
     assert!(first.push.z > first.push.truncate().length(), "mostly up: {}", first.push);
@@ -639,7 +639,7 @@ fn a_hit_cow_charges_a_player_far_off_for_big_damage_and_knockback() {
     sim.teleport_player(spot);
     assert!(in_pasture(spot), "{spot:?}");
     let hurts = blows(&mut sim, 8.0);
-    let brain = base::cow::CowBrain::default();
+    let brain = base_cow::CowBrain::default();
     let charge = hurts.iter().find(|h| (h.damage - brain.charge_damage).abs() < 1e-4).expect("charged within 8 s");
     assert_eq!(charge.attacker.map(|a| a.0), Some(cow));
     assert!(charge.push.truncate().length() > 10.0, "thrown hard: {}", charge.push);
@@ -649,13 +649,13 @@ fn cow_pos(sim: &Simulation, id: u64) -> WorldPos {
     sim.targets().iter().find(|t| t.id == id).expect("not broken").pos
 }
 
-fn mode_is(sim: &Simulation, id: u64, mode: base::cow::Mode) -> bool {
+fn mode_is(sim: &Simulation, id: u64, mode: base_cow::Mode) -> bool {
     cow_mode(sim, id) == Some(mode as usize as f32)
 }
 
 #[test]
 fn a_cow_comes_round_through_the_doorway_to_a_player_behind_the_wall() {
-    use base::cow::Mode;
+    use base_cow::Mode;
     let mut sim = base_sim();
     let cow = anger_a_cow(&mut sim);
     // Lure it over to the east wall, standing just inside it until it gets there.
@@ -692,7 +692,7 @@ fn a_cow_comes_round_through_the_doorway_to_a_player_behind_the_wall() {
 
 #[test]
 fn a_charge_dodged_into_the_wall_stuns_the_cow() {
-    use base::cow::Mode;
+    use base_cow::Mode;
     let mut sim = base_sim();
     let cow = anger_a_cow(&mut sim);
     // Stand just inside the east wall, level with the cow, until it charges; then step aside.
@@ -724,7 +724,7 @@ fn a_charge_dodged_into_the_wall_stuns_the_cow() {
 
 #[test]
 fn a_hurt_cow_calms_down_but_fights_or_runs_when_the_player_comes_back() {
-    use base::cow::Mode;
+    use base_cow::Mode;
     let mut sim = base_sim();
     let cow = anger_a_cow(&mut sim);
     // Well away, past its chase range, long enough for it and the herd to settle.
@@ -762,7 +762,7 @@ fn the_herd_holds_a_grudge_for_a_hurt_herdmate() {
     let mut reacted = false;
     for _ in 0..60 {
         sim.step(&PlayerInput::default());
-        reacted |= mode_is(&sim, other, base::cow::Mode::Angry) || mode_is(&sim, other, base::cow::Mode::Flee);
+        reacted |= mode_is(&sim, other, base_cow::Mode::Angry) || mode_is(&sim, other, base_cow::Mode::Flee);
     }
     assert!(reacted, "fought or ran");
 }
@@ -771,7 +771,7 @@ fn the_herd_holds_a_grudge_for_a_hurt_herdmate() {
 fn hitting_one_cow_brings_some_of_the_herd_to_its_side_and_scatters_the_rest() {
     let mut sim = base_sim();
     // Whether any one cow helps is down to chance; a keener herd makes both outcomes sure.
-    let cow = sim.brain_names().position(|n| n == base::cow::COW_BRAIN).unwrap();
+    let cow = sim.brain_names().position(|n| n == base_cow::COW_BRAIN).unwrap();
     assert!(sim.brain_mut(cow).unwrap().set_tunable("defend_chance", 0.5));
     let hit = anger_a_cow(&mut sim);
     let mut fought = std::collections::BTreeSet::new();
@@ -781,10 +781,10 @@ fn hitting_one_cow_brings_some_of_the_herd_to_its_side_and_scatters_the_rest() {
         sim.take_player_hurts();
         for t in sim.targets().iter() {
             match t.signal.as_str() {
-                base::cow::ANGRY => {
+                base_cow::ANGRY => {
                     fought.insert(t.id);
                 }
-                base::cow::ALARMED if !fought.contains(&t.id) => {
+                base_cow::ALARMED if !fought.contains(&t.id) => {
                     ran.insert(t.id);
                 }
                 _ => {}
@@ -798,7 +798,7 @@ fn hitting_one_cow_brings_some_of_the_herd_to_its_side_and_scatters_the_rest() {
     // They calm down once the player is far off.
     sim.teleport_player(WorldPos::at_boxel(BoxelPos::new(0, 0, 0)));
     idle(&mut sim, 6 * 60);
-    assert!(sim.targets().iter().all(|t| t.signal != base::cow::ANGRY), "lost interest");
+    assert!(sim.targets().iter().all(|t| t.signal != base_cow::ANGRY), "lost interest");
 }
 
 

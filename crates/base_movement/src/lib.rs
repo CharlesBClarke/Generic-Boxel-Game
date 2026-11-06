@@ -65,9 +65,22 @@ pub struct QuakeController {
     /// While crouched on the ground, the biggest drop the body may walk off, meters. Below 1
     /// stops at every boxel edge.
     pub edge_guard_drop: f32,
+}
 
-    since_ground: f32,
-    since_jump_press: f32,
+/// What the controller remembers between ticks, as slots in its memory.
+#[derive(Clone, Copy)]
+enum Slot {
+    /// Seconds since the body last stood on something.
+    SinceGround,
+    /// Seconds since jump was last pressed.
+    SinceJumpPress,
+}
+
+const SLOTS: usize = 2;
+
+/// A slot's value; a body's first tick finds nothing, so both timers start long past.
+fn recall(memory: &[f32], slot: Slot) -> f32 {
+    memory.get(slot as usize).copied().unwrap_or(f32::INFINITY)
 }
 
 impl Default for QuakeController {
@@ -94,8 +107,6 @@ impl Default for QuakeController {
             crouch_speed: 0.4,
             // Minecraft's value: stops at every boxel edge.
             edge_guard_drop: 0.6,
-            since_ground: f32::INFINITY,
-            since_jump_press: f32::INFINITY,
         }
     }
 }
@@ -130,22 +141,14 @@ impl QuakeController {
 }
 
 impl MovementController for QuakeController {
-    fn spawn(&self) -> Box<dyn MovementController> {
-        Box::new(Self {
-            since_ground: f32::INFINITY,
-            since_jump_press: f32::INFINITY,
-            ..self.clone()
-        })
-    }
-
-    fn step(&mut self, ctx: &MoveContext) -> MoveOutput {
+    fn step(&self, ctx: &MoveContext) -> MoveOutput {
         let dt = ctx.dt;
         let input = &ctx.input;
-        self.since_ground = if ctx.ground.is_some() { 0.0 } else { self.since_ground + dt };
-        self.since_jump_press = if input.jump_pressed { 0.0 } else { self.since_jump_press + dt };
+        let mut since_ground = if ctx.ground.is_some() { 0.0 } else { recall(&ctx.memory, Slot::SinceGround) + dt };
+        let mut since_jump_press = if input.jump_pressed { 0.0 } else { recall(&ctx.memory, Slot::SinceJumpPress) + dt };
 
-        let wants_jump = self.since_jump_press <= self.jump_buffer || (input.jump_held && self.hold_to_hop >= 0.5);
-        let can_jump = self.since_ground <= self.coyote_time;
+        let wants_jump = since_jump_press <= self.jump_buffer || (input.jump_held && self.hold_to_hop >= 0.5);
+        let can_jump = since_ground <= self.coyote_time;
         let jumping = wants_jump && can_jump;
 
         let crouched = ctx.height < ctx.standing_height - 1e-3;
@@ -183,14 +186,17 @@ impl MovementController for QuakeController {
             // The jump replaces any downward speed instead of fighting it.
             velocity.z = 0.0;
             impulse.z = self.jump_speed();
-            self.since_jump_press = f32::INFINITY;
-            self.since_ground = f32::INFINITY;
+            since_jump_press = f32::INFINITY;
+            since_ground = f32::INFINITY;
         }
         // Standing up on the jump tick, then tucking again next tick if crouch is still held.
         let height = (input.crouch && !jumping).then_some(self.crouch_height);
         // Like Minecraft's sneaking: crouched on the ground, the body won't walk off edges.
         let guarded = input.crouch && ctx.ground.is_some() && !jumping;
-        MoveOutput { velocity, impulse, height, edge_guard: guarded.then_some(self.edge_guard_drop) }
+        let mut memory = vec![0.0; SLOTS];
+        memory[Slot::SinceGround as usize] = since_ground;
+        memory[Slot::SinceJumpPress as usize] = since_jump_press;
+        MoveOutput { velocity, impulse, height, edge_guard: guarded.then_some(self.edge_guard_drop), memory }
     }
 }
 
@@ -250,6 +256,35 @@ mod tests {
 
     const DT: f32 = 1.0 / 60.0;
 
+    /// The controller with one body's memory, carried from tick to tick as the engine would.
+    #[derive(Default)]
+    struct Running {
+        c: QuakeController,
+        memory: Vec<f32>,
+    }
+
+    impl std::ops::Deref for Running {
+        type Target = QuakeController;
+
+        fn deref(&self) -> &QuakeController {
+            &self.c
+        }
+    }
+
+    impl std::ops::DerefMut for Running {
+        fn deref_mut(&mut self) -> &mut QuakeController {
+            &mut self.c
+        }
+    }
+
+    impl Running {
+        fn step(&mut self, ctx: &MoveContext) -> MoveOutput {
+            let out = self.c.step(&MoveContext { memory: std::mem::take(&mut self.memory), ..ctx.clone() });
+            self.memory = out.memory.clone();
+            out
+        }
+    }
+
     fn ctx(velocity: Vec3, input: MoveInput, friction: Option<f32>) -> MoveContext {
         MoveContext {
             dt: DT,
@@ -258,6 +293,7 @@ mod tests {
             standing_height: 1.8,
             input,
             ground: friction.map(|friction| Ground { friction }),
+            memory: Vec::new(),
         }
     }
 
@@ -266,7 +302,7 @@ mod tests {
     }
 
     /// Runs on flat ground, applying the floor the way the engine would.
-    fn on_ground(c: &mut QuakeController, mut v: Vec3, input: &MoveInput, ticks: usize, friction: f32) -> Vec3 {
+    fn on_ground(c: &mut Running, mut v: Vec3, input: &MoveInput, ticks: usize, friction: f32) -> Vec3 {
         for _ in 0..ticks {
             let out = c.step(&ctx(v, input.clone(), Some(friction)));
             v = out.velocity + out.impulse;
@@ -277,7 +313,7 @@ mod tests {
 
     #[test]
     fn reaches_walk_speed_quickly_and_no_faster() {
-        let mut c = QuakeController::default();
+        let mut c = Running::default();
         let v = on_ground(&mut c, Vec3::ZERO, &forward(), 15, 1.0);
         assert!(v.x > 0.8 * c.walk_speed, "only {} after a quarter second", v.x);
         let v = on_ground(&mut c, v, &forward(), 120, 1.0);
@@ -286,7 +322,7 @@ mod tests {
 
     #[test]
     fn sprint_is_faster() {
-        let mut c = QuakeController::default();
+        let mut c = Running::default();
         let sprint = MoveInput { sprint: true, ..forward() };
         let v = on_ground(&mut c, Vec3::ZERO, &sprint, 120, 1.0);
         assert!((v.x - c.sprint_speed).abs() < 0.3, "settled at {}", v.x);
@@ -294,7 +330,7 @@ mod tests {
 
     #[test]
     fn friction_stops_you() {
-        let mut c = QuakeController::default();
+        let mut c = Running::default();
         let v = on_ground(&mut c, Vec3::new(5.0, 0.0, 0.0), &MoveInput::default(), 30, 1.0);
         assert!(v.length() < 1e-3, "still moving at {v}");
     }
@@ -302,7 +338,7 @@ mod tests {
     #[test]
     fn ice_slides_much_farther() {
         let distance = |friction: f32| {
-            let mut c = QuakeController::default();
+            let mut c = Running::default();
             let mut v = Vec3::new(5.0, 0.0, 0.0);
             let mut total = 0.0;
             for _ in 0..600 {
@@ -319,7 +355,7 @@ mod tests {
     fn air_strafing_gains_speed() {
         // Holding strafe right while turning to keep facing along the velocity: the classic
         // Quake air strafe. Speed should climb past anything the ground allows.
-        let mut c = QuakeController::default();
+        let mut c = Running::default();
         let mut v = Vec3::new(c.walk_speed, 0.0, 0.0);
         for _ in 0..60 {
             let input = MoveInput { movement: Vec2::X, yaw: v.y.atan2(v.x), ..Default::default() };
@@ -330,7 +366,7 @@ mod tests {
 
     #[test]
     fn air_control_alone_cannot_exceed_the_cap_from_rest() {
-        let mut c = QuakeController::default();
+        let mut c = Running::default();
         let mut v = Vec3::ZERO;
         for _ in 0..120 {
             v = c.step(&ctx(v, forward(), None)).velocity;
@@ -340,7 +376,7 @@ mod tests {
 
     #[test]
     fn bunny_hops_keep_speed() {
-        let mut c = QuakeController::default();
+        let mut c = Running::default();
         let fast = Vec3::new(9.0, 0.0, -3.0);
         let hop = MoveInput { jump_held: true, ..forward() };
         let out = c.step(&ctx(fast, hop, Some(1.0)));
@@ -350,7 +386,7 @@ mod tests {
 
     #[test]
     fn jump_reaches_the_configured_height() {
-        let mut c = QuakeController::default();
+        let mut c = Running::default();
         let jump = MoveInput { jump_pressed: true, jump_held: true, ..Default::default() };
         let out = c.step(&ctx(Vec3::ZERO, jump, Some(1.0)));
         let mut v = out.velocity + out.impulse;
@@ -365,7 +401,7 @@ mod tests {
 
     #[test]
     fn falling_is_faster_than_rising() {
-        let mut c = QuakeController::default();
+        let mut c = Running::default();
         let rising = c.step(&ctx(Vec3::new(0.0, 0.0, 5.0), MoveInput::default(), None)).velocity.z;
         let falling = c.step(&ctx(Vec3::new(0.0, 0.0, -5.0), MoveInput::default(), None)).velocity.z;
         assert!((5.0 - rising) < (-5.0 - falling).abs());
@@ -373,14 +409,14 @@ mod tests {
 
     #[test]
     fn terminal_velocity_caps_falls() {
-        let mut c = QuakeController::default();
+        let mut c = Running::default();
         let v = c.step(&ctx(Vec3::new(0.0, 0.0, -1000.0), MoveInput::default(), None)).velocity;
         assert_eq!(v.z, -c.terminal_velocity);
     }
 
     #[test]
     fn a_buffered_press_jumps_on_landing() {
-        let mut c = QuakeController { hold_to_hop: 0.0, ..Default::default() };
+        let mut c = Running { c: QuakeController { hold_to_hop: 0.0, ..Default::default() }, memory: Vec::new() };
         let press = MoveInput { jump_pressed: true, jump_held: true, ..Default::default() };
         c.step(&ctx(Vec3::new(0.0, 0.0, -5.0), press, None));
         // Just inside the buffer window: released key, land 5 ticks later (~0.083 s).
@@ -390,7 +426,7 @@ mod tests {
         assert!(c.step(&ctx(Vec3::ZERO, MoveInput::default(), Some(1.0))).impulse.z > 0.0);
 
         // Outside it: land 8 ticks later (~0.13 s).
-        let mut c = QuakeController { hold_to_hop: 0.0, ..Default::default() };
+        let mut c = Running { c: QuakeController { hold_to_hop: 0.0, ..Default::default() }, memory: Vec::new() };
         c.step(&ctx(Vec3::new(0.0, 0.0, -5.0), MoveInput { jump_pressed: true, ..Default::default() }, None));
         for _ in 0..7 {
             c.step(&ctx(Vec3::new(0.0, 0.0, -5.0), MoveInput::default(), None));
@@ -401,7 +437,7 @@ mod tests {
     #[test]
     fn coyote_time_allows_late_jumps_once() {
         let press = MoveInput { jump_pressed: true, jump_held: true, ..Default::default() };
-        let mut c = QuakeController { hold_to_hop: 0.0, ..Default::default() };
+        let mut c = Running { c: QuakeController { hold_to_hop: 0.0, ..Default::default() }, memory: Vec::new() };
         c.step(&ctx(Vec3::ZERO, MoveInput::default(), Some(1.0)));
         for _ in 0..4 {
             c.step(&ctx(Vec3::ZERO, MoveInput::default(), None));
@@ -409,7 +445,7 @@ mod tests {
         assert!(c.step(&ctx(Vec3::ZERO, press.clone(), None)).impulse.z > 0.0, "late jump inside the window");
         assert_eq!(c.step(&ctx(Vec3::ZERO, press.clone(), None)).impulse.z, 0.0, "no second coyote jump");
 
-        let mut c = QuakeController { hold_to_hop: 0.0, ..Default::default() };
+        let mut c = Running { c: QuakeController { hold_to_hop: 0.0, ..Default::default() }, memory: Vec::new() };
         c.step(&ctx(Vec3::ZERO, MoveInput::default(), Some(1.0)));
         for _ in 0..8 {
             c.step(&ctx(Vec3::ZERO, MoveInput::default(), None));
@@ -419,7 +455,7 @@ mod tests {
 
     #[test]
     fn tunables_round_trip() {
-        let mut c = QuakeController::default();
+        let mut c = Running::default();
         for t in c.tunables() {
             assert!(t.min <= t.value && t.value <= t.max, "{} default {} outside its range", t.name, t.value);
             assert!(c.set_tunable(&t.name, t.min));
@@ -434,7 +470,7 @@ mod tests {
 
     #[test]
     fn crouching_walks_slower() {
-        let mut c = QuakeController::default();
+        let mut c = Running::default();
         let input = MoveInput { crouch: true, sprint: true, ..forward() };
         let mut v = Vec3::ZERO;
         for _ in 0..120 {
@@ -448,7 +484,7 @@ mod tests {
 
     #[test]
     fn guards_edges_only_while_crouched_on_the_ground() {
-        let mut c = QuakeController::default();
+        let mut c = Running::default();
         let crouch = MoveInput { crouch: true, ..Default::default() };
         assert_eq!(c.step(&crouched_ctx(Vec3::ZERO, crouch.clone(), Some(1.0))).edge_guard, Some(0.6));
         assert_eq!(c.step(&ctx(Vec3::ZERO, MoveInput::default(), Some(1.0))).edge_guard, None);
@@ -459,7 +495,7 @@ mod tests {
 
     #[test]
     fn asks_for_crouch_height_only_while_crouching() {
-        let mut c = QuakeController::default();
+        let mut c = Running::default();
         assert_eq!(c.step(&ctx(Vec3::ZERO, MoveInput::default(), Some(1.0))).height, None);
         let out = c.step(&ctx(Vec3::ZERO, MoveInput { crouch: true, ..Default::default() }, None));
         assert_eq!(out.height, Some(c.crouch_height), "a mid-air tuck");
@@ -467,7 +503,7 @@ mod tests {
 
     #[test]
     fn crouching_does_not_change_the_jump() {
-        let mut c = QuakeController::default();
+        let mut c = Running::default();
         let crouch = MoveInput { crouch: true, ..Default::default() };
         for _ in 0..120 {
             assert_eq!(c.step(&crouched_ctx(Vec3::ZERO, crouch.clone(), Some(1.0))).height, Some(c.crouch_height));
