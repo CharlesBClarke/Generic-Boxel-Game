@@ -158,7 +158,7 @@ Ideas that come up while playing get added here.
 ### Seam backlog (added when the game is ready for them)
 
 - ~~**Data mods.**~~ Done (2026-10-27), see Done toys.
-- **WebAssembly behavior.** *Suggested next.* Sandbox the cow's brain as WebAssembly (a `brain.wit` like `movement.wit`; it already takes plain data in and out), then block behavior once a toy has some. Also: move the movement controller's own state into the engine, and test giving freed mod pages back. Notes: `docs/notes/wasm-behavior.md`.
+- **WebAssembly behavior.** *First part done (2026-11-06), see Done toys: the cow brain runs as WebAssembly and movement keeps its state in the engine.* Left: block behavior once a toy has some, and giving freed mod pages back once a mod grows big. Notes: `docs/notes/wasm-behavior.md`.
 - ~~**Local server.**~~ Done (2026-11-05), see Done toys. Next steps toward multiplayer are in its Deferred list.
 - **Sub-grid trial.** A rotating platform the player can stand on and be carried by, to test collision with moving, rotated grids before more physics piles up. Whenever a toy wants something that moves. Notes: `docs/notes/sub-grid-trial.md`.
 - ~~**Sandbox limits.**~~ Done (2026-10-28), see Done toys.
@@ -196,6 +196,7 @@ Bugs found in already-merged code, each fixed on its own `fix-` branch (see the 
 ### Done toys
 
 Full write-ups (plans, implementation notes, verify rounds, decisions) are in `docs/done-toys.md`. One line each, newest first:
+- **WebAssembly behavior seam** (2026-11-06, `seam-wasm-behavior`). The cow brain runs as a sandboxed WebAssembly component (`base_cow`), bit for bit the same as native; movement controllers keep their state in the engine; `--native-brain`.
 - **Cow pathfinding** (2026-11-06, `toy-cow-pathfinding`). Cows find paths round walls, through gaps and up block-high ledges with a hop when chasing, running off and regrouping; with no way up they wait below; charges run off cliffs and falls hurt. F7 shows the routes; the pasture has a course (pen with a gap and terraces, pillar, mesa).
 - **Health bar under the hotbar** (2026-11-06, `toy-health-bar-bottom`). The health bar moved from the top of the screen to the bottom, under the hotbar, which sits higher to make room.
 - **Shading** (2026-11-05, `toy-shading`). Crisp crease and ridge lines per texel from what's past each quad's edges, an AO curve with an Apply button, light from a movable sun and the sky instead of fixed brightness per face, a sheen per look (ice), a gradient sky with a sun and fog that fades the far world into it. About 2.7 ms a frame at 10M triangles. Also an F9 frame rate recorder (on `master` via `dev-perf-recorder`).

@@ -2,25 +2,24 @@
 //!
 //! - `--native-movement` runs the movement controller natively instead of as WebAssembly, for
 //!   comparing the two.
+//! - `--native-brain` does the same for the cow brain.
 //! - `--mods <dir>` reads the base mod's data half from `dir` instead of the source tree.
 
 use std::path::PathBuf;
 
-use game::Movement;
+use game::{Code, Where};
 
 fn main() {
     let args: Vec<String> = std::env::args().collect();
-    let movement = match args.iter().any(|a| a == "--native-movement") {
-        true => Movement::Native,
-        false => Movement::Wasm,
-    };
+    let place = |flag: &str| if args.iter().any(|a| a == flag) { Where::Native } else { Where::Wasm };
+    let code = Code { movement: place("--native-movement"), brain: place("--native-brain") };
     let data = match args.iter().position(|a| a == "--mods") {
         Some(i) => PathBuf::from(args.get(i + 1).unwrap_or_else(|| panic!("--mods needs a folder"))),
         None => PathBuf::from(base::DATA_DIR),
     };
-    eprintln!("movement controller: {movement:?}");
+    eprintln!("movement controller: {:?}, cow brain: {:?}", code.movement, code.brain);
     eprintln!("base data: {}", data.display());
-    let sim = game::load_from(&data, movement).unwrap_or_else(|e| {
+    let sim = game::load_from(&data, code).unwrap_or_else(|e| {
         eprintln!("loading the game failed: {e}");
         std::process::exit(1);
     });

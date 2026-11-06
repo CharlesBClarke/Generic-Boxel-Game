@@ -4,7 +4,7 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use game::Movement;
+use game::Code;
 
 /// A copy of `mods/base` in the temp directory, removed when dropped.
 struct Copy(PathBuf);
@@ -44,7 +44,7 @@ fn copy_dir(from: &Path, to: &Path) {
 fn editing_the_data_files_changes_the_game() {
     let copy = Copy::new("edit");
     copy.edit("blocks.toml", "friction = 0.1", "friction = 0.5");
-    let sim = game::load_from(&copy.0, Movement::Native).expect("the edited mod loads");
+    let sim = game::load_from(&copy.0, Code::NATIVE).expect("the edited mod loads");
     let ice = sim.blocks().get(sim.blocks().id(base::ICE).unwrap()).unwrap();
     assert_eq!(ice.friction, 0.5);
 }
@@ -53,7 +53,7 @@ fn editing_the_data_files_changes_the_game() {
 fn a_broken_data_file_is_a_readable_error() {
     let copy = Copy::new("broken");
     copy.edit("blocks.toml", "friction = 0.1", "fricton = 0.1");
-    let err = game::load_from(&copy.0, Movement::Native).err().expect("loading fails").to_string();
+    let err = game::load_from(&copy.0, Code::NATIVE).err().expect("loading fails").to_string();
     let text = fs::read_to_string(copy.0.join("blocks.toml")).unwrap();
     let line = text.lines().position(|l| l.contains("fricton")).unwrap() + 1;
     assert!(err.starts_with(&format!("{}:{line}: ", copy.0.join("blocks.toml").display())), "{err}");
@@ -64,16 +64,16 @@ fn a_broken_data_file_is_a_readable_error() {
 fn a_block_naming_a_look_no_mod_has_is_an_error() {
     let copy = Copy::new("other_mod_look");
     copy.edit("blocks.toml", "look = \"brick\"", "look = \"other:brick\"");
-    let err = game::load_from(&copy.0, Movement::Native).err().expect("loading fails").to_string();
+    let err = game::load_from(&copy.0, Code::NATIVE).err().expect("loading fails").to_string();
     assert_eq!(err, "no look named \"other:brick\"");
 }
 
 #[test]
 fn editing_a_recipe_changes_the_look() {
-    let before = game::load_from(Path::new(base::DATA_DIR), Movement::Native).expect("the base mod loads");
+    let before = game::load_from(Path::new(base::DATA_DIR), Code::NATIVE).expect("the base mod loads");
     let copy = Copy::new("recipe");
     copy.edit("blocks.toml", "scale = 2, seed = 1", "scale = 2, seed = 99");
-    let after = game::load_from(&copy.0, Movement::Native).expect("the edited mod loads");
+    let after = game::load_from(&copy.0, Code::NATIVE).expect("the edited mod loads");
     let stone = |sim: &sim::Simulation| sim.looks().get(base::STONE).unwrap().rgba.clone();
     assert_ne!(stone(&before), stone(&after), "a new seed gives new speckle");
     assert_eq!(before.looks().get("base:brick"), after.looks().get("base:brick"), "other looks stay the same");
@@ -83,7 +83,7 @@ fn editing_a_recipe_changes_the_look() {
 fn a_broken_recipe_names_its_line() {
     let copy = Copy::new("broken_recipe");
     copy.edit("blocks.toml", "length = 8, height = 4, colors = [[150", "length = 5, height = 4, colors = [[150");
-    let err = game::load_from(&copy.0, Movement::Native).err().expect("loading fails").to_string();
+    let err = game::load_from(&copy.0, Code::NATIVE).err().expect("loading fails").to_string();
     let text = fs::read_to_string(copy.0.join("blocks.toml")).unwrap();
     let line = text.lines().position(|l| l == "[looks.brick]").unwrap() + 1;
     assert!(err.starts_with(&format!("{}:{line}: ", copy.0.join("blocks.toml").display())), "{err}");
@@ -92,7 +92,7 @@ fn a_broken_recipe_names_its_line() {
 
 #[test]
 fn the_cow_is_data_and_its_numbers_can_be_edited() {
-    let sim = game::load(Movement::Native).unwrap();
+    let sim = game::load(Code::NATIVE).unwrap();
     let cow = sim.target_defs().iter().find(|d| d.name == base::COW).expect("base defines the cow");
     let model = sim.models().iter().find(|m| m.name == cow.model).expect("with its model");
     assert_eq!((model.texture.width, model.texture.height), (128, 128));
@@ -103,17 +103,17 @@ fn the_cow_is_data_and_its_numbers_can_be_edited() {
     }
     let known = |s: &Option<String>| s.as_ref().is_some_and(|s| sim.sounds().iter().any(|d| &d.name == s));
     assert!(known(&cow.sounds.hit) && known(&cow.sounds.step) && known(&cow.sounds.slam) && known(&cow.sounds.death), "and its moo, hooves, slam and death");
-    assert_eq!(cow.brain.as_deref(), Some(base::cow::COW_BRAIN), "and the base crate's brain");
+    assert_eq!(cow.brain.as_deref(), Some(base_cow::COW_BRAIN), "and the base crate's brain");
     assert_eq!(cow.step_height, 0.6);
 
     let copy = Copy::new("cow");
     copy.edit("targets.toml", "health = 130", "health = 55");
-    let sim = game::load_from(&copy.0, Movement::Native).unwrap();
+    let sim = game::load_from(&copy.0, Code::NATIVE).unwrap();
     assert_eq!(sim.target_defs().iter().find(|d| d.name == base::COW).unwrap().health, 55.0);
 
     let copy = Copy::new("cow_broken");
     copy.edit("targets.toml", "mesh = \"models/cow.glb\"", "mesh = \"models/bull.glb\"");
-    let error = game::load_from(&copy.0, Movement::Native).err().unwrap().to_string();
+    let error = game::load_from(&copy.0, Code::NATIVE).err().unwrap().to_string();
     assert!(error.contains("targets.toml:") && error.contains("bull.glb"), "{error}");
 }
 
@@ -121,13 +121,13 @@ fn the_cow_is_data_and_its_numbers_can_be_edited() {
 fn a_cow_naming_a_brain_no_mod_has_is_an_error() {
     let copy = Copy::new("cow_brainless");
     copy.edit("targets.toml", "brain = \"cow\"", "brain = \"sheep\"");
-    let error = game::load_from(&copy.0, Movement::Native).err().unwrap().to_string();
+    let error = game::load_from(&copy.0, Code::NATIVE).err().unwrap().to_string();
     assert!(error.contains("base:sheep"), "{error}");
 }
 
 #[test]
 fn every_block_the_player_and_the_club_make_sounds() {
-    let sim = game::load(Movement::Native).unwrap();
+    let sim = game::load(Code::NATIVE).unwrap();
     for (_, def) in sim.blocks().iter() {
         let s = &def.sounds;
         assert!(s.step.is_some() && s.broken.is_some() && s.placed.is_some(), "{} is heard", def.name);
@@ -140,12 +140,12 @@ fn every_block_the_player_and_the_club_make_sounds() {
 fn naming_a_sound_no_mod_has_is_an_error() {
     let copy = Copy::new("sound_missing");
     copy.edit("blocks.toml", "step = \"step_on_ice\"", "step = \"other:skate\"");
-    let error = game::load_from(&copy.0, Movement::Native).err().unwrap().to_string();
+    let error = game::load_from(&copy.0, Code::NATIVE).err().unwrap().to_string();
     assert!(error.contains("other:skate"), "{error}");
 
     let copy = Copy::new("sound_typo");
     copy.edit("blocks.toml", "step = \"step_on_ice\"", "step = \"step_on_ise\"");
-    let error = game::load_from(&copy.0, Movement::Native).err().unwrap().to_string();
+    let error = game::load_from(&copy.0, Code::NATIVE).err().unwrap().to_string();
     assert!(error.contains("blocks.toml") && error.contains("no sound \"step_on_ise\""), "{error}");
 }
 

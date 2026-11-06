@@ -16,6 +16,7 @@ server.workspace = true
 client.workspace = true
 base.workspace = true
 base_movement.workspace = true
+base_cow.workspace = true
 wasm_host.workspace = true
 data_mods.workspace = true
 

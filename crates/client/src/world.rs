@@ -346,7 +346,7 @@ pub(crate) mod testing {
     /// The base game's simulation, with its native movement controller and no player yet.
     pub fn base_sim() -> Simulation {
         let data = data_mods::load(std::path::Path::new(base::DATA_DIR)).unwrap();
-        Simulation::with_mods(&[&data, &base::BaseMod, &base_movement::BaseMovementMod]).unwrap()
+        Simulation::with_mods(&[&data, &base::BaseMod, &base_cow::BaseCowMod, &base_movement::BaseMovementMod]).unwrap()
     }
 
     /// A client connected to a local server running `sim`.

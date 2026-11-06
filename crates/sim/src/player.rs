@@ -139,10 +139,12 @@ pub struct Body {
     last_step: StepReport,
 }
 
-/// The player: a body, moved by the mod's movement controller. Derefs to its [`Body`].
+/// The player: a body, moved by the mod's movement controller. Derefs to its [`Body`]. The
+/// controller is shared by every body of its kind, so the player keeps only its memory.
 pub struct Player {
     body: Body,
-    controller: Box<dyn MovementController>,
+    /// What the controller handed back last tick.
+    memory: Vec<f32>,
 }
 
 impl std::ops::Deref for Player {
@@ -161,35 +163,27 @@ impl std::ops::DerefMut for Player {
 
 impl Player {
     /// A player shaped by `def`, standing with its feet at `pos`.
-    pub fn new(def: &PlayerDef, controller: Box<dyn MovementController>, pos: WorldPos) -> Self {
+    pub fn new(def: &PlayerDef, pos: WorldPos) -> Self {
         let shape = Shape {
             width: def.width,
             height: def.height,
             eye_height: def.eye_height,
             step_height: def.step_height,
         };
-        Self::with_controller(shape, controller, pos)
+        Self::with_shape(shape, pos)
     }
 
-    pub fn with_controller(shape: Shape, controller: Box<dyn MovementController>, pos: WorldPos) -> Self {
-        Self { body: Body::new(shape, pos), controller }
+    pub fn with_shape(shape: Shape, pos: WorldPos) -> Self {
+        Self { body: Body::new(shape, pos), memory: Vec::new() }
     }
 
     pub fn body(&self) -> &Body {
         &self.body
     }
 
-    pub fn controller(&self) -> &dyn MovementController {
-        self.controller.as_ref()
-    }
-
-    pub fn controller_mut(&mut self) -> &mut dyn MovementController {
-        self.controller.as_mut()
-    }
-
-    /// Advances one tick of `dt` seconds.
-    pub fn step(&mut self, input: &PlayerInput, dt: f32, terrain: &impl Terrain) {
-        self.body.step(self.controller.as_mut(), input, dt, terrain);
+    /// Advances one tick of `dt` seconds, moved by `controller`.
+    pub fn step(&mut self, controller: &dyn MovementController, input: &PlayerInput, dt: f32, terrain: &impl Terrain) {
+        self.body.step(controller, &mut self.memory, input, dt, terrain);
     }
 }
 
@@ -320,8 +314,16 @@ impl Body {
         self.on_ground = false;
     }
 
-    /// Advances one tick of `dt` seconds, `controller` deciding the velocity.
-    pub fn step(&mut self, controller: &mut dyn MovementController, input: &PlayerInput, dt: f32, terrain: &impl Terrain) {
+    /// Advances one tick of `dt` seconds, `controller` deciding the velocity. `memory` is what
+    /// the controller keeps for this body between ticks.
+    pub fn step(
+        &mut self,
+        controller: &dyn MovementController,
+        memory: &mut Vec<f32>,
+        input: &PlayerInput,
+        dt: f32,
+        terrain: &impl Terrain,
+    ) {
         self.prev_pos = self.pos;
         if input.toggle_fly {
             self.flying = !self.flying;
@@ -353,7 +355,9 @@ impl Body {
                 standing_height: self.shape.height,
                 input: move_input,
                 ground,
+                memory: std::mem::take(memory),
             });
+            *memory = out.memory;
             self.last_step = StepReport {
                 velocity_in: self.velocity,
                 controller_velocity: out.velocity,
@@ -686,10 +690,7 @@ mod tests {
     }
 
     impl MovementController for Walker {
-        fn spawn(&self) -> Box<dyn MovementController> {
-            Box::new(self.clone())
-        }
-        fn step(&mut self, ctx: &MoveContext) -> MoveOutput {
+        fn step(&self, ctx: &MoveContext) -> MoveOutput {
             let walk = ctx.input.wish_direction() * WALK;
             let mut velocity = Vec3::new(walk.x, walk.y, ctx.velocity.z - GRAVITY * ctx.dt);
             let mut impulse = Vec3::ZERO;
@@ -703,6 +704,7 @@ mod tests {
                 impulse,
                 height: ctx.input.crouch.then_some(CROUCH),
                 edge_guard: crouched_on_ground.then_some(GUARD_DROP),
+                memory: Vec::new(),
             }
         }
     }
@@ -720,10 +722,7 @@ mod tests {
     }
 
     impl MovementController for FrictionSpy {
-        fn spawn(&self) -> Box<dyn MovementController> {
-            Box::new(FrictionSpy(self.0.clone()))
-        }
-        fn step(&mut self, ctx: &MoveContext) -> MoveOutput {
+        fn step(&self, ctx: &MoveContext) -> MoveOutput {
             *self.0.lock().unwrap() = ctx.ground.as_ref().map(|g| g.friction);
             MoveOutput { velocity: ctx.velocity - Vec3::Z * GRAVITY * ctx.dt, ..Default::default() }
         }
@@ -755,7 +754,7 @@ mod tests {
     }
 
     fn player(x: f32, y: f32, z: f32) -> Player {
-        Player::with_controller(shape(0.0), Box::new(Walker), at(x, y, z))
+        Player::with_shape(shape(0.0), at(x, y, z))
     }
 
     fn at(x: f32, y: f32, z: f32) -> WorldPos {
@@ -772,8 +771,12 @@ mod tests {
     }
 
     fn run(player: &mut Player, input: &PlayerInput, ticks: usize, terrain: &impl Terrain) {
+        run_with(&Walker, player, input, ticks, terrain);
+    }
+
+    fn run_with(controller: &dyn MovementController, player: &mut Player, input: &PlayerInput, ticks: usize, terrain: &impl Terrain) {
         for _ in 0..ticks {
-            player.step(input, DT, terrain);
+            player.step(controller, input, DT, terrain);
         }
     }
 
@@ -845,7 +848,7 @@ mod tests {
         let jump = PlayerInput { jump_held: true, ..Default::default() };
         let mut peak = 0.0f32;
         for _ in 0..60 {
-            p.step(&jump, DT, &w);
+            p.step(&Walker, &jump, DT, &w);
             peak = peak.max(height(&p));
         }
         assert!(peak <= 0.2 + 1e-3, "head went through the ceiling: feet peaked at {peak}");
@@ -867,7 +870,7 @@ mod tests {
         run(&mut p, &PlayerInput::default(), 5, &w);
         p.apply_impulse(Vec3::new(0.0, 0.0, 5.0));
         p.apply_impulse(Vec3::new(0.0, 0.0, 5.0));
-        p.step(&PlayerInput::default(), DT, &w);
+        p.step(&Walker, &PlayerInput::default(), DT, &w);
         assert!((p.velocity().z - (10.0 - GRAVITY * DT)).abs() < 1e-4, "impulses should add up");
         assert!(!p.on_ground());
     }
@@ -875,17 +878,18 @@ mod tests {
     #[test]
     fn the_controller_is_told_the_friction_underfoot() {
         let seen = std::sync::Arc::new(std::sync::Mutex::new(None));
+        let spy = FrictionSpy(seen.clone());
         let ice = World { solid: floor, icy: |p: BoxelPos| p.0.x >= 0 };
-        let mut p = Player::with_controller(shape(0.0), Box::new(FrictionSpy(seen.clone())), at(0.5, 0.5, 0.0));
-        run(&mut p, &PlayerInput::default(), 3, &ice);
+        let mut p = Player::with_shape(shape(0.0), at(0.5, 0.5, 0.0));
+        run_with(&spy, &mut p, &PlayerInput::default(), 3, &ice);
         assert_eq!(*seen.lock().unwrap(), Some(0.1));
 
-        let mut p = Player::with_controller(shape(0.0), Box::new(FrictionSpy(seen.clone())), at(-0.5, 0.5, 0.0));
-        run(&mut p, &PlayerInput::default(), 3, &ice);
+        let mut p = Player::with_shape(shape(0.0), at(-0.5, 0.5, 0.0));
+        run_with(&spy, &mut p, &PlayerInput::default(), 3, &ice);
         assert_eq!(*seen.lock().unwrap(), Some(1.0));
 
-        let mut p = Player::with_controller(shape(0.0), Box::new(FrictionSpy(seen.clone())), at(0.5, 0.5, 3.0));
-        run(&mut p, &PlayerInput::default(), 1, &ice);
+        let mut p = Player::with_shape(shape(0.0), at(0.5, 0.5, 3.0));
+        run_with(&spy, &mut p, &PlayerInput::default(), 1, &ice);
         assert_eq!(*seen.lock().unwrap(), None, "no ground while falling");
     }
 
@@ -894,13 +898,13 @@ mod tests {
         let one_high = world(|p| floor(p) || (p.0.x >= 2 && p.0.z == 0));
         let two_high = world(|p| floor(p) || (p.0.x >= 2 && p.0.z <= 1));
 
-        let mut p = Player::with_controller(shape(1.0), Box::new(Walker), at(0.5, 0.5, 0.0));
+        let mut p = Player::with_shape(shape(1.0), at(0.5, 0.5, 0.0));
         run(&mut p, &PlayerInput::default(), 5, &one_high);
         run(&mut p, &walk_east(), 60, &one_high);
         assert_eq!(p.pos().cell().z, 1, "should have stepped up");
         assert!(p.pos().cell().x >= 3);
 
-        let mut p = Player::with_controller(shape(1.0), Box::new(Walker), at(0.5, 0.5, 0.0));
+        let mut p = Player::with_shape(shape(1.0), at(0.5, 0.5, 0.0));
         run(&mut p, &PlayerInput::default(), 5, &two_high);
         run(&mut p, &walk_east(), 60, &two_high);
         assert_eq!(p.pos().cell().z, 0, "a two-high wall is too tall");
@@ -916,11 +920,11 @@ mod tests {
         // The rise is instant and the renderer eases it itself, so blending between ticks
         // must not show it a second time.
         let one_high = world(|p| floor(p) || (p.0.x >= 2 && p.0.z == 0));
-        let mut p = Player::with_controller(shape(1.0), Box::new(Walker), at(1.5, 0.5, 0.0));
+        let mut p = Player::with_shape(shape(1.0), at(1.5, 0.5, 0.0));
         run(&mut p, &PlayerInput::default(), 5, &one_high);
         for _ in 0..60 {
             let before = p.stepped_total();
-            p.step(&walk_east(), DT, &one_high);
+            p.step(&Walker, &walk_east(), DT, &one_high);
             if p.stepped_total() > before {
                 let rise = p.prev_pos().delta_to(p.pos()).z;
                 assert!(rise.abs() < 1e-4, "the tick blends a rise of {rise}");
@@ -935,7 +939,7 @@ mod tests {
     fn step_up_needs_headroom() {
         // A one-high ledge with a ceiling above it leaving only 1.5 boxels of room.
         let w = world(|p| floor(p) || (p.0.x >= 2 && (p.0.z == 0 || p.0.z == 2)));
-        let mut p = Player::with_controller(shape(1.0), Box::new(Walker), at(0.5, 0.5, 0.0));
+        let mut p = Player::with_shape(shape(1.0), at(0.5, 0.5, 0.0));
         run(&mut p, &PlayerInput::default(), 5, &w);
         run(&mut p, &walk_east(), 60, &w);
         assert_eq!(p.pos().cell().z, 0);
@@ -1011,7 +1015,7 @@ mod tests {
         let shift = p.crouch_shift_total();
         // The tuck happens before this tick's motion, so compare against the motion alone.
         let velocity = p.velocity().z - GRAVITY * DT;
-        p.step(&crouch(), DT, &w);
+        p.step(&Walker, &crouch(), DT, &w);
         let moved = velocity * DT;
         assert!((height(&p) - (feet + 0.8 + moved)).abs() < 1e-4, "feet should rise 0.8");
         assert!((head(&p) - (top + moved)).abs() < 1e-4, "head should stay put");
@@ -1040,7 +1044,7 @@ mod tests {
         assert!((push.shift - Vec3::Z).length() < 1e-5, "shift {}", push.shift);
         assert!((push.direction - Vec3::Z).length() < 1e-5, "straight up from the middle");
         p.apply_push_out(push, 6.0);
-        p.step(&PlayerInput::default(), DT, &w);
+        p.step(&Walker, &PlayerInput::default(), DT, &w);
         assert_eq!(p.pos().cell().z, 1);
         assert!(p.velocity().z > 5.0, "launched at {}", p.velocity().z);
     }
@@ -1165,8 +1169,8 @@ mod tests {
         let far = world(move |p: BoxelPos| near_solid(BoxelPos(p.0 - shift)));
         let start = at(0.5, 0.5, 2.0);
         let far_start = WorldPos::new(start.cell() + shift, start.offset());
-        let mut a = Player::with_controller(shape(1.0), Box::new(Walker), start);
-        let mut b = Player::with_controller(shape(1.0), Box::new(Walker), far_start);
+        let mut a = Player::with_shape(shape(1.0), start);
+        let mut b = Player::with_shape(shape(1.0), far_start);
 
         let inputs = [
             PlayerInput { movement: Vec2::new(0.3, 1.0), yaw: 0.4, ..Default::default() },
@@ -1174,8 +1178,8 @@ mod tests {
             PlayerInput { movement: Vec2::new(-1.0, 0.2), yaw: 2.0, ..Default::default() },
         ];
         for input in inputs.iter().cycle().take(600) {
-            a.step(input, DT, &near);
-            b.step(input, DT, &far);
+            a.step(&Walker, input, DT, &near);
+            b.step(&Walker, input, DT, &far);
             assert_eq!(a.pos().offset(), b.pos().offset());
             assert_eq!(a.pos().cell() + shift, b.pos().cell());
         }

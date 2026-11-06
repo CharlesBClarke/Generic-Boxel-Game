@@ -1,5 +1,6 @@
 //! Compiles the WebAssembly mods to components in `OUT_DIR`: the base game's movement
-//! controller, embedded in the game, and test fixtures that misbehave, used only by tests.
+//! controller and cow brain, embedded in the game, and test fixtures that misbehave, used only
+//! by tests.
 
 use std::env;
 use std::fs;
@@ -9,13 +10,13 @@ use std::process::Command;
 use wit_component::ComponentEncoder;
 
 /// Crates compiled to WebAssembly, by package name.
-const GUESTS: &[&str] = &["base_movement", "panicky_movement", "hostile_movement", "stuck_movement"];
+const GUESTS: &[&str] = &["base_movement", "base_cow", "panicky_movement", "hostile_movement", "stuck_movement", "hostile_brain"];
 
 fn main() {
     let manifest_dir = PathBuf::from(env::var("CARGO_MANIFEST_DIR").unwrap());
     let root = manifest_dir.join("../..").canonicalize().unwrap();
     let out_dir = PathBuf::from(env::var("OUT_DIR").unwrap());
-    for path in ["crates/api", "crates/base_movement", "crates/test_mods", "Cargo.toml", "Cargo.lock"] {
+    for path in ["crates/api", "crates/base_movement", "crates/base_cow", "crates/test_mods", "Cargo.toml", "Cargo.lock"] {
         println!("cargo::rerun-if-changed={}", root.join(path).display());
     }
 

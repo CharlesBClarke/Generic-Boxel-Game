@@ -5,23 +5,25 @@
 //! - 1: loops forever in `step`.
 //! - 2: allocates forever in `step`.
 //! - 3: recurses forever in `step`.
-//! - 4: loops forever in `spawn`.
 //! - 5: loops forever in `tunables`.
 //! - 6: allocates `allocate_mib` mebibytes in `step` and keeps them.
+//!
+//! (4 looped in `spawn`, which controllers no longer have.)
 
 use std::hint::black_box;
+use std::sync::Mutex;
 
 use api::{MoveContext, MoveOutput, MovementController, Tunable, Tunables};
 
 #[cfg(target_arch = "wasm32")]
 api::export_movement_controller!("test:hostile", Hostile);
 
-#[derive(Clone, Debug, Default)]
+#[derive(Debug, Default)]
 pub struct Hostile {
     pub behavior: u32,
     pub allocate_mib: u32,
     /// Memory kept by behavior 6, so it stays allocated.
-    kept: Vec<Vec<u8>>,
+    kept: Mutex<Vec<Vec<u8>>>,
 }
 
 fn spin() -> ! {
@@ -39,14 +41,7 @@ fn recurse(depth: u64) -> u64 {
 }
 
 impl MovementController for Hostile {
-    fn spawn(&self) -> Box<dyn MovementController> {
-        if self.behavior == 4 {
-            spin();
-        }
-        Box::new(Hostile { kept: Vec::new(), ..self.clone() })
-    }
-
-    fn step(&mut self, ctx: &MoveContext) -> MoveOutput {
+    fn step(&self, ctx: &MoveContext) -> MoveOutput {
         match self.behavior {
             1 => spin(),
             2 => loop {
@@ -56,7 +51,7 @@ impl MovementController for Hostile {
             3 => {
                 black_box(recurse(0));
             }
-            6 => self.kept.push(black_box(Vec::with_capacity((self.allocate_mib as usize) << 20))),
+            6 => self.kept.lock().unwrap().push(black_box(Vec::with_capacity((self.allocate_mib as usize) << 20))),
             _ => {}
         }
         MoveOutput { velocity: ctx.velocity, ..Default::default() }

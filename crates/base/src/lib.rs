@@ -6,7 +6,6 @@ use api::{
     TerrainDef, ToolDef, ToolSounds, Vec3, WorldEdit, WorldPos,
 };
 
-pub mod cow;
 pub mod shapes;
 pub mod terrain;
 
@@ -25,7 +24,7 @@ pub const LOG: &str = "base:log";
 pub const GRAVEL: &str = "base:gravel";
 pub const CRAFTING_TABLE: &str = "base:crafting_table";
 
-/// The cow, defined in `mods/base/targets.toml`, with its brain in [`cow`].
+/// The cow, defined in `mods/base/targets.toml`, with its brain in the `base_cow` crate.
 pub const COW: &str = "base:cow";
 /// The melee tool.
 pub const CLUB: &str = "base:club";
@@ -101,7 +100,6 @@ impl Mod for BaseMod {
 
     fn register(&self, r: &mut dyn Registrar) -> Result<(), ApiError> {
         // Blocks and their looks are data, in `mods/base`; see `DATA_DIR`.
-        r.register_brain(cow::COW_BRAIN, Box::new(cow::CowBrain::default()))?;
         r.register_generator(terrain::HILLS, Box::new(terrain::Hills::default()))?;
         r.register_player(PlayerDef {
             width: 0.6,

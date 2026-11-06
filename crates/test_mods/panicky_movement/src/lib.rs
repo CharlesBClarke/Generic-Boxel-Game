@@ -12,11 +12,7 @@ pub struct Panicky {
 }
 
 impl MovementController for Panicky {
-    fn spawn(&self) -> Box<dyn MovementController> {
-        Box::new(self.clone())
-    }
-
-    fn step(&mut self, _ctx: &MoveContext) -> MoveOutput {
+    fn step(&self, _ctx: &MoveContext) -> MoveOutput {
         panic!("this controller always panics")
     }
 }

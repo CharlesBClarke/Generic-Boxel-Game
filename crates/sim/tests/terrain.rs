@@ -6,7 +6,7 @@ use sim::{PlayerInput, Simulation};
 
 fn base() -> Simulation {
     let data = data_mods::load(std::path::Path::new(base::DATA_DIR)).unwrap();
-    let mut sim = Simulation::with_mods(&[&data, &base::BaseMod, &base_movement::BaseMovementMod]).unwrap();
+    let mut sim = Simulation::with_mods(&[&data, &base::BaseMod, &base_cow::BaseCowMod, &base_movement::BaseMovementMod]).unwrap();
     sim.spawn_player().unwrap();
     sim
 }

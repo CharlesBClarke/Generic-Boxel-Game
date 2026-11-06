@@ -9,7 +9,7 @@ mod common;
 
 fn base_sim() -> Simulation {
     let data = common::AllPlaceable::load();
-    let mods: [&dyn api::Mod; 3] = [&data, &base::BaseMod, &base_movement::BaseMovementMod];
+    let mods: [&dyn api::Mod; 4] = [&data, &base::BaseMod, &base_cow::BaseCowMod, &base_movement::BaseMovementMod];
     let mut sim = Simulation::with_mods(&mods).expect("base mod loads");
     sim.spawn_player().expect("base registers a player");
     sim

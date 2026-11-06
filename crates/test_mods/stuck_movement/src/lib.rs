@@ -1,5 +1,5 @@
 //! Test fixture: a movement controller that never finishes being created, so loading the
-//! component loops forever unless the engine stops it.
+//! component (which makes the controller) loops forever unless the engine stops it.
 
 use std::hint::black_box;
 
@@ -20,11 +20,7 @@ impl Default for Stuck {
 }
 
 impl MovementController for Stuck {
-    fn spawn(&self) -> Box<dyn MovementController> {
-        Box::new(self.clone())
-    }
-
-    fn step(&mut self, ctx: &MoveContext) -> MoveOutput {
+    fn step(&self, ctx: &MoveContext) -> MoveOutput {
         MoveOutput { velocity: ctx.velocity, ..Default::default() }
     }
 }

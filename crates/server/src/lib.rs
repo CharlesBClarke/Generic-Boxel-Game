@@ -174,8 +174,10 @@ impl Server {
 fn sections(sim: &mut Simulation) -> Vec<TuningSection> {
     let mut out = Vec::new();
     let mut add = |name: String, values: Vec<api::Tunable>| out.push(TuningSection { name, values });
-    if let Some(player) = sim.player() {
-        add("movement".into(), player.controller().tunables());
+    if sim.player().is_some()
+        && let Some(controller) = sim.player_controller()
+    {
+        add("movement".into(), controller.tunables());
     }
     if let Some(d) = sim.interaction_def() {
         add("interaction".into(), d.tunables());
@@ -221,7 +223,7 @@ fn tune(sim: &mut Simulation, section: &str, name: &str, value: f32) -> bool {
         t.is_some_and(|t| t.set_tunable(name, value))
     }
     match section {
-        "movement" => set(sim.player_mut().map(|p| p.controller_mut() as &mut dyn Tunables), name, value),
+        "movement" => set(sim.player_controller_mut().map(|c| c as &mut dyn Tunables), name, value),
         "interaction" => set(sim.interaction_def_mut().map(|d| d as &mut dyn Tunables), name, value),
         "push_out" => set(sim.push_out_def_mut().map(|d| d as &mut dyn Tunables), name, value),
         "crowd" => set(sim.crowd_def_mut().map(|d| d as &mut dyn Tunables), name, value),

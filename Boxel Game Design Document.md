@@ -56,7 +56,7 @@ The engine is written in Rust and ships with no content. The base game is a mod 
 
 Early on, the API is plain Rust and the base game is compiled in against it. Data files and WebAssembly arrive in stages, as the game needs them.
 
-**WebAssembly so far.** The first stage is in: the base game's movement controller runs as a WebAssembly component on wasmtime. Each kind of mod behavior gets a WIT interface in the API crate. Mods write the same plain Rust traits either way, and an export macro wraps them for the boundary. Components import nothing unless a host service grants it.
+**WebAssembly so far.** The base game's movement controller (since 2026-10-26) and cow brain (since 2026-11-06) run as WebAssembly components on wasmtime. Each kind of mod behavior gets a WIT interface in the API crate. Mods write the same plain Rust traits either way, and an export macro wraps them for the boundary. Components import nothing unless a host service grants it.
 
 **Determinism.** Mod code must give the same results bit for bit, natively and in WebAssembly, on every machine, so replays and multiplayer stay in sync. The API uses the `libm` crate for trig rather than the platform's math library, and wasmtime canonicalizes NaNs. Tests check native and WebAssembly results bit for bit.
 
@@ -72,7 +72,7 @@ Sandboxed mods are expected to be the most common kind: game logic in WebAssembl
 
 **Mod memory.** Each sandboxed mod has its own memory, so space one mod frees can't be used by another. WebAssembly memory also never shrinks, so without care a large mod pack would use the sum of every mod's peak memory. Three rules keep it close to what a single shared heap would use:
 
-- **State lives in the engine.** Entities and blocks a mod controls keep their state as plain data in the engine, passed in on each call and returned changed, like `MoveContext` and `MoveOutput`. A mod's own memory holds only working space and its fixed data, so it stays small no matter how many entities exist. Creature brains (since 2026-11-03) follow this fully: one brain per kind, each creature's memory kept by the engine as a short list of numbers.
+- **State lives in the engine.** Entities and blocks a mod controls keep their state as plain data in the engine, passed in on each call and returned changed, like `MoveContext` and `MoveOutput`. A mod's own memory holds only working space and its fixed data, so it stays small no matter how many entities exist. Creature brains (since 2026-11-03) and movement controllers (since 2026-11-06) follow this fully: one per kind, each creature's or body's memory kept by the engine as a short list of numbers.
 - **Mods give pages back.** The allocator the API supplies to mods tells the engine when it frees large page-aligned regions, and the engine returns those pages to the OS. Modders get this without doing anything.
 - **Mods can be restarted.** A mod that holds no state of its own can be reloaded at any time: after a crash, to reclaim memory, or for hot reload.
 

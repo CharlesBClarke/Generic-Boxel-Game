@@ -8,12 +8,14 @@ members = [
     "crates/client",
     "crates/base",
     "crates/base_movement",
+    "crates/base_cow",
     "crates/wasm_host",
     "crates/data_mods",
     "crates/game",
     "crates/test_mods/panicky_movement",
     "crates/test_mods/hostile_movement",
     "crates/test_mods/stuck_movement",
+    "crates/test_mods/hostile_brain",
 ]
 
 [workspace.package]
@@ -29,6 +31,7 @@ server = { path = "crates/server" }
 client = { path = "crates/client" }
 base = { path = "crates/base" }
 base_movement = { path = "crates/base_movement" }
+base_cow = { path = "crates/base_cow" }
 wasm_host = { path = "crates/wasm_host" }
 data_mods = { path = "crates/data_mods" }
 # Pinned to the glam version Bevy 0.18 uses, so math types cross the render boundary without conversion.

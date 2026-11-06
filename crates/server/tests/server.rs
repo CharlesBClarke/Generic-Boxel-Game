@@ -8,7 +8,7 @@ use sim::{Cells, Craft, Grid, MaterialId, Piece, PlayerInput, Simulation, Univer
 
 fn base_sim() -> Simulation {
     let data = data_mods::load(std::path::Path::new(base::DATA_DIR)).unwrap();
-    let mods: [&dyn Mod; 3] = [&data, &base::BaseMod, &base_movement::BaseMovementMod];
+    let mods: [&dyn Mod; 4] = [&data, &base::BaseMod, &base_cow::BaseCowMod, &base_movement::BaseMovementMod];
     let mut sim = Simulation::with_mods(&mods).expect("base mod loads");
     sim.spawn_player().expect("base registers a player");
     sim

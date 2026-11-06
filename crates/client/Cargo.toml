@@ -18,3 +18,4 @@ server.workspace = true
 base.workspace = true
 data_mods.workspace = true
 base_movement.workspace = true
+base_cow.workspace = true
