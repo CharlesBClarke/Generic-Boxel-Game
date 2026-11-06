@@ -193,6 +193,7 @@ Bugs found in already-merged code, each fixed on its own `fix-` branch (see the 
 ### Done toys
 
 Full write-ups (plans, implementation notes, verify rounds, decisions) are in `docs/done-toys.md`. One line each, newest first:
+- **Health bar under the hotbar** (2026-11-06, `toy-health-bar-bottom`). The health bar moved from the top of the screen to the bottom, under the hotbar, which sits higher to make room.
 - **Shading** (2026-11-05, `toy-shading`). Crisp crease and ridge lines per texel from what's past each quad's edges, an AO curve with an Apply button, light from a movable sun and the sky instead of fixed brightness per face, a sheen per look (ice), a gradient sky with a sun and fog that fades the far world into it. About 2.7 ms a frame at 10M triangles. Also an F9 frame rate recorder (on `master` via `dev-perf-recorder`).
 - **Generated terrain** (2026-11-05, `toy-generated-terrain`). A 512³ seeded terrain of hills, ranges, frozen lakes and boulders (Tectonic-inspired), its own place reached by teleport, with herds; live render and simulation distances, a regenerate, and a cost readout. 1024³ runs at about 25 fps; startup meshing (20 s) is the first limit.
 - **Cow tweaks** (2026-11-05, `toy-cow-tweaks`). Cows charge only with a clear straight run (`Seen.clear_run`) and run well past; hurting a cow gives it and its herdmates a grudge until a knock-out (fight or run when you come near); giving up means running, and a cow run down turns and fights; the pasture is walled 8 high.
