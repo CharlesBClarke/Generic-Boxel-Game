@@ -14,6 +14,7 @@ pub mod feel;
 pub mod hurt;
 pub mod items;
 pub mod mesher;
+pub mod perf;
 pub mod solid;
 pub mod sound;
 pub mod tuning;
@@ -100,6 +101,8 @@ pub fn run(connection: Box<dyn Connection>) {
         .init_resource::<sound::Hearing>()
         .init_resource::<sound::SoundPreview>()
         .init_resource::<sound::SoundPicks>()
+        .init_resource::<perf::PerfRecorder>()
+        .init_resource::<perf::PerfTags>()
         .add_systems(
             Startup,
             (
@@ -111,6 +114,7 @@ pub fn run(connection: Box<dyn Connection>) {
                 combat::setup_readout,
                 hurt::setup_health,
                 sound::setup_audio,
+                perf::setup_perf_text,
             ),
         )
         .add_systems(FixedUpdate, (tick_simulation, drill::drill_tick).chain())
@@ -136,6 +140,7 @@ pub fn run(connection: Box<dyn Connection>) {
                 editing::draw_region_guide,
                 drill::draw_drill,
                 update_hud,
+                perf::record_perf,
                 crafting::update_table_hint,
             )
                 .chain(),
