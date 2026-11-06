@@ -34,7 +34,9 @@ pub use error::ApiError;
 pub use health::HealthDef;
 pub use interaction::{InteractionDef, PushOutDef};
 pub use item::{InventoryDef, ItemDropDef};
-pub use media::{Bone, BonePose, Clip, ModelDef, Skin, SoundDef, Texture, Track};
+pub use media::{
+    BlockSounds, Bone, BonePose, Clip, ModelDef, PlayerSounds, Skin, SoundDef, TargetSounds, Texture, ToolSounds, Track,
+};
 pub use glam::{I64Vec3, Vec2, Vec3};
 pub use modding::{Mod, Registrar, WorldEdit};
 pub use orientation::Orientation;

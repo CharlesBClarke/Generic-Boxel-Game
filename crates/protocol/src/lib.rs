@@ -10,7 +10,7 @@ use api::{
     SoundDef, TargetDef, ToolDef, Tunable, WorldPos,
 };
 use sim::{
-    Body, BlockRegistry, ChunkData, CraftRefusal, Inventory, Item, LookRegistry, MaterialId, PlayerHurt, PlayerInput,
+    BlockEdit, Body, BlockRegistry, ChunkData, CraftRefusal, Inventory, Item, LookRegistry, MaterialId, PlayerHurt, PlayerInput,
     Slam, Strike, Swing, Target,
 };
 
@@ -41,6 +41,9 @@ pub enum Command {
     TeleportPlayer(WorldPos),
     /// Puts every creature back at its spot, whole.
     RespawnTargets,
+    /// Reads the sounds again, for trying sound files without a restart. The server answers
+    /// with [`ServerMsg::Sounds`].
+    ReloadSounds,
 }
 
 /// From the server to the client.
@@ -55,6 +58,9 @@ pub enum ServerMsg {
     Blocks(Box<BlockRegistry>),
     /// Definitions or tuning changed, by a command.
     Defs(Box<Defs>),
+    /// Every sound after [`Command::ReloadSounds`], or why reading them again failed (the old
+    /// ones stay).
+    Sounds(Result<Vec<SoundDef>, String>),
 }
 
 /// What a client needs to start: the content, the world and where things stand.
@@ -130,6 +136,8 @@ pub enum Event {
     Strike(Strike),
     Slam(Slam),
     PlayerHurt(PlayerHurt),
+    /// A block the player broke or placed.
+    BlockEdit(BlockEdit),
     /// A craft the input asked for: the part made and how many, or why nothing was.
     Craft(Result<(MaterialId, u32), CraftRefusal>),
 }

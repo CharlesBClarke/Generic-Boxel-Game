@@ -811,7 +811,7 @@ mod tests {
         TargetDef {
             name: "test:dummy".into(),
             model: "test:dummy".into(),
-            hit_sound: None,
+            sounds: Default::default(),
             brain: None,
             width: 0.9,
             height: 1.3,
@@ -845,6 +845,7 @@ mod tests {
             recoil_bounce: 0.0,
             windup: 0.1,
             recover: 0.3,
+            sounds: Default::default(),
         }
     }
 

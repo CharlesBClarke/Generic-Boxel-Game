@@ -3,19 +3,17 @@
 //! this only shows and plays it.
 //!
 //! A hit freezes the view for a moment (hit-stop), kicks the view, flashes the target white,
-//! squashes and tumbles it, recoils the tool and plays the target's sound. A head hit (any hit
-//! box that multiplies damage) freezes longer, flashes gold and sounds higher. A target slammed
+//! squashes and tumbles it and recoils the tool. A head hit (any hit box that multiplies damage)
+//! freezes longer and flashes gold. Sounds are `sound`'s. A target slammed
 //! into a wall freezes, flashes and kicks up dust from the wall; a hard landing squashes it and
 //! kicks up dust from the ground. A target that breaks bursts into chunks. A swing that misses
 //! whiffs: the tool follows through further. The last hit's damage, and why, shows under the
 //! crosshair.
 
 use std::collections::HashMap;
-use std::sync::Arc;
 
 use api::{ModelDef, Skin, Tunable, Tunables, Vec3 as ZVec3, WorldPos};
 use bevy::asset::RenderAssetUsages;
-use bevy::audio::{AudioPlayer, AudioSource, PlaybackSettings};
 use bevy::image::ImageSampler;
 use bevy::camera::visibility::NoFrustumCulling;
 use bevy::mesh::skinning::{SkinnedMesh, SkinnedMeshInverseBindposes};
@@ -84,8 +82,6 @@ pub struct CombatFeel {
     pub recoil_stiffness: f32,
     /// How far past its strike pose a missed swing carries the tool, as a share of the swing.
     pub whiff_follow: f32,
-    /// How much a hit sound's pitch varies either way, as a share.
-    pub pitch_spread: f32,
     /// How many chunks a broken target bursts into, and how fast they fly, meters a second.
     pub chunks: f32,
     pub chunk_speed: f32,
@@ -129,7 +125,6 @@ impl Default for CombatFeel {
             recoil: 0.12,
             recoil_stiffness: 400.0,
             whiff_follow: 0.35,
-            pitch_spread: 0.15,
             chunks: 24.0,
             chunk_speed: 6.0,
             crit_hitstop: 0.05,
@@ -184,7 +179,6 @@ tunable_fields! {
     recoil: 0.0, 0.5;
     recoil_stiffness: 20.0, 2000.0;
     whiff_follow: 0.0, 1.0;
-    pitch_spread: 0.0, 0.5;
     chunks: 0.0, 100.0;
     chunk_speed: 0.0, 20.0;
     crit_hitstop: 0.0, 0.3;
@@ -272,12 +266,11 @@ impl ViewKick {
     }
 }
 
-/// How each target is drawn, by the target's ID, and the media its models and sounds need.
+/// How each target is drawn, by the target's ID, and the media its models need.
 #[derive(Resource, Default)]
 pub(crate) struct TargetViews {
     views: HashMap<u64, TargetView>,
     models: HashMap<String, ModelAssets>,
-    sounds: HashMap<String, Handle<AudioSource>>,
 }
 
 struct ModelAssets {
@@ -372,13 +365,12 @@ pub(crate) struct ChunkMarker {
     age: f32,
 }
 
-/// Builds every model's mesh and texture and every sound once.
+/// Builds every model's mesh and texture once.
 pub(crate) fn setup_media(
     world: Res<ClientWorld>,
     mut views: ResMut<TargetViews>,
     mut meshes: ResMut<Assets<Mesh>>,
     mut images: ResMut<Assets<Image>>,
-    mut sounds: ResMut<Assets<AudioSource>>,
     mut bindposes: ResMut<Assets<SkinnedMeshInverseBindposes>>,
 ) {
     for model in world.models() {
@@ -393,9 +385,6 @@ pub(crate) fn setup_media(
             skin,
         };
         views.models.insert(model.name.clone(), assets);
-    }
-    for sound in world.sounds() {
-        views.sounds.insert(sound.name.clone(), sounds.add(AudioSource { bytes: Arc::from(sound.ogg.as_slice()) }));
     }
 }
 
@@ -497,8 +486,6 @@ pub(crate) fn play_strikes(
             stop.freeze(longer);
         }
         readout.show(hit_words(hit.damage, zone.map(|z| z.name.as_str()), crit, hit.carried, hit.broke));
-        let pitch = if hit.broke { 0.7 } else if crit { feel.crit_pitch } else { 1.0 };
-        play_sound(&mut commands, &views, def.hit_sound.as_deref(), pitch, &feel, strike.tick ^ hit.target);
         if hit.broke {
             if let Some(view) = views.views.remove(&hit.target) {
                 commands.entity(view.entity).despawn();
@@ -515,15 +502,6 @@ pub(crate) fn play_strikes(
     }
 }
 
-/// Plays a target's sound, if it has one, at `pitch` give or take the feel's spread.
-pub(crate) fn play_sound(commands: &mut Commands, views: &TargetViews, sound: Option<&str>, pitch: f32, feel: &CombatFeel, seed: u64) {
-    let Some(sound) = sound.and_then(|s| views.sounds.get(s)) else {
-        return;
-    };
-    let wobble = (hash(seed) * 2.0 - 1.0) * feel.pitch_spread;
-    commands.spawn((AudioPlayer(sound.clone()), PlaybackSettings::DESPAWN.with_speed((pitch + wobble).max(0.1))));
-}
-
 /// The color of the first solid block at `pos`, or `None` if there's nothing solid there.
 fn block_color(world: &ClientWorld, pos: WorldPos) -> Option<Color> {
     let blocks = world.blocks();
@@ -533,7 +511,7 @@ fn block_color(world: &ClientWorld, pos: WorldPos) -> Option<Color> {
 }
 
 /// Plays the juice of every wall slam since the last frame: a freeze, a flash and a squash
-/// against the wall, a shake, the target's sound low, and dust from the wall. A slam that breaks
+/// against the wall, a shake, and dust from the wall. A slam that breaks
 /// a target bursts it.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn play_slams(
@@ -554,7 +532,6 @@ pub(crate) fn play_slams(
         stop.freeze(feel.slam_hitstop + if slam.broke { feel.break_hitstop } else { 0.0 });
         kick.shake(feel.slam_shake, feel.shake_time);
         readout.show(format!("SLAM  {:.0}{}", slam.damage, if slam.broke { "  BROKEN" } else { "" }));
-        play_sound(&mut commands, &views, def.hit_sound.as_deref(), 0.8, &feel, slam.target.wrapping_mul(31));
         let middle = slam.pos.translate(ZVec3::Z * def.height * 0.5);
         let wall = middle.translate(slam.into * (def.width * 0.5 + 0.1));
         if let Some(color) = block_color(&world, wall) {

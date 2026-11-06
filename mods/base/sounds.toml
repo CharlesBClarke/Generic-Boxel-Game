@@ -1,0 +1,195 @@
+# Sounds, for blocks, targets and the player to name. See the data_mods crate's sounds module
+# for every field. Files are Ogg Vorbis, or WAV for loops; where they came from is in CREDITS.md.
+# printer.wav, wind.wav and powerdown.ogg are made by tools/make_sounds.sh.
+#
+# Each sound lists its variations (one picked at random each play). volume is a gain on the
+# file, pitch the playback speed, pitch_spread how much each play wanders either way.
+#
+# Only sounds the game uses are kept here. More to try are in ~/Projects/boxel-sound-packs (see
+# its README); the tuning panel's pick lists offer every sound in this file, and F5 reloads it.
+
+# Footsteps, one per surface, tuned by ear in the tuning panel's Footsteps list (2026-11-05).
+# Brick and the player's own fallback use step_concrete.
+[sounds.step_on_stone]
+files = ["sounds/footstep_concrete_*.ogg"]
+volume = 0.125
+pitch = 0.5
+pitch_spread = 0.06
+
+[sounds.step_on_marker]
+files = ["sounds/footstep_concrete_*.ogg"]
+volume = 0.075
+pitch = 0.77
+pitch_spread = 0.06
+
+[sounds.step_on_wood]
+files = ["sounds/footstep_wood_*.ogg"]
+volume = 0.225
+pitch = 1.55
+pitch_spread = 0.06
+
+[sounds.step_on_log]
+files = ["sounds/footstep_wood_*.ogg"]
+volume = 0.25
+pitch = 1.0
+pitch_spread = 0.06
+
+[sounds.step_on_crafting_table]
+files = ["sounds/footstep_wood_*.ogg"]
+volume = 0.2
+pitch = 1.15
+pitch_spread = 0.06
+
+[sounds.step_on_dirt]
+files = ["sounds/step_lth*.ogg"]
+volume = 0.24
+pitch = 1.15
+pitch_spread = 0.06
+
+[sounds.step_on_grass]
+files = ["sounds/step_lth*.ogg"]
+volume = 0.24
+pitch = 0.98
+pitch_spread = 0.06
+
+[sounds.step_on_gravel]
+files = ["sounds/gravel_snow_*.ogg"]
+volume = 0.12
+pitch = 0.5
+pitch_spread = 0.06
+
+[sounds.step_on_ice]
+files = ["sounds/gravel_ice_*.ogg"]
+volume = 0.24
+pitch = 1.98
+pitch_spread = 0.06
+
+[sounds.step_concrete]
+files = ["sounds/footstep_concrete_*.ogg"]
+volume = 0.5
+pitch_spread = 0.06
+
+
+# Breaking and placing blocks.
+[sounds.break_stone]
+files = ["sounds/impactMining_*.ogg"]
+volume = 0.6
+pitch_spread = 0.05
+
+[sounds.break_wood]
+files = ["sounds/impactWood_medium_*.ogg"]
+volume = 0.6
+pitch_spread = 0.05
+
+[sounds.break_soft]
+files = ["sounds/impactSoft_medium_*.ogg"]
+volume = 0.7
+pitch_spread = 0.05
+
+[sounds.break_ice]
+files = ["sounds/impactGlass_medium_*.ogg"]
+volume = 0.5
+pitch_spread = 0.05
+
+[sounds.place]
+files = ["sounds/impactGeneric_light_*.ogg"]
+volume = 0.6
+pitch_spread = 0.05
+
+[sounds.place_wood]
+files = ["sounds/impactWood_light_*.ogg"]
+volume = 0.6
+pitch_spread = 0.05
+
+[sounds.place_ice]
+files = ["sounds/impactGlass_light_*.ogg"]
+volume = 0.5
+pitch_spread = 0.05
+
+
+# The cow: its voice, hooves, being slammed and breaking.
+[sounds.moo]
+files = ["sounds/moo.ogg"]
+pitch_spread = 0.08
+
+[sounds.hoof]
+files = ["sounds/footstep_grass_*.ogg"]
+volume = 0.7
+pitch = 0.6
+pitch_spread = 0.06
+
+[sounds.slam]
+files = ["sounds/impactWood_heavy_*.ogg"]
+volume = 0.9
+pitch_spread = 0.05
+
+[sounds.kill_cow]
+files = ["sounds/kill_splat_*.ogg"]
+volume = 0.52
+pitch_spread = 0.05
+
+
+# The club.
+[sounds.swing_club]
+files = ["sounds/swing_rpg_*.ogg"]
+volume = 0.28
+pitch = 1.25
+pitch_spread = 0.06
+
+[sounds.hit_club]
+files = ["sounds/hit_mid_*.ogg"]
+volume = 0.66
+pitch = 0.9
+pitch_spread = 0.05
+
+
+# The player, a robot. A landing is the surface's own footstep, louder (see the client's
+# land_loudness); a hard one adds hardland_robot.
+[sounds.hardland_robot]
+files = ["sounds/impactPlate_heavy_*.ogg"]
+volume = 1.6
+pitch = 0.97
+pitch_spread = 0.05
+
+[sounds.hurt_robot]
+files = ["sounds/impactPlate_heavy_*.ogg"]
+volume = 3.2
+pitch = 0.675
+pitch_spread = 0.05
+
+[sounds.knockout_robot]
+files = ["sounds/powerdown.ogg"]
+volume = 0.72
+pitch = 0.5
+
+[sounds.guard]
+files = ["sounds/impactMetal_medium_*.ogg"]
+volume = 0.8
+pitch_spread = 0.05
+
+[sounds.pickup_robot]
+files = ["sounds/pickup_beads.ogg"]
+volume = 0.1
+pitch = 0.5
+pitch_spread = 0.05
+
+[sounds.craft]
+files = ["sounds/scifi_impactMetal_*.ogg"]
+volume = 0.6
+pitch_spread = 0.05
+
+[sounds.craft_refused]
+files = ["sounds/scifi_forceField_000.ogg"]
+volume = 0.4
+
+
+# Loops the client drives. The servo (the neck's motor, a stepper like a 3D printer's) follows
+# how fast the view turns; printer.wav is a real printer recording, TEMPORARY: replace before
+# release (see CREDITS.md). The wind follows how fast the body moves.
+[sounds.servo]
+files = ["sounds/printer.wav"]
+looping = true
+
+[sounds.wind]
+files = ["sounds/wind.wav"]
+looping = true

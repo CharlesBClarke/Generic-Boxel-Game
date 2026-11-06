@@ -97,49 +97,59 @@ top = { colors = [[200, 166, 117], [196, 162, 113]], depth = 2, ragged = 0, scal
 
 [[block]]
 name = "stone"
+sounds = { step = "step_on_stone", broken = "break_stone", placed = "place" }
 look = "stone"
 
 [[block]]
 name = "dirt"
+sounds = { step = "step_on_dirt", broken = "break_soft", placed = "place" }
 look = "dirt"
 
 [[block]]
 name = "grass"
+sounds = { step = "step_on_grass", broken = "break_soft", placed = "place" }
 placeable = false
 look = "grass"
 material = "dirt"
 
 [[block]]
 name = "brick"
+sounds = { step = "step_concrete", broken = "break_stone", placed = "place" }
 look = "brick"
 
 # A debug landmark, so it stays a flat, loud color.
 [[block]]
 name = "marker"
+sounds = { step = "step_on_marker", broken = "break_stone", placed = "place" }
 placeable = false
 color = [240, 180, 40]
 
 [[block]]
 name = "ice"
+sounds = { step = "step_on_ice", broken = "break_ice", placed = "place_ice" }
 look = "ice"
 friction = 0.1
 
 [[block]]
 name = "wood"
+sounds = { step = "step_on_wood", broken = "break_wood", placed = "place_wood" }
 look = "wood"
 
 [[block]]
 name = "log"
+sounds = { step = "step_on_log", broken = "break_wood", placed = "place_wood" }
 look = "log"
 turning = "axis"
 
 [[block]]
 name = "gravel"
+sounds = { step = "step_on_gravel", broken = "break_soft", placed = "place" }
 look = "gravel"
 
 # Where shapes are crafted (see crafting.toml). It turns like stairs: placed, its front faces
 # you, and each face of it makes shapes a different way.
 [[block]]
 name = "crafting_table"
+sounds = { step = "step_on_crafting_table", broken = "break_wood", placed = "place_wood" }
 look = "crafting_table"
 turning = "any"

@@ -24,6 +24,8 @@ fn main() {
         eprintln!("loading the game failed: {e}");
         std::process::exit(1);
     });
-    let server = server::Server::new(sim);
+    let sounds = data.clone();
+    let server = server::Server::new(sim)
+        .with_sound_source(Box::new(move || data_mods::load_sounds(&sounds).map_err(|e| e.to_string())));
     client::run(Box::new(server::LocalConnection::new(server)));
 }

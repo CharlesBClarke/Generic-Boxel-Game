@@ -14,6 +14,10 @@
 //!
 //! Loading applies what the file names over the code's defaults. Unknown sections and names
 //! are skipped with a warning, and values are clamped to each slider's range.
+//!
+//! Two sections hold text instead of numbers: `[footsteps]` and `[combat sounds]`, the sounds
+//! picked to try per surface and per kind, as `name = sound volume pitch` (see
+//! `sound::SoundPicks`).
 
 use std::path::PathBuf;
 
@@ -23,6 +27,20 @@ use api::{Tunable, Tunables};
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct SavedTuning {
     pub sections: Vec<(String, Vec<(String, f32)>)>,
+    /// The lines of the sections kept as text ([`TEXT_SECTIONS`]), by section.
+    pub texts: Vec<(String, Vec<(String, String)>)>,
+}
+
+/// The sections kept as text.
+pub const FOOTSTEPS: &str = "footsteps";
+pub const COMBAT_SOUNDS: &str = "combat sounds";
+pub const TEXT_SECTIONS: [&str; 2] = [FOOTSTEPS, COMBAT_SOUNDS];
+
+impl SavedTuning {
+    /// The lines saved under the text section `section`.
+    pub fn text(&self, section: &str) -> Vec<(String, String)> {
+        self.texts.iter().filter(|(name, _)| name == section).flat_map(|(_, lines)| lines.clone()).collect()
+    }
 }
 
 impl SavedTuning {
@@ -44,10 +62,18 @@ impl SavedTuning {
                 continue;
             };
             let (name, value) = (name.trim(), value.trim());
-            let Some((_, values)) = saved.sections.last_mut() else {
+            let Some((section, values)) = saved.sections.last_mut() else {
                 problems.push(format!("line {}: {name} comes before any [section]", number + 1));
                 continue;
             };
+            if TEXT_SECTIONS.contains(&section.as_str()) {
+                let line = (name.to_owned(), value.to_owned());
+                match saved.texts.iter_mut().find(|(s, _)| s == section) {
+                    Some((_, lines)) => lines.push(line),
+                    None => saved.texts.push((section.clone(), vec![line])),
+                }
+                continue;
+            }
             match value.parse::<f32>() {
                 Ok(v) if v.is_finite() => values.push((name.to_owned(), v)),
                 _ => problems.push(format!("line {}: expected a number for {name}, got {value:?}", number + 1)),
@@ -78,13 +104,19 @@ impl SavedTuning {
     }
 }
 
-/// Writes sections of values as tuning text.
-pub fn format(sections: &[(String, Vec<Tunable>)]) -> String {
+/// Writes sections of values, then sections of text, as tuning text.
+pub fn format(sections: &[(String, Vec<Tunable>)], texts: &[(String, Vec<(String, String)>)]) -> String {
     let mut out = String::from("# Tuning panel values, written by its Save button. Loaded at startup over the defaults.\n");
     for (section, values) in sections {
         out += &format!("\n[{section}]\n");
         for t in values {
             out += &format!("{} = {:?}\n", t.name, t.value);
+        }
+    }
+    for (section, lines) in texts.iter().filter(|(_, lines)| !lines.is_empty()) {
+        out += &format!("\n[{section}]\n");
+        for (name, text) in lines {
+            out += &format!("{name} = {text}\n");
         }
     }
     out
@@ -126,12 +158,24 @@ mod tests {
     }
 
     #[test]
+    fn footsteps_are_kept_as_text() {
+        let picks = vec![("base:grass".to_owned(), "base:step_leather 0.4 0.98".to_owned())];
+        let combat = vec![("swing".to_owned(), "base:swing_rpg 1.00 1.10".to_owned())];
+        let texts = [(FOOTSTEPS.to_owned(), picks.clone()), (COMBAT_SOUNDS.to_owned(), combat.clone())];
+        let text = format(&[("sound".to_owned(), vec![Tunable::new("master", 0.8, 0.0, 2.0)])], &texts);
+        let (saved, problems) = SavedTuning::parse(&text);
+        assert!(problems.is_empty(), "{problems:?}");
+        assert_eq!((saved.text(FOOTSTEPS), saved.text(COMBAT_SOUNDS)), (picks, combat));
+        assert_eq!(saved.sections[0].1, [("master".to_owned(), 0.8)], "numbers still read as numbers");
+    }
+
+    #[test]
     fn written_values_read_back() {
         let sections = vec![
             ("movement".to_owned(), vec![Tunable::new("walk_speed", 5.0, 0.0, 10.0), Tunable::new("gravity", 25.5, 0.0, 80.0)]),
             ("brain cow".to_owned(), vec![Tunable::new("flee_speed", 0.1, 0.0, 9.0)]),
         ];
-        let (saved, problems) = SavedTuning::parse(&format(&sections));
+        let (saved, problems) = SavedTuning::parse(&format(&sections, &[]));
         assert!(problems.is_empty(), "{problems:?}");
         assert_eq!(
             saved.sections,

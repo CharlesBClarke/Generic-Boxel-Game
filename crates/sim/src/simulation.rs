@@ -48,6 +48,15 @@ impl From<ApiError> for SimError {
     }
 }
 
+/// A block the player broke or placed.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct BlockEdit {
+    pub pos: BoxelPos,
+    pub block: BlockId,
+    /// Placed; otherwise broken.
+    pub placed: bool,
+}
+
 /// The player being hurt: by a creature's attack, or by landing hard.
 #[derive(Clone, Debug, PartialEq)]
 pub struct PlayerHurt {
@@ -117,6 +126,8 @@ pub struct Simulation {
     guarding: bool,
     /// Strikes since the last [`Simulation::take_strikes`].
     strikes: Vec<Strike>,
+    /// Blocks broken and placed since the last [`Simulation::take_block_edits`].
+    block_edits: Vec<BlockEdit>,
     tick: u64,
 }
 
@@ -171,9 +182,6 @@ impl Simulation {
             if !sim.models.iter().any(|m| m.name == def.model) {
                 return Err(ApiError::UnknownModel(def.model.clone()).into());
             }
-            if let Some(sound) = def.hit_sound.as_ref().filter(|&name| !sim.sounds.iter().any(|s| s.name == *name)) {
-                return Err(ApiError::UnknownSound(sound.clone()).into());
-            }
             let brain = match &def.brain {
                 None => None,
                 Some(name) => Some(
@@ -182,6 +190,7 @@ impl Simulation {
             };
             sim.target_brains.push(brain);
         }
+        sim.check_sounds()?;
         for m in mods {
             m.build_world(&mut WorldEditor {
                 blocks: &mut sim.blocks,
@@ -193,6 +202,40 @@ impl Simulation {
             })?;
         }
         Ok(sim)
+    }
+
+    /// Swaps in sounds read again while the game runs: each replaces the one of its name, and a
+    /// new name is added. Nothing changes unless every sound is valid and every name content
+    /// uses is still there.
+    pub fn replace_sounds(&mut self, sounds: Vec<SoundDef>) -> Result<(), ApiError> {
+        let mut merged = self.sounds.clone();
+        for def in sounds {
+            def.validate().map_err(ApiError::InvalidDef)?;
+            match merged.iter_mut().find(|s| s.name == def.name) {
+                Some(old) => *old = def,
+                None => merged.push(def),
+            }
+        }
+        let old = std::mem::replace(&mut self.sounds, merged);
+        if let Err(e) = self.check_sounds() {
+            self.sounds = old;
+            return Err(e);
+        }
+        Ok(())
+    }
+
+    /// Checks every sound a block, creature, tool or the player names is registered.
+    fn check_sounds(&self) -> Result<(), ApiError> {
+        let named = self.blocks.iter().flat_map(|(_, def)| def.sounds.names())
+            .chain(self.target_defs.iter().flat_map(|def| def.sounds.names()))
+            .chain(self.tools.iter().flat_map(|def| def.sounds.names()))
+            .chain(self.player_def.iter().flat_map(|def| def.sounds.names()));
+        for name in named {
+            if !self.sounds.iter().any(|s| s.name == *name) {
+                return Err(ApiError::UnknownSound(name.clone()));
+            }
+        }
+        Ok(())
     }
 
     /// Adds a movement controller the engine loaded itself, such as one from a WebAssembly
@@ -314,8 +357,11 @@ impl Simulation {
         }
         let hit = self.target(input.yaw, input.pitch);
         if breaking {
-            if let Some(hit) = hit {
+            if let Some(hit) = hit
+                && let Some(&occupant) = self.universe.main().cell(hit.pos).get(hit.occupant)
+            {
                 self.remove_occupant(hit.pos, hit.occupant);
+                self.block_edits.push(BlockEdit { pos: hit.pos, block: occupant.block, placed: false });
             }
             return;
         }
@@ -325,6 +371,7 @@ impl Simulation {
                 self.inventory.take(cost.material, cost.amount);
             }
             self.add_occupant(place.pos, place.occupant);
+            self.block_edits.push(BlockEdit { pos: place.pos, block: place.occupant.block, placed: true });
         }
     }
 
@@ -813,6 +860,11 @@ impl Simulation {
         self.targets.take_slams()
     }
 
+    /// Blocks the player broke or placed since the last call, oldest first.
+    pub fn take_block_edits(&mut self) -> Vec<BlockEdit> {
+        std::mem::take(&mut self.block_edits)
+    }
+
     /// Tool strikes since the last call, hits and misses, oldest first.
     pub fn take_strikes(&mut self) -> Vec<Strike> {
         std::mem::take(&mut self.strikes)
@@ -996,6 +1048,7 @@ impl Registrar for ContentRegistrar<'_> {
 
     fn register_sound(&mut self, def: SoundDef) -> Result<(), ApiError> {
         check_new_name(&def.name, self.sounds.iter().map(|s| s.name.clone()))?;
+        def.validate().map_err(ApiError::InvalidDef)?;
         self.sounds.push(def);
         Ok(())
     }

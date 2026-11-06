@@ -46,6 +46,9 @@ pub struct Controls {
     pub drill: KeyCode,
     /// Puts every target back at its spot, whole.
     pub respawn_targets: KeyCode,
+    /// Reads the sounds again (`sounds.toml` and its files), to try sound files without a
+    /// restart.
+    pub reload_sounds: KeyCode,
     /// Shows and hides the dev text (readouts, coordinates, controls). Hidden by default in
     /// release builds.
     pub dev_text: KeyCode,
@@ -119,6 +122,7 @@ impl Default for Controls {
             tuning: KeyCode::Tab,
             drill: KeyCode::F4,
             respawn_targets: KeyCode::F6,
+            reload_sounds: KeyCode::F5,
             dev_text: KeyCode::F1,
             drop: KeyCode::KeyQ,
             interact: KeyCode::KeyE,
@@ -223,6 +227,7 @@ impl Controls {
                 "tuning" => &mut self.tuning,
                 "drill" => &mut self.drill,
                 "respawn_targets" => &mut self.respawn_targets,
+                "reload_sounds" => &mut self.reload_sounds,
                 "dev_text" => &mut self.dev_text,
                 "drop" => &mut self.drop,
                 "interact" => &mut self.interact,

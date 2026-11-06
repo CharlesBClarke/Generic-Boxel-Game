@@ -1,5 +1,7 @@
 //! Block definitions.
 
+use crate::BlockSounds;
+
 /// A kind of block, registered by name. Names are the identity; any numeric IDs the
 /// engine assigns at runtime are private to it.
 #[derive(Clone, Debug, PartialEq)]
@@ -29,6 +31,8 @@ pub struct BlockDef {
     /// `"base:stone"`; blocks of different shapes share one, so a slab gives half a stone.
     /// `None` gives nothing.
     pub material: Option<String>,
+    /// What it sounds like underfoot, breaking and being placed.
+    pub sounds: BlockSounds,
 }
 
 impl BlockDef {
@@ -44,6 +48,7 @@ impl BlockDef {
             shape: vec![BlockBox::FULL],
             turning: Turning::None,
             material: None,
+            sounds: BlockSounds::default(),
         }
     }
 
@@ -74,6 +79,11 @@ impl BlockDef {
 
     pub fn with_material(mut self, material: impl Into<String>) -> Self {
         self.material = Some(material.into());
+        self
+    }
+
+    pub fn with_sounds(mut self, sounds: BlockSounds) -> Self {
+        self.sounds = sounds;
         self
     }
 

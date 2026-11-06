@@ -1,7 +1,7 @@
 //! The live tuning panel: sliders for every value the server lets a client tune (the player's
 //! movement controller, the interaction, push-out, crowd, health, item drop and inventory
 //! definitions, tools, targets and brains, whichever mod they come from) and the client's own:
-//! the camera feel, the combat feel, the animation, ambient occlusion and the chase drill. Save
+//! sound, the camera feel, the combat feel, the animation, ambient occlusion and the chase drill. Save
 //! keeps them in the tuning file (see `tuning_file`), which is applied at startup.
 //!
 //! The server's values are edited as copies and each change is sent back as a command; the
@@ -17,6 +17,7 @@ use crate::combat::CombatFeel;
 use crate::drill::{Drill, DrillTuning};
 use crate::feel::CameraFeel;
 use crate::mesher::AoTuning;
+use crate::sound::{Kind, Pick, Picks, SoundPicks, SoundPreview, SoundTuning};
 use crate::tuning_file;
 use crate::world::{ClientWorld, Link};
 
@@ -45,6 +46,9 @@ pub fn tuning_panel(
     mut drill: ResMut<Drill>,
     mut animation: ResMut<AnimationTuning>,
     mut preview: ResMut<AnimationPreview>,
+    mut sound: ResMut<SoundTuning>,
+    mut preview_sound: ResMut<SoundPreview>,
+    mut picks: ResMut<SoundPicks>,
 ) -> Result {
     // The saved file is applied once, on the first frame there is a player, open or not.
     if world.player().is_none() {
@@ -80,6 +84,26 @@ pub fn tuning_panel(
     let mut camera = feel.clone();
     let mut shading = *ao;
     let mut drill_tuning = drill.tuning.clone();
+    let mut hearing = sound.clone();
+    let mut trying = picks.clone();
+    // Every sound whose name (after the namespace) starts with a prefix, for the pick lists.
+    let named = |prefix: &str| -> Vec<String> {
+        world.sounds().iter().map(|s| s.name.clone()).filter(|n| short(n).starts_with(prefix)).collect()
+    };
+    let step_sounds = named("step_");
+    // Any sound can be picked anywhere: a row's own kind is listed first, then the rest. Loops
+    // (the servo) are left out.
+    let all_sounds: Vec<String> = world.sounds().iter().filter(|s| !s.looping).map(|s| s.name.clone()).collect();
+    // Every surface with steps of its own, for the Footsteps list.
+    let surfaces: Vec<(String, String)> = world
+        .blocks()
+        .iter()
+        .filter(|(_, d)| d.is_full())
+        .filter_map(|(_, d)| Some((d.name.clone(), d.sounds.step.clone()?)))
+        .collect();
+    // Each kind of combat sound: its own, and the sounds offered for it.
+    let kinds: Vec<(Kind, String, Vec<String>)> =
+        Kind::ALL.iter().map(|&k| (k, k.own(world.defs()).unwrap_or_default(), named(k.prefix()))).collect();
 
     // Every section of sliders by its saved name, for loading, saving and printing.
     macro_rules! sections {
@@ -91,6 +115,7 @@ pub fn tuning_panel(
             s.push(("camera".to_owned(), &mut camera));
             s.push(("ao".to_owned(), &mut shading));
             s.push(("drill".to_owned(), &mut drill_tuning));
+            s.push(("sound".to_owned(), &mut hearing));
             s
         }};
     }
@@ -105,6 +130,14 @@ pub fn tuning_panel(
             saved.apply(name, &mut **target, &mut problems);
         }
         let known: Vec<String> = sections.into_iter().map(|(name, _)| name).collect();
+        let surface_names: Vec<String> = surfaces.iter().map(|(name, _)| name.clone()).collect();
+        let lines = saved.text(tuning_file::FOOTSTEPS);
+        trying.steps = Picks::from_lines(tuning_file::FOOTSTEPS, &lines, &surface_names, &all_sounds, &mut problems);
+        let kind_keys: Vec<String> = Kind::ALL.iter().map(|k| k.key().to_owned()).collect();
+        let every_sound: Vec<String> = world.sounds().iter().map(|s| s.name.clone()).collect();
+        let lines = saved.text(tuning_file::COMBAT_SOUNDS);
+        trying.combat = Picks::from_lines(tuning_file::COMBAT_SOUNDS, &lines, &kind_keys, &every_sound, &mut problems);
+        let known: Vec<String> = known.into_iter().chain(tuning_file::TEXT_SECTIONS.map(str::to_owned)).collect();
         for section in saved.unknown_sections(&known) {
             problems.push(format!("no section named [{section}]"));
         }
@@ -146,6 +179,40 @@ pub fn tuning_panel(
                     }
                     sliders(ui, name, values);
                 }
+                ui.separator();
+                ui.heading("Sound");
+                sliders(ui, "sound", &mut hearing);
+                ui.collapsing("Footsteps", |ui| {
+                    ui.label("Try any step sound on any surface. Save and Print values keep them too.");
+                    for (surface, own) in &surfaces {
+                        pick_row(ui, surface, short(surface), own, &step_sounds, &all_sounds, &mut trying.steps, &mut preview_sound.0);
+                    }
+                    if ui.button("Reset footsteps").clicked() {
+                        trying.steps = Picks::default();
+                    }
+                });
+                ui.collapsing("Body sounds", |ui| {
+                    ui.label("A landing is the surface's footstep, louder (land_loudness); a hard one adds this. A pick-up plays the material too (pickup_material).");
+                    for (kind, own, choices) in kinds.iter().filter(|(k, _, _)| Kind::BODY.contains(k)) {
+                        pick_row(ui, kind.key(), kind.label(), own, choices, &all_sounds, &mut trying.combat, &mut preview_sound.0);
+                    }
+                });
+                ui.collapsing("Combat sounds", |ui| {
+                    ui.label("Try any sound for each kind. A swing that hits a block plays the block's footstep, louder (block_hit_volume).");
+                    for (kind, own, choices) in kinds.iter().filter(|(k, _, _)| Kind::COMBAT.contains(k)) {
+                        pick_row(ui, kind.key(), kind.label(), own, choices, &all_sounds, &mut trying.combat, &mut preview_sound.0);
+                    }
+                    if ui.button("Reset combat and body sounds").clicked() {
+                        trying.combat = Picks::default();
+                    }
+                });
+                ui.collapsing("Hear a sound", |ui| {
+                    for name in world.sounds().iter().filter(|s| !s.looping).map(|s| s.name.clone()) {
+                        if ui.button(format!("Play {name}")).clicked() {
+                            preview_sound.0 = Some(Pick::plain(name));
+                        }
+                    }
+                });
                 ui.separator();
                 ui.heading("Combat feel");
                 sliders(ui, "combat", &mut juice);
@@ -191,6 +258,8 @@ pub fn tuning_panel(
                     playing = AnimationTuning::default();
                     preview.clip = None;
                     drill_tuning = DrillTuning::default();
+                    hearing = SoundTuning::default();
+                    trying = SoundPicks::default();
                 }
                 save = ui.button("Save").on_hover_text("Keep these values for next time").clicked();
                 print = ui.button("Print values").clicked();
@@ -209,13 +278,21 @@ pub fn tuning_panel(
     if print || save {
         let values: Vec<(String, Vec<Tunable>)> =
             sections!().into_iter().map(|(name, target)| (name, target.tunables())).collect();
+        let texts = [
+            (tuning_file::FOOTSTEPS.to_owned(), trying.steps.to_lines()),
+            (tuning_file::COMBAT_SOUNDS.to_owned(), trying.combat.to_lines()),
+        ];
         if print {
-            let out: String = values.iter().map(|(name, t)| format!("// {name}\n{}", printout(t))).collect();
+            let mut out: String = values.iter().map(|(name, t)| format!("// {name}\n{}", printout(t))).collect();
+            for (section, lines) in texts.iter().filter(|(_, lines)| !lines.is_empty()) {
+                out += &format!("// {section}\n");
+                out += &lines.iter().map(|(name, pick)| format!("{name} = {pick}\n")).collect::<String>();
+            }
             info!("tuned values:\n{out}");
             panel.printout = out;
         }
         if save {
-            panel.note = match save_file(&values) {
+            panel.note = match save_file(&values, &texts) {
                 Ok(path) => format!("Saved to {}", path.display()),
                 Err(e) => format!("Couldn't save: {e}"),
             };
@@ -244,10 +321,62 @@ pub fn tuning_panel(
         *feel = camera;
     }
     ao.set_if_neq(shading);
+    if trying != *picks {
+        *picks = trying;
+    }
+    if hearing != *sound {
+        *sound = hearing;
+    }
     if drill_tuning != drill.tuning {
         drill.tuning = drill_tuning;
     }
     Ok(())
+}
+
+/// One row of a pick list: what `key` plays (its own sound, `own`, unless picked from
+/// `choices`), with volume, pitch and a Play button.
+/// The list offers `choices` first, then every other sound in `all`.
+#[allow(clippy::too_many_arguments)]
+fn pick_row(
+    ui: &mut egui::Ui,
+    key: &str,
+    label: &str,
+    own: &str,
+    choices: &[String],
+    all: &[String],
+    picks: &mut Picks,
+    play: &mut Option<Pick>,
+) {
+    let unpicked = Pick { sound: own.to_owned(), volume: 1.0, pitch: 1.0 };
+    let mut pick = picks.0.get(key).cloned().unwrap_or_else(|| unpicked.clone());
+    ui.horizontal(|ui| {
+        ui.label(label);
+        let shown = if pick.sound.is_empty() { "none" } else { short(&pick.sound) };
+        egui::ComboBox::from_id_salt(key).selected_text(shown).height(400.0).show_ui(ui, |ui| {
+            for s in choices {
+                ui.selectable_value(&mut pick.sound, s.clone(), short(s));
+            }
+            ui.separator();
+            for s in all.iter().filter(|s| !choices.contains(s)) {
+                ui.selectable_value(&mut pick.sound, s.clone(), short(s));
+            }
+        });
+        ui.add(egui::Slider::new(&mut pick.volume, 0.0..=2.0).text("volume"));
+        ui.add(egui::Slider::new(&mut pick.pitch, 0.5..=2.0).text("pitch"));
+        if ui.button("Play").clicked() && !pick.sound.is_empty() {
+            *play = Some(pick.clone());
+        }
+    });
+    if pick == unpicked || pick.sound.is_empty() {
+        picks.0.remove(key);
+    } else {
+        picks.0.insert(key.to_owned(), pick);
+    }
+}
+
+/// A name without its mod's namespace, such as `step_cloth` for `base:step_cloth`.
+fn short(name: &str) -> &str {
+    name.split_once(':').map_or(name, |(_, path)| path)
 }
 
 /// A server section's heading in the panel.
@@ -283,12 +412,12 @@ fn changes(before: &[TuningSection], edited: &[(String, Values)]) -> Vec<Command
 }
 
 /// Writes the values to the tuning file, making its folder if needed.
-fn save_file(values: &[(String, Vec<Tunable>)]) -> std::io::Result<std::path::PathBuf> {
+fn save_file(values: &[(String, Vec<Tunable>)], texts: &[(String, Vec<(String, String)>)]) -> std::io::Result<std::path::PathBuf> {
     let path = tuning_file::path().ok_or_else(|| std::io::Error::other("no config folder (HOME isn't set)"))?;
     if let Some(folder) = path.parent() {
         std::fs::create_dir_all(folder)?;
     }
-    std::fs::write(&path, tuning_file::format(values))?;
+    std::fs::write(&path, tuning_file::format(values, texts))?;
     Ok(path)
 }
 

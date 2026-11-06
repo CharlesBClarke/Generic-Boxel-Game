@@ -1,4 +1,5 @@
-//! `targets.toml`: models, sounds, and targets drawn and heard through them.
+//! `targets.toml`: models, and targets drawn through them and heard through sounds from
+//! `sounds.toml`.
 //!
 //! ```toml
 //! [models.cow]
@@ -7,13 +8,11 @@
 //! texture = "textures/cow.png"  # a PNG, drawn with hard pixel edges
 //! play_once = ["eat", "die"]    # optional: animations that hold their last pose; others loop
 //!
-//! [sounds.moo]
-//! file = "sounds/moo.ogg"       # Ogg Vorbis
-//!
 //! [[target]]
 //! name = "cow"
 //! model = "cow"
-//! hit_sound = "moo"             # optional
+//! sounds = { hit = "moo", step = "hoof", slam = "thud", death = "splat" }  # optional, each one too: names
+//!                               # from sounds.toml
 //! brain = "cow"                 # optional: a brain a code mod registers; without one it's a
 //!                               # dummy that only moves when hit
 //! width = 0.9                   # every number is required unless marked; see api::TargetDef
@@ -37,8 +36,8 @@
 //! damage = 2                    # multiplies the tool's damage
 //! ```
 //!
-//! Paths are relative to the mod folder. Model and sound names are short and get the mod's
-//! namespace; a target may also name another mod's in full.
+//! Paths are relative to the mod folder. Model names are short and get the mod's namespace; a
+//! target may also name another mod's models and sounds in full.
 
 use std::collections::BTreeMap;
 use std::fs;
@@ -46,6 +45,8 @@ use std::path::Path;
 
 use api::block::is_valid_name;
 use api::{HitBox, ModelDef, SoundDef, TargetDef, Texture};
+
+use crate::sounds::TargetSoundsEntry;
 use serde::Deserialize;
 use toml::Spanned;
 
@@ -56,8 +57,6 @@ use crate::{LoadError, Source};
 struct TargetsFile {
     #[serde(default)]
     models: BTreeMap<String, Spanned<ModelEntry>>,
-    #[serde(default)]
-    sounds: BTreeMap<String, Spanned<SoundEntry>>,
     #[serde(default)]
     target: Vec<TargetEntry>,
 }
@@ -73,16 +72,11 @@ struct ModelEntry {
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
-struct SoundEntry {
-    file: String,
-}
-
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
 struct TargetEntry {
     name: Spanned<String>,
     model: Spanned<String>,
-    hit_sound: Option<Spanned<String>>,
+    #[serde(default)]
+    sounds: TargetSoundsEntry,
     brain: Option<Spanned<String>>,
     width: f32,
     height: f32,
@@ -113,7 +107,7 @@ struct HitBoxEntry {
 }
 
 /// Everything `targets.toml` defines.
-pub(crate) type Media = (Vec<ModelDef>, Vec<SoundDef>, Vec<TargetDef>);
+pub(crate) type Media = (Vec<ModelDef>, Vec<TargetDef>);
 
 /// A brain's full name. Brains come from code, so a short one is only checked for form here;
 /// whether it exists is checked once every mod has registered.
@@ -130,8 +124,9 @@ fn brain_name(spanned: &Spanned<String>, namespace: &str, file: &Source) -> Resu
 /// An OBJ file's vertex positions, texture coordinates and triangle indices.
 type ObjMesh = (Vec<[f32; 3]>, Vec<[f32; 2]>, Vec<u32>);
 
-/// What `targets.toml` in `dir` defines, or nothing if there's no such file.
-pub(crate) fn load(dir: &Path, namespace: &str) -> Result<Media, LoadError> {
+/// What `targets.toml` in `dir` defines, or nothing if there's no such file. `sounds` are the
+/// ones `sounds.toml` defined.
+pub(crate) fn load(dir: &Path, namespace: &str, sounds: &[SoundDef]) -> Result<Media, LoadError> {
     let path = dir.join("targets.toml");
     if !path.exists() {
         return Ok(Default::default());
@@ -172,14 +167,6 @@ pub(crate) fn load(dir: &Path, namespace: &str) -> Result<Media, LoadError> {
         models.push(def);
     }
 
-    let mut sounds = Vec::new();
-    for (short, entry) in &entries.sounds {
-        let name = named(short, entry.span(), "sound")?;
-        let e = entry.get_ref();
-        let ogg = fs::read(dir.join(&e.file)).map_err(|err| file.error_at(entry, format!("sound {short:?}: {}: {err}", e.file)))?;
-        sounds.push(SoundDef { name, ogg });
-    }
-
     // A short name is this mod's own and must be defined here; a full one is checked once
     // every mod has loaded.
     let reference = |spanned: &Spanned<String>, defined: &[String], what: &str, table: &str| {
@@ -192,7 +179,6 @@ pub(crate) fn load(dir: &Path, namespace: &str) -> Result<Media, LoadError> {
         Ok(full)
     };
     let model_names: Vec<String> = models.iter().map(|m| m.name.clone()).collect();
-    let sound_names: Vec<String> = sounds.iter().map(|s| s.name.clone()).collect();
     let mut targets = Vec::new();
     for entry in entries.target {
         let short = entry.name.get_ref();
@@ -200,7 +186,7 @@ pub(crate) fn load(dir: &Path, namespace: &str) -> Result<Media, LoadError> {
         let def = TargetDef {
             name,
             model: reference(&entry.model, &model_names, "model", "models")?,
-            hit_sound: entry.hit_sound.as_ref().map(|s| reference(s, &sound_names, "sound", "sounds")).transpose()?,
+            sounds: entry.sounds.resolve(&file, namespace, sounds)?,
             brain: entry.brain.as_ref().map(|b| brain_name(b, namespace, &file)).transpose()?,
             width: entry.width,
             height: entry.height,
@@ -220,7 +206,7 @@ pub(crate) fn load(dir: &Path, namespace: &str) -> Result<Media, LoadError> {
         def.validate().map_err(|why| file.error_at(&entry.name, format!("target {short:?}: {why}")))?;
         targets.push(def);
     }
-    Ok((models, sounds, targets))
+    Ok((models, targets))
 }
 
 /// Reads the vertex positions, texture coordinates and faces of an OBJ file into one vertex per

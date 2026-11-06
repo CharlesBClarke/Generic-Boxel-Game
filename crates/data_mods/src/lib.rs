@@ -3,8 +3,10 @@
 //! - `mod.toml`: the mod's `name` (its namespace), `version` and an optional `description`.
 //! - `blocks.toml`: `[[block]]` entries, a `[shapes]` table of named shapes they can share, and
 //!   `[looks.<name>]` recipes for how blocks look, generated into solid volumes (see [`looks`]).
-//! - `targets.toml`: `[models.<name>]` and `[sounds.<name>]` read from files in the folder, and
-//!   `[[target]]` entries drawn and heard through them (see [`targets`]).
+//! - `sounds.toml`: `[sounds.<name>]` read from Ogg Vorbis or WAV files in the folder, for blocks and
+//!   targets to name (see [`sounds`]).
+//! - `targets.toml`: `[models.<name>]` read from files in the folder, and `[[target]]` entries
+//!   drawn and heard through them (see [`targets`]).
 //! - `inventory.toml`: what a player carries: a shared capacity, throwing, and what a player
 //!   starts with (see [`inventory`]).
 //! - `crafting.toml`: which block is the crafting table (see [`crafting`]).
@@ -17,6 +19,7 @@ mod crafting;
 mod inventory;
 mod glb;
 mod looks;
+mod sounds;
 mod targets;
 
 use std::collections::{BTreeMap, HashMap};
@@ -175,6 +178,8 @@ struct BlockEntry {
     #[serde(default)]
     turning: TurningName,
     material: Option<Spanned<String>>,
+    #[serde(default)]
+    sounds: sounds::BlockSoundsEntry,
 }
 
 /// A shape: the name of one in `[shapes]`, or boxes given in place.
@@ -256,6 +261,7 @@ pub fn load(dir: &Path) -> Result<DataMod, LoadError> {
         return Err(manifest_file.error_at(&manifest.name, message));
     }
 
+    let sounds = sounds::load(dir, &namespace)?;
     let blocks_path = dir.join("blocks.toml");
     let (looks, blocks) = if blocks_path.exists() {
         let file = Source::read(blocks_path)?;
@@ -277,14 +283,14 @@ pub fn load(dir: &Path) -> Result<DataMod, LoadError> {
         let blocks = entries
             .block
             .into_iter()
-            .map(|entry| block_def(&file, &namespace, &looks, &shapes, entry))
+            .map(|entry| block_def(&file, &namespace, &looks, &shapes, &sounds, entry))
             .collect::<Result<_, _>>()?;
         (looks, blocks)
     } else {
         (Vec::new(), Vec::new())
     };
 
-    let (models, sounds, targets) = targets::load(dir, &namespace)?;
+    let (models, targets) = targets::load(dir, &namespace, &sounds)?;
     let inventory = inventory::load(dir, &namespace, &blocks)?;
     let crafting = crafting::load(dir, &namespace, &blocks)?;
     Ok(DataMod {
@@ -301,6 +307,14 @@ pub fn load(dir: &Path) -> Result<DataMod, LoadError> {
     })
 }
 
+/// Reads only `sounds.toml` of the mod folder at `dir`, for hearing changes to it while the
+/// game runs. Which sounds blocks and targets name still comes from their own files.
+pub fn load_sounds(dir: &Path) -> Result<Vec<SoundDef>, LoadError> {
+    let manifest_file = Source::read(dir.join("mod.toml"))?;
+    let manifest: Manifest = manifest_file.parse()?;
+    sounds::load(dir, manifest.name.get_ref())
+}
+
 /// Turns one `[[block]]` entry into a definition. Names are short in the file and get the
 /// mod's namespace; a look may also name another mod's look in full.
 fn block_def(
@@ -308,6 +322,7 @@ fn block_def(
     namespace: &str,
     looks: &[LookDef],
     shapes: &HashMap<&str, Vec<BlockBox>>,
+    sounds: &[SoundDef],
     entry: BlockEntry,
 ) -> Result<BlockDef, LoadError> {
     let short = entry.name.get_ref();
@@ -377,7 +392,8 @@ fn block_def(
         .with_placeable(entry.placeable)
         .with_shape(shape)
         .with_turning(entry.turning.into())
-        .with_material(material);
+        .with_material(material)
+        .with_sounds(entry.sounds.resolve(file, namespace, sounds)?);
     def.look = look;
     Ok(def)
 }
@@ -652,13 +668,10 @@ mod tests {
         mesh = "box.obj"
         texture = "box.png"
 
-        [sounds.thud]
-        file = "thud.ogg"
-
         [[target]]
         name = "dummy"
         model = "box"
-        hit_sound = "thud"
+        sounds = { hit = "thud" }
         width = 0.8
         height = 1.2
         health = 10
@@ -681,7 +694,7 @@ mod tests {
     fn target_folder(test: &str, targets: &str) -> Folder {
         let folder = Folder::new(test);
         folder.write("mod.toml", MANIFEST).write("box.obj", TRIANGLE).write("box.png", tiny_png()).write("thud.ogg", b"OggS");
-        folder.write("targets.toml", targets);
+        folder.write("sounds.toml", "[sounds.thud]\nfiles = [\"thud.ogg\"]\n").write("targets.toml", targets);
         folder
     }
 
@@ -694,10 +707,10 @@ mod tests {
         assert_eq!((model.texture.width, model.texture.height), (2, 1));
         assert_eq!(model.texture.rgba, [255, 0, 0, 255, 0, 0, 0, 0]);
         assert_eq!(m.sounds()[0].name, "test:thud");
-        assert_eq!(m.sounds()[0].ogg, b"OggS");
+        assert_eq!(m.sounds()[0].variations, [b"OggS"]);
         let [target] = m.targets() else { panic!("one target") };
         assert_eq!((target.name.as_str(), target.model.as_str()), ("test:dummy", "test:box"));
-        assert_eq!(target.hit_sound.as_deref(), Some("test:thud"));
+        assert_eq!(target.sounds.hit.as_deref(), Some("test:thud"));
         assert_eq!((target.health, target.weight, target.air_drag, target.slam_speed), (10.0, 2.0, 2.0, 4.0));
         let [top] = &target.hit_boxes[..] else { panic!("one hit box") };
         assert_eq!((top.name.as_str(), top.min, top.max, top.damage), ("top", [-0.4, -0.4, 0.8], [0.4, 0.4, 1.2], 2.0));
@@ -711,7 +724,7 @@ mod tests {
             (e.line, e.message)
         };
         let (line, message) = error("t_model", "model = \"box\"", "model = \"crate\"");
-        assert_eq!(line, Some(11));
+        assert_eq!(line, Some(8));
         assert!(message.contains("no model \"crate\""), "{message}");
         let (line, message) = error("t_mesh", "mesh = \"box.obj\"", "mesh = \"gone.obj\"");
         assert_eq!(line, Some(2));
@@ -719,8 +732,11 @@ mod tests {
         let (_, message) = error("t_health", "health = 10", "health = 0");
         assert!(message.contains("health must be positive"), "{message}");
         let (line, message) = error("t_field", "drag = 5", "drag = 5\n        speed = 3");
-        assert_eq!(line, Some(19));
+        assert_eq!(line, Some(16));
         assert!(message.contains("unknown field"), "{message}");
+        let (line, message) = error("t_sound", "hit = \"thud\"", "hit = \"clang\"");
+        assert_eq!(line, Some(9));
+        assert!(message.contains("no sound \"clang\""), "{message}");
         let (_, message) = error("t_missing", "        weight = 2\n", "");
         assert!(message.contains("weight"), "{message}");
         let (_, message) = error("t_box", "max = [0.4, 0.4, 1.2]", "max = [0.4, 0.4, 0.5]");
@@ -778,6 +794,68 @@ mod tests {
     fn another_mods_model_is_left_for_the_engine_to_check() {
         let m = target_folder("t_other", &TARGETS.replacen("model = \"box\"", "model = \"other:box\"", 1)).load().unwrap();
         assert_eq!(m.targets()[0].model, "other:box");
+    }
+
+    /// A folder with sounds `a1`, `a2` and `b` in `sounds/`, and `sounds.toml` holding `sounds`.
+    fn sound_folder(test: &str, sounds: &str) -> Folder {
+        let folder = Folder::new(test);
+        fs::create_dir_all(folder.0.join("sounds")).unwrap();
+        folder.write("mod.toml", MANIFEST).write("sounds/a1.ogg", b"A1").write("sounds/a2.ogg", b"A2");
+        folder.write("sounds/b.ogg", b"B").write("sounds.toml", sounds);
+        folder
+    }
+
+    #[test]
+    fn reads_sounds_with_variations_and_blocks_naming_them() {
+        let folder = sound_folder(
+            "sounds",
+            r#"
+                [sounds.step]
+                files = ["sounds/a*.ogg", "sounds/b.ogg"]
+                volume = 0.5
+                pitch = 0.8
+                pitch_spread = 0.1
+
+                [sounds.hum]
+                files = ["sounds/b.ogg"]
+                looping = true
+            "#,
+        );
+        folder.write("blocks.toml", "[[block]]\nname = \"stone\"\ncolor = [1, 2, 3]\nsounds = { step = \"step\", placed = \"other:clink\" }\n");
+        let m = folder.load().unwrap();
+        let [hum, step] = m.sounds() else { panic!("two sounds") };
+        assert_eq!(step.name, "test:step");
+        assert_eq!(step.variations, [&b"A1"[..], b"A2", b"B"], "a * matches in name order");
+        assert_eq!((step.volume, step.pitch, step.pitch_spread, step.looping), (0.5, 0.8, 0.1, false));
+        assert_eq!((hum.volume, hum.pitch, hum.pitch_spread, hum.looping), (1.0, 1.0, 0.0, true), "defaults");
+        let sounds = &m.blocks()[0].sounds;
+        assert_eq!(sounds.step.as_deref(), Some("test:step"));
+        assert_eq!(sounds.placed.as_deref(), Some("other:clink"), "another mod's is checked later");
+        assert_eq!(sounds.broken, None);
+    }
+
+    #[test]
+    fn sound_mistakes_name_the_file_and_line() {
+        let error = |test: &str, sounds: &str| {
+            let e = sound_folder(test, sounds).load().unwrap_err();
+            assert!(e.path.ends_with("sounds.toml"), "{e}");
+            (e.line, e.message)
+        };
+        let (line, message) = error("s_none", "\n[sounds.step]\nfiles = [\"sounds/c*.ogg\"]\n");
+        assert_eq!(line, Some(2));
+        assert!(message.contains("matches no files"), "{message}");
+        let (_, message) = error("s_gone", "[sounds.step]\nfiles = [\"sounds/gone.ogg\"]\n");
+        assert!(message.contains("gone.ogg"), "{message}");
+        let (_, message) = error("s_empty", "[sounds.step]\nfiles = []\n");
+        assert!(message.contains("files is empty"), "{message}");
+        let (_, message) = error("s_spread", "[sounds.step]\nfiles = [\"sounds/b.ogg\"]\npitch_spread = 2\n");
+        assert!(message.contains("pitch_spread"), "{message}");
+
+        let folder = sound_folder("s_block", "");
+        folder.write("blocks.toml", "[[block]]\nname = \"stone\"\ncolor = [1, 2, 3]\nsounds = { step = \"step\" }\n");
+        let e = folder.load().unwrap_err();
+        assert_eq!((e.line, e.path.ends_with("blocks.toml")), (Some(4), true), "{e}");
+        assert!(e.message.contains("no sound \"step\""), "{e}");
     }
 
     const INVENTORY: &str = r#"

@@ -34,6 +34,10 @@ pub struct ClientWorld {
     slams: Vec<Slam>,
     hurts: Vec<PlayerHurt>,
     craft: Option<Result<(MaterialId, u32), CraftRefusal>>,
+    /// Every event since the last [`ClientWorld::take_heard`], for sound.
+    heard: Vec<Event>,
+    /// The outcome of reading the sounds again, until [`ClientWorld::take_sound_reload`].
+    sound_reload: Option<Result<(), String>>,
 }
 
 impl ClientWorld {
@@ -58,6 +62,8 @@ impl ClientWorld {
             slams: Vec::new(),
             hurts: Vec::new(),
             craft: None,
+            heard: Vec::new(),
+            sound_reload: None,
         };
         world.take_snapshot(welcome.snapshot);
         world.show_latest();
@@ -77,16 +83,23 @@ impl ClientWorld {
             }
             ServerMsg::Blocks(blocks) => self.blocks = *blocks,
             ServerMsg::Defs(defs) => self.defs = *defs,
+            ServerMsg::Sounds(Ok(sounds)) => {
+                self.sounds = sounds;
+                self.sound_reload = Some(Ok(()));
+            }
+            ServerMsg::Sounds(Err(why)) => self.sound_reload = Some(Err(why)),
         }
     }
 
     fn take_snapshot(&mut self, mut snapshot: Snapshot) {
         for event in snapshot.events.drain(..) {
+            self.heard.push(event.clone());
             match event {
                 Event::Strike(s) => self.strikes.push(s),
                 Event::Slam(s) => self.slams.push(s),
                 Event::PlayerHurt(h) => self.hurts.push(h),
                 Event::Craft(c) => self.craft = Some(c),
+                Event::BlockEdit(_) => {}
             }
         }
         self.latest = snapshot;
@@ -251,6 +264,17 @@ impl ClientWorld {
     /// Blows and falls that hurt the player since the last call, oldest first.
     pub fn take_player_hurts(&mut self) -> Vec<PlayerHurt> {
         std::mem::take(&mut self.hurts)
+    }
+
+    /// Whether the sounds were read again since the last call: they're new in
+    /// [`ClientWorld::sounds`], or here's why not.
+    pub fn take_sound_reload(&mut self) -> Option<Result<(), String>> {
+        self.sound_reload.take()
+    }
+
+    /// Every event since the last call, oldest first, for sound to hear.
+    pub fn take_heard(&mut self) -> Vec<Event> {
+        std::mem::take(&mut self.heard)
     }
 
     /// The outcome of the last craft since the last call.

@@ -9,16 +9,27 @@ use api::Tunables;
 use protocol::{ClientMsg, Command, Connection, Content, Defs, Event, ServerMsg, Snapshot, TuningSection, Welcome};
 use sim::{PlayerInput, Simulation};
 
+/// Reads the sounds again from wherever the mods came from.
+pub type SoundSource = Box<dyn FnMut() -> Result<Vec<api::SoundDef>, String> + Send>;
+
 pub struct Server {
     sim: Simulation,
     /// How many blocks the client has heard of, so crafting a new shape sends the registry.
     blocks_sent: usize,
+    /// Where [`Command::ReloadSounds`] reads from; without one it can't.
+    sound_source: Option<SoundSource>,
 }
 
 impl Server {
     /// A server running `sim`, which must already have its mods loaded and its player spawned.
     pub fn new(sim: Simulation) -> Self {
-        Self { sim, blocks_sent: 0 }
+        Self { sim, blocks_sent: 0, sound_source: None }
+    }
+
+    /// Lets clients have the sounds read again from `source` while the game runs.
+    pub fn with_sound_source(mut self, source: SoundSource) -> Self {
+        self.sound_source = Some(source);
+        self
     }
 
     /// Everything a client needs to start.
@@ -48,6 +59,7 @@ impl Server {
     pub fn handle(&mut self, msg: ClientMsg) -> Vec<ServerMsg> {
         match msg {
             ClientMsg::Input(input) => self.tick(&input),
+            ClientMsg::Command(Command::ReloadSounds) => vec![ServerMsg::Sounds(self.reload_sounds())],
             ClientMsg::Command(command) => {
                 self.command(command);
                 vec![ServerMsg::Defs(Box::new(self.defs()))]
@@ -70,6 +82,7 @@ impl Server {
         events.extend(self.sim.take_strikes().into_iter().map(Event::Strike));
         events.extend(self.sim.take_slams().into_iter().map(Event::Slam));
         events.extend(self.sim.take_player_hurts().into_iter().map(Event::PlayerHurt));
+        events.extend(self.sim.take_block_edits().into_iter().map(Event::BlockEdit));
         if input.craft.is_some()
             && let Some(result) = self.sim.last_craft()
         {
@@ -94,6 +107,14 @@ impl Server {
         }
     }
 
+    /// Reads the sounds again and swaps them in, returning every sound.
+    fn reload_sounds(&mut self) -> Result<Vec<api::SoundDef>, String> {
+        let source = self.sound_source.as_mut().ok_or("this server can't read its sounds again")?;
+        let sounds = source()?;
+        self.sim.replace_sounds(sounds).map_err(|e| e.to_string())?;
+        Ok(self.sim.sounds().to_vec())
+    }
+
     fn command(&mut self, command: Command) {
         let sim = &mut self.sim;
         match command {
@@ -107,6 +128,7 @@ impl Server {
             Command::BrainsOn(on) => sim.set_brains_on(on),
             Command::TeleportPlayer(pos) => sim.teleport_player(pos),
             Command::RespawnTargets => sim.respawn_targets(),
+            Command::ReloadSounds => {}
         }
     }
 

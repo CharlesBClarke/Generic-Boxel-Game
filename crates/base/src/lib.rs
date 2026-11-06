@@ -2,8 +2,8 @@
 //! and their looks are a data mod in `mods/base`, loaded by the engine alongside it.
 
 use api::{
-    ApiError, BoxelPos, CrowdDef, HealthDef, I64Vec3, InteractionDef, ItemDropDef, Mod, Orientation, PlayerDef, PushOutDef, Registrar, ToolDef, Vec3,
-    WorldEdit, WorldPos,
+    ApiError, BoxelPos, CrowdDef, HealthDef, I64Vec3, InteractionDef, ItemDropDef, Mod, Orientation, PlayerDef, PlayerSounds, PushOutDef, Registrar, ToolDef,
+    ToolSounds, Vec3, WorldEdit, WorldPos,
 };
 
 pub mod cow;
@@ -95,6 +95,21 @@ impl Mod for BaseMod {
             // Enough to walk up slabs and stairs, not full blocks.
             step_height: 0.6,
             controller: "base:quake".into(),
+            // A robot: metal and motors. The sounds are data, in `mods/base/sounds.toml`.
+            sounds: PlayerSounds {
+                step: Some("base:step_concrete".into()),
+                // A landing is the surface's own footstep, louder; only a hard one adds a sound.
+                land: None,
+                hard_land: Some("base:hardland_robot".into()),
+                hurt: Some("base:hurt_robot".into()),
+                knocked_out: Some("base:knockout_robot".into()),
+                guard: Some("base:guard".into()),
+                servo: Some("base:servo".into()),
+                wind: Some("base:wind".into()),
+                pickup: Some("base:pickup_robot".into()),
+                craft: Some("base:craft".into()),
+                craft_refused: Some("base:craft_refused".into()),
+            },
         })?;
         // Minecraft-like for now: about Minecraft's survival reach, 4 edits a second held.
         r.register_interaction(InteractionDef { reach: 4.5, repeat_rate: 4.0 })?;
@@ -147,6 +162,7 @@ impl Mod for BaseMod {
             recoil_bounce: 3.0,
             windup: 0.07,
             recover: 0.28,
+            sounds: ToolSounds { swing: Some("base:swing_club".into()), hit: Some("base:hit_club".into()) },
         })
     }
 
