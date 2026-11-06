@@ -56,6 +56,10 @@ pub struct Controls {
     pub drop: KeyCode,
     /// Opens the crafting menu at a crafting table aimed at, and closes it.
     pub interact: KeyCode,
+    /// Measures the frame rate for a few seconds and writes it down (see `crate::perf`).
+    pub record_perf: KeyCode,
+    /// Goes back to where the last frame rate recording was made, looking the same way.
+    pub perf_spot: KeyCode,
     /// In the crafting menu: turns the part being painted with a quarter turn.
     pub turn_part: KeyCode,
     /// Tapping forward twice within this many seconds sprints until forward is released.
@@ -126,6 +130,8 @@ impl Default for Controls {
             dev_text: KeyCode::F1,
             drop: KeyCode::KeyQ,
             interact: KeyCode::KeyE,
+            record_perf: KeyCode::F9,
+            perf_spot: KeyCode::F10,
             turn_part: KeyCode::KeyR,
             double_tap_window: 0.3,
             use_main: Binding::Mouse(MouseButton::Left),
@@ -231,6 +237,8 @@ impl Controls {
                 "dev_text" => &mut self.dev_text,
                 "drop" => &mut self.drop,
                 "interact" => &mut self.interact,
+                "record_perf" => &mut self.record_perf,
+                "perf_spot" => &mut self.perf_spot,
                 "turn_part" => &mut self.turn_part,
                 _ => {
                     problems.push(format!("line {}: unknown action {action:?}", number + 1));
