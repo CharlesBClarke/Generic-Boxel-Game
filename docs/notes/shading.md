@@ -1,5 +1,7 @@
 # Shading
 
+*Built 2026-11-05 as the Shading toy (see `docs/done-toys.md`); stored light and sun shadows are their own backlog entries now.*
+
 Moved from the `SLICES.md` backlog on 2026-11-03; the backlog keeps a short pitch.
 
 **Shading.** Added 2026-11-03 at the user's request: shapes look flat, and ambient occlusion is hard to see even at strength 1. Three reasons, from the code: AO is worked out at a face's four corners and blended across the whole 1 m face, so it's a faint block-wide gradient rather than a line along the crease; strength scales how full the space by a corner is, so a floor against one wall only reaches 0.5 at the corner; and outside edges (a stair's lip, a slab's edge, a wall's corner) get nothing, and most of what shapes show is outside edges. Everything here is client-side and tunable in the panel:

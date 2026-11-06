@@ -3,6 +3,49 @@
 Moved out of `SLICES.md` on 2026-11-03 so the roadmap stays short. Each toy's full write-up, newest first, as it stood when it closed. `SLICES.md` keeps a one-line summary of each.
 
 
+#### Shading (branch `toy-shading`)
+
+**Stage:** Done (2026-11-05). Verified by the user in play ("what I see looks good", "I like the ice sheen", fog "looks right"); the frame rate cost was judged "very reasonable".
+
+**Goal:** shapes read clearly and the world has an atmosphere: crisp dark creases and lit outside edges, light from a sun and sky, a sheen on ice, and distance fading into a sky. First of three graphics toys agreed 2026-11-05: Shading, then Stored light (flood fill, red, green, blue and sky, smooth per vertex, plus a first block that gives light), then Sun shadows (method picked by measuring). Notes: `docs/notes/shading.md`.
+
+**Plan** (approved 2026-11-05, engaged; fog and sky added at the user's request)
+- *AO curve* (`mesher::AoTuning`): darkness = `strength × min(filled / full_at, 1)^curve`, with new tunables `full_at` (0.75: where two walls meet reaches full strength) and `curve` (1.5: small occlusion stays light). Corner AO stays as the soft broad layer; changing it still remeshes.
+- *Creases and ridges per texel.* Per-vertex AO can't draw a line: a full face has 4 vertices over 16×16 texels. The mesher records, for each of a quad's four edges, a 2-bit kind per texel along it: crease (the sixteenth past the edge, in front of the face, is filled), ridge (past the edge both in front and behind are empty: the surface turns away), or flat. Worked out from the same 27-boxel neighborhood as AO, by intersecting boxes with strips, not per sixteenth. Lone meshes (ghost, items) use their own boxes, so they get ridges too. New vertex attributes: the four edge masks (`Uint32x4`) and where on the face (`Unorm16x4`: texels along both axes and the face's size). The shader shades one flat value per texel: crease darkness, ridge brightness, width in texels; live sliders, no remesh. Vertices grow from 56 to 80 bytes.
+- *Sun and sky light.* The baked brightness per face direction (`mesher::shade`) goes; the shader lights each fragment from its normal: hemisphere sky light (sky above, ground bounce below) plus the sun's color × max(n·sun, 0). Sun azimuth, elevation, strength and color; sky light strength and tint; ground bounce. Defaults close to today's brightness. Moving the sun needs no remesh.
+- *Sheen* (Blinn-Phong from the sun), per look: `sheen = { strength, sharpness }` in a look recipe in `blocks.toml`, carried as `api::LookDef.sheen` and passed to the shader as a small table by volume. Ice gets one.
+- *Sky and fog.* A full-screen sky drawn at the far plane replaces the clear color: a horizon-to-zenith gradient and a sun disc. The block shader fades to the sky's color in the view direction with distance, from `fog_start` to `fog_end` (fractions of the render distance), so the edge of the drawn world melts away.
+- *Where:* new `client::shading` (the `ShadingTuning` resource as a `shading` panel section, the atmosphere uniform synced into every `SolidMaterial` and the sky material when it changes, the sky material) and `atmosphere.wgsl` shared by `solid.wgsl` and `sky.wgsl`. `client::solid` gains the attributes, the uniform and the sheen table; `client::volumes` the sheen per volume; `data_mods::looks` the recipe field.
+- *Tests:* edge kinds for a floor against a wall, a step's lip, a slab beside a full block, a block across a chunk border, a lone block (all ridges); AO curve values; sheen parsed from a recipe and absent by default; the sheen table by volume; sun direction from azimuth and elevation (Z-up). The look is judged in play.
+- *Out of scope:* cast shadows, stored light, a day cycle (the sun is a slider), bloom and HDR. Cows and the held tool keep their own baked light and get no fog (noted, deferred).
+
+**Done when**
+1. Inside creases show as a crisp dark line a few texels wide and outside edges catch a light line, on full blocks and small shapes alike.
+2. The AO curve, crease and ridge values are live sliders.
+3. Faces are lit by a movable sun plus sky light, with no remesh when it moves.
+4. Ice shows a sheen toward the sun; other looks don't.
+5. The sky is a gradient with a sun, and distant terrain fades into it, hiding the edge of the render distance.
+6. Frame rate and meshing time on the generated terrain are compared with `master`; tests pass and clippy is clean.
+
+*Implemented:* `api::Sheen` and `LookDef.sheen`; `sheen = { strength, sharpness }` in look recipes (sharpness defaults to 32), ice at 0.6 and 48. `mesher`: `AoTuning.full_at` and `curve` (`AoTuning::LINEAR` is the old rule), `MeshData.edges` and `face`, `edges()` from strips past each edge, `alone()` for the ghost and items; the baked `shade()` is gone. `volumes.sheens`, `solid::sheen_image`, new attributes `ATTRIBUTE_EDGES` and `ATTRIBUTE_FACE`, the normal now reaches the shader. `client::shading` (`ShadingTuning` as the `shading` panel section, 26 sliders; `Atmosphere`; `SkyMaterial`, a clip-space triangle at the far plane; `sync_atmosphere`), `atmosphere.wgsl`, `sky.wgsl`, `solid.wgsl` lit, edged, sheened and fogged. Tests: mesher (+6: curve, floor against a wall, slab, half-covered edge, chunk border, lone blocks), shading (3), volumes and data_mods (sheen). Workspace tests all pass; clippy clean; the game starts with no shader errors.
+
+*Added during Verify (2026-11-05, engaged):* the user found the AO sliders too slow (each step remeshed the whole terrain) and the frame rate lower. AO sliders now wait for an Apply button; the Shading section has switches (sun and sky light, edges, sheen, fog, sky) to measure what each costs. A frame rate recorder went to `master` on its own branch (`dev-perf-recorder`, merged into this one): F9 records 5 s to `~/.local/share/boxel/perf.txt` with the branch and the switches, F10 goes back to the recorded spot. The user also asked whether the AO is as fine as the old system per texel: it isn't (the lines only see the sixteenth past each edge); real texel-fine AO needs the GPU boxel grid that Sun shadows needs too.
+
+*Measured:* meshing the default 512³ terrain (1.32M quads) takes 4.37 s, against 4.43 s on `master`: the edges cost nothing noticeable. Vertices grow by 24 bytes, about 125 MB more GPU memory at 512³ and roughly 470 MB at 1024³. Frame rate is for the user's play check.
+
+**Verify** (2026-11-05)
+- Creases and ridges, live sliders, the movable sun: seen in play. The AO sliders remeshed the whole terrain on every step, too slow at this size, so they got an Apply button (see above).
+- Ice sheen: met ("I like the ice sheen"). Sky and fog hiding the render distance's edge: met ("it looks right").
+- Frame rate, recorded with the new F9 recorder at render distance 4096 m, 9.89M triangles, cap off, similar but not identical views: `master` 81.5 fps (12.3 ms, 1% low 33.9), `toy-shading` 66.8 fps (15.0 ms, 1% low 27.8). About 2.7 ms a frame for the shading, roughly 18%. The low 1% lows were already there on `master`, so the stutter isn't from shading. The cost per part was deferred by the user.
+- All criteria met.
+
+*Decisions:* lighting is the shader's job, not the mesher's: the mesher bakes only corner AO and what's past each edge, and everything tunable about light and air is a uniform, so it changes without remeshing. Fine AO is two layers: corner AO per vertex (soft, broad, on a curve) and crease and ridge lines per texel from what the sixteenth past each edge holds. These lines are a stylized contact line, not real occlusion (they don't see an occluder's size, a gap of a texel, or a diagonal touch); real texel-fine AO waits for a GPU copy of the boxel grid, which sun shadows want too. Sheen is per look, as data in `blocks.toml`. The sky is a clip-space triangle at the far plane, and fog fades to the sky's own color in that direction, so the far world melts into it. Changing AO waits for Apply.
+
+*Deferred:* the cost of each shading part (the switches and the recorder are ready); the stutter already on `master` (1% lows around 30 fps at 10M triangles); recorder lines without window size, simulation distance, panel state or the tuning values; real texel-fine AO (GPU boxel grid, with Sun shadows); mipmaps or distance filtering for looks (noted for Generated detail in looks); cows, the held tool and the drill's markers keep their own baked light and get no fog; a day cycle; bloom and HDR.
+
+*API debt:* none new. `LookDef` gained `sheen` (plain data) and lost `Eq`.
+
+
 #### Generated terrain (branch `toy-generated-terrain`)
 
 **Stage:** Done (2026-11-05). Verified by the user in play ("both things work"); the shape isn't Tectonic's, which went to the backlog. Asked for by the user: "can we do bigger".
