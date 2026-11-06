@@ -115,7 +115,7 @@ A run of small toy slices. Each one takes a single game-feel feature that doesn'
 
 ### Functional crafting (`toy-functional-crafting`)
 
-**Stage:** Verify (implemented and tested 2026-11-06; waiting for the user to play it)
+**Stage:** Implement (plan changed during Verify, 2026-11-06: see Plan changes)
 
 **Goal:** Several materials in one crafted shape, and materials with properties that act, enough for a door and a lever with no door code in the engine. Takes item 1, item 2 and item 4 of Crafting follow-ups and the proof toy of Generative crafting.
 
@@ -140,6 +140,11 @@ A run of small toy slices. Each one takes a single game-feel feature that doesn'
 - No door or lever code anywhere: it all comes from material properties.
 
 **Out of scope:** simple and advanced crafters, drag and drop, capacity, connectors (fences), wiring, the edge placement mode (follow-up 3).
+
+**Plan changes** (2026-11-06, from the user's first play)
+- *A grid per view.* Opening the menu from a side face switched it to side mode, so the stacks left on the top grid quietly made a different shape. Now the top and the side each keep their own stacks, and the menu opens in the view last used. Crafted parts stay shared: a part made in one view is a brush in the other.
+- *Loading a part into the grid* (a new feature the user asked for). A "load" button by each carried part or bundle puts back the stacks, view and flip that made it, remembered from the craft for the session. A part not crafted this session is rebuilt from its shape if it's whole quarters (top view first, then side); otherwise loading is greyed out.
+- The window widening when the preview appears and the carried list using only part of its column are older bugs, fixed on `fix-crafting-menu-layout`.
 
 **Implementation notes**
 - One detail differs from the plan's words, not its intent. A knob sticks out of the panel, so turning about the hinge alone pushes it out of the boxel. The swing picks the way that leaves less outside, then slides everything back in (a knobbed door swings toward its knob, its hinge moving in by the knob's depth). Since a slid swing can't be undone by turning back, open pieces are their own kinds (`BlockRegistry::opened`) that remember the closed occupant, which is the notes' "two kinds swapped in place".
@@ -170,6 +175,7 @@ A run of small toy slices. Each one takes a single game-feel feature that doesn'
 - **Interaction controls.** Split out of Block editing (2026-10-25). Fix Minecraft's ambiguous right click once there are things to use, like crystals or devices. Principles: one input, one action (no catch-all "use" button that changes meaning with what you hold or look at), and what you see is what you get (a ghost of the result, red when not allowed).
   - *Added 2026-10-28:* decide how players reach shared boxels. Placing into an occupied boxel makes placement harder to read (every click has two possible boxels), so it may become a deliberate trick (a key, a tool, or a property of blocks like water) instead of happening on any click. Decide once combat and usable items show how crowded the controls get; the engine keeps full support either way. Also from play: two slabs at right angles make a stair, so a separate stairs block may not be needed.
 - **Block interactions.** Unstable crystals: two block types, a touch trigger, a directional blast, and a way to push blocks so devices are possible.
+- **Recheck the crafting rules.** Added 2026-11-06 at the user's request, during Functional crafting: a restriction should exist only to make players build blocks they know how to place. The top and side views accept the same stacks, but each makes shapes rest on a different face (the bottom, the back), and "nothing floats" means a knob beside a panel can't be built on top. A gentler rule (a layer may touch anything already connected to the base) would let both views make doors. Pairs with the 3D crafting view.
 - **3D crafting view.** Added 2026-11-06 at the user's request, during Functional crafting: "maybe we should re think the grid maybe a 3d gui is more natural here, but that can be done later". Replace the 4×4 grid of stacks with a 3D view of the boxel to build in.
 - **Crafting follow-ups.** *Items 1, 2 and 4 taken by Functional crafting (2026-11-06); the edge mode (3) is left.* Four changes agreed with the user, to plan together: several materials in one shape as a bundle, building on the side of the table, an "edge" placement mode on middle click to compare, and no upside-down flip on the upper half of a wall. Notes: `docs/notes/crafting-follow-ups.md`.
 - **Generative crafting.** A few materials, a few property ingredients and a capacity limit. The user aims for fully emergent crafting ("emergent shapes, authored verbs": properties come from materials, so even doors come out of the system), with a simple crafter whose odd recipes the advanced one explains. Drag and drop is designed here. A proof toy: trigger, toggle and listener, enough for a door and a lever. Notes: `docs/notes/generative-crafting.md`.
