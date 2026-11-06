@@ -507,9 +507,10 @@ pub(crate) fn held_line(world: &ClientWorld, palette: &Palette, names: &PartName
 /// The size of a hotbar slot's picture.
 const SLOT_ICON: f32 = 40.0;
 
-/// The hotbar along the bottom of the screen: how full the inventory is, a slot for each tool,
-/// material and part with its picture, number and amount, the selected one picked out, and
-/// what's held with the keys that change it. It only shows; keys and the wheel pick slots.
+/// The hotbar along the bottom of the screen, above the health bar: how full the inventory
+/// is, a slot for each tool, material and part with its picture, number and amount, the
+/// selected one picked out, and what's held with the keys that change it. It only shows; keys
+/// and the wheel pick slots.
 pub(crate) fn hotbar(
     mut contexts: bevy_egui::EguiContexts,
     world: Res<ClientWorld>,
@@ -523,7 +524,7 @@ pub(crate) fn hotbar(
     let blocks = world.blocks();
     let shadow = egui::Color32::from_black_alpha(150);
     egui::Area::new(egui::Id::new("hotbar"))
-        .anchor(egui::Align2::CENTER_BOTTOM, [0.0, -8.0])
+        .anchor(egui::Align2::CENTER_BOTTOM, [0.0, -26.0])
         .interactable(false)
         .show(ctx, |ui| {
             egui::Frame::new().fill(shadow).corner_radius(6.0).inner_margin(6.0).show(ui, |ui| {

@@ -59,7 +59,7 @@ pub(crate) struct HealthBar;
 #[derive(Component)]
 pub(crate) struct FlashOverlay;
 
-/// The health bar at the top of the screen, and the red flash covering it all.
+/// The health bar at the bottom of the screen under the hotbar, and the red flash covering it all.
 pub(crate) fn setup_health(mut commands: Commands) {
     commands.spawn((
         Node { position_type: PositionType::Absolute, width: percent(100), height: percent(100), ..default() },
@@ -71,7 +71,7 @@ pub(crate) fn setup_health(mut commands: Commands) {
         .spawn(Node {
             position_type: PositionType::Absolute,
             width: percent(100),
-            top: px(12),
+            bottom: px(8),
             justify_content: JustifyContent::Center,
             ..default()
         })
