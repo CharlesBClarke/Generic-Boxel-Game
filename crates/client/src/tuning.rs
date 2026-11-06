@@ -20,6 +20,7 @@ use crate::feel::CameraFeel;
 use crate::mesher::AoTuning;
 use crate::sound::{Kind, Pick, Picks, SoundPicks, SoundPreview, SoundTuning};
 use crate::tuning_file;
+use crate::shading::ShadingTuning;
 use crate::view::ViewTuning;
 use crate::world::{ClientWorld, Link};
 
@@ -52,6 +53,7 @@ pub fn tuning_panel(
     mut preview_sound: ResMut<SoundPreview>,
     mut picks: ResMut<SoundPicks>,
     mut view: ResMut<ViewTuning>,
+    mut light: ResMut<ShadingTuning>,
 ) -> Result {
     // The saved file is applied once, on the first frame there is a player, open or not.
     if world.player().is_none() {
@@ -87,6 +89,7 @@ pub fn tuning_panel(
     let mut camera = feel.clone();
     let mut shading = *ao;
     let mut seeing = *view;
+    let mut lighting = *light;
     let mut regenerate = false;
     let mut drill_tuning = drill.tuning.clone();
     let mut hearing = sound.clone();
@@ -120,6 +123,7 @@ pub fn tuning_panel(
             s.push(("camera".to_owned(), &mut camera));
             s.push(("ao".to_owned(), &mut shading));
             s.push(("view".to_owned(), &mut seeing));
+            s.push(("shading".to_owned(), &mut lighting));
             s.push(("drill".to_owned(), &mut drill_tuning));
             s.push(("sound".to_owned(), &mut hearing));
             s
@@ -195,6 +199,10 @@ pub fn tuning_panel(
                 ui.heading("View");
                 sliders(ui, "view", &mut seeing);
                 ui.separator();
+                ui.heading("Shading");
+                ui.label("sun and sky light, the sky, fog, and the lines along creases and ridges");
+                sliders(ui, "shading", &mut lighting);
+                ui.separator();
                 ui.heading("Sound");
                 sliders(ui, "sound", &mut hearing);
                 ui.collapsing("Footsteps", |ui| {
@@ -251,6 +259,7 @@ pub fn tuning_panel(
                 sliders(ui, "camera", &mut camera);
                 ui.separator();
                 ui.heading("Ambient occlusion");
+                ui.label("changing these remeshes every chunk");
                 sliders(ui, "ao", &mut shading);
                 ui.separator();
                 ui.heading("Chase drill");
@@ -270,6 +279,7 @@ pub fn tuning_panel(
                     camera = CameraFeel::default();
                     shading = AoTuning::default();
                     seeing = ViewTuning::default();
+                    lighting = ShadingTuning::default();
                     juice = CombatFeel::default();
                     playing = AnimationTuning::default();
                     preview.clip = None;
@@ -344,6 +354,7 @@ pub fn tuning_panel(
     }
     ao.set_if_neq(shading);
     view.set_if_neq(seeing);
+    light.set_if_neq(lighting);
     if trying != *picks {
         *picks = trying;
     }

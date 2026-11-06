@@ -105,15 +105,39 @@ A run of small toy slices. Each one takes a single game-feel feature that doesn'
 ### Current toy
 
 **Waiting for a play check** (remind the user at the start of every session, and at good moments during one, until they confirm; then delete the line):
-- Sound (1): footsteps quicken when sprinting, and a walking cow's hooves are heard.
-- Sound (4): breaking and placing a block sounds like that block.
 - Sound (5): sounds pan as you turn and fade with distance (turn away from a mooing cow, walk off).
 
 **Low-priority play checks** (don't remind every session; check only when a toy makes it convenient, such as one that puts the player among moving cows; delete the line once seen):
 - Cow herd (1): a cow shoved well away from the herd walks back to it on its own.
 - Cow herd (3): a moving cow that runs into the player pushes them back, with no jitter or sticking.
 
-None. Plan the next toy in a new session.
+#### Shading (branch `toy-shading`)
+
+**Stage:** Verify (implemented and tested 2026-11-05; waiting on the user's play check)
+
+**Goal:** shapes read clearly and the world has an atmosphere: crisp dark creases and lit outside edges, light from a sun and sky, a sheen on ice, and distance fading into a sky. First of three graphics toys agreed 2026-11-05: Shading, then Stored light (flood fill, red, green, blue and sky, smooth per vertex, plus a first block that gives light), then Sun shadows (method picked by measuring). Notes: `docs/notes/shading.md`.
+
+**Plan** (approved 2026-11-05, engaged; fog and sky added at the user's request)
+- *AO curve* (`mesher::AoTuning`): darkness = `strength × min(filled / full_at, 1)^curve`, with new tunables `full_at` (0.75: where two walls meet reaches full strength) and `curve` (1.5: small occlusion stays light). Corner AO stays as the soft broad layer; changing it still remeshes.
+- *Creases and ridges per texel.* Per-vertex AO can't draw a line: a full face has 4 vertices over 16×16 texels. The mesher records, for each of a quad's four edges, a 2-bit kind per texel along it: crease (the sixteenth past the edge, in front of the face, is filled), ridge (past the edge both in front and behind are empty: the surface turns away), or flat. Worked out from the same 27-boxel neighborhood as AO, by intersecting boxes with strips, not per sixteenth. Lone meshes (ghost, items) use their own boxes, so they get ridges too. New vertex attributes: the four edge masks (`Uint32x4`) and where on the face (`Unorm16x4`: texels along both axes and the face's size). The shader shades one flat value per texel: crease darkness, ridge brightness, width in texels; live sliders, no remesh. Vertices grow from 56 to 80 bytes.
+- *Sun and sky light.* The baked brightness per face direction (`mesher::shade`) goes; the shader lights each fragment from its normal: hemisphere sky light (sky above, ground bounce below) plus the sun's color × max(n·sun, 0). Sun azimuth, elevation, strength and color; sky light strength and tint; ground bounce. Defaults close to today's brightness. Moving the sun needs no remesh.
+- *Sheen* (Blinn-Phong from the sun), per look: `sheen = { strength, sharpness }` in a look recipe in `blocks.toml`, carried as `api::LookDef.sheen` and passed to the shader as a small table by volume. Ice gets one.
+- *Sky and fog.* A full-screen sky drawn at the far plane replaces the clear color: a horizon-to-zenith gradient and a sun disc. The block shader fades to the sky's color in the view direction with distance, from `fog_start` to `fog_end` (fractions of the render distance), so the edge of the drawn world melts away.
+- *Where:* new `client::shading` (the `ShadingTuning` resource as a `shading` panel section, the atmosphere uniform synced into every `SolidMaterial` and the sky material when it changes, the sky material) and `atmosphere.wgsl` shared by `solid.wgsl` and `sky.wgsl`. `client::solid` gains the attributes, the uniform and the sheen table; `client::volumes` the sheen per volume; `data_mods::looks` the recipe field.
+- *Tests:* edge kinds for a floor against a wall, a step's lip, a slab beside a full block, a block across a chunk border, a lone block (all ridges); AO curve values; sheen parsed from a recipe and absent by default; the sheen table by volume; sun direction from azimuth and elevation (Z-up). The look is judged in play.
+- *Out of scope:* cast shadows, stored light, a day cycle (the sun is a slider), bloom and HDR. Cows and the held tool keep their own baked light and get no fog (noted, deferred).
+
+**Done when**
+1. Inside creases show as a crisp dark line a few texels wide and outside edges catch a light line, on full blocks and small shapes alike.
+2. The AO curve, crease and ridge values are live sliders.
+3. Faces are lit by a movable sun plus sky light, with no remesh when it moves.
+4. Ice shows a sheen toward the sun; other looks don't.
+5. The sky is a gradient with a sun, and distant terrain fades into it, hiding the edge of the render distance.
+6. Frame rate and meshing time on the generated terrain are compared with `master`; tests pass and clippy is clean.
+
+*Implemented:* `api::Sheen` and `LookDef.sheen`; `sheen = { strength, sharpness }` in look recipes (sharpness defaults to 32), ice at 0.6 and 48. `mesher`: `AoTuning.full_at` and `curve` (`AoTuning::LINEAR` is the old rule), `MeshData.edges` and `face`, `edges()` from strips past each edge, `alone()` for the ghost and items; the baked `shade()` is gone. `volumes.sheens`, `solid::sheen_image`, new attributes `ATTRIBUTE_EDGES` and `ATTRIBUTE_FACE`, the normal now reaches the shader. `client::shading` (`ShadingTuning` as the `shading` panel section, 26 sliders; `Atmosphere`; `SkyMaterial`, a clip-space triangle at the far plane; `sync_atmosphere`), `atmosphere.wgsl`, `sky.wgsl`, `solid.wgsl` lit, edged, sheened and fogged. Tests: mesher (+6: curve, floor against a wall, slab, half-covered edge, chunk border, lone blocks), shading (3), volumes and data_mods (sheen). Workspace tests all pass; clippy clean; the game starts with no shader errors.
+
+*Measured:* meshing the default 512³ terrain (1.32M quads) takes 4.37 s, against 4.43 s on `master`: the edges cost nothing noticeable. Vertices grow by 24 bytes, about 125 MB more GPU memory at 512³ and roughly 470 MB at 1024³. Frame rate is for the user's play check.
 
 ### Toy backlog
 
@@ -122,7 +146,8 @@ None. Plan the next toy in a new session.
 - **Covered blocks.** Added 2026-10-31, deferred from Solid materials. Should blocks be roughly one material, with grass and snow a cover on a block rather than part of it? What should a cut through grass show: honest (a bottom slab is all dirt, since the look spans the boxel) or anchored (the look's top follows each box's top, so a grass slab has grass on top, at the cost of seams between a stair's steps)? Settle it once something needs to cut grass, like world generation or crafted shapes.
 - **Lower contrast in the other looks.** Added 2026-11-02 at the user's request, from Wood and brick looks: the lower contrast given to bricks and wood "should eventually be added elsewhere" (stone, dirt, gravel, ice and so on). Mostly recipe numbers in `blocks.toml`; `noise` may want a speckle-like setting.
 - **Generated detail in looks.** Run look noise in the shader on the world texel position, so noisy looks (dirt, stone, gravel, ice) never repeat; then generated detail over baked looks (wood grain that follows each board, per-brick speckle), then a large-scale patch tint. Notes: `docs/notes/generated-detail.md`.
-- **Shading.** Shapes look flat and AO is weak even at strength 1. An AO curve (the user likes this), crease and ridge shading per texel, and a sun and sky direction instead of fixed brightness per face. Client only, all tunable. Stored light, dynamic lights and shadows come later. Notes: `docs/notes/shading.md`.
+- **Stored light.** Second of the graphics toys (agreed 2026-11-05, after Shading): flood-fill light per boxel with red, green, blue and sky channels (the design doc's read-old automaton), baked smooth per vertex, relit on edits and across chunk borders, plus a first block that gives light so there is something to see. Open: whether it lives in `sim` (gameplay like spawning or plants can read it) or only in the client.
+- **Sun shadows.** Third graphics toy (agreed 2026-11-05): cast shadows from the sun only. Pick the method by measuring on the Iris Xe: Bevy shadow maps (redraws ~10M triangles per cascade), ray marching a GPU copy of the boxel grid (the design doc's way), or shadows baked per vertex (cheap, but fixes the sun).
 - **Robot voice and jump sound.** Deferred from Sound (2026-11-05): espeak lines for the robot (knocked out, back up, low health; rendered to files offline by `tools/`, so the game never links GPL code), and a jump sound (a push-off of the surface plus a pickable `jump_` sound). Notes: `docs/notes/sound.md`.
 - **Sound juice.** Added 2026-11-05 at the user's request, during Sound: the standard game-audio juicing effects, on `kira`'s tracks and effects. Candidates: muffle everything (low-pass) for a moment when hurt and while health is low; drop pitch and slow sounds during hit-stop; duck other sounds under a big hit; a low sub-thump layer under heavy hits and slams; a little saturation on head hits; short reverb tails on big impacts; louder and brighter the faster you're moving. All tunable, each worth playing with on its own.
 - **Acoustics.** After Sound: muffling behind walls and room feel (reverb from rays cast out from the ear) on the boxel grid; sound around corners later; full acoustic ray tracing skipped. Notes: `docs/notes/acoustics.md`.

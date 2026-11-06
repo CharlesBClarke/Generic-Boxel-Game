@@ -14,6 +14,7 @@ pub mod feel;
 pub mod hurt;
 pub mod items;
 pub mod mesher;
+pub mod shading;
 pub mod solid;
 pub mod sound;
 pub mod tuning;
@@ -27,7 +28,7 @@ use std::time::{Duration, Instant};
 use api::{ChunkPos, I64Vec3, Vec3 as ZVec3, WorldPos};
 use bevy::asset::RenderAssetUsages;
 use bevy::input::mouse::AccumulatedMouseMotion;
-use bevy::mesh::{Indices, PrimitiveTopology};
+use bevy::mesh::{Indices, PrimitiveTopology, VertexAttributeValues};
 use bevy::prelude::*;
 use bevy::window::{CursorGrabMode, CursorOptions, PresentMode, PrimaryWindow};
 use bevy_egui::{EguiPlugin, EguiPrimaryContextPass};
@@ -38,7 +39,7 @@ use crate::controls::{Controls, DoubleTapSprint, SprintToggle, label};
 use crate::editing::{ChunkMeshes, Ghost, Palette, PartNames};
 use crate::feel::{CameraFeel, FeelState, Motion};
 use crate::mesher::MeshData;
-use crate::solid::{ATTRIBUTE_SOLID, SolidMaterial, SolidPlugin};
+use crate::solid::{ATTRIBUTE_EDGES, ATTRIBUTE_FACE, ATTRIBUTE_SOLID, SolidMaterial, SolidPlugin};
 use crate::tuning::TuningPanel;
 use crate::volumes::Volumes;
 use crate::world::{ClientWorld, Link};
@@ -62,7 +63,7 @@ pub fn run(connection: Box<dyn Connection>) {
             primary_window: Some(Window { title: "Boxel".into(), ..default() }),
             ..default()
         }))
-        .add_plugins((EguiPlugin::default(), SolidPlugin))
+        .add_plugins((EguiPlugin::default(), SolidPlugin, shading::ShadingPlugin))
         .insert_resource(ClearColor(Color::srgb(0.55, 0.75, 0.95)))
         .insert_resource(Time::<Fixed>::from_hz(protocol::TICK_RATE))
         .insert_resource(world)
@@ -225,9 +226,16 @@ fn spawn_chunk_meshes(
     ao: Res<mesher::AoTuning>,
 ) {
     let volumes = Volumes::build(world.looks(), world.blocks());
-    // Unlit: shading is baked into vertex colors until there is a lighting system.
     let image = images.add(solid::volume_image(&volumes));
-    let solid = |tint: Color, alpha_mode: AlphaMode| SolidMaterial { tint: tint.into(), volumes: image.clone(), alpha_mode };
+    let sheens = images.add(solid::sheen_image(&volumes));
+    let solid = |tint: Color, alpha_mode: AlphaMode| SolidMaterial {
+        tint: tint.into(),
+        volumes: image.clone(),
+        // Filled in by `shading` before the first frame is drawn.
+        atmosphere: default(),
+        sheens: sheens.clone(),
+        alpha_mode,
+    };
     let material = materials.add(solid(Color::WHITE, AlphaMode::Opaque));
     let ghost_material = |color: Color| solid(color, AlphaMode::Blend);
     let ghost = Ghost {
@@ -284,6 +292,8 @@ pub(crate) fn to_bevy_mesh(data: MeshData) -> Mesh {
         .with_inserted_attribute(Mesh::ATTRIBUTE_NORMAL, convert(data.normals))
         .with_inserted_attribute(Mesh::ATTRIBUTE_COLOR, data.colors)
         .with_inserted_attribute(ATTRIBUTE_SOLID, data.solid)
+        .with_inserted_attribute(ATTRIBUTE_EDGES, VertexAttributeValues::Uint32x4(data.edges))
+        .with_inserted_attribute(ATTRIBUTE_FACE, VertexAttributeValues::Unorm16x4(data.face))
         .with_inserted_indices(Indices::U32(data.indices))
 }
 

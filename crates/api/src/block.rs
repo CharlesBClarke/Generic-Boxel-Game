@@ -152,7 +152,7 @@ pub enum Turning {
 /// [`LookDef::SIZE`] texels a side that spans one boxel and repeats every block. Faces show the
 /// texels just inside them, so a cut shows what's inside. Plain pixels, so it crosses any
 /// boundary as data.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct LookDef {
     /// Namespaced name, such as `"base:stone"`.
     pub name: String,
@@ -163,6 +163,17 @@ pub struct LookDef {
     /// Four bytes a texel, sRGB, opaque. X runs fastest, then Y, then Z (up, as in the world):
     /// texel `(x, y, z)` starts at byte `4 * LookDef::index(x, y, z)`.
     pub rgba: Vec<u8>,
+    /// A shine where the sun reflects off it toward the eye, like ice; `None` for matte looks.
+    pub sheen: Option<Sheen>,
+}
+
+/// How a look shines (Blinn-Phong): how bright the highlight gets, and how tight it is.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Sheen {
+    /// The highlight's brightness at its center, as a share of the sun's light.
+    pub strength: f32,
+    /// How tight the highlight is: 1 spreads it over the whole face, hundreds make a glint.
+    pub sharpness: f32,
 }
 
 impl LookDef {

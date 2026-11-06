@@ -277,8 +277,10 @@ pub fn load(dir: &Path) -> Result<DataMod, LoadError> {
                 let message = format!("invalid look name {short:?}: use lowercase letters, digits and underscores");
                 return Err(file.error_at(recipe, message));
             }
-            let rgba = recipe.get_ref().generate().map_err(|e| file.error_at(recipe, format!("look {short:?}: {e}")))?;
-            looks.push(LookDef { name, turns: recipe.get_ref().turns, rgba });
+            let error = |e: String| file.error_at(recipe, format!("look {short:?}: {e}"));
+            let rgba = recipe.get_ref().generate().map_err(error)?;
+            let sheen = recipe.get_ref().sheen().map_err(error)?;
+            looks.push(LookDef { name, turns: recipe.get_ref().turns, rgba, sheen });
         }
         let blocks = entries
             .block
@@ -622,6 +624,22 @@ mod tests {
         let err = blocks_error("unknown_recipe_field", "[looks.stone]\nnoise = { colors = [[1, 1, 1]], scael = 2 }\n", 2);
         assert!(err.contains("scael"), "{err}");
         blocks_error("bad_look_name", "[looks.Stone]\nnoise = { colors = [[1, 1, 1]] }\n", 1);
+    }
+
+    #[test]
+    fn a_look_can_shine() {
+        let folder = Folder::new("sheen");
+        folder.write("mod.toml", MANIFEST).write(
+            "blocks.toml",
+            "[looks.ice]\nsheen = { strength = 0.5, sharpness = 64 }\nnoise = { colors = [[1, 1, 1]] }\n\n[looks.glow]\nsheen = { strength = 0.25 }\nnoise = { colors = [[1, 1, 1]] }\n\n[looks.stone]\nnoise = { colors = [[1, 1, 1]] }\n",
+        );
+        let m = folder.load().unwrap();
+        let sheen = |name: &str| m.looks().iter().find(|l| l.name == name).unwrap().sheen;
+        assert_eq!(sheen("test:ice"), Some(api::Sheen { strength: 0.5, sharpness: 64.0 }));
+        assert_eq!(sheen("test:glow").map(|s| s.sharpness), Some(32.0), "sharpness has a default");
+        assert_eq!(sheen("test:stone"), None, "looks are matte by default");
+        let err = blocks_error("bad_sheen", "[looks.stone]\nsheen = { strength = -1 }\nnoise = { colors = [[1, 1, 1]] }\n", 1);
+        assert!(err.contains("sheen strength"), "{err}");
     }
 
     #[test]

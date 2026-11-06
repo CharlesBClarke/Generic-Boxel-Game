@@ -21,11 +21,26 @@ pub struct Recipe {
     /// with the world.
     #[serde(default)]
     pub turns: bool,
+    /// A shine toward the sun, like ice's.
+    sheen: Option<SheenRecipe>,
     noise: Option<Noise>,
     bricks: Option<Bricks>,
     planks: Option<Planks>,
     rings: Option<Rings>,
     top: Option<Top>,
+}
+
+/// How a look shines: see [`api::Sheen`].
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct SheenRecipe {
+    strength: f32,
+    #[serde(default = "sheen_sharpness")]
+    sharpness: f32,
+}
+
+fn sheen_sharpness() -> f32 {
+    32.0
 }
 
 /// Speckle: smooth noise, each value picking one of the colors.
@@ -179,6 +194,20 @@ fn check_fraction(what: &str, f: f32) -> Result<(), String> {
 }
 
 impl Recipe {
+    /// The look's sheen, or says what's wrong with it.
+    pub fn sheen(&self) -> Result<Option<api::Sheen>, String> {
+        let Some(s) = &self.sheen else {
+            return Ok(None);
+        };
+        if !(0.0..=4.0).contains(&s.strength) {
+            return Err(format!("sheen strength must be from 0 to 4, not {}", s.strength));
+        }
+        if !(1.0..=1024.0).contains(&s.sharpness) {
+            return Err(format!("sheen sharpness must be from 1 to 1024, not {}", s.sharpness));
+        }
+        Ok(Some(api::Sheen { strength: s.strength, sharpness: s.sharpness }))
+    }
+
     /// Makes the volume, or says what's wrong with the recipe.
     pub fn generate(&self) -> Result<Vec<u8>, String> {
         let bases = [self.noise.is_some(), self.bricks.is_some(), self.planks.is_some(), self.rings.is_some()];

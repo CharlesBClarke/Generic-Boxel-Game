@@ -11,6 +11,8 @@ pub struct Volumes {
     pub count: u32,
     /// Four bytes a texel, sRGB: X fastest, then Y, then Z through every volume in turn.
     pub rgba: Vec<u8>,
+    /// Each volume's sheen as strength and sharpness, by volume; zero strength for matte ones.
+    pub sheens: Vec<[f32; 2]>,
     /// Which volume each block uses and whether its look turns with it, by block ID; `None`
     /// for blocks without a look.
     of_block: Vec<Option<(u32, bool)>>,
@@ -26,11 +28,13 @@ impl Volumes {
         // A look's texels run X, then Y, then Z, so stacking along Z is just one after another.
         let mut rgba = vec![255; LookDef::VOLUME * 4];
         let mut by_look = std::collections::HashMap::new();
+        let mut sheens = vec![[0.0, 1.0]];
         for (i, look) in looks.iter().enumerate() {
             rgba.extend_from_slice(&look.rgba);
             by_look.insert(look.name.clone(), (i as u32 + 1, look.turns));
+            sheens.push(look.sheen.map_or([0.0, 1.0], |s| [s.strength, s.sharpness]));
         }
-        let mut volumes = Volumes { count: looks.iter().count() as u32 + 1, rgba, of_block: vec![None], by_look };
+        let mut volumes = Volumes { count: looks.iter().count() as u32 + 1, rgba, sheens, of_block: vec![None], by_look };
         volumes.sync(blocks);
         volumes
     }
@@ -63,7 +67,7 @@ mod tests {
     use api::BlockDef;
 
     fn look(name: &str, color: [u8; 4], turns: bool) -> LookDef {
-        LookDef { name: name.into(), turns, rgba: color.repeat(LookDef::VOLUME) }
+        LookDef { name: name.into(), turns, rgba: color.repeat(LookDef::VOLUME), sheen: None }
     }
 
     #[test]
@@ -82,6 +86,13 @@ mod tests {
         assert_eq!((volumes.of(plain), volumes.of(BlockId::EMPTY)), (None, None));
         assert!(volumes.turns(grass) && volumes.turns(slab), "every shape follows its look's rule");
         assert!(!volumes.turns(plain));
+        assert_eq!(volumes.sheens, [[0.0, 1.0]; 3], "matte looks, white too");
+
+        // A shiny look's sheen sits at its volume.
+        let mut shiny = LookRegistry::default();
+        shiny.register(look("test:matte", [1, 1, 1, 255], false)).unwrap();
+        shiny.register(LookDef { sheen: Some(api::Sheen { strength: 0.5, sharpness: 40.0 }), ..look("test:ice", [9, 9, 9, 255], false) }).unwrap();
+        assert_eq!(Volumes::build(&shiny, &blocks).sheens, [[0.0, 1.0], [0.0, 1.0], [0.5, 40.0]]);
 
         // A block registered later, as crafting does, finds its look once synced.
         let mut volumes = volumes;
