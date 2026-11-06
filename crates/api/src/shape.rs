@@ -117,6 +117,20 @@ impl ShapeGrid {
         boxes
     }
 
+    /// Every sixteenth filled in either.
+    pub fn union(&self, other: &ShapeGrid) -> ShapeGrid {
+        let mut out = self.clone();
+        for (a, b) in out.rows.iter_mut().zip(&other.rows) {
+            *a |= b;
+        }
+        out
+    }
+
+    /// Whether any sixteenth is filled in both.
+    pub fn overlaps(&self, other: &ShapeGrid) -> bool {
+        self.rows.iter().zip(&other.rows).any(|(a, b)| a & b != 0)
+    }
+
     /// The shape turned by `orientation` about the boxel's center.
     pub fn turned(&self, orientation: Orientation) -> ShapeGrid {
         let mut out = Self::EMPTY;

@@ -15,6 +15,15 @@
 //! **As built.** The shape keeps the frame it was built in: placed, its far side (+Y) points the
 //! way the player looks, as it pointed away from someone at the table's front. Flipping turns it
 //! upside down about the Y axis, for things easier built top first.
+//!
+//! **On the side.** Built on the table's side, the grid is the wall as you face it (up the grid
+//! is up) and stacks grow out of the wall toward you, so nothing floats is measured from the
+//! wall: a knob can stick out of a door. The rule builds as on the top and tips the result a
+//! quarter turn about X, so the wall becomes the far side.
+//!
+//! **Several materials.** The rule only sees filled space. A caller with several materials
+//! checks the whole with [`stack_shape`] and gets each material's own sixteenths with
+//! [`stack_fill`] on stacks holding only that material's layers.
 
 use crate::shape::ShapeGrid;
 use crate::Orientation;
@@ -79,8 +88,20 @@ impl std::fmt::Display for CraftError {
 
 /// The shape `stacks` build, as built: before any flip.
 pub fn stack_shape(stacks: &Stacks) -> Result<ShapeGrid, CraftError> {
+    let out = stack_fill(stacks)?;
+    if out.is_empty() {
+        return Err(CraftError::Empty);
+    }
+    if let Some((x, y)) = floating(&out) {
+        return Err(CraftError::Floating { row: GRID - 1 - y / 4, col: x / 4 });
+    }
+    Ok(out)
+}
+
+/// The sixteenths `stacks` fill, as built, without asking whether anything floats: empty for
+/// empty stacks. Only a layer too fine to shrink is refused.
+pub fn stack_fill(stacks: &Stacks) -> Result<ShapeGrid, CraftError> {
     let mut out = ShapeGrid::EMPTY;
-    let mut any = false;
     for (row, line) in stacks.iter().enumerate() {
         for (col, stack) in line.iter().enumerate() {
             // Row 0 is the far side, +Y.
@@ -91,19 +112,12 @@ pub fn stack_shape(stacks: &Stacks) -> Result<ShapeGrid, CraftError> {
                     Some(Layer::Solid) => u64::MAX,
                     Some(Layer::Shape(shape)) => shape.quarters().ok_or(CraftError::TooFine { row, col, layer })?,
                 };
-                any = true;
                 for bit in (0..64).filter(|b| quarters & (1 << b) != 0) {
                     let s = [bit % 4, bit / 4 % 4, bit / 16];
                     out.set(4 * qx + s[0], 4 * qy + s[1], 4 * layer + s[2], true);
                 }
             }
         }
-    }
-    if !any {
-        return Err(CraftError::Empty);
-    }
-    if let Some((x, y)) = floating(&out) {
-        return Err(CraftError::Floating { row: GRID - 1 - y / 4, col: x / 4 });
     }
     Ok(out)
 }
@@ -131,10 +145,21 @@ pub fn flipped(shape: &ShapeGrid) -> ShapeGrid {
     shape.turned(Orientation::quarter_turns(1, 2))
 }
 
+/// The shape built on the table's side tipped up, so the wall it grew from is its far side.
+pub fn tipped(shape: &ShapeGrid) -> ShapeGrid {
+    shape.turned(Orientation::quarter_turns(0, 1))
+}
+
+/// A shape as built, made ready to carry: tipped up if built on the side, then flipped if
+/// `flip`.
+pub fn finished(shape: &ShapeGrid, side: bool, flip: bool) -> ShapeGrid {
+    let shape = if side { tipped(shape) } else { shape.clone() };
+    if flip { flipped(&shape) } else { shape }
+}
+
 /// The shape `stacks` build, flipped if `flip`.
 pub fn craft_shape(stacks: &Stacks, flip: bool) -> Result<ShapeGrid, CraftError> {
-    let shape = stack_shape(stacks)?;
-    Ok(if flip { flipped(&shape) } else { shape })
+    Ok(finished(&stack_shape(stacks)?, false, flip))
 }
 
 /// Stacks from text rows, far side first: each character is a cell's height, `0` to `4`, in
@@ -269,5 +294,28 @@ mod tests {
         assert_eq!(stairs, shape(&[([0, 0, 8], [16, 16, 16]), ([0, 8, 0], [16, 16, 8])]));
         // A flipped shape may hang: only the stacks have to rest.
         assert!(floating(&stairs).is_some());
+    }
+
+    #[test]
+    fn built_on_the_side_the_wall_is_the_far_side_and_stacks_come_toward_you() {
+        // One layer everywhere: a wall. A second layer in the right column, second row from
+        // the top: a knob sticking out toward you, up the wall's right side.
+        let mut stacks = heights(["1111"; 4]);
+        stacks[1][3][1] = Some(Layer::Solid);
+        let built = stack_shape(&stacks).unwrap();
+        let door = finished(&built, true, false);
+        assert_eq!(door.volume(), 16 * 16 * 4 + 64);
+        assert!(door.get(0, 15, 0) && door.get(0, 12, 15) && !door.get(0, 11, 0), "a wall on the far side");
+        assert!(door.get(13, 10, 9) && !door.get(13, 7, 9), "the knob one quarter out, from 8 to 12 up");
+        assert!(!door.get(0, 10, 9), "only in the right column");
+    }
+
+    #[test]
+    fn filling_ignores_floating_but_not_fineness() {
+        let mut stacks = heights(["...."; 4]);
+        stacks[0][0][2] = Some(Layer::Solid);
+        assert_eq!(stack_fill(&stacks).unwrap().volume(), 64);
+        assert_eq!(stack_shape(&stacks), Err(CraftError::Floating { row: 0, col: 0 }));
+        assert!(stack_fill(&heights(["...."; 4])).unwrap().is_empty());
     }
 }

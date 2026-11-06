@@ -129,7 +129,7 @@ fn the_copy_matches_the_server_through_edits_and_crafts() {
     let mut cells: Cells = Default::default();
     cells[0][0][0] = Some(Piece::new(brick));
     let before = server.simulation().blocks().len();
-    let msgs = server.handle(input(PlayerInput { craft: Some(Craft { table, cells, flip: false, count: 1 }), ..Default::default() }));
+    let msgs = server.handle(input(PlayerInput { craft: Some(Craft { table, cells, side: false, flip: false, count: 1 }), ..Default::default() }));
     for msg in &msgs {
         copy.apply(msg);
     }

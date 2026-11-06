@@ -113,7 +113,41 @@ A run of small toy slices. Each one takes a single game-feel feature that doesn'
 
 - Cow pathfinding (low priority, 2026-11-06): the user called the toy "really good" without going through the five course checks one by one; note any that misbehave: cows through the pen's gap and up its terraces, up the mesa's steps, a charge baited off the mesa's cliff (landing hurt), waiting below the pillar (orange route), climbing hills on the generated terrain.
 
-None. Plan the next toy in a new session.
+### Functional crafting (`toy-functional-crafting`)
+
+**Stage:** Verify (implemented and tested 2026-11-06; waiting for the user to play it)
+
+**Goal:** Several materials in one crafted shape, and materials with properties that act, enough for a door and a lever with no door code in the engine. Takes item 1, item 2 and item 4 of Crafting follow-ups and the proof toy of Generative crafting.
+
+**Plan**
+- *Several materials, as a bundle* (the user's choice of 2026-11-02). The table stops refusing mixed materials: each material's sixteenths become a piece, and nothing-floats checks the whole. One material makes an ordinary part as before. Several make a bundle: one carried kind listing its pieces (at most 4, the most a boxel holds), each a block of its own named from the bundle, breaking into an ordinary part. Placing checks room for every piece, then puts each piece in the boxel as its own occupant, all turned alike. Breaking takes off the piece aimed at. A bundle can go in a table layer, each piece shrinking with it. Menu pictures, the ghost and hotbar draw each piece in its color.
+- *Building on the side of the table* (follow-up 2). A top/side switch in the menu: on the side the grid is the wall as you face it and stacks grow toward you; the rule builds as usual and tips the result a quarter turn about X, so the wall becomes the far side.
+- *No upside-down flip on the upper half of a wall* in basic placement (follow-up 4); only ceilings flip.
+- *Properties from materials.* `api::Property` (`trigger`, `hinge`, `listener`), set on a material's block in `blocks.toml` (`properties = [...]`) and copied to every shape of it. New base materials: brass (trigger), iron (hinge), copper (listener). Rules, a boxel's occupants acting as one block:
+  - Trigger: interact (E) aimed at a trigger piece signals its boxel, and every touching boxel holding a listener. Left and right click never trigger.
+  - Hinge: a signaled boxel holding a hinge piece swings a quarter turn about the hinge piece's long axis (vertical when it has none), the way that leaves least sticking out of the boxel, then slides back inside. The swing reaches the boxels along the same hinge line, so a two-high door moves as one and double doors don't couple. Opened pieces become "open" kinds that remember what they were, so closing restores them exactly; open kinds break into the same part. Refused, nothing moving, if a body is in the way.
+  - Listener: takes signals from touching triggers; passes nothing on (no wiring yet).
+- API debt: the three properties are a fixed engine set (paid by the WebAssembly behavior seam's block behavior).
+- Test area: a doorway with a two-high door and a lever beside it, built with the same shapes players make.
+
+**Tests:** mixed stacks and the side tip in `api::crafting`; bundle plan and make, placing a bundle, breaking one piece; the swing (stays inside, open then close gives back the start, horizontal hinge); signals (lever through a listener, a two-high door together, double doors apart, a body blocks it); end to end through player input.
+
+**Done when**
+- Mixed materials make one design; placed, each piece shows its material, and breaking takes one piece.
+- Shapes can be built on the side of the table.
+- A two-high door (wood panel, iron hinge strip, brass knob) opens and closes with E on its knob, and won't swing into the player.
+- A brass lever beside a door with a copper listener opens it.
+- No door or lever code anywhere: it all comes from material properties.
+
+**Out of scope:** simple and advanced crafters, drag and drop, capacity, connectors (fences), wiring, the edge placement mode (follow-up 3).
+
+**Implementation notes**
+- One detail differs from the plan's words, not its intent. A knob sticks out of the panel, so turning about the hinge alone pushes it out of the boxel. The swing picks the way that leaves less outside, then slides everything back in (a knobbed door swings toward its knob, its hinge moving in by the knob's depth). Since a slid swing can't be undone by turning back, open pieces are their own kinds (`BlockRegistry::opened`) that remember the closed occupant, which is the notes' "two kinds swapped in place".
+- Bundles: `BlockRegistry::bundle`; each piece is its own block kind (`<ns>:bundle_<hash>_<i>`), breaking into the ordinary part. The first piece is what's held and placed, and it brings the rest (`companions`, `cost`).
+- Signals and swings: `sim::signal`. Interact: `PlayerInput.interact_pressed` (the existing interact key, which also opens the table).
+- Opening the menu on a table's side face starts it in side mode.
+- The test area's door is at `DOOR_SPOT` (north of spawn, waypoint `door`); the player starts with 4 each of brass, iron and copper.
+- Deferred: a thrown bundle is drawn as its first piece only.
 
 ### Toy backlog
 
@@ -136,7 +170,8 @@ None. Plan the next toy in a new session.
 - **Interaction controls.** Split out of Block editing (2026-10-25). Fix Minecraft's ambiguous right click once there are things to use, like crystals or devices. Principles: one input, one action (no catch-all "use" button that changes meaning with what you hold or look at), and what you see is what you get (a ghost of the result, red when not allowed).
   - *Added 2026-10-28:* decide how players reach shared boxels. Placing into an occupied boxel makes placement harder to read (every click has two possible boxels), so it may become a deliberate trick (a key, a tool, or a property of blocks like water) instead of happening on any click. Decide once combat and usable items show how crowded the controls get; the engine keeps full support either way. Also from play: two slabs at right angles make a stair, so a separate stairs block may not be needed.
 - **Block interactions.** Unstable crystals: two block types, a touch trigger, a directional blast, and a way to push blocks so devices are possible.
-- **Crafting follow-ups.** Four changes agreed with the user, to plan together: several materials in one shape as a bundle, building on the side of the table, an "edge" placement mode on middle click to compare, and no upside-down flip on the upper half of a wall. Notes: `docs/notes/crafting-follow-ups.md`.
+- **3D crafting view.** Added 2026-11-06 at the user's request, during Functional crafting: "maybe we should re think the grid maybe a 3d gui is more natural here, but that can be done later". Replace the 4×4 grid of stacks with a 3D view of the boxel to build in.
+- **Crafting follow-ups.** *Items 1, 2 and 4 taken by Functional crafting (2026-11-06); the edge mode (3) is left.* Four changes agreed with the user, to plan together: several materials in one shape as a bundle, building on the side of the table, an "edge" placement mode on middle click to compare, and no upside-down flip on the upper half of a wall. Notes: `docs/notes/crafting-follow-ups.md`.
 - **Generative crafting.** A few materials, a few property ingredients and a capacity limit. The user aims for fully emergent crafting ("emergent shapes, authored verbs": properties come from materials, so even doors come out of the system), with a simple crafter whose odd recipes the advanced one explains. Drag and drop is designed here. A proof toy: trigger, toggle and listener, enough for a door and a lever. Notes: `docs/notes/generative-crafting.md`.
 - **Cow looking.** Cows turn head and neck first and react by degrees (notice and carry on, face it, back off), like real cows; herds face a newcomer together. Notes: `docs/notes/cow-looking.md`.
 - **Head hit boxes that follow the animation.** Hit boxes are fixed to the body and don't follow the animated head, so a grazing cow's head box stays where the head was. A headbutt needs the head box where the head is: move boxes with their bones, or have the brain pick box poses per clip.
@@ -172,6 +207,7 @@ Shortcuts taken around the API, each with the toy that needed it. Paid down in s
 - **Chase drill in the client** (advanced movement toy, temporary; ghost hits added by the combat feel toy). The ghost and objectives in `client::drill` are game logic living in the client, and it finds landmarks by the `landmark:` prefix on waypoint names. Kept by the local server seam (2026-11-05) as a good game for feeling the movement; it reads the client's copy of the world. Remove the drill rather than moving it into the API, unless a later toy wants real enemies, which would need entities and a game-rules hook in the API.
 - **Tool look in the client** (combat feel toy). Every tool is drawn as the same club, posed by `client::combat`; mods can't give a tool its own model or swing poses. API version: a tool names a model and its poses.
 - **Crafting menu in the client** (emergent shapes toy). The table's menu, its strokes and the turn and flip controls live in `client::crafting`; mods can't change how crafting is presented. The rule itself is in `api::crafting`. API version: a client-side mod API for menus, or a data description of the table's grid.
+- **Fixed block properties** (functional crafting toy). `trigger`, `hinge` and `listener` are a fixed set in `api::Property`, worked by `sim::signal`; mods give them to materials but can't write their own. API version: block behavior as WebAssembly (the seam backlog's WebAssembly behavior), with properties naming a mod's handler.
 - **Health bar in the client** (fighting cow toy). `client::hurt` draws the player's health and the hurt flash; mods can't change how health is shown. API version: a client-side mod API for the HUD.
 - **Sound kinds in the client** (sound toy). What makes a sound (steps, landings, swings, hits, kills, hurts, knock-outs, pick-ups, the servo and wind loops) and the tuning panel's pick lists are a fixed set in `client::sound` (`Kind`, `Hearing`); mods name sounds for these slots but can't add kinds or play sounds for their own events. API version: mods attach sounds to named events, or a client-side mod API for sound.
 - **Camera feel in the client** (movement toy; hit-stop, view kick and shake added by the combat feel toy in `client::combat`). FOV widening, head bob, landing dip and step smoothing live in `client::feel`, so mods can't change them. API version: a client-side mod API for camera effects, presumably driven by the same tunables.

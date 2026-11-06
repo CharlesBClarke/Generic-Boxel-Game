@@ -363,6 +363,7 @@ impl Simulation {
             self.inventory.take(m, self.inventory.amount(m));
         }
         self.edit_blocks(input);
+        self.interact(input);
         self.use_tool(input);
         self.throw(input);
         let capacity = self.capacity();
@@ -464,11 +465,83 @@ impl Simulation {
         }
         let target = hit.and_then(|hit| self.placement(&hit, input.place_block, input.yaw, input.pitch, input.place_precise));
         if let Some(place) = target.filter(|p| p.allowed) {
-            if let (Some(_), Some(cost)) = (&self.inventory_def, self.blocks.drop(place.occupant.block)) {
+            if let (Some(_), Some(cost)) = (&self.inventory_def, self.blocks.cost(place.occupant.block)) {
                 self.inventory.take(cost.material, cost.amount);
             }
-            self.add_occupant(place.pos, place.occupant);
+            for occupant in place.occupants() {
+                self.add_occupant(place.pos, occupant);
+            }
             self.block_edits.push(BlockEdit { pos: place.pos, block: place.occupant.block, placed: true });
+        }
+    }
+
+    /// Works the trigger aimed at, if the interact button went down: signals reach its boxel and
+    /// the listeners touching it, and each hinge line they reach swings once (see
+    /// [`crate::signal`]).
+    fn interact(&mut self, input: &PlayerInput) {
+        if !input.interact_pressed {
+            return;
+        }
+        let Some(hit) = self.target(input.yaw, input.pitch) else {
+            return;
+        };
+        let grid = self.universe.main();
+        let trigger = grid.cell(hit.pos).get(hit.occupant).and_then(|o| self.blocks.get(o.block));
+        if !trigger.is_some_and(|def| def.has(api::Property::Trigger)) {
+            return;
+        }
+        let mut swung: Vec<BoxelPos> = Vec::new();
+        for pos in crate::signal::reached(grid, &self.blocks, hit.pos) {
+            if swung.contains(&pos) {
+                continue;
+            }
+            let grid = self.universe.main();
+            if let Some(swing) = crate::signal::swing(grid, &self.blocks, pos) {
+                swung.extend(swing.iter().map(|(p, _)| *p));
+                self.swing_hinges(swing);
+            }
+        }
+    }
+
+    /// Swings a hinge line, unless a body is in the way of where it goes.
+    fn swing_hinges(&mut self, swing: crate::signal::Swing) {
+        use crate::signal::Change;
+        let view = self.view();
+        let blocks = &self.blocks;
+        let clear = swing.iter().all(|(pos, changes)| {
+            let boxes: Vec<CellBox> = changes
+                .iter()
+                .flat_map(|c| -> Vec<CellBox> {
+                    match c {
+                        Change::Open { closed, shape } if blocks.is_solid(closed.block) => {
+                            shape.to_boxes().into_iter().map(CellBox::from_block_box).collect()
+                        }
+                        Change::Close(o) | Change::Keep(o) if blocks.is_solid(o.block) => occupant_boxes(*o, blocks).collect(),
+                        _ => Vec::new(),
+                    }
+                })
+                .collect();
+            view.bodies_clear(*pos, &boxes)
+        });
+        if !clear {
+            return;
+        }
+        for (pos, changes) in swing {
+            let mut cell = Vec::new();
+            for change in changes {
+                cell.push(match change {
+                    Change::Open { closed, shape } => match self.blocks.opened(closed, &shape) {
+                        Ok(id) => Occupant::new(id),
+                        Err(_) => closed,
+                    },
+                    Change::Close(o) | Change::Keep(o) => o,
+                });
+            }
+            self.universe.main_mut().set_cell(pos, &cell);
+            self.changed.mark(pos);
+            if let Some(first) = cell.first() {
+                self.block_edits.push(BlockEdit { pos, block: first.block, placed: true });
+            }
         }
     }
 

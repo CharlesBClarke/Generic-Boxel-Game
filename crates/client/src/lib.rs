@@ -167,6 +167,7 @@ pub(crate) struct PendingToggles {
     use_pressed: bool,
     alt_pressed: bool,
     drop_pressed: bool,
+    interact_pressed: bool,
 }
 
 /// The world view's origin. Everything is drawn relative to this cell, so the GPU only
@@ -354,6 +355,7 @@ fn tick_simulation(
         drop_material: palette.material(&world),
         craft: if frozen { None } else { menu.pending.take() },
         discard: if frozen { None } else { menu.discard.take() },
+        interact_pressed: take(&mut toggles.interact_pressed),
     };
     link.send(ClientMsg::Input(Box::new(input)), &mut world);
     if let Some(result) = world.take_craft() {

@@ -12,7 +12,8 @@ use crate::crafting::{Craft, CraftPlan, CraftRefusal};
 use crate::inventory::capacity_units;
 use crate::player::{Body, PushOut, Terrain};
 use crate::{
-    BlockId, BlockRegistry, CellBox, Grid, Hit, Inventory, Occupant, Target, can_share, occupant_boxes, raycast,
+    BlockId, BlockRegistry, CellBox, Grid, Hit, Inventory, MAX_OCCUPANTS, Occupant, Target, can_share, occupant_boxes,
+    raycast,
 };
 
 /// How far in front of an aimed-at face the point that picks the boxel for a placed block is.
@@ -25,9 +26,18 @@ pub struct PlaceTarget {
     pub pos: BoxelPos,
     /// The block, turned by the placement rule.
     pub occupant: Occupant,
+    /// The rest of a bundle placed with it, turned alike, in the bundle's order.
+    pub companions: [Option<Occupant>; MAX_OCCUPANTS - 1],
     /// Whether it may go there. A refused placement still says where it would have gone, so
     /// a preview can show it as not allowed.
     pub allowed: bool,
+}
+
+impl PlaceTarget {
+    /// Every occupant placing adds, the block's first.
+    pub fn occupants(&self) -> impl Iterator<Item = Occupant> + '_ {
+        std::iter::once(self.occupant).chain(self.companions.iter().flatten().copied())
+    }
 }
 
 /// Everything the questions below look at, borrowed from the simulation or from a client's copy.
@@ -61,7 +71,8 @@ impl View<'_> {
     }
 
     /// What placing `block` aimed at `hit`, looking along `yaw` and `pitch`, would do, or `None`
-    /// if there's nothing to place: the block isn't placeable or the hit has no face.
+    /// if there's nothing to place: the block isn't placeable or the hit has no face. A bundle's
+    /// first piece brings the rest of the bundle, turned alike, and every piece must fit.
     ///
     /// The block goes into the boxel holding the point just in front of the aimed-at face. If it
     /// can't share that boxel, it goes into the boxel on the far side of the face instead, like
@@ -88,24 +99,34 @@ impl View<'_> {
             let aim = Aim {
                 face,
                 look,
-                // The aimed-at point in this boxel's space.
-                upper: (front - (pos.0 - hit.pos.0).as_vec3()).z > 0.5,
                 region: precise.then_some(region),
             };
-            let occupant = Occupant::turned(block, orient(def.turning, &aim));
-            if can_share(self.grid.cell(pos), occupant, self.blocks).is_ok() {
-                let allowed = self.can_pay(block) && self.body_allows(pos, occupant);
-                return Some(PlaceTarget { pos, occupant, allowed });
+            let orientation = orient(def.turning, &aim);
+            let occupant = Occupant::turned(block, orientation);
+            let mut companions = [None; MAX_OCCUPANTS - 1];
+            for (slot, &b) in companions.iter_mut().zip(self.blocks.companions(block)) {
+                *slot = Some(Occupant::turned(b, orientation));
             }
-            first.get_or_insert(PlaceTarget { pos, occupant, allowed: false });
+            let target = PlaceTarget { pos, occupant, companions, allowed: false };
+            let mut cell = self.grid.cell(pos).to_vec();
+            let fits = target.occupants().all(|o| {
+                let ok = can_share(&cell, o, self.blocks).is_ok();
+                cell.push(o);
+                ok
+            });
+            if fits {
+                let allowed = self.can_pay(block) && target.occupants().all(|o| self.body_allows(pos, o));
+                return Some(PlaceTarget { allowed, ..target });
+            }
+            first.get_or_insert(target);
         }
         first
     }
 
-    /// Whether the player carries enough to place `block`: its volume of its material. Always,
-    /// without an inventory definition or for a block made of no material.
+    /// Whether the player carries enough to place `block`: its volume of its material, or its
+    /// whole bundle. Always, without an inventory definition or for a block made of nothing.
     pub fn can_pay(&self, block: BlockId) -> bool {
-        match (self.inventory_def, self.blocks.drop(block)) {
+        match (self.inventory_def, self.blocks.cost(block)) {
             (Some(_), Some(cost)) => self.inventory.amount(cost.material) >= cost.amount,
             _ => true,
         }
@@ -119,6 +140,13 @@ impl View<'_> {
             return true;
         }
         let boxes: Vec<_> = occupant_boxes(occupant, self.blocks).collect();
+        self.bodies_allow(pos, &boxes)
+    }
+
+    /// Whether the bodies in the world leave room for solid `boxes` at `pos`: they overlap no
+    /// target, and either don't overlap the player or the player can be pushed out.
+    pub fn bodies_allow(&self, pos: BoxelPos, boxes: &[CellBox]) -> bool {
+        let boxes = boxes.to_vec();
         if self.targets.iter().any(|t| t.overlaps_boxes(&self.target_defs[t.kind.index()], pos, &boxes)) {
             return false;
         }
@@ -126,6 +154,15 @@ impl View<'_> {
             return true;
         };
         !player.overlaps_boxes(pos, &boxes) || self.push_out(player, pos, &boxes).is_some()
+    }
+
+    /// Whether no body at all overlaps solid `boxes` at `pos`: nothing is pushed aside.
+    pub fn bodies_clear(&self, pos: BoxelPos, boxes: &[CellBox]) -> bool {
+        if boxes.is_empty() {
+            return true;
+        }
+        let targets = self.targets.iter().any(|t| t.overlaps_boxes(&self.target_defs[t.kind.index()], pos, boxes));
+        !targets && !self.player.is_some_and(|p| p.overlaps_boxes(pos, boxes))
     }
 
     /// How `player` would get out of a solid block filling `boxes` at `pos`, if there's a rule
@@ -160,7 +197,7 @@ impl View<'_> {
         if player.eye().delta_to(center).length() > reach + 0.5 {
             return Err(CraftRefusal::TooFar);
         }
-        crate::crafting::plan(self.blocks, self.inventory, self.capacity(), &craft.cells, craft.flip, craft.count)
+        crate::crafting::plan(self.blocks, self.inventory, self.capacity(), &craft.cells, craft.side, craft.flip, craft.count)
     }
 
     /// How much the player can carry, every material together, in [`crate::FULL_VOLUME`] units,
@@ -238,8 +275,6 @@ struct Aim {
     /// The outward normal of the face the block goes against.
     face: I64Vec3,
     look: Vec3,
-    /// Aimed at the upper half of the boxel the block goes into.
-    upper: bool,
     /// For precise placement, the part of the face aimed at (see [`face_region`]); `None` for
     /// basic placement.
     region: Option<Option<[i32; 3]>>,
@@ -248,8 +283,9 @@ struct Aim {
 /// How a block placed with `aim` is turned, kept as far as `turning` allows.
 ///
 /// Basic placement is like Minecraft's: the block stands upright with its front (+Y) the way
-/// the player looks, and upside down against a ceiling or when aimed at the upper half of a
-/// wall; a block that only turns its axis lines up with the face.
+/// the player looks, and upside down against a ceiling (not on the upper half of a wall: the
+/// table's flip makes upside-down shapes); a block that only turns its axis lines up with the
+/// face.
 ///
 /// Precise placement puts the block's bottom against the face aimed at, and looks at the part
 /// of the face aimed at to turn it about the face: in the middle square its front points the
@@ -275,7 +311,7 @@ fn orient(turning: Turning, aim: &Aim) -> Orientation {
     };
     let (up, forward) = match aim.region {
         None => {
-            let upside_down = normal[2] == -1 || (normal[2] == 0 && aim.upper);
+            let upside_down = normal[2] == -1;
             let up = if upside_down { [0, 0, -1] } else { [0, 0, 1] };
             if turning == Turning::Axis {
                 (normal, look_except(axis))

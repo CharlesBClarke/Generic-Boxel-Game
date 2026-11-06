@@ -77,6 +77,8 @@ pub struct PlayerInput {
     pub craft: Option<crate::crafting::Craft>,
     /// Throws away everything carried of this material or part, without dropping it.
     pub discard: Option<crate::MaterialId>,
+    /// The interact button went down since the last tick: works a trigger aimed at.
+    pub interact_pressed: bool,
 }
 
 /// How a body gets out of a block that appeared inside it.

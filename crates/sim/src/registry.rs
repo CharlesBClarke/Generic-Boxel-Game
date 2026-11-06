@@ -5,6 +5,8 @@ use std::collections::HashMap;
 use api::block::is_valid_name;
 use api::{ApiError, BlockBox, BlockDef, LookDef, ShapeGrid, Turning};
 
+use crate::Occupant;
+
 /// Volume units in a full boxel: one per sixteenth cubed. Amounts of material count in these,
 /// so a slab's worth is a whole number.
 pub const FULL_VOLUME: u32 = (BlockBox::SIZE as u32).pow(3);
@@ -14,8 +16,9 @@ pub const FULL_VOLUME: u32 = (BlockBox::SIZE as u32).pow(3);
 ///
 /// Most are materials, carried by volume in any amount. A crafted shape is carried too, as a
 /// part: its own kind, named after its block, carried in whole parts and made of a material
-/// (see [`BlockRegistry::shaped`]). Both count toward the capacity by volume, so inventories,
-/// loose items and costs treat them alike.
+/// (see [`BlockRegistry::shaped`]). A shape of several materials is a bundle: a part whose
+/// pieces are placed together, one block each (see [`BlockRegistry::bundle`]). All count toward
+/// the capacity by volume, so inventories, loose items and costs treat them alike.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct MaterialId(u16);
 
@@ -65,14 +68,21 @@ pub struct BlockRegistry {
     drops: Vec<Option<Drop>>,
     /// Each material's and part's name and the block it's drawn as, and what a part is made of.
     materials: Vec<Material>,
+    /// Each bundle piece's bundle.
+    bundle_of: HashMap<BlockId, MaterialId>,
+    /// Each open kind's closed occupant: what it was before it swung open.
+    closed_of: HashMap<BlockId, Occupant>,
 }
 
 #[derive(Clone)]
 struct Material {
     name: String,
     block: BlockId,
-    /// For a part, the material it's made of and its volume, carried only in whole parts.
+    /// For a part, the material it's made of and its volume, carried only in whole parts. A
+    /// bundle's is its first piece's material.
     part: Option<(MaterialId, u32)>,
+    /// For a bundle, its pieces' blocks, first piece first; empty otherwise.
+    pieces: Vec<BlockId>,
 }
 
 impl BlockRegistry {
@@ -107,7 +117,7 @@ impl BlockRegistry {
             return Ok(MaterialId(i as u16));
         }
         let index = u16::try_from(self.materials.len()).map_err(|_| ApiError::InvalidDef("too many materials".into()))?;
-        self.materials.push(Material { name: name.to_owned(), block, part: None });
+        self.materials.push(Material { name: name.to_owned(), block, part: None, pieces: Vec::new() });
         Ok(MaterialId(index))
     }
 
@@ -161,6 +171,104 @@ impl BlockRegistry {
             return self.get(entry.block).filter(|def| def.is_full()).map(|_| entry.block);
         }
         self.id(&shaped_name(&entry.name, shape)).filter(|&id| self.shape(id) == *shape)
+    }
+
+    /// A bundle of `pieces`, each a material and the sixteenths it fills, registering it the
+    /// first time: one carried kind whose pieces are placed together, each as a block of its
+    /// own. Each piece block copies the material's part in that shape (see
+    /// [`BlockRegistry::shaped`]) and breaks into it, so pieces come off one at a time as
+    /// ordinary parts. Named from the first material's namespace and a hash of the pieces, like
+    /// `base:bundle_0123456789abcdef`, its pieces with `_0`, `_1`… after that.
+    pub fn bundle(&mut self, pieces: &[(MaterialId, ShapeGrid)]) -> Result<MaterialId, ApiError> {
+        if !(2..=crate::MAX_OCCUPANTS).contains(&pieces.len()) {
+            return Err(ApiError::InvalidDef(format!("a bundle has 2 to {} pieces", crate::MAX_OCCUPANTS)));
+        }
+        let mut hash = Fnv::default();
+        for (material, shape) in pieces {
+            let entry = self.materials.get(material.index()).ok_or_else(|| ApiError::InvalidDef("no such material".into()))?;
+            hash.add(entry.name.as_bytes());
+            hash.add(&shape.hash64().to_le_bytes());
+        }
+        let first = &self.materials[pieces[0].0.index()].name;
+        let namespace = first.split_once(':').map_or("bundle", |(ns, _)| ns);
+        let name = format!("{namespace}:bundle_{:016x}", hash.0);
+        if let Some(id) = self.material(&name) {
+            return Ok(id);
+        }
+        let parts = pieces.iter().map(|(m, shape)| self.shaped(*m, shape)).collect::<Result<Vec<_>, _>>()?;
+        let mut blocks = Vec::new();
+        for (i, part) in parts.iter().enumerate() {
+            let def = BlockDef { name: format!("{name}_{i}"), placeable: true, ..self.get(*part).expect("just made").clone() };
+            blocks.push(self.register(def)?);
+        }
+        let volume = pieces.iter().map(|(_, shape)| shape.volume()).sum();
+        let id = MaterialId(
+            u16::try_from(self.materials.len()).map_err(|_| ApiError::InvalidDef("too many materials".into()))?,
+        );
+        let part = Some((pieces[0].0, volume));
+        self.materials.push(Material { name, block: blocks[0], part, pieces: blocks.clone() });
+        for b in blocks {
+            self.bundle_of.insert(b, id);
+        }
+        Ok(id)
+    }
+
+    /// A bundle's piece blocks, first piece first; empty for anything else.
+    pub fn pieces(&self, id: MaterialId) -> &[BlockId] {
+        self.materials.get(id.index()).map_or(&[], |m| &m.pieces)
+    }
+
+    /// The bundle a piece block belongs to, if it's one.
+    pub fn bundle_of(&self, block: BlockId) -> Option<MaterialId> {
+        self.bundle_of.get(&block).copied()
+    }
+
+    /// The blocks placed along with `block`: the rest of its bundle when it's a bundle's first
+    /// piece, the block a bundle is held and placed as. Empty otherwise.
+    pub fn companions(&self, block: BlockId) -> &[BlockId] {
+        match self.bundle_of(block).map(|b| self.pieces(b)) {
+            Some([first, rest @ ..]) if *first == block => rest,
+            _ => &[],
+        }
+    }
+
+    /// What placing `block` uses up: its whole bundle when it's a bundle's first piece,
+    /// otherwise what breaking it gives back.
+    pub fn cost(&self, block: BlockId) -> Option<Drop> {
+        if !self.companions(block).is_empty() {
+            let bundle = self.bundle_of(block)?;
+            return Some(Drop { material: bundle, amount: self.unit(bundle) });
+        }
+        self.drop(block)
+    }
+
+    /// The material a block is made of: what it breaks into, or what that part is made of.
+    pub fn made_of(&self, block: BlockId) -> Option<MaterialId> {
+        let drop = self.drop(block)?;
+        Some(self.part_of(drop.material).unwrap_or(drop.material))
+    }
+
+    /// The open kind of `closed` filling `shape` unturned, registering it the first time: what
+    /// a swung piece becomes. It copies the closed block, breaks into the same thing, isn't
+    /// placed by players, and remembers `closed`, so swinging back gives exactly it.
+    pub fn opened(&mut self, closed: Occupant, shape: &ShapeGrid) -> Result<BlockId, ApiError> {
+        let def = self.get(closed.block).ok_or_else(|| ApiError::InvalidDef("no such block".into()))?;
+        let mut hash = Fnv::default();
+        hash.add(&closed.orientation.apply([1, 2, 3]).map(|c| c as i8 as u8));
+        hash.add(&shape.hash64().to_le_bytes());
+        let name = format!("{}_o{:016x}", def.name, hash.0);
+        if let Some(id) = self.id(&name) {
+            return Ok(id);
+        }
+        let def = BlockDef { name, shape: shape.to_boxes(), turning: Turning::Any, placeable: false, ..def.clone() };
+        let id = self.register(def)?;
+        self.closed_of.insert(id, closed);
+        Ok(id)
+    }
+
+    /// For an open kind, what it was closed.
+    pub fn closed_of(&self, block: BlockId) -> Option<Occupant> {
+        self.closed_of.get(&block).copied()
     }
 
     /// The sixteenths a block fills, unturned.
@@ -232,6 +340,23 @@ impl BlockRegistry {
 
     pub fn is_empty(&self) -> bool {
         self.defs.is_empty()
+    }
+}
+
+/// 64-bit FNV-1a, the same on every machine, for naming.
+struct Fnv(u64);
+
+impl Default for Fnv {
+    fn default() -> Self {
+        Fnv(0xcbf2_9ce4_8422_2325)
+    }
+}
+
+impl Fnv {
+    fn add(&mut self, bytes: &[u8]) {
+        for &b in bytes {
+            self.0 = (self.0 ^ b as u64).wrapping_mul(0x0100_0000_01b3);
+        }
     }
 }
 
