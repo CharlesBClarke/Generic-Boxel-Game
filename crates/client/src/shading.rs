@@ -39,6 +39,18 @@ pub struct ShadingTuning {
     /// The sun's disc, as its radius in degrees, and the glow around it.
     pub sun_size: f32,
     pub sun_glow: f32,
+    /// The sun's flat rays, drawn like a child draws a sun: how many; how far they reach past
+    /// the disc, in disc radii; how wide they are at the disc, as a share of the gap between
+    /// them (0.45 nearly closes it); how strongly they show.
+    pub rays: f32,
+    pub ray_length: f32,
+    pub ray_width: f32,
+    pub ray_strength: f32,
+    /// How much shorter some rays are than others (0 all the same), how much they fade toward
+    /// their tips (0 not at all), and how fast they turn, in turns a minute.
+    pub ray_variation: f32,
+    pub ray_fade: f32,
+    pub ray_spin: f32,
     /// Where fog starts and where it's thickest, as shares of the render distance.
     pub fog_start: f32,
     pub fog_end: f32,
@@ -93,8 +105,15 @@ impl Default for ShadingTuning {
             sky_tint: 0.3,
             zenith: [0.33, 0.55, 0.9],
             horizon: [0.72, 0.83, 0.95],
-            sun_size: 1.5,
-            sun_glow: 0.4,
+            sun_size: 5.0,
+            sun_glow: 0.15,
+            rays: 12.0,
+            ray_length: 1.2,
+            ray_width: 0.25,
+            ray_strength: 0.8,
+            ray_variation: 0.4,
+            ray_fade: 0.5,
+            ray_spin: 0.0,
             fog_start: 0.5,
             fog_end: 1.0,
             fog: 1.0,
@@ -132,6 +151,8 @@ impl ShadingTuning {
             fog: Vec4::new(fog_start, (self.fog_end * render_distance).max(fog_start + 1.0), self.fog, 0.0),
             edges: Vec4::new(self.crease, self.ridge, self.edge_width, 0.0),
             parts: Vec4::new(on(self.parts.edges), on(self.parts.fog), on(self.parts.sheen), on(self.parts.light)),
+            rays: Vec4::new(self.rays, self.ray_length, self.ray_width, self.ray_strength),
+            ray_shape: Vec4::new(self.ray_variation, self.ray_fade, self.ray_spin, self.sun_size.to_radians()),
         }
     }
 }
@@ -159,6 +180,13 @@ impl Tunables for ShadingTuning {
         t.extend([
             Tunable::new("sun_size", self.sun_size, 0.1, 10.0),
             Tunable::new("sun_glow", self.sun_glow, 0.0, 2.0),
+            Tunable::new("rays", self.rays, 0.0, 32.0),
+            Tunable::new("ray_length", self.ray_length, 0.0, 6.0),
+            Tunable::new("ray_width", self.ray_width, 0.0, 0.45),
+            Tunable::new("ray_strength", self.ray_strength, 0.0, 1.0),
+            Tunable::new("ray_variation", self.ray_variation, 0.0, 1.0),
+            Tunable::new("ray_fade", self.ray_fade, 0.0, 1.0),
+            Tunable::new("ray_spin", self.ray_spin, -10.0, 10.0),
             Tunable::new("fog_start", self.fog_start, 0.0, 1.0),
             Tunable::new("fog_end", self.fog_end, 0.05, 1.5),
             Tunable::new("fog", self.fog, 0.0, 1.0),
@@ -194,6 +222,13 @@ impl Tunables for ShadingTuning {
             "sky_tint" => self.sky_tint = value,
             "sun_size" => self.sun_size = value,
             "sun_glow" => self.sun_glow = value,
+            "rays" => self.rays = value,
+            "ray_length" => self.ray_length = value,
+            "ray_width" => self.ray_width = value,
+            "ray_strength" => self.ray_strength = value,
+            "ray_variation" => self.ray_variation = value,
+            "ray_fade" => self.ray_fade = value,
+            "ray_spin" => self.ray_spin = value,
             "fog_start" => self.fog_start = value,
             "fog_end" => self.fog_end = value,
             "fog" => self.fog = value,
@@ -226,6 +261,10 @@ pub struct Atmosphere {
     pub edges: Vec4,
     /// Which parts are drawn, 1 or 0: edges, fog, sheen, light.
     pub parts: Vec4,
+    /// The sun's rays: how many, how far past the disc in disc radii, how wide, how strong.
+    pub rays: Vec4,
+    /// How much ray lengths vary, how much rays fade, turns a minute; the disc's radius in radians.
+    pub ray_shape: Vec4,
 }
 
 /// The sky: drawn over the whole screen at the far plane, so only where nothing else is.
@@ -375,6 +414,15 @@ mod tests {
         assert_eq!(Parts { fog: false, sky: false, ..default() }.off(), "shading off: fog, sky");
         let a = ShadingTuning { parts: Parts { edges: false, ..default() }, ..default() }.atmosphere(100.0);
         assert_eq!(a.parts, Vec4::new(0.0, 1.0, 1.0, 1.0));
+    }
+
+    #[test]
+    fn the_rays_reach_the_shaders_with_the_discs_radius() {
+        let t = ShadingTuning { rays: 9.0, ray_length: 2.0, ray_width: 0.3, ray_spin: 1.5, sun_size: 4.0, ..Default::default() };
+        let a = t.atmosphere(100.0);
+        assert_eq!(a.rays, Vec4::new(9.0, 2.0, 0.3, t.ray_strength));
+        assert_eq!(a.ray_shape, Vec4::new(t.ray_variation, t.ray_fade, 1.5, 4f32.to_radians()));
+        assert!((a.sun_direction.w - a.ray_shape.w.cos()).abs() < 1e-6, "the disc's edge, both ways");
     }
 
     #[test]

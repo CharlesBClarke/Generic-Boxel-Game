@@ -3,6 +3,14 @@
 Moved out of `SLICES.md` on 2026-11-03 so the roadmap stays short. Each toy's full write-up, newest first, as it stood when it closed. `SLICES.md` keeps a one-line summary of each.
 
 
+#### Endless materials and a bigger sun (`toy-endless-materials`)
+
+**Stage:** Done (2026-11-07). Verified by the user in play: "its good, they do show inf". A micro toy. Asked for 2026-11-07: "In my save I lost all coper and cant get more, can you please make sure I just have inf of some important materials? and make the sun bigger". Planned and engaged in one session (small, the user's call).
+- *Plan:* `inventory.toml` gains `endless = [...]` (`InventoryDef::endless`, checked like `start`); the simulation tops each endless material up to `api::ENDLESS_AMOUNT` (64 boxels) every tick and after a load, past any capacity, so old saves get theirs back. The hotbar and the table's carried grid show `∞`; the "carrying" line leaves endless ones out. Base: brass, copper, phasite, antiphasite ("no iron tought because that dosent do anything"; brick and stone can be gathered). Sun: `sun_size` 1.5° → 5° (also in the user's `tuning.txt`). *Added 2026-11-07 after a first look* ("the sun is blurry, and a perfict shere I was hoping for rays, not god rays, not any kind of 3d lighing just 2d rays going away rom the sun"): a crisp disc (a pixel's soft edge), `sun_glow` down to 0.15, and flat pointed rays drawn in the sky shader around it (`sun()` in `atmosphere.wgsl`), sky only, with sliders `rays`, `ray_length`, `ray_width`, `ray_strength`, `ray_variation`, `ray_fade`, `ray_spin`.
+- *Done when:* (1) the loaded save has copper, brass, phasite and antiphasite, shown as ∞, and placing them never runs out; (2) iron, brick and wood still count down; (3) the sun is bigger, crisp, with flat rays the user likes (picked with the sliders; picks baked as defaults).
+- *Tests:* all pass across the workspace; clippy clean. New: `InventoryDef` rejects a bad endless name; `inventory.toml` reads `endless` and points at a bad one's line; `Inventory::top_up`; an endless material is back after placing and after loading a save that carried none; an unknown endless material fails; the hotbar shows ∞ for copper and a count for iron; the rays reach the shader with the disc's radius. The shader was only checked for compile errors by a 30-second run; the user judged the look.
+- *Deferred:* UI scale (backlog); rays through gaps in terrain (the user doesn't want lighting rays). The user kept the default ray values.
+
 #### Blueprint library (`toy-blueprint-library`)
 
 **Stage:** Done (2026-11-07). Verified by the user in play: variants, center, swaps, blueprints inside blueprints, saving and reloading all work; the window stays put and the carried icon grid works. The menu itself was judged too heavy (too many views), recorded for the next crafting toy.

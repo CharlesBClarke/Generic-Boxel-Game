@@ -5,12 +5,16 @@
 #   capacity      how much fits, every material together; leave it out for no limit
 #   throw_speed   meters per second a thrown item leaves at, along the look
 #   pickup_delay  seconds before a thrown item can be picked up again
+#   endless       materials that never run out: always at least 64, shown as ∞
 #   [start]       what the player starts with, by material
 
 # No capacity: the player carries without limit (2026-11-02, at the user's request; see
 # "Rethink the inventory" in SLICES.md).
 throw_speed = 6
 pickup_delay = 1.5
+# The world can't give these back, so they never run out (2026-11-07, at the user's request).
+# Iron is left out: it does nothing yet.
+endless = ["brass", "copper", "phasite", "antiphasite"]
 
 # The test area has brick to break but no wood, so start with some of both.
 [start]

@@ -133,6 +133,8 @@ pub struct Simulation {
     inventory_def: Option<InventoryDef>,
     /// What the player carries.
     inventory: Inventory,
+    /// The inventory definition's endless materials, kept topped up.
+    endless: Vec<MaterialId>,
     crafting_def: Option<CraftingDef>,
     signal_def: Option<SignalDef>,
     /// The last craft: the part made and how many, or why nothing was.
@@ -203,6 +205,10 @@ impl Simulation {
                 let material = sim.blocks.material(name).ok_or_else(|| ApiError::UnknownMaterial(name.clone()))?;
                 sim.inventory.add(material, capacity_units(*boxels), None);
             }
+            for name in &def.endless {
+                sim.endless.push(sim.blocks.material(name).ok_or_else(|| ApiError::UnknownMaterial(name.clone()))?);
+            }
+            sim.refill_endless();
         }
         for def in &sim.target_defs {
             if !sim.models.iter().any(|m| m.name == def.model) {
@@ -427,7 +433,16 @@ impl Simulation {
             }
         }
         self.hurt_player(input.yaw);
+        self.refill_endless();
         self.tick += 1;
+    }
+
+    /// Tops the endless materials back up, so they never run out.
+    fn refill_endless(&mut self) {
+        let amount = capacity_units(api::ENDLESS_AMOUNT);
+        for &m in &self.endless {
+            self.inventory.top_up(m, amount);
+        }
     }
 
     /// A read-only look at the world, for the questions in [`View`].

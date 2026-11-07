@@ -542,7 +542,8 @@ impl PartNames {
     }
 }
 
-/// How full the inventory is, for the line above the hotbar.
+/// How full the inventory is, for the line above the hotbar. Without a limit, materials that
+/// never run out are left out of the count.
 pub(crate) fn carried_line(world: &ClientWorld) -> String {
     let inventory = world.inventory();
     let amount = crate::items::amount_label;
@@ -551,7 +552,24 @@ pub(crate) fn carried_line(world: &ClientWorld) -> String {
             let full = if inventory.room(Some(capacity)) == 0 { "  FULL" } else { "" };
             format!("carrying {} / {}{full}", amount(inventory.total()), amount(capacity))
         }
-        None => format!("carrying {}, no limit", amount(inventory.total())),
+        None => {
+            let counted = inventory.iter().filter(|&(m, _)| !is_endless(world, m)).map(|(_, a)| a).sum();
+            format!("carrying {}, no limit", amount(counted))
+        }
+    }
+}
+
+/// Whether material `m` never runs out.
+fn is_endless(world: &ClientWorld, m: MaterialId) -> bool {
+    let name = world.blocks().material_name(m);
+    world.inventory_def().is_some_and(|d| d.endless.iter().any(|e| e == name))
+}
+
+/// How much of material `m` is carried, as a label: `∞` for one that never runs out.
+pub(crate) fn carried_label(world: &ClientWorld, m: MaterialId, amount: u32) -> String {
+    match is_endless(world, m) {
+        true => "∞".to_owned(),
+        false => crate::items::amount_label(amount),
     }
 }
 
@@ -562,9 +580,7 @@ pub(crate) fn slot_label(world: &ClientWorld, names: &PartNames, entry: &Entry) 
     let counted = world.inventory_def().is_some();
     match entry {
         Entry::Tool(tool) => (short(&world.tool(*tool).name).to_owned(), None),
-        Entry::Material(m, _) => {
-            (names.label(blocks, *m), counted.then(|| crate::items::amount_label(inventory.amount(*m))))
-        }
+        Entry::Material(m, _) => (names.label(blocks, *m), counted.then(|| carried_label(world, *m, inventory.amount(*m)))),
         Entry::Part(p, _) => (names.label(blocks, *p), Some(format!("×{}", inventory.amount(*p) / blocks.unit(*p)))),
         Entry::Block(block) => (blocks.get(*block).map_or("?".to_owned(), |def| short(&def.name).to_owned()), None),
     }
@@ -762,10 +778,12 @@ mod tests {
         let (_, sim) = connect(base_sim());
         let names = PartNames::default();
         let palette = Palette { slot: 1, ..Default::default() };
-        assert_eq!(carried_line(&sim), "carrying 52, no limit");
+        assert_eq!(carried_line(&sim), "carrying 36, no limit", "brick, wood and iron; endless ones aren't counted");
         let slots = entries(&sim);
         assert_eq!(slot_label(&sim, &names, &slots[0]), ("club".into(), None));
         assert_eq!(slot_label(&sim, &names, &slots[1]), ("brick".into(), Some("16".into())));
+        assert_eq!(slot_label(&sim, &names, &slots[5]), ("copper".into(), Some("∞".into())), "copper never runs out");
+        assert_eq!(slot_label(&sim, &names, &slots[4]), ("iron".into(), Some("4".into())), "iron does");
         let held = held_line(&sim, &palette, &names, &Controls::default());
         assert!(held.starts_with("brick block, shapes are crafted at a table, Q throws"), "{held}");
         assert_eq!((fraction(sim::FULL_VOLUME / 2), fraction(sim::FULL_VOLUME * 3 / 16)), ("½".into(), "3/16".into()));

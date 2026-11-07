@@ -86,7 +86,7 @@ fn fragment(in: VertexOutput) -> @location(0) vec4<f32> {
         rgb += sheen(atmosphere, normal, to_eye, shine.x, shine.y) * tint.rgb;
     }
     if parts.y > 0.5 {
-        rgb = mix(rgb, sky(atmosphere, -to_eye, false), fog_amount(atmosphere, distance));
+        rgb = mix(rgb, sky(atmosphere, -to_eye), fog_amount(atmosphere, distance));
     }
 
     var color = vec4<f32>(rgb, base.a);

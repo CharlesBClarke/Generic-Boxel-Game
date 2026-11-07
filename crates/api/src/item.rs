@@ -106,7 +106,13 @@ pub struct InventoryDef {
     /// What a player starts with: material names and boxels' worth of each. Names are checked
     /// once every mod has registered its blocks.
     pub start: Vec<(String, f32)>,
+    /// Materials that never run out: kept topped up to [`ENDLESS_AMOUNT`] boxels' worth, past any
+    /// capacity, however much is used. Names are checked like `start`'s.
+    pub endless: Vec<String>,
 }
+
+/// How much of an endless material a player always has, at least, in boxels' worth.
+pub const ENDLESS_AMOUNT: f32 = 64.0;
 
 impl InventoryDef {
     /// Checks the values make sense.
@@ -127,6 +133,9 @@ impl InventoryDef {
             if !(amount.is_finite() && *amount >= 0.0) {
                 return Err(format!("start amount of {name} must be at least 0, got {amount}"));
             }
+        }
+        if let Some(name) = self.endless.iter().find(|n| !is_valid_name(n)) {
+            return Err(format!("invalid material name {name:?} in endless, expected namespace:path"));
         }
         let total: f32 = self.start.iter().map(|(_, amount)| amount).sum();
         if let Some(capacity) = self.capacity
@@ -208,6 +217,7 @@ mod tests {
             throw_speed: 6.0,
             pickup_delay: 1.0,
             start: vec![("test:stone".into(), 16.0), ("test:wood".into(), 16.0)],
+            endless: vec!["test:copper".into()],
         }
     }
 
@@ -221,6 +231,7 @@ mod tests {
         assert!(InventoryDef { capacity: Some(20.0), ..inventory() }.validate().is_err(), "starts with more than fits");
         assert!(InventoryDef { start: vec![("stone".into(), 1.0)], ..inventory() }.validate().is_err(), "a bad name");
         assert!(InventoryDef { start: vec![("test:stone".into(), -1.0)], ..inventory() }.validate().is_err());
+        assert!(InventoryDef { endless: vec!["copper".into()], ..inventory() }.validate().is_err(), "a bad endless name");
     }
 
     #[test]
