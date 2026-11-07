@@ -6,8 +6,8 @@ use std::collections::HashSet;
 use api::{ApiError, ChunkPos, I64Vec3, Tunables};
 
 use super::Simulation;
-use crate::save::{Made, SaveData, SavedChunk, SavedItem, SavedPlayer};
-use crate::{ChunkData, Drop, Inventory, Occupant};
+use crate::save::{Made, SaveData, SavedBlueprint, SavedChange, SavedChunk, SavedDesign, SavedItem, SavedPlayer, SavedThing};
+use crate::{Blueprint, BlockRegistry, Cells, Change, ChunkData, Design, Drop, Inventory, Library, Occupant, Piece, Recipe, Thing};
 
 /// What a load couldn't bring back. Nothing here stops a load: a block from a mod that's gone
 /// is left out of its boxel, a material that's gone out of the inventory.
@@ -105,7 +105,8 @@ impl Simulation {
                 velocity: item.velocity,
             })
             .collect();
-        SaveData { tick: self.tick, terrain, made, chunks, player, inventory, items }
+        let blueprints = save_blueprints(blocks, &self.blueprints);
+        SaveData { tick: self.tick, terrain, made, chunks, player, inventory, items, blueprints }
     }
 
     /// Puts the world back as `save` has it: generates the terrain with its values, makes its
@@ -197,6 +198,8 @@ impl Simulation {
                 _ => report.skip(format!("a loose item of {}", item.material)),
             }
         }
+        let library = load_blueprints(&self.blocks, &save.blueprints, &mut report);
+        self.set_blueprints(library);
         self.respawn_targets();
         self.lift_out_of_ground();
         Ok(report)
@@ -230,4 +233,123 @@ impl Simulation {
     pub fn edited_chunks(&self) -> &HashSet<ChunkPos> {
         self.changed.edited()
     }
+}
+
+/// `library` by name.
+fn save_blueprints(blocks: &BlockRegistry, library: &Library) -> Vec<SavedBlueprint> {
+    let name = |id| library.get(id).map_or(String::new(), |b: &Blueprint| b.name.clone());
+    library
+        .iter()
+        .map(|(_, b)| {
+            let design = match &b.design {
+                Design::Recipe(recipe) => SavedDesign::Recipe {
+                    layers: recipe
+                        .cells
+                        .iter()
+                        .flatten()
+                        .flatten()
+                        .map(|p| {
+                            p.map(|p| {
+                                let thing = match p.thing {
+                                    Thing::Material(m) => SavedThing::Material(blocks.material_name(m).to_owned()),
+                                    Thing::Blueprint(id) => SavedThing::Blueprint(name(id)),
+                                };
+                                (thing, p.turns)
+                            })
+                        })
+                        .collect(),
+                    side: recipe.side,
+                    flip: recipe.flip,
+                },
+                Design::Variant { base, changes } => SavedDesign::Variant {
+                    base: name(*base),
+                    changes: changes
+                        .iter()
+                        .map(|c| match *c {
+                            Change::Turn { axis, quarters } => SavedChange::Turn { axis, quarters },
+                            Change::Mirror { axis } => SavedChange::Mirror { axis },
+                            Change::Shift(by) => SavedChange::Shift(by),
+                            Change::Swap { from, to } => SavedChange::Swap {
+                                from: blocks.material_name(from).to_owned(),
+                                to: blocks.material_name(to).to_owned(),
+                            },
+                        })
+                        .collect(),
+                },
+            };
+            SavedBlueprint { name: b.name.clone(), design }
+        })
+        .collect()
+}
+
+/// A library from `saved`. A blueprint naming a material or blueprint that's gone is left out,
+/// and so is every blueprint using it.
+fn load_blueprints(blocks: &BlockRegistry, saved: &[SavedBlueprint], report: &mut LoadReport) -> Library {
+    let mut kept: Vec<&SavedBlueprint> = saved.iter().collect();
+    loop {
+        let names: Vec<&str> = kept.iter().map(|b| b.name.as_str()).collect();
+        let mut library = Library::default();
+        for b in &kept {
+            // Designs come once every name has an id, since a layer may use a later one.
+            library.insert(Blueprint { name: b.name.clone(), design: Design::Variant { base: crate::BlueprintId(u32::MAX), changes: Vec::new() } });
+        }
+        let mut lost = None;
+        for b in &kept {
+            match design_of(blocks, &library, &names, &b.design) {
+                Ok(design) => {
+                    let id = library.find(&b.name).expect("just inserted");
+                    library.set_design(id, design);
+                }
+                Err(why) => {
+                    lost = Some((b.name.clone(), why));
+                    break;
+                }
+            }
+        }
+        match lost {
+            None => return library,
+            Some((name, why)) => {
+                report.skip(format!("blueprint {name}: {why}"));
+                kept.retain(|b| b.name != name);
+            }
+        }
+    }
+}
+
+fn design_of(blocks: &BlockRegistry, library: &Library, names: &[&str], saved: &SavedDesign) -> Result<Design, String> {
+    let material = |name: &str| blocks.material(name).ok_or(format!("no material {name}"));
+    let blueprint = |name: &str| match names.contains(&name) {
+        true => Ok(library.find(name).expect("every kept name is in")),
+        false => Err(format!("no blueprint {name}")),
+    };
+    Ok(match saved {
+        SavedDesign::Recipe { layers, side, flip } => {
+            let mut cells: Cells = Default::default();
+            for (i, layer) in layers.iter().enumerate().take(64) {
+                let Some((thing, turns)) = layer else {
+                    continue;
+                };
+                let thing = match thing {
+                    SavedThing::Material(name) => Thing::Material(material(name)?),
+                    SavedThing::Blueprint(name) => Thing::Blueprint(blueprint(name)?),
+                };
+                cells[i / 16][i / 4 % 4][i % 4] = Some(Piece { thing, turns: *turns % 4 });
+            }
+            Design::Recipe(Recipe { cells, side: *side, flip: *flip })
+        }
+        SavedDesign::Variant { base, changes } => Design::Variant {
+            base: blueprint(base)?,
+            changes: changes
+                .iter()
+                .map(|c| {
+                    Ok(match c {
+                        SavedChange::Turn { axis, quarters } => Change::Turn { axis: *axis, quarters: *quarters },
+                        SavedChange::Mirror { axis } => Change::Mirror { axis: *axis },
+                        SavedChange::Shift(by) => Change::Shift(*by),
+                        SavedChange::Swap { from, to } => Change::Swap { from: material(from)?, to: material(to)? },
+                    })
+                })
+                .collect::<Result<_, String>>()?,
+        },
+    })
 }

@@ -60,6 +60,8 @@ The project's words, used the same way in conversation, code and docs. When a ne
 | Boxel | One grid cell of the world. Used instead of "voxel" throughout the project. |
 | Texel | One sixteenth of a boxel along each side, 4096 to a boxel: the finest detail a shape or a look has. (Older notes say "sixteenth".) |
 | Quarter | Four texels across: one cell of the crafting grid. |
+| Variant | A blueprint linked to another (its base) with changes: turned, mirrored, shifted or with one material swapped for another. Editing the base changes the variant. |
+| Shift | Sliding a whole gadget inside its boxel, a quarter at a time or to the middle. Example: a gadget built in the upper right quarter of the grid, shifted to be centered. |
 | Chunk | A 32×32×32 cube of boxels, the unit of storage and meshing. |
 | Sub-grid | A volume of boxels with its own position and rotation, separate from the main world grid. Ships, vehicles and contraptions are sub-grids. |
 | World view | A camera into any grid, loaded and drawn by the client. The player's own view is one world view among possibly many. |

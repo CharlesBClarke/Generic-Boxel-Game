@@ -177,6 +177,65 @@ impl ShapeGrid {
         out
     }
 
+    /// The shape mirrored across the boxel's middle along `axis` (0 is X, 1 Y, 2 Z).
+    pub fn mirrored(&self, axis: usize) -> ShapeGrid {
+        let mut out = Self::EMPTY;
+        for z in 0..N {
+            for y in 0..N {
+                for x in 0..N {
+                    if self.get(x, y, z) {
+                        let mut p = [x, y, z];
+                        p[axis] = N - 1 - p[axis];
+                        out.set(p[0], p[1], p[2], true);
+                    }
+                }
+            }
+        }
+        out
+    }
+
+    /// The shape slid by `by` texels, or `None` if any filled texel would leave the boxel.
+    pub fn shifted(&self, by: [i32; 3]) -> Option<ShapeGrid> {
+        let mut out = Self::EMPTY;
+        for z in 0..N {
+            for y in 0..N {
+                for x in 0..N {
+                    if self.get(x, y, z) {
+                        let p = [x, y, z].map(|c| c as i32);
+                        let q = [p[0] + by[0], p[1] + by[1], p[2] + by[2]];
+                        if q.iter().any(|&c| !(0..N as i32).contains(&c)) {
+                            return None;
+                        }
+                        out.set(q[0] as usize, q[1] as usize, q[2] as usize, true);
+                    }
+                }
+            }
+        }
+        Some(out)
+    }
+
+    /// The smallest box holding every filled texel, as its lowest texel and one past its
+    /// highest along each axis; `None` when empty.
+    pub fn bounds(&self) -> Option<([usize; 3], [usize; 3])> {
+        let mut lo = [N; 3];
+        let mut hi = [0; 3];
+        for z in 0..N {
+            for y in 0..N {
+                let row = self.rows[Self::row(y, z)];
+                if row == 0 {
+                    continue;
+                }
+                let x0 = row.trailing_zeros() as usize;
+                let x1 = N - row.leading_zeros() as usize;
+                for (i, (a, b)) in [(x0, x1), (y, y + 1), (z, z + 1)].into_iter().enumerate() {
+                    lo[i] = lo[i].min(a);
+                    hi[i] = hi[i].max(b);
+                }
+            }
+        }
+        (lo[0] < N).then_some((lo, hi))
+    }
+
     /// The shape at quarter detail, if it has no finer detail: bit `qx + 4 qy + 16 qz` set where
     /// the 4×4×4 texels of quarter `(qx, qy, qz)` are all filled. `None` if any quarter is
     /// only partly filled.
@@ -321,5 +380,29 @@ mod tests {
         assert_eq!(slab.hash64(), ShapeGrid::from_boxes(&[SLAB]).hash64());
         assert_ne!(slab.hash64(), ShapeGrid::from_boxes(&STAIRS).hash64());
         assert_ne!(slab.hash64(), slab.turned(Orientation::quarter_turns(0, 2)).hash64());
+    }
+
+    #[test]
+    fn mirroring_twice_gets_back_and_matches_a_turned_axis() {
+        let stairs = ShapeGrid::from_boxes(&STAIRS);
+        for axis in 0..3 {
+            assert_eq!(stairs.mirrored(axis).mirrored(axis), stairs);
+        }
+        // Stairs rise toward +Y: mirrored on Y they rise toward -Y, like a half turn about Z,
+        // since they're the same all along X.
+        assert_eq!(stairs.mirrored(1), stairs.turned(Orientation::quarter_turns(2, 2)));
+        assert_ne!(stairs.mirrored(1), stairs);
+    }
+
+    #[test]
+    fn shifts_slide_inside_the_boxel_or_refuse() {
+        let corner = ShapeGrid::from_boxes(&[BlockBox::new([12, 12, 0], [16, 16, 4])]);
+        assert_eq!(corner.bounds(), Some(([12, 12, 0], [16, 16, 4])));
+        let centered = corner.shifted([-6, -6, 0]).unwrap();
+        assert_eq!(centered, ShapeGrid::from_boxes(&[BlockBox::new([6, 6, 0], [10, 10, 4])]));
+        assert_eq!(corner.shifted([1, 0, 0]), None, "off the +X side");
+        assert_eq!(corner.shifted([0, 0, -1]), None, "through the floor");
+        assert_eq!(ShapeGrid::EMPTY.bounds(), None);
+        assert_eq!(ShapeGrid::FULL.bounds(), Some(([0; 3], [16; 3])));
     }
 }

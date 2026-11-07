@@ -711,6 +711,13 @@ fn event_cues(event: &Event, tuning: &SoundTuning, frame: &Frame, me: &PlayerSou
                 cues.push(Cue::new(sound, None, Group::Robot));
             }
         }
+        // Only a refusal makes a sound: edits are many small clicks.
+        Event::Blueprint(Err(_)) => {
+            if let Some(sound) = &me.craft_refused {
+                cues.push(Cue::new(sound, None, Group::Robot));
+            }
+        }
+        Event::Blueprint(Ok(_)) => {}
     }
 }
 

@@ -113,10 +113,25 @@ A run of small toy slices. Each one takes a single game-feel feature that doesn'
 
 - Cow pathfinding (low priority, 2026-11-06): the user called the toy "really good" without going through the five course checks one by one; note any that misbehave: cows through the pen's gap and up its terraces, up the mesa's steps, a charge baited off the mesa's cliff (landing hurt), waiting below the pillar (orange route), climbing hills on the generated terrain.
 
-None. Plan the next toy in a new session.
+#### Blueprint library
+
+**Stage:** Verify (branch `toy-blueprint-library`)
+
+**Goal:** stop remaking near-identical gadgets by hand, keep the list tidy, and make icons readable. From the user's frustrations in `docs/notes/crafting-3d.md`.
+
+**Plan** (approved 2026-11-07)
+- **Blueprints in `sim`, per player, saved with the world by name** (save version 2; version 1 saves load with none). A blueprint is a name and either a recipe (stacks, view, flip) or a **linked variant**: a base blueprint and a list of changes, so editing the base changes every variant.
+- **A grid layer can hold a blueprint**, not only a carried material or gadget, so inner gadgets need never be made or carried. Crafting is free, so planning works a nested blueprint's shape out itself; a blueprint that uses itself is refused.
+- **Variants:** turn a quarter about each axis, mirror on each axis, shift a quarter along each axis or center it on one, swap one material for another (phasite for antiphasite). A change on a recipe blueprint makes a new variant of it; a change on a variant changes that variant (undo takes the last one off). A shift that would leave the boxel is refused; a gadget off the quarter grid still places but can't go in a layer.
+- **The table menu:** a blueprint list beside what's carried, as a tree (a blueprint folds under each one using it in a layer, a variant under its base). Save the grid as a blueprint without crafting, make ×N from one, load a recipe blueprint into the grid and save over it, rename, delete (refused while another uses it).
+- **Icons** keep their angle, spin once now and then, and spin while hovered.
+- Crates: `api::crafting` (the variant changes on shapes), `sim::blueprint` (new: library, resolving), `sim::crafting`, `sim::save`, `protocol` and `server` (edits in, library out), `client::crafting`.
+- Tests: each change (four turns or two mirrors get back the start, shifts, swaps merging pieces), nested and looping blueprints, the tree, save round trip, edits through the server. Then play: rebuild the door and trapdoor in a test world.
+- Deferred: renaming "part" to "gadget" in the code (backlog). The placement review is the next toy.
 
 ### Toy backlog
 
+- **Rename "part" to "gadget" in the code.** Added 2026-11-07, deferred from Blueprint library at the user's request: the Terminology table says gadget, the code still says part.
 - **Hotbar background not quite snug.** Added 2026-11-07 at the user's request, after `fix-hotbar-shrink`: the background now shrinks when slots go, but in play not all the way down to its contents. Minor, maybe not worth fixing. Unchecked guess: the line under the slots (what's held and the placement mode) is wider than the slot row, so it sets the width.
 - **Tectonic-like terrain shape.** Added 2026-11-05 at the user's request, from Generated terrain: the generated mountains are pointy, unlike Tectonic's broad ranges with plateaus, flat tops, terraced tiers and valleys. Reshape `base::terrain` toward it (Tectonic's regions and curves are MIT under `data/tectonic/`; its `data/minecraft/` files are Mojang's and stay out). Tuning `jaggedness`, `range_scale` and `mountain_height` softens the current shape meanwhile.
 - **Rethink the inventory.** Added 2026-11-02 at the user's request, during Emergent shapes: "the last toy really was horrible… I was planning on just removing it but got talked out and now every problem with this one is caused by it". The Inventory and items toy's capacity limit and paying for things by volume caused each problem found while playing Emergent shapes: patterns made from parts refused once plain wood ran out, crafting needed room to carry, and dirt couldn't be used. Crafting was made free and an unlimited carry was proposed in that toy. Decide whether a carrying limit or costs belong in the game at all before building on them again. If something like them comes back, it should be because a toy needs it.

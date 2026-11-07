@@ -20,6 +20,8 @@ pub struct Server {
     sim: Simulation,
     /// How many blocks the client has heard of, so crafting a new shape sends the registry.
     blocks_sent: usize,
+    /// The blueprints' revision the client has, so a change sends them.
+    blueprints_sent: u64,
     /// Where [`Command::ReloadSounds`] reads from; without one it can't.
     sound_source: Option<SoundSource>,
     /// Why the last regeneration failed, if it did.
@@ -35,7 +37,7 @@ pub struct Server {
 impl Server {
     /// A server running `sim`, which must already have its mods loaded and its player spawned.
     pub fn new(sim: Simulation) -> Self {
-        Self { sim, blocks_sent: 0, sound_source: None, generation_error: None, world: None, loaded: false, fresh: None }
+        Self { sim, blocks_sent: 0, blueprints_sent: 0, sound_source: None, generation_error: None, world: None, loaded: false, fresh: None }
     }
 
     /// Saves and loads the world at `file`. `loaded` says `sim` was loaded from it already.
@@ -62,6 +64,7 @@ impl Server {
         // Changes so far are in the chunks sent now.
         self.sim.take_changed_chunks();
         self.blocks_sent = self.sim.blocks().len();
+        self.blueprints_sent = self.sim.blueprints_revision();
         let grid = self.sim.universe().main();
         let chunks = grid.chunks().map(|(pos, _)| grid.export_chunk(pos)).collect();
         let snapshot = self.snapshot(Vec::new());
@@ -72,6 +75,7 @@ impl Server {
                 sounds: self.sim.sounds().to_vec(),
             },
             blocks: self.sim.blocks().clone(),
+            blueprints: self.sim.blueprints().clone(),
             defs: self.defs(),
             chunks,
             spawn: self.sim.spawn(),
@@ -109,6 +113,10 @@ impl Server {
             self.blocks_sent = self.sim.blocks().len();
             out.push(ServerMsg::Blocks(Box::new(self.sim.blocks().clone())));
         }
+        if self.sim.blueprints_revision() != self.blueprints_sent {
+            self.blueprints_sent = self.sim.blueprints_revision();
+            out.push(ServerMsg::Blueprints(Box::new(self.sim.blueprints().clone())));
+        }
         let changed = self.sim.take_changed_chunks();
         let grid = self.sim.universe().main();
         out.extend(changed.into_iter().map(|pos| ServerMsg::Chunk(grid.export_chunk(pos))));
@@ -121,6 +129,11 @@ impl Server {
             && let Some(result) = self.sim.last_craft()
         {
             events.push(Event::Craft(result));
+        }
+        if input.blueprint.is_some()
+            && let Some(result) = self.sim.last_blueprint()
+        {
+            events.push(Event::Blueprint(result.clone()));
         }
         out.push(ServerMsg::Tick(Box::new(self.snapshot(events))));
         out

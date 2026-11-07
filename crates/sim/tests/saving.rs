@@ -58,7 +58,7 @@ fn craft_things(sim: &mut Simulation) {
     stand(sim, t.0.x + 1, t.0.y - 4);
     let wood = material(sim, base::WOOD);
     let slab: Cells = [[[Some(Piece::new(wood)), Some(Piece::new(wood)), None, None]; 4]; 4];
-    let craft = Craft { table: t, cells: slab, side: false, flip: false, count: 2 };
+    let craft = Craft::grid(t, slab, false, false, 2);
     sim.step(&PlayerInput { craft: Some(craft), ..Default::default() });
     assert!(matches!(sim.last_craft(), Some(Ok(_))), "a slab: {:?}", sim.last_craft());
 
@@ -70,7 +70,7 @@ fn craft_things(sim: &mut Simulation) {
         }
     }
     door[1][3][1] = Some(Piece::new(brass));
-    let craft = Craft { table: t, cells: door, side: true, flip: false, count: 1 };
+    let craft = Craft::grid(t, door, true, false, 1);
     sim.step(&PlayerInput { craft: Some(craft), ..Default::default() });
     assert!(matches!(sim.last_craft(), Some(Ok(_))), "a bundle: {:?}", sim.last_craft());
 }

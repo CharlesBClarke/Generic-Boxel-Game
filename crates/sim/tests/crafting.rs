@@ -58,7 +58,7 @@ fn cells(rows: [&str; 4], m: MaterialId) -> Cells {
 const SLAB: [&str; 4] = ["2222"; 4];
 
 fn request(cells: Cells, count: u32) -> Craft {
-    Craft { table: table(), cells, side: false, flip: false, count }
+    Craft::grid(table(), cells, false, false, count)
 }
 
 fn craft(sim: &mut Simulation, cells: Cells, count: u32) {
@@ -148,7 +148,7 @@ fn a_part_in_a_layer_makes_a_finer_part_and_stays() {
     craft(&mut sim, cells(["4444", "....", "....", "...."], wood), 1);
     let Some(Ok((wall, 1))) = sim.last_craft() else { panic!("a wall: {:?}", sim.last_craft()) };
     let mut grid = cells(["...."; 4], wood);
-    grid[3][0][0] = Some(Piece { thing: wall, turns: 1 });
+    grid[3][0][0] = Some(Piece { thing: wall.into(), turns: 1 });
     let plan = sim.craft_plan(&request(grid, 1)).unwrap();
     assert_eq!(plan.volume, FULL_VOLUME / 64 / 4, "a quarter cube, a quarter filled");
     assert!(plan.shape.get(0, 0, 0) && !plan.shape.get(3, 0, 0));
@@ -172,7 +172,7 @@ fn a_flipped_craft_is_upside_down() {
     let t = table();
     stand(&mut sim, t.0.x, t.0.y - 2);
     let wood = material(&sim, base::WOOD);
-    let plan = sim.craft_plan(&Craft { flip: true, ..request(cells(SLAB, wood), 1) }).unwrap();
+    let plan = sim.craft_plan(&Craft::grid(table(), cells(SLAB, wood), false, true, 1)).unwrap();
     assert!(plan.shape.get(0, 0, 15) && !plan.shape.get(0, 0, 0), "a top slab");
 }
 
@@ -210,7 +210,7 @@ fn several_materials_make_one_bundle_placed_whole_and_broken_whole() {
     let t = table();
     stand(&mut sim, t.0.x + 1, t.0.y - 4);
     let grid = door_cells(&sim);
-    let on_side = Craft { side: true, ..request(grid, 1) };
+    let on_side = Craft::grid(table(), grid, true, false, 1);
     let plan = sim.craft_plan(&on_side).unwrap();
     let box_of = |min, max| ShapeGrid::from_boxes(&[api::BlockBox::new(min, max)]);
     let (phasite, brass) = (material(&sim, base::PHASITE), material(&sim, base::BRASS));

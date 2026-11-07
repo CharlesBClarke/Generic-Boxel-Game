@@ -378,6 +378,7 @@ fn tick_simulation(
     cursor: Single<&CursorOptions, With<PrimaryWindow>>,
     mut toggles: ResMut<PendingToggles>,
     mut menu: ResMut<crafting::CraftingMenu>,
+    mut names: ResMut<editing::PartNames>,
     world_menu: Res<world_menu::WorldMenu>,
     stop: Res<combat::HitStop>,
     mut link: ResMut<Link>,
@@ -413,12 +414,16 @@ fn tick_simulation(
         drop_held: playing && keys.pressed(controls.drop),
         drop_material: palette.material(&world),
         craft: if frozen { None } else { menu.take_pending() },
+        blueprint: if frozen { None } else { menu.take_blueprint_edit() },
         discard: if frozen { None } else { menu.discard.take() },
         interact_pressed: take(&mut toggles.interact_pressed),
     };
     link.send(ClientMsg::Input(Box::new(input)), &mut world);
     if let Some(result) = world.take_craft() {
-        menu.crafted(world.blocks(), result);
+        menu.crafted(world.blocks(), world.blueprints(), &mut names, result);
+    }
+    if let Some(result) = world.take_blueprint_note() {
+        menu.blueprint_edited(result);
     }
     if !frozen {
         world.show_latest();

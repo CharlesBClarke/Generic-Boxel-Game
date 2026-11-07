@@ -53,6 +53,8 @@ pub struct View<'a> {
     pub crafting: Option<&'a CraftingDef>,
     pub inventory: &'a Inventory,
     pub inventory_def: Option<&'a InventoryDef>,
+    /// The player's blueprints.
+    pub blueprints: &'a crate::Library,
 }
 
 impl View<'_> {
@@ -201,7 +203,7 @@ impl View<'_> {
         if player.eye().delta_to(center).length() > reach + 0.5 {
             return Err(CraftRefusal::TooFar);
         }
-        crate::crafting::plan(self.blocks, self.inventory, self.capacity(), &craft.cells, craft.side, craft.flip, craft.count)
+        crate::crafting::plan(self.blocks, self.blueprints, self.inventory, self.capacity(), &craft.source, craft.count)
     }
 
     /// How much the player can carry, every material together, in [`crate::FULL_VOLUME`] units,
