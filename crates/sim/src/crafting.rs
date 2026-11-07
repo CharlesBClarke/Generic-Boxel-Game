@@ -113,17 +113,19 @@ pub fn plan(
                 let Some(piece) = piece.filter(|p| p.thing.index() < blocks.material_count()) else {
                     continue;
                 };
+                // A part goes in as it stands in the world: on the side, tipped back into the
+                // wall's frame first, so the craft's tip brings it upright again. Then the
+                // brush's turn, about the stacks' axis.
                 let turn = Orientation::quarter_turns(2, piece.turns as i32);
+                let framed = |shape: ShapeGrid| {
+                    let shape = if side { api::crafting::untipped(&shape) } else { shape };
+                    Layer::Shape(Box::new(shape.turned(turn)))
+                };
                 let id = piece.thing;
                 let layers: Vec<(MaterialId, Layer)> = match (blocks.pieces(id), blocks.part_of(id)) {
                     ([], None) => vec![(id, Layer::Solid)],
-                    ([], Some(of)) => {
-                        vec![(of, Layer::Shape(Box::new(blocks.shape(blocks.material_block(id)).turned(turn))))]
-                    }
-                    (pieces, _) => pieces
-                        .iter()
-                        .filter_map(|&b| Some((blocks.made_of(b)?, Layer::Shape(Box::new(blocks.shape(b).turned(turn))))))
-                        .collect(),
+                    ([], Some(of)) => vec![(of, framed(blocks.shape(blocks.material_block(id))))],
+                    (pieces, _) => pieces.iter().filter_map(|&b| Some((blocks.made_of(b)?, framed(blocks.shape(b))))).collect(),
                 };
                 let mut shape = ShapeGrid::EMPTY;
                 for (material, layer) in layers {
@@ -379,5 +381,31 @@ mod tests {
         assert!(turned.get(0, 0, 0) && !turned.get(3, 0, 0), "a quarter turn counterclockwise puts it at the left");
         let flipped = plan(&blocks, &inventory, CAPACITY, &cells(SLAB, stone), false, true, 1).unwrap().shape;
         assert!(flipped.get(0, 0, 15) && !flipped.get(0, 0, 0), "a slab flipped is a top slab");
+    }
+
+    #[test]
+    fn a_part_goes_into_a_layer_as_it_was_built_in_either_view() {
+        // A standing L: two cells side by side, one stacked four high.
+        let (mut blocks, mut inventory, stone, _) = setup();
+        let l = cells(["....", "....", "....", "41.."], stone);
+        for side in [false, true] {
+            let made = plan(&blocks, &inventory, CAPACITY, &l, side, false, 1).unwrap();
+            let part = make(&mut blocks, &mut inventory, CAPACITY, &made).unwrap();
+            let mut again = cells(["...."; 4], stone);
+            again[3][0][0] = Some(Piece::new(part));
+            let small = plan(&blocks, &inventory, CAPACITY, &again, side, false, 1);
+            let small = small.unwrap_or_else(|e| panic!("side {side}: the tiny L rests where the big one did: {e}"));
+            assert_eq!(small.volume, made.volume / 64);
+            // Shrunk into the near left quarter, standing the way the big one stood.
+            let expected = if side {
+                // Its column out from the wall at the bottom left, its foot along the wall.
+                [(0, 12, 0, true), (0, 15, 0, true), (1, 15, 0, true), (1, 12, 0, false), (0, 15, 1, false)]
+            } else {
+                [(0, 0, 3, true), (0, 0, 0, true), (1, 0, 0, true), (1, 0, 1, false), (0, 1, 0, false)]
+            };
+            for (x, y, z, filled) in expected {
+                assert_eq!(small.shape.get(x, y, z), filled, "side {side}: ({x}, {y}, {z})");
+            }
+        }
     }
 }

@@ -152,6 +152,7 @@ A run of small toy slices. Each one takes a single game-feel feature that doesn'
 - Signals and swings: `sim::signal`. Interact: `PlayerInput.interact_pressed` (the existing interact key, which also opens the table).
 - Opening the menu on a table's side face starts it in side mode.
 - The test area's door is at `DOOR_SPOT` (north of spawn, waypoint `door`); the player starts with 4 each of brass, iron and copper.
+- A part in a layer on the side is tipped back into the wall's frame before its turn (`api::crafting::untipped`), so it comes out of a craft standing as it stands in the world, in either view; the turn key turns it on the wall's face. Found in play: a standing L made on the side came back out turned a quarter wrong when used in the side's own grid.
 - Deferred: a thrown bundle is drawn as its first piece only.
 
 ### Toy backlog

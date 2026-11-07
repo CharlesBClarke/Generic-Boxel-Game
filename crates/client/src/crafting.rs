@@ -138,7 +138,7 @@ pub fn rebuild(blocks: &BlockRegistry, id: MaterialId) -> Option<Recipe> {
         // As built: undo the flip, then the tip (see `api::crafting::finished`).
         let as_built = |shape: &ShapeGrid| {
             let shape = if flip { api::crafting::flipped(shape) } else { shape.clone() };
-            if side { shape.turned(Orientation::quarter_turns(0, -1)) } else { shape }
+            if side { api::crafting::untipped(&shape) } else { shape }
         };
         let mut cells: Cells = Default::default();
         let whole = pieces.iter().all(|(m, shape)| {
@@ -311,7 +311,7 @@ fn show_menu(
                     ui.label("Click to add a layer, hold to level a row; right button takes one off");
                     let view = menu.view();
                     let CraftingMenu { grids, brush, stroke, .. } = &mut *menu;
-                    grid(ui, blocks, names, &mut grids[view], *brush, stroke, bad);
+                    grid(ui, blocks, names, &mut grids[view], *brush, stroke, bad, view == 1);
                     ui.horizontal(|ui| {
                         if ui.button("Clear").clicked() {
                             *menu.cells_mut() = Default::default();
@@ -324,7 +324,7 @@ fn show_menu(
                             brush.turns = (brush.turns + 1) % 4;
                         }
                     });
-                    brush_line(ui, blocks, names, menu.brush);
+                    brush_line(ui, blocks, names, menu.brush, menu.side);
                 });
                 ui.separator();
                 // The tallest column's bottom: the result's is last frame's, as it comes after.
@@ -349,7 +349,7 @@ fn show_menu(
 }
 
 /// What the brush is, and how it's turned.
-fn brush_line(ui: &mut egui::Ui, blocks: &BlockRegistry, names: &PartNames, brush: Option<Piece>) {
+fn brush_line(ui: &mut egui::Ui, blocks: &BlockRegistry, names: &PartNames, brush: Option<Piece>, side: bool) {
     let Some(brush) = brush else {
         ui.label("brush: none (press something carried)");
         return;
@@ -357,7 +357,7 @@ fn brush_line(ui: &mut egui::Ui, blocks: &BlockRegistry, names: &PartNames, brus
     ui.horizontal(|ui| {
         ui.label("brush:");
         let (rect, _) = ui.allocate_exact_size(egui::vec2(ICON, ICON), egui::Sense::hover());
-        paint_piece(ui.painter(), rect, blocks, brush);
+        paint_piece(ui.painter(), rect, blocks, brush, side);
         let turned = match brush.turns {
             0 => String::new(),
             n => format!(", turned {} left", ["", "a quarter", "half", "three quarters"][n as usize]),
@@ -402,6 +402,7 @@ fn paint(stroke: &mut Option<Stroke>, brush: Option<Piece>, stack: &mut [Option<
 
 /// The 4×4 grid of stacks, painted by strokes. `bad` is a cell to mark as the reason nothing
 /// can be made.
+#[allow(clippy::too_many_arguments)]
 fn grid(
     ui: &mut egui::Ui,
     blocks: &BlockRegistry,
@@ -410,6 +411,7 @@ fn grid(
     brush: Option<Piece>,
     stroke: &mut Option<Stroke>,
     bad: Option<(usize, usize)>,
+    side: bool,
 ) {
     let (primary, secondary) = ui.ctx().input(|i| (i.pointer.primary_down(), i.pointer.secondary_down()));
     if !primary && !secondary {
@@ -433,7 +435,7 @@ fn grid(
                 // Taller stacks are lighter, so heights read at a glance.
                 painter.rect_filled(rect, 2.0, egui::Color32::from_gray(30 + 18 * h as u8));
                 if let Some(top) = h.checked_sub(1).and_then(|i| stack[i]) {
-                    paint_piece(&painter, rect.shrink(8.0), blocks, top);
+                    paint_piece(&painter, rect.shrink(8.0), blocks, top, side);
                 }
                 if h > 0 {
                     let at = rect.right_bottom() - egui::vec2(4.0, 2.0);
@@ -608,12 +610,14 @@ fn result(
     }
 }
 
-/// A layer as the grid shows it: a material's color, or a part's shape turned as it goes in.
-fn paint_piece(painter: &egui::Painter, rect: egui::Rect, blocks: &BlockRegistry, piece: Piece) {
+/// A layer as the grid shows it: a material's color, or a part's shape as it goes in: on the
+/// side, tipped back into the wall's frame, then turned (see `sim::crafting::plan`).
+fn paint_piece(painter: &egui::Painter, rect: egui::Rect, blocks: &BlockRegistry, piece: Piece, side: bool) {
     match blocks.part_of(piece.thing) {
         Some(_) => {
             let turn = Orientation::quarter_turns(2, piece.turns as i32);
-            let pieces: Vec<_> = pieces_of(blocks, piece.thing).into_iter().map(|(s, c)| (s.turned(turn), c)).collect();
+            let framed = |s: ShapeGrid| if side { api::crafting::untipped(&s) } else { s }.turned(turn);
+            let pieces: Vec<_> = pieces_of(blocks, piece.thing).into_iter().map(|(s, c)| (framed(s), c)).collect();
             paint_pieces(painter, rect, &pieces);
         }
         None => paint_thing(painter, rect, blocks, piece.thing),

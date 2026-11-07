@@ -19,7 +19,9 @@
 //! **On the side.** Built on the table's side, the grid is the wall as you face it (up the grid
 //! is up) and stacks grow out of the wall toward you, so nothing floats is measured from the
 //! wall: a knob can stick out of a door. The rule builds as on the top and tips the result a
-//! quarter turn about X, so the wall becomes the far side.
+//! quarter turn about X, so the wall becomes the far side. A shape put in a layer there is
+//! tipped back first ([`untipped`]), so it comes out of the craft standing as it stands in the
+//! world, whichever view made it.
 //!
 //! **Several materials.** The rule only sees filled space. A caller with several materials
 //! checks the whole with [`stack_shape`] and gets each material's own sixteenths with
@@ -148,6 +150,12 @@ pub fn flipped(shape: &ShapeGrid) -> ShapeGrid {
 /// The shape built on the table's side tipped up, so the wall it grew from is its far side.
 pub fn tipped(shape: &ShapeGrid) -> ShapeGrid {
     shape.turned(Orientation::quarter_turns(0, 1))
+}
+
+/// A finished shape tipped back down into the side's frame, the way [`tipped`] undoes: what a
+/// part looks like in a layer on the side, so it goes in standing as it stands in the world.
+pub fn untipped(shape: &ShapeGrid) -> ShapeGrid {
+    shape.turned(Orientation::quarter_turns(0, -1))
 }
 
 /// A shape as built, made ready to carry: tipped up if built on the side, then flipped if
