@@ -6,8 +6,12 @@ use std::sync::mpsc::{Receiver, Sender, channel};
 use std::thread::JoinHandle;
 
 use api::Tunables;
-use protocol::{ClientMsg, Command, Connection, Content, Defs, Event, ServerMsg, Snapshot, TuningSection, Welcome};
-use sim::{PlayerInput, Simulation};
+use protocol::{ClientMsg, Command, Connection, Content, Defs, Event, ServerMsg, Snapshot, TuningSection, Welcome, WorldNote};
+use sim::{PlayerInput, SaveData, Simulation};
+
+pub mod worlds;
+
+pub use worlds::{DEFAULT_WORLD, WorldFile};
 
 /// Reads the sounds again from wherever the mods came from.
 pub type SoundSource = Box<dyn FnMut() -> Result<Vec<api::SoundDef>, String> + Send>;
@@ -20,17 +24,36 @@ pub struct Server {
     sound_source: Option<SoundSource>,
     /// Why the last regeneration failed, if it did.
     generation_error: Option<String>,
+    /// Where the world is saved and loaded from; without one it can't be.
+    world: Option<WorldFile>,
+    /// The world was loaded from its file when the server started.
+    loaded: bool,
+    /// The world as the game built it, before any save: what a fresh world starts from.
+    fresh: Option<SaveData>,
 }
 
 impl Server {
     /// A server running `sim`, which must already have its mods loaded and its player spawned.
     pub fn new(sim: Simulation) -> Self {
-        Self { sim, blocks_sent: 0, sound_source: None, generation_error: None }
+        Self { sim, blocks_sent: 0, sound_source: None, generation_error: None, world: None, loaded: false, fresh: None }
+    }
+
+    /// Saves and loads the world at `file`. `loaded` says `sim` was loaded from it already.
+    pub fn with_world(mut self, file: WorldFile, loaded: bool) -> Self {
+        self.world = Some(file);
+        self.loaded = loaded;
+        self
     }
 
     /// Lets clients have the sounds read again from `source` while the game runs.
     pub fn with_sound_source(mut self, source: SoundSource) -> Self {
         self.sound_source = Some(source);
+        self
+    }
+
+    /// Lets clients start fresh worlds from `fresh`, the world as the game built it.
+    pub fn with_fresh(mut self, fresh: SaveData) -> Self {
+        self.fresh = Some(fresh);
         self
     }
 
@@ -54,6 +77,8 @@ impl Server {
             spawn: self.sim.spawn(),
             waypoints: self.sim.waypoints().to_vec(),
             snapshot,
+            loaded_look: self.loaded.then(|| self.sim.look()),
+            world: self.world.as_ref().map(|w| w.name.clone()),
         }
     }
 
@@ -62,6 +87,13 @@ impl Server {
         match msg {
             ClientMsg::Input(input) => self.tick(&input),
             ClientMsg::Command(Command::ReloadSounds) => vec![ServerMsg::Sounds(self.reload_sounds())],
+            ClientMsg::Command(Command::SaveWorld) => vec![ServerMsg::World(self.save_world())],
+            ClientMsg::Command(Command::LoadWorld) => vec![ServerMsg::World(self.load_world())],
+            ClientMsg::Command(Command::SaveWorldAs(name)) => vec![ServerMsg::World(self.save_world_as(&name))],
+            ClientMsg::Command(Command::OpenWorld(name)) => vec![ServerMsg::World(self.open_world(&name))],
+            ClientMsg::Command(Command::ListWorlds) => {
+                vec![ServerMsg::Worlds(self.world.as_ref().map_or_else(Vec::new, WorldFile::saved_worlds))]
+            }
             ClientMsg::Command(command) => {
                 self.command(command);
                 vec![ServerMsg::Defs(Box::new(self.defs()))]
@@ -117,6 +149,78 @@ impl Server {
         Ok(self.sim.sounds().to_vec())
     }
 
+    /// Writes the world to its file.
+    fn save_world(&mut self) -> WorldNote {
+        let Some(file) = &self.world else { return WorldNote::Failed("this server has no world file".into()) };
+        match file.write(&self.sim.save()) {
+            Ok(()) => WorldNote::Saved { name: file.name.clone() },
+            Err(e) => WorldNote::Failed(format!("saving: {e}")),
+        }
+    }
+
+    /// Saves the world as `name`, and plays on in that one.
+    fn save_world_as(&mut self, name: &str) -> WorldNote {
+        let Some(file) = &self.world else { return WorldNote::Failed("this server has no world file".into()) };
+        match file.sibling(name) {
+            Ok(file) => {
+                self.world = Some(file);
+                self.save_world()
+            }
+            Err(e) => WorldNote::Failed(e),
+        }
+    }
+
+    /// Puts the world back as its file has it.
+    fn load_world(&mut self) -> WorldNote {
+        let Some(file) = self.world.clone() else { return WorldNote::Failed("this server has no world file".into()) };
+        match file.read() {
+            Ok(Some(save)) => self.load(&file.name, &save, false),
+            Ok(None) => WorldNote::Failed(format!("world {} hasn't been saved yet", file.name)),
+            Err(e) => WorldNote::Failed(format!("loading: {e}")),
+        }
+    }
+
+    /// Saves the world, then plays world `name`: as saved, or fresh if it hasn't been saved.
+    fn open_world(&mut self, name: &str) -> WorldNote {
+        let Some(file) = &self.world else { return WorldNote::Failed("this server has no world file".into()) };
+        let next = match file.sibling(name) {
+            Ok(next) => next,
+            Err(e) => return WorldNote::Failed(e),
+        };
+        // Read it before leaving this one, so a damaged save changes nothing.
+        let save = match next.read() {
+            Ok(save) => save,
+            Err(e) => return WorldNote::Failed(format!("opening: {e}")),
+        };
+        if let WorldNote::Failed(why) = self.save_world() {
+            return WorldNote::Failed(format!("{why}; stayed in this world"));
+        }
+        self.world = Some(next);
+        match save {
+            Some(save) => self.load(name, &save, false),
+            None => {
+                let Some(fresh) = &self.fresh else { return WorldNote::Failed("this server can't start fresh worlds".into()) };
+                // Fresh, but with the terrain as it's tuned now.
+                let fresh = SaveData { terrain: self.sim.save().terrain, ..fresh.clone() };
+                self.load(name, &fresh, true)
+            }
+        }
+    }
+
+    /// Puts the world back as `save` has it, as world `name`.
+    fn load(&mut self, name: &str, save: &SaveData, fresh: bool) -> WorldNote {
+        match self.sim.load(save) {
+            Ok(report) => {
+                self.generation_error = None;
+                for skipped in &report.skipped {
+                    eprintln!("server: loading {name}: left out {skipped}");
+                }
+                WorldNote::Loaded { name: name.to_owned(), look: self.sim.look(), skipped: report.skipped, fresh }
+            }
+            Err(e) => WorldNote::Failed(format!("loading: {e}")),
+        }
+    }
+
     fn command(&mut self, command: Command) {
         let sim = &mut self.sim;
         match command {
@@ -136,7 +240,12 @@ impl Server {
                     eprintln!("server: generating the terrain failed: {e}");
                 }
             }
-            Command::ReloadSounds => {}
+            Command::ReloadSounds
+            | Command::SaveWorld
+            | Command::LoadWorld
+            | Command::SaveWorldAs(_)
+            | Command::OpenWorld(_)
+            | Command::ListWorlds => {}
         }
     }
 

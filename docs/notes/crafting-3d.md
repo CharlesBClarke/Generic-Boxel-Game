@@ -20,3 +20,7 @@ So: designing components is fun; the tools fight it, and repeating the same work
 - **The bigger question:** how much of the game happens at sub-boxel scale. If designing components is the fun, it needs these tools; if it's occasional, most players get ready-made pieces. Feeds the signature feature choice.
 
 Open: resolution (quarters as now, or finer).
+
+## Placing is part of the crafting problem
+
+Recorded 2026-11-07 at the user's request: placing rules are tied closely to the problems with crafting, so proving crafting includes reviewing placement (backlog: Review placement against the checklist, Speed build). How a part goes into the world decides how it has to be built at the table, and the other way round.

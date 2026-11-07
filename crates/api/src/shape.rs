@@ -34,6 +34,16 @@ impl ShapeGrid {
     /// The whole boxel.
     pub const FULL: ShapeGrid = ShapeGrid { rows: [u16::MAX; N * N] };
 
+    /// The raw rows, for storing a shape: one per `(y, z)`, `y + 16 * z`, bit `x` set where filled.
+    pub fn rows(&self) -> &[u16; N * N] {
+        &self.rows
+    }
+
+    /// A shape from rows laid out as [`ShapeGrid::rows`] gives them.
+    pub fn from_rows(rows: [u16; N * N]) -> ShapeGrid {
+        ShapeGrid { rows }
+    }
+
     fn row(y: usize, z: usize) -> usize {
         y + N * z
     }

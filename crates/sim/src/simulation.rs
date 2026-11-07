@@ -22,6 +22,10 @@ use crate::{
     occupant_boxes, raycast,
 };
 
+mod save;
+
+pub use save::LoadReport;
+
 /// How far below the eye a thrown item starts, in meters, so it leaves from about the chest.
 const THROW_DROP: f32 = 0.3;
 
@@ -140,6 +144,8 @@ pub struct Simulation {
     strikes: Vec<Strike>,
     /// Blocks broken and placed since the last [`Simulation::take_block_edits`].
     block_edits: Vec<BlockEdit>,
+    /// Where the player looked in the last input, as yaw and pitch, for saving.
+    look: (f32, f32),
     tick: u64,
 }
 
@@ -281,6 +287,7 @@ impl Simulation {
                 grid.import_chunk(chunk);
                 now.insert(chunk.pos);
                 self.changed.mark_chunk(chunk.pos);
+                self.changed.forget_edits(chunk.pos);
             }
             total.chunks += stats.chunks;
             total.uniform += stats.uniform;
@@ -290,6 +297,7 @@ impl Simulation {
         for &gone in self.generated.difference(&now) {
             grid.remove_chunk(gone);
             self.changed.mark_chunk(gone);
+            self.changed.forget_edits(gone);
         }
         self.generated = now;
         self.generation = Some(total);
@@ -359,6 +367,7 @@ impl Simulation {
     /// move after the player, and loose items after them, toward where the player ended up. Last,
     /// creatures' attacks that hit the player hurt them.
     pub fn step(&mut self, input: &PlayerInput) {
+        self.look = (input.yaw, input.pitch);
         if let Some(craft) = &input.craft {
             self.last_craft = Some(self.craft(craft));
         }
@@ -1127,6 +1136,11 @@ impl Simulation {
     /// Tool strikes since the last call, hits and misses, oldest first.
     pub fn take_strikes(&mut self) -> Vec<Strike> {
         std::mem::take(&mut self.strikes)
+    }
+
+    /// Where the player looked in the last input, or as a loaded save left it: yaw and pitch.
+    pub fn look(&self) -> (f32, f32) {
+        self.look
     }
 
     pub fn universe(&self) -> &Universe {

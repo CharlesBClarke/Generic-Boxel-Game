@@ -3,6 +3,37 @@
 Moved out of `SLICES.md` on 2026-11-03 so the roadmap stays short. Each toy's full write-up, newest first, as it stood when it closed. `SLICES.md` keeps a one-line summary of each.
 
 
+#### Saving (`toy-saving`)
+
+**Stage:** Done (2026-11-07). Verified by the user in play: a door survives quitting and restarting and still works, F8 puts the world back as last saved, `--world` keeps worlds separate, and the Escape menu works.
+
+**Goal:** the world survives quitting, and a save can be gone back to, so builds can be kept and compared (see Test worlds for comparing rules). Engine work kept whatever happens to generative crafting.
+
+**Plan** (approved 2026-11-07 in the session that reordered the backlog around proving crafting; planned in that session rather than a fresh one, at the user's go. The user's answers: cows start fresh but should be saved someday, autosave on quit, F6/F8)
+- *What's kept:* chunks that loading can't make again (every chunk outside the generated terrain, plus the generated chunks edited since they were generated), with generated terrain made again from the saved `world` and generator values; blocks by name, never ID, and blocks made while playing (crafted shapes, bundles, pieces cut by hiding) as recipes to make again; the player (position, look, fly mode, health), the inventory and loose items by name. Creatures aren't saved: the herd starts fresh.
+- *Where:* `sim::save` (plain data and its bytes) and `Simulation::save`/`load` (in `sim/src/simulation/save.rs`), no file access in `sim`; `server::worlds` writes `~/.local/share/boxel/worlds/<name>/world.bin`; `Command::SaveWorld`/`LoadWorld` answered with `ServerMsg::World`; a load's changes reach the client through the normal tick (new blocks, then chunks).
+- *Controls:* `--world <name>` (default `default`), save and reload keys, autosave on quit.
+- *Tests:* round trips by name into a new game whose made blocks got other IDs, loading undoing edits since the save (test area, door and dug terrain), a missing mod's blocks left out with a report, damaged saves refused, and through the server with the client's copy following.
+
+*Changed while building:* the save key is **F2**, not F6 (F6 already respawns targets); F8 reloads. One hand-written binary file (`world.bin`, versioned) instead of a TOML header plus a new crate: shapes are 512-byte bit grids, so a readable header bought little. The hotbar slot isn't saved (client state). A world loaded at startup ignores the tuning file's terrain values, since regenerating would wipe its edits; the panel's Regenerate button still regenerates (edits lost until F8). A save that can't be read stops the game instead of starting fresh, so quitting can't save over it.
+
+*Implemented:* `api::ShapeGrid::rows`/`from_rows`; `sim::save` (`SaveData`, `Made`, `SavedChunk`, `SavedPlayer`, `SavedItem`, `to_bytes`/`from_bytes` with run-length cells); `ChangedChunks` also keeps the chunks edited since they were last generated; `Simulation::save`, `load` (returns a `LoadReport` of what a missing mod named), `look`; `Body::set_flying`; `Items::clear`. `server::worlds::WorldFile` (writes a `.part` file then renames); `Server::with_world`; `Welcome.loaded_look`. `game::load_world` and `--world`. Client: `save_world` (F2) and `reload_world` (F8), a note on screen, the view turned to the saved look, `save_on_exit` in `Last` on `AppExit`. Both keys added to the user's controls file.
+
+*Tests:* 616 pass across the workspace (3 ignored, as before); clippy clean natively and for `wasm32`. New: save bytes (2: round trip, damaged saves refused), changed-chunk edits (in an existing test), `sim/tests/saving.rs` (4: a world back the same in a new game with other IDs, including a dug terrain chunk, crafted slab and bundle, the door's cut pieces, fly mode and items; loading undoes edits since the save; terrain values come back; a missing mod's names left out), `server::worlds` (3), the server through messages (1). The game starts cleanly with a new world.
+
+*Plan change at Verify* (2026-11-07, the user, after playing it: "ok it works", then asked for an Escape menu because F keys are hard to reach on their keyboard; engaged; the open question, whether opening another world saves the one left, went to the recommendation: yes). **World menu** (`client::world_menu`): Escape opens it while playing (before, it only let the mouse go) and closes it again, after closing the crafting menu or tuning panel first. It shows the world played, Save, Reload last save, Save as (plays on in the copy), the saved worlds last saved first with Open, New world (as the game starts, with the terrain as tuned now), Back to playing and Save and quit. New commands `SaveWorldAs`, `OpenWorld` (saves the world left first; reads the next one before leaving, so a damaged save changes nothing) and `ListWorlds`; the server keeps the world as the game built it, before terrain or any save (`game::load_world` returns it), to start fresh worlds from. Keys are blocked while the menu is open, so names can be typed. Tests: 619 pass (3 ignored); new: the saved-worlds list (1), world names in the client (1), saving as, opening, starting fresh and the list through the server (1).
+
+*Done when:* (1) build a door, quit and restart: it's there and works; (2) F2 saves and F8 puts the world back as saved; (3) named worlds stay separate (`--world door-test`); (4) tests pass and clippy is clean; (5) the Escape menu saves, reloads, saves as, opens a saved world and starts a new one, and typing a name doesn't move or act.
+
+*Deferred:* saving creatures (the user wants it eventually); the hotbar slot; saving the world now and then while playing (only on quit and F2).
+
+*Decisions:* saves keep blocks by name, and blocks made while playing as recipes to make them again; generated terrain is made again from the saved terrain values, so only chunks edited since generation are stored (plus every chunk outside the terrain); creatures aren't saved and start fresh; a world loaded at startup ignores the tuning file's terrain values; a save that can't be read stops the game rather than being saved over; Escape opens the world menu; opening another world saves the one left.
+
+*Deferred:* saving creatures (wanted eventually); the hotbar slot; saving now and then while playing.
+
+*API debt:* none new (saving and the world menu are engine features, not content).
+
+
 #### Material behavior (`toy-material-behavior`)
 
 **Stage:** Done (2026-11-06). Verified by the user in play: both levers swap the door, a reach of one texel looks right, standing in the doorway pushes you out with the whole door swapping, the ghost view and breaking the door's half whole. The user on the idea: "I like it but I hate it": designing a nice door is fun, but the crafting UI fights it and near-identical rotated parts are tedious ("like MC but shrunk down"); recorded under the 3D crafting view (`docs/notes/crafting-3d.md`). The user liked the ghost view.

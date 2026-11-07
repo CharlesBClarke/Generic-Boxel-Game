@@ -140,6 +140,11 @@ impl Items {
         self.list.iter()
     }
 
+    /// Takes every item away. IDs carry on from where they were, so none is reused.
+    pub fn clear(&mut self) {
+        self.list.clear();
+    }
+
     pub fn len(&self) -> usize {
         self.list.len()
     }

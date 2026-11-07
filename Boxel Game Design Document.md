@@ -66,8 +66,9 @@ The project's words, used the same way in conversation, code and docs. When a ne
 | Occupant | Something that fills a boxel position: a block and how it's turned. One position can hold several occupants (up to 16), which generalizes Minecraft's waterlogging. |
 | Material | What a block is made of (stone, wood, brass). Its look and properties come with it into every shape made of it. |
 | Shape | Which texels of a boxel something fills. |
-| Part | A crafted shape of one material, carried and placed as its own item. |
-| Bundle | A crafted design of several materials (up to 8), placed whole into one boxel as one occupant per material. |
+| Gadget | Anything that comes out of a crafting table, of one material or several, carried and placed as its own item. Replaces "part" (2026-11-07; the code still says part). Example: an insulated door corner, or the door it goes into. |
+| Blueprint | The plan a gadget is made from: kept in a list, not carried, editable, and makeable without crafting it. A blueprint can use other blueprints, folded under it (a door's corners under the door). |
+| Bundle | A gadget of several materials (up to 8), placed whole into one boxel as one occupant per material. |
 | Piece | One occupant of a bundle, or part of an occupant cut by hiding. |
 | Look | How a material is drawn: a 16×16×16 volume of colors, one per texel, so any cut shows what's inside. |
 | Property | Something a material does, wherever a piece of it is: trigger, conductor, phase, starts hidden. |
