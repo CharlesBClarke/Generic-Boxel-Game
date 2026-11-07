@@ -3,6 +3,41 @@
 Moved out of `SLICES.md` on 2026-11-03 so the roadmap stays short. Each toy's full write-up, newest first, as it stood when it closed. `SLICES.md` keeps a one-line summary of each.
 
 
+#### Material behavior (`toy-material-behavior`)
+
+**Stage:** Done (2026-11-06). Verified by the user in play: both levers swap the door, a reach of one texel looks right, standing in the doorway pushes you out with the whole door swapping, the ghost view and breaking the door's half whole. The user on the idea: "I like it but I hate it": designing a nice door is fun, but the crafting UI fights it and near-identical rotated parts are tedious ("like MC but shrunk down"); recorded under the 3D crafting view (`docs/notes/crafting-3d.md`). The user liked the ghost view.
+
+**Goal:** Redo what materials do, planned with a checklist for rules: replace the hinge's arbitrary swing, let copper carry signals like wire, and make bundles break whole.
+
+**Plan** (approved 2026-11-06, after three rounds on what the user meant: a vanisher whose reach is in texels, plus a second material that starts vanished so a door is two panels)
+- *Phase materials replace the hinge.* Phasite (placed shown) and antiphasite (placed hidden), from two properties that combine: `phase` (a signal flips it between shown and hidden) and `starts_hidden`. A signal to a boxel flips each phase group with a piece there: pieces of one material touching face to face, across boxels too. Hiding takes every other texel within reach of the group (tunable 0 to 4, default 1, edges and corners counting, other phase pieces never). Showing brings back the group and what it took.
+- *Hidden is a kind of block,* like the old open kinds: a hidden piece and a cut piece's kept part are derived kinds (`BlockRegistry::derive`) remembering the occupant they came from, so the parts join back exactly. Nothing is locked: breaking and placing around hidden pieces work as usual ("leave it open").
+- *Seeing hidden pieces:* drawn as ghosts, and aimable and breakable, only while holding a phase material (the user left this to Claude).
+- *Copper conducts* (`listener` renamed `conductor`): the signal floods from the trigger's boxel through face-touching boxels with shown copper (capped), signaling each.
+- *Bundles break whole,* with `WorldEdit::add_bundle` so the test door is a bundle.
+- `api::SignalDef { reach, conduct_limit }`, tunable live; the hinge, its swing and open kinds go.
+- The rules checklist goes in the design doc.
+
+**Done when:** the test door swaps from a lever beside it and a lever wired through copper; a flush door takes one texel off its frame and puts it back exactly; a body in the way is handled; breaking any piece returns the bundle; reach tunes live; tests and clippy clean. All met.
+
+**Changes while building and verifying**
+- *Shows before hides,* and showing brings back the hidden texels within reach rather than whole pieces. With hides first, closing the door brought back the slices the other panel had just taken, so the frame didn't return exactly (caught by the exactness test). Now what's hidden is always what's within reach of a hidden group, and the door cycles exactly. The test door is built last, so its starting-hidden panel takes its reach of everything around it, as it would after a cycle.
+- *No knob on the test door:* at reach 1 a brass knob touching a panel loses only that texel and would float. A lever beside the door and a lever wired through copper on the floor open it, each lever with a handle on both sides of the wall.
+- *Up to 8 materials a design, 16 occupants a boxel* (at the user's request: wood, brass, copper and both phase materials didn't fit in four). `MAX_MATERIALS` and `MAX_OCCUPANTS = 2 × MAX_MATERIALS`, room for each piece of a full design to be cut by hiding. Hand placement shares the 16.
+- *All or nothing, and push-out* (a bug found in play: a panel the player stood in stayed hidden while the other flipped, leaving no door, then a double door). A signal that can't bring something back (a creature or a solid in its place, no room in a boxel) changes nothing (`signal::Undo`). A piece coming back on the player pushes them out like a placed block, refused only with no room.
+
+**Implementation notes**
+- `sim::signal`: `reached` (copper flood), `group`, `Texels` (sixteenths over boxels, grown by reach as a cube), `signal`/`show`/`hide` with an `Undo` log, `hide_placed` for pieces that start hidden (placing and world building). Derived kinds are named `<block>_c<hash>` (kept) and `<block>_h<hash>` (hidden); a hidden kind isn't solid; both break into their volume of the material, not a part. `BlockRegistry::origin` gives a piece's occupant and texels.
+- Hidden pieces: `can_share` counts them toward the limit but gives them no space; the mesher skips them and they don't cull faces; `View::target_seeing` aims at them only when asked (breaking and placing while holding a phase material; interact never). Client: `HiddenGhosts` meshes hidden pieces within 24 boxels of the player while a phase material is held, rebuilt on block changes or a new chunk.
+- `Simulation::break_occupant`: a bundle piece takes every piece of the bundle in the boxel, cut and hidden parts too, and drops the bundle once if they make it whole, otherwise each.
+- Base: `blocks.toml` adds phasite and antiphasite (looks, `properties`); iron is plain now; the player starts with 4 of each. `shapes::{door_lower, door_upper, lever, wire}`; the test door is at `DOOR_SPOT` with levers at x + 1 and x + 3 and a wire along the wall's foot.
+
+*Tests:* 604 pass, clippy clean. `sim::signal` (11: copper flood, growth across boxels, groups by material, hide and show back exactly, the swap door and a blocked swap left whole, blocked by a solid or a body, reach 0, phase pieces never taken, two doors on one wire); `sim/tests/doors.rs` (7: starts shut, the lever beside swaps and back exactly, the wired lever, pushed out of the doorway, ghosts aimed only holding a phase material, breaking a hidden piece takes the half whole, antiphasite placed hidden); bundle placed and broken whole in `sim/tests/crafting.rs`; eight materials in `sim::crafting`; hidden pieces don't draw in `client::mesher`.
+*Decisions:* see "Phase materials and signals" in the Phase 2 decisions, the checklist for rules and the occupant limits in the design doc.
+*Deferred:* knobs on phase doors (a knob only loses its touching texel; a reach per material, or knobs of the phase material that also trigger, are options); a creature in the way blocks a signal rather than being pushed; turned copies and the 3D crafting view (backlog).
+*API debt:* Fixed block properties now lists `trigger`, `conductor`, `phase` and `starts_hidden`.
+
+
 #### Functional crafting (`toy-functional-crafting`)
 
 **Stage:** Done (2026-11-06). Verified by the user in play: the grid per view, loading a part, the window and list layout, the side L, and no flip high on a wall. Split at close at the user's request: what materials do (the trigger, hinge and listener built here) is planned again in Material behavior (`docs/notes/material-behavior.md`); the door and lever stay as that toy's first try.
