@@ -113,47 +113,7 @@ A run of small toy slices. Each one takes a single game-feel feature that doesn'
 
 - Cow pathfinding (low priority, 2026-11-06): the user called the toy "really good" without going through the five course checks one by one; note any that misbehave: cows through the pen's gap and up its terraces, up the mesa's steps, a charge baited off the mesa's cliff (landing hurt), waiting below the pillar (orange route), climbing hills on the generated terrain.
 
-### Functional crafting (`toy-functional-crafting`)
-
-**Stage:** Verify (plan changes built 2026-11-06; waiting for the user to play it. `fix-crafting-menu-layout` is merged into this branch and goes to `master` once the user has seen it)
-
-**Goal:** Several materials in one crafted shape, and materials with properties that act, enough for a door and a lever with no door code in the engine. Takes item 1, item 2 and item 4 of Crafting follow-ups and the proof toy of Generative crafting.
-
-**Plan**
-- *Several materials, as a bundle* (the user's choice of 2026-11-02). The table stops refusing mixed materials: each material's sixteenths become a piece, and nothing-floats checks the whole. One material makes an ordinary part as before. Several make a bundle: one carried kind listing its pieces (at most 4, the most a boxel holds), each a block of its own named from the bundle, breaking into an ordinary part. Placing checks room for every piece, then puts each piece in the boxel as its own occupant, all turned alike. Breaking takes off the piece aimed at. A bundle can go in a table layer, each piece shrinking with it. Menu pictures, the ghost and hotbar draw each piece in its color.
-- *Building on the side of the table* (follow-up 2). A top/side switch in the menu: on the side the grid is the wall as you face it and stacks grow toward you; the rule builds as usual and tips the result a quarter turn about X, so the wall becomes the far side.
-- *No upside-down flip on the upper half of a wall* in basic placement (follow-up 4); only ceilings flip.
-- *Properties from materials.* `api::Property` (`trigger`, `hinge`, `listener`), set on a material's block in `blocks.toml` (`properties = [...]`) and copied to every shape of it. New base materials: brass (trigger), iron (hinge), copper (listener). Rules, a boxel's occupants acting as one block:
-  - Trigger: interact (E) aimed at a trigger piece signals its boxel, and every touching boxel holding a listener. Left and right click never trigger.
-  - Hinge: a signaled boxel holding a hinge piece swings a quarter turn about the hinge piece's long axis (vertical when it has none), the way that leaves least sticking out of the boxel, then slides back inside. The swing reaches the boxels along the same hinge line, so a two-high door moves as one and double doors don't couple. Opened pieces become "open" kinds that remember what they were, so closing restores them exactly; open kinds break into the same part. Refused, nothing moving, if a body is in the way.
-  - Listener: takes signals from touching triggers; passes nothing on (no wiring yet).
-- API debt: the three properties are a fixed engine set (paid by the WebAssembly behavior seam's block behavior).
-- Test area: a doorway with a two-high door and a lever beside it, built with the same shapes players make.
-
-**Tests:** mixed stacks and the side tip in `api::crafting`; bundle plan and make, placing a bundle, breaking one piece; the swing (stays inside, open then close gives back the start, horizontal hinge); signals (lever through a listener, a two-high door together, double doors apart, a body blocks it); end to end through player input.
-
-**Done when**
-- Mixed materials make one design; placed, each piece shows its material, and breaking takes one piece.
-- Shapes can be built on the side of the table.
-- A two-high door (wood panel, iron hinge strip, brass knob) opens and closes with E on its knob, and won't swing into the player.
-- A brass lever beside a door with a copper listener opens it.
-- No door or lever code anywhere: it all comes from material properties.
-
-**Out of scope:** simple and advanced crafters, drag and drop, capacity, connectors (fences), wiring, the edge placement mode (follow-up 3).
-
-**Plan changes** (2026-11-06, from the user's first play)
-- *A grid per view.* Opening the menu from a side face switched it to side mode, so the stacks left on the top grid quietly made a different shape. Now the top and the side each keep their own stacks, and the menu opens in the view last used. Crafted parts stay shared: a part made in one view is a brush in the other.
-- *Loading a part into the grid* (a new feature the user asked for). A "load" button by each carried part or bundle puts back the stacks, view and flip that made it, remembered from the craft for the session. A part not crafted this session is rebuilt from its shape if it's whole quarters (top view first, then side); otherwise loading is greyed out.
-- The window widening when the preview appears and the carried list using only part of its column are older bugs, fixed on `fix-crafting-menu-layout`.
-
-**Implementation notes**
-- One detail differs from the plan's words, not its intent. A knob sticks out of the panel, so turning about the hinge alone pushes it out of the boxel. The swing picks the way that leaves less outside, then slides everything back in (a knobbed door swings toward its knob, its hinge moving in by the knob's depth). Since a slid swing can't be undone by turning back, open pieces are their own kinds (`BlockRegistry::opened`) that remember the closed occupant, which is the notes' "two kinds swapped in place".
-- Bundles: `BlockRegistry::bundle`; each piece is its own block kind (`<ns>:bundle_<hash>_<i>`), breaking into the ordinary part. The first piece is what's held and placed, and it brings the rest (`companions`, `cost`).
-- Signals and swings: `sim::signal`. Interact: `PlayerInput.interact_pressed` (the existing interact key, which also opens the table).
-- Opening the menu on a table's side face starts it in side mode.
-- The test area's door is at `DOOR_SPOT` (north of spawn, waypoint `door`); the player starts with 4 each of brass, iron and copper.
-- A part in a layer on the side is tipped back into the wall's frame before its turn (`api::crafting::untipped`), so it comes out of a craft standing as it stands in the world, in either view; the turn key turns it on the wall's face. Found in play: a standing L made on the side came back out turned a quarter wrong when used in the side's own grid.
-- Deferred: a thrown bundle is drawn as its first piece only.
+None. Plan the next toy in a new session.
 
 ### Toy backlog
 
@@ -176,9 +136,11 @@ A run of small toy slices. Each one takes a single game-feel feature that doesn'
 - **Interaction controls.** Split out of Block editing (2026-10-25). Fix Minecraft's ambiguous right click once there are things to use, like crystals or devices. Principles: one input, one action (no catch-all "use" button that changes meaning with what you hold or look at), and what you see is what you get (a ghost of the result, red when not allowed).
   - *Added 2026-10-28:* decide how players reach shared boxels. Placing into an occupied boxel makes placement harder to read (every click has two possible boxels), so it may become a deliberate trick (a key, a tool, or a property of blocks like water) instead of happening on any click. Decide once combat and usable items show how crowded the controls get; the engine keeps full support either way. Also from play: two slabs at right angles make a stair, so a separate stairs block may not be needed.
 - **Block interactions.** Unstable crystals: two block types, a touch trigger, a directional blast, and a way to push blocks so devices are possible.
+- **Material behavior.** Split out of Functional crafting (2026-11-06): what materials do, planned again with a checklist for rules. Bundles break whole, copper conducts, and the hinge (arbitrary tiebreaks, a slide that moves doors too far) is replaced by the user's vanisher or done as a sub-grid. Notes: `docs/notes/material-behavior.md`.
+- **Review placement against the checklist.** Added 2026-11-06 at the user's request: placement grew by fixing annoyances one at a time; check its rules against the checklist in `docs/notes/material-behavior.md` (no hidden tiebreaks, one sentence, predictable).
 - **Recheck the crafting rules.** Added 2026-11-06 at the user's request, during Functional crafting: a restriction should exist only to make players build blocks they know how to place. The top and side views accept the same stacks, but each makes shapes rest on a different face (the bottom, the back), and "nothing floats" means a knob beside a panel can't be built on top. A gentler rule (a layer may touch anything already connected to the base) would let both views make doors. Pairs with the 3D crafting view.
 - **3D crafting view.** Added 2026-11-06 at the user's request, during Functional crafting: "maybe we should re think the grid maybe a 3d gui is more natural here, but that can be done later". Replace the 4×4 grid of stacks with a 3D view of the boxel to build in.
-- **Crafting follow-ups.** *Items 1, 2 and 4 taken by Functional crafting (2026-11-06); the edge mode (3) is left.* Four changes agreed with the user, to plan together: several materials in one shape as a bundle, building on the side of the table, an "edge" placement mode on middle click to compare, and no upside-down flip on the upper half of a wall. Notes: `docs/notes/crafting-follow-ups.md`.
+- **Crafting follow-ups.** *Items 1, 2 and 4 done in Functional crafting (2026-11-06); the edge mode (3) is left.* Four changes agreed with the user, to plan together: several materials in one shape as a bundle, building on the side of the table, an "edge" placement mode on middle click to compare, and no upside-down flip on the upper half of a wall. Notes: `docs/notes/crafting-follow-ups.md`.
 - **Generative crafting.** A few materials, a few property ingredients and a capacity limit. The user aims for fully emergent crafting ("emergent shapes, authored verbs": properties come from materials, so even doors come out of the system), with a simple crafter whose odd recipes the advanced one explains. Drag and drop is designed here. A proof toy: trigger, toggle and listener, enough for a door and a lever. Notes: `docs/notes/generative-crafting.md`.
 - **Cow looking.** Cows turn head and neck first and react by degrees (notice and carry on, face it, back off), like real cows; herds face a newcomer together. Notes: `docs/notes/cow-looking.md`.
 - **Head hit boxes that follow the animation.** Hit boxes are fixed to the body and don't follow the animated head, so a grazing cow's head box stays where the head was. A headbutt needs the head box where the head is: move boxes with their bones, or have the brain pick box poses per clip.
@@ -225,6 +187,7 @@ Shortcuts taken around the API, each with the toy that needed it. Paid down in s
 - **Skyrim-style controls** (2026-10-31, from Combat feel; clarified 2026-11-03): whatever is held has a main use on left click and a second use on right click. Blocks break and place; a tool swings and guards. Part of the answer to the ambiguous-interactions gripe; the Interaction controls toy builds on it. *Only half of Skyrim's system is built:* the one-item case. In Skyrim, holding two things (one per hand) gives each button that hand's main use, and alt uses go unreachable; that half is the backlog's Two hands.
 - **Sound** (2026-11-05, from Sound): the simulation is silent; the client hears what the server sends (events and snapshots), so new sounds need events, not sim audio. Sounds are data in `sounds.toml`, named by kind prefix (`step_`, `swing_`, `hit_`, `kill_`, `hurt_`, `knockout_`, `hardland_`, `pickup_`), and the mod keeps only used files; candidates live in `~/Projects/boxel-sound-packs/`. Loops are WAV. `kira` stays at 0.10 until Bevy is upgraded (ALSA clash). espeak, if used, is rendered offline.
 - **Creature navigation** (2026-11-05, from Cow tweaks; revised 2026-11-06, Cow pathfinding): pathfinding is an engine service. A brain asks with `BrainOutput.go_to` and gets `BrainContext.route` a tick or more later; the engine searches standing spots with the real collision sweeps (so shaped cells work), hops one-block ledges for creatures with a `hop_speed`, drops at most `max_drop`, and runs one search a tick. Brains still see `Seen.clear_run` for straight lines like charges, which keep no edge guard and can go off cliffs; creatures take fall damage.
+- **Crafting frames** (2026-11-06, from Functional crafting): the table's top and side are two frames of one rule (a side build is a top build tipped so the wall is the far side), each view keeping its own grid; a part used in a layer keeps how it stands in the world, in either view. Several materials make a bundle, placed whole into one boxel as one occupant per material.
 - **Generated terrain** (2026-11-05, from Generated terrain): generators are pure per-chunk functions through `api::terrain`, plain data, positions relative to their terrain's center; the engine decides how much to fill (`world` section) and fills it explicitly in `game::load`. Regenerating replaces the terrain (edits lost) and lifts buried bodies out. Beyond the simulation distance creatures and items hold still.
 - **Signature feature:** not decided yet. Choose it once the block interaction and crafting toys have been played, and record the choice and why in the design doc.
 
@@ -234,11 +197,13 @@ Bugs found in already-merged code, each fixed on its own `fix-` branch (see the 
 
 - 2026-10-28, `fix-step-smoothing`: a step-up moved the body but not its previous position, so the renderer blended the rise between ticks while the camera feel also eased it, making the view dip and snap when climbing. Latent until the block shapes toy gave the player a step height.
 - 2026-11-05, `fix-clear-run-hang`: a cow's clear-run sweep never counted a sub-millimeter last piece as blocked, so with the player a hair away and the cow against something it looped forever and locked up the game (the server runs in the client's tick).
+- 2026-11-06, `fix-crafting-menu-layout`: the crafting window sized itself to its content and stayed centered, so the first crafted part's row (wider, with its buttons) widened it and moved the grid; the carried list was capped shorter than its column. Columns now have fixed widths and the list fills the tallest column.
 - 2026-11-06, `fix-controls-table`: adding a key action meant five edits (field, default, parser arm, HUD format slot, the player's controls file). Now one row in `client::controls`'s `key_actions!` table gives the field, default, config name and HUD hint, and loading warns about actions the controls file doesn't list.
 
 ### Done toys
 
 Full write-ups (plans, implementation notes, verify rounds, decisions) are in `docs/done-toys.md`. One line each, newest first:
+- **Functional crafting** (2026-11-06, `toy-functional-crafting`). Several materials in one crafted shape (a bundle, placed whole, broken piece by piece); building on the table's side; a grid per view and loading a part back into it; a first try at materials that act (a door and lever from brass, iron and copper), to be redone in Material behavior.
 - **WebAssembly behavior seam** (2026-11-06, `seam-wasm-behavior`). The cow brain runs as a sandboxed WebAssembly component (`base_cow`), bit for bit the same as native; movement controllers keep their state in the engine; `--native-brain`.
 - **Cow pathfinding** (2026-11-06, `toy-cow-pathfinding`). Cows find paths round walls, through gaps and up block-high ledges with a hop when chasing, running off and regrouping; with no way up they wait below; charges run off cliffs and falls hurt. F7 shows the routes; the pasture has a course (pen with a gap and terraces, pillar, mesa).
 - **Health bar under the hotbar** (2026-11-06, `toy-health-bar-bottom`). The health bar moved from the top of the screen to the bottom, under the hotbar, which sits higher to make room.
