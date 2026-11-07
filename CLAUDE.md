@@ -79,6 +79,7 @@ Name the step being skipped and what it risks in one or two sentences, then ask 
 - Coordinates: +Z up, right-handed, +X east, +Y north. Convert to Bevy's Y-up only at the render and import boundaries; engine and mod code only see Z-up.
 - Positions are an integer cell plus a small float offset, never one large float. Only the renderer converts to floats, relative to its world view's origin.
 - Use "boxel", not "voxel", in code and docs.
+- Use the words in the design doc's Terminology table, the same way in conversation, code and docs. When the user uses a word that isn't there, or uses one differently, check what they mean with a concrete example before going on, then add it to the table.
 - Base game content lives in the `base` crate and uses only the `api` crate, never engine internals. If the API can't express something, extend the API. A shortcut is allowed only if it's logged in the API debt list in `SLICES.md`.
 - When closing a toy, if the API debt list is getting long, suggest a seam slice next.
 - Registries and saves use names, not raw numeric IDs.

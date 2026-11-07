@@ -49,9 +49,9 @@ pub enum Property {
     Conductor,
     /// A signal to a boxel holding a piece of it flips the piece's group, every piece of the
     /// material touching it face to face, between shown and hidden. Hiding takes everything
-    /// else within reach of the group with it; showing brings that back.
+    /// else within its grab with it (see `SignalDef::grab`); showing brings that back.
     Phase,
-    /// Placed hidden, taking what's within reach of it, as if it had just been signaled to hide.
+    /// Placed hidden, grabbing what touches it, as if it had just been signaled to hide.
     StartsHidden,
 }
 
@@ -160,7 +160,7 @@ impl BlockDef {
     }
 }
 
-/// A box inside a boxel, in sixteenths of a boxel: from 0 to 16 on each axis, `min` below `max`.
+/// A box inside a boxel, in texels: from 0 to 16 on each axis, `min` below `max`.
 /// Faces of an unturned box: +Z is the top, -Z the bottom and the rest are sides.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct BlockBox {
@@ -169,7 +169,7 @@ pub struct BlockBox {
 }
 
 impl BlockBox {
-    /// Sixteenths across a boxel.
+    /// Texels across a boxel.
     pub const SIZE: u8 = 16;
     /// The whole boxel.
     pub const FULL: BlockBox = BlockBox { min: [0; 3], max: [16; 3] };

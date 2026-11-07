@@ -142,8 +142,8 @@ impl Mod for BaseMod {
         r.register_interaction(InteractionDef { reach: 4.5, repeat_rate: 4.0 })?;
         // Block-jumping: placing a block at your feet lifts you onto it and launches you.
         r.register_push_out(PushOutDef { strength: 6.0, upward_bias: 1.0 })?;
-        // Hiding takes what touches a phase group, a sixteenth deep; a wire carries far.
-        r.register_signals(SignalDef { reach: 1.0, conduct_limit: 4096 })?;
+        // Hiding grabs what touches a phase group, a texel deep; a wire carries far.
+        r.register_signals(SignalDef { grab: 1.0, conduct_limit: 4096 })?;
         // Creatures see each other across a herd, and bodies push apart firmly enough that you
         // can't walk through a cow; the player is a little lighter than one (2.5).
         r.register_crowd(CrowdDef { sight: 12.0, push: 25.0, max_push: 8.0, player_weight: 1.5 })?;

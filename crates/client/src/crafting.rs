@@ -656,7 +656,7 @@ fn color_of(blocks: &BlockRegistry, material: MaterialId) -> [u8; 3] {
 /// stands), a little to the left and above, so the front, the left side and the top show.
 const VIEW: [f32; 3] = [0.6, 1.0, -0.8];
 
-/// One face of one sixteenth, as the picture draws it.
+/// One face of one texel, as the picture draws it.
 struct Quad {
     depth: f32,
     corners: [ZVec3; 4],
@@ -664,14 +664,14 @@ struct Quad {
     color: [u8; 3],
 }
 
-/// The visible faces of `shape` from [`VIEW`], farthest first, in sixteenths.
+/// The visible faces of `shape` from [`VIEW`], farthest first, in texels.
 #[cfg(test)]
 fn quads(shape: &ShapeGrid) -> Vec<Quad> {
     quads_of(&[(shape.clone(), [0; 3])])
 }
 
 /// The visible faces of the pieces from [`VIEW`], each in its piece's color, farthest first,
-/// in sixteenths. Where pieces overlap, the first one's color shows.
+/// in texels. Where pieces overlap, the first one's color shows.
 fn quads_of(pieces: &[(ShapeGrid, [u8; 3])]) -> Vec<Quad> {
     let color_at = |x: i32, y: i32, z: i32| {
         let inside = (0..16).contains(&x) && (0..16).contains(&y) && (0..16).contains(&z);
@@ -744,7 +744,7 @@ mod tests {
 
     #[test]
     fn pictures_draw_only_the_faces_that_show() {
-        // A full block shows one big face on each of three sides, in sixteenths.
+        // A full block shows one big face on each of three sides, in texels.
         assert_eq!(quads(&ShapeGrid::FULL).len(), 3 * 16 * 16);
         assert!(quads(&ShapeGrid::EMPTY).is_empty());
         // A slab's top is lower, and its back half isn't drawn twice.

@@ -8,12 +8,12 @@
 //! face, across boxels too (see [`group`]). A signal flips each group with a piece in a
 //! signaled boxel: a group with anything shown hides, otherwise it shows. Shows go first, so a
 //! door's closed panel and its open panel, of two phase materials, swap on one signal, and
-//! what's hidden is always what's within reach of a hidden group.
+//! what's hidden is always what's within the grab of a hidden group.
 //!
-//! **Reach.** Hiding a group takes everything else within reach of it too, sixteenth by
-//! sixteenth, edges and corners counting, other phase pieces excepted: a piece partly within
-//! reach is cut, its kept part and its hidden part each a derived kind remembering the piece
-//! (see [`crate::Derived`]). Showing a group brings back everything hidden within reach of it,
+//! **Grab.** Hiding a group takes everything else within its grab too, texel by
+//! texel, edges and corners counting, other phase pieces excepted: a piece partly within
+//! the grab is cut, its kept part and its hidden part each a derived kind remembering the piece
+//! (see [`crate::Derived`]). Showing a group brings back everything hidden within its grab,
 //! and the parts of one piece join up again into exactly that piece. A signal is all or
 //! nothing: if something solid or a body is in the place of anything it would bring back, it
 //! changes nothing.
@@ -24,7 +24,7 @@ use api::{BoxelPos, I64Vec3, Property, ShapeGrid};
 
 use crate::{BlockRegistry, Grid, MAX_OCCUPANTS, Occupant};
 
-/// Sixteenths across a boxel.
+/// Texels across a boxel.
 const N: i32 = 16;
 
 /// The most pieces one phase group holds.
@@ -69,7 +69,7 @@ pub struct Piece {
     pub occupant: Occupant,
 }
 
-/// The sixteenths a piece fills in its boxel.
+/// The texels a piece fills in its boxel.
 fn texels(blocks: &BlockRegistry, o: Occupant) -> ShapeGrid {
     blocks.origin(o).1
 }
@@ -129,7 +129,7 @@ fn touches(a: &ShapeGrid, b: &ShapeGrid, side: Option<I64Vec3>) -> bool {
     false
 }
 
-/// Every sixteenth face-touching a filled one of `shape`, within its boxel.
+/// Every texel face-touching a filled one of `shape`, within its boxel.
 fn shifted_faces(shape: &ShapeGrid) -> ShapeGrid {
     let mut out = ShapeGrid::EMPTY;
     for_each(shape, |p| {
@@ -154,7 +154,7 @@ fn set(shape: &mut ShapeGrid, p: [i32; 3]) {
     shape.set(p[0] as usize, p[1] as usize, p[2] as usize, true);
 }
 
-/// Calls `f` with every filled sixteenth of `shape`.
+/// Calls `f` with every filled texel of `shape`.
 fn for_each(shape: &ShapeGrid, mut f: impl FnMut([i32; 3])) {
     for z in 0..N {
         for y in 0..N {
@@ -167,28 +167,28 @@ fn for_each(shape: &ShapeGrid, mut f: impl FnMut([i32; 3])) {
     }
 }
 
-/// Sixteenths spread over boxels.
+/// Texels spread over boxels.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Texels(HashMap<BoxelPos, ShapeGrid>);
 
 impl Texels {
-    /// Adds `shape`'s sixteenths in the boxel at `pos`.
+    /// Adds `shape`'s texels in the boxel at `pos`.
     pub fn add(&mut self, pos: BoxelPos, shape: &ShapeGrid) {
         let entry = self.0.entry(pos).or_default();
         *entry = entry.union(shape);
     }
 
-    /// The sixteenths in the boxel at `pos`.
+    /// The texels in the boxel at `pos`.
     pub fn get(&self, pos: BoxelPos) -> ShapeGrid {
         self.0.get(&pos).cloned().unwrap_or_default()
     }
 
-    /// Every boxel with any sixteenths, and them.
+    /// Every boxel with any texels, and them.
     pub fn iter(&self) -> impl Iterator<Item = (BoxelPos, &ShapeGrid)> {
         self.0.iter().filter(|(_, s)| !s.is_empty()).map(|(p, s)| (*p, s))
     }
 
-    /// Every sixteenth within `r` of one of these, edges and corners counting: grown by `r`
+    /// Every texel within `r` of one of these, edges and corners counting: grown by `r`
     /// along each axis in turn, so a cube around each.
     pub fn grown(&self, r: i32) -> Texels {
         let mut out = self.clone();
@@ -250,14 +250,14 @@ impl Undo {
 }
 
 /// Answers a signal to the boxels in `reached`: flips every phase group with a piece in one,
-/// the showing ones first (see the module). `reach` is in sixteenths; `clear` says whether
-/// bodies leave room for solid sixteenths `shape` in the boxel at a position. All or nothing:
+/// the showing ones first (see the module). `grab` is in texels; `clear` says whether
+/// bodies leave room for solid texels `shape` in the boxel at a position. All or nothing:
 /// if anything to bring back can't come, the world is left as it was.
 pub fn signal(
     grid: &mut Grid,
     blocks: &mut BlockRegistry,
     reached: &[BoxelPos],
-    reach: i32,
+    grab: i32,
     clear: &dyn Fn(BoxelPos, &ShapeGrid) -> bool,
 ) -> Result<Undo, Blocked> {
     let mut groups: Vec<Vec<Piece>> = Vec::new();
@@ -277,8 +277,8 @@ pub fn signal(
     let mut undo = Undo::default();
     let done = shows
         .iter()
-        .try_for_each(|g| show(grid, blocks, g, reach, clear, &mut undo))
-        .and_then(|()| hides.iter().try_for_each(|g| hide(grid, blocks, g, reach, &mut undo)));
+        .try_for_each(|g| show(grid, blocks, g, grab, clear, &mut undo))
+        .and_then(|()| hides.iter().try_for_each(|g| hide(grid, blocks, g, grab, &mut undo)));
     match done {
         Ok(()) => Ok(undo),
         Err(blocked) => {
@@ -290,9 +290,9 @@ pub fn signal(
 
 /// Hides pieces just placed that start hidden (see [`hide`]), all or nothing: if they can't
 /// be hidden, they stay shown. Returns the boxels that changed.
-pub fn hide_placed(grid: &mut Grid, blocks: &mut BlockRegistry, pieces: &[Piece], reach: i32) -> Vec<BoxelPos> {
+pub fn hide_placed(grid: &mut Grid, blocks: &mut BlockRegistry, pieces: &[Piece], grab: i32) -> Vec<BoxelPos> {
     let mut undo = Undo::default();
-    match hide(grid, blocks, pieces, reach, &mut undo) {
+    match hide(grid, blocks, pieces, grab, &mut undo) {
         Ok(()) => undo.changed(),
         Err(Blocked) => {
             undo.undo(grid);
@@ -301,10 +301,10 @@ pub fn hide_placed(grid: &mut Grid, blocks: &mut BlockRegistry, pieces: &[Piece]
     }
 }
 
-/// Hides the shown ones of `pieces`, whole, and every other shown piece's sixteenths within
-/// `reach` of them, phase pieces excepted, keeping what it changes in `undo`. Blocked if a
+/// Hides the shown ones of `pieces`, whole, and every other shown piece's texels within
+/// `grab` of them, phase pieces excepted, keeping what it changes in `undo`. Blocked if a
 /// boxel has no room for a cut piece's two parts.
-pub fn hide(grid: &mut Grid, blocks: &mut BlockRegistry, pieces: &[Piece], reach: i32, undo: &mut Undo) -> Result<(), Blocked> {
+pub fn hide(grid: &mut Grid, blocks: &mut BlockRegistry, pieces: &[Piece], grab: i32, undo: &mut Undo) -> Result<(), Blocked> {
     let mut area = Texels::default();
     let shown: Vec<Piece> = pieces.iter().copied().filter(|p| !blocks.is_hidden(p.occupant.block)).collect();
     for p in shown {
@@ -312,7 +312,7 @@ pub fn hide(grid: &mut Grid, blocks: &mut BlockRegistry, pieces: &[Piece], reach
         area.add(p.pos, &shape);
         hide_part(grid, blocks, p.pos, p.occupant, &shape, undo)?;
     }
-    let within: Vec<(BoxelPos, ShapeGrid)> = area.grown(reach).iter().map(|(p, s)| (p, s.clone())).collect();
+    let within: Vec<(BoxelPos, ShapeGrid)> = area.grown(grab).iter().map(|(p, s)| (p, s.clone())).collect();
     for (pos, mask) in within {
         let shown: Vec<Occupant> = grid
             .cell(pos)
@@ -327,15 +327,15 @@ pub fn hide(grid: &mut Grid, blocks: &mut BlockRegistry, pieces: &[Piece], reach
     Ok(())
 }
 
-/// Shows the hidden ones of `pieces`, whole, and every other hidden piece's sixteenths within
-/// `reach` of them, phase pieces excepted, keeping what it changes in `undo`. Blocked if any
+/// Shows the hidden ones of `pieces`, whole, and every other hidden piece's texels within
+/// `grab` of them, phase pieces excepted, keeping what it changes in `undo`. Blocked if any
 /// can't come back: `clear` or the boxel's shown solid pieces leave no room, or the boxel has
 /// no room for another occupant.
 pub fn show(
     grid: &mut Grid,
     blocks: &mut BlockRegistry,
     pieces: &[Piece],
-    reach: i32,
+    grab: i32,
     clear: &dyn Fn(BoxelPos, &ShapeGrid) -> bool,
     undo: &mut Undo,
 ) -> Result<(), Blocked> {
@@ -347,7 +347,7 @@ pub fn show(
     for p in hidden {
         show_part(grid, blocks, p.pos, p.occupant, &ShapeGrid::FULL, clear, undo)?;
     }
-    let within: Vec<(BoxelPos, ShapeGrid)> = area.grown(reach).iter().map(|(p, s)| (p, s.clone())).collect();
+    let within: Vec<(BoxelPos, ShapeGrid)> = area.grown(grab).iter().map(|(p, s)| (p, s.clone())).collect();
     for (pos, mask) in within {
         let hidden: Vec<Occupant> = grid
             .cell(pos)
@@ -363,7 +363,7 @@ pub fn show(
     Ok(())
 }
 
-/// Hides the sixteenths of shown occupant `o` at `pos` inside `mask`: the piece becomes a
+/// Hides the texels of shown occupant `o` at `pos` inside `mask`: the piece becomes a
 /// hidden part and, if any is left outside, a kept part. Nothing to do if `o` isn't there or
 /// nothing of it is inside; blocked if the boxel has no room for both parts.
 fn hide_part(
@@ -399,7 +399,7 @@ fn hide_part(
     Ok(())
 }
 
-/// Shows the sixteenths of hidden occupant `o` at `pos` inside `mask`, joining them up with
+/// Shows the texels of hidden occupant `o` at `pos` inside `mask`, joining them up with
 /// the rest of their piece; any outside stay hidden. Nothing to do if `o` isn't there or
 /// nothing of it is inside; blocked if the boxel has no room, or it's solid and a shown solid
 /// piece or, by `clear`, a body is in its place.
@@ -574,7 +574,7 @@ mod tests {
         let changed = signal(&mut g, &mut k.blocks, &[at(0, 0, 0)], 1, &always).unwrap().changed();
         assert_eq!(changed.len(), 3);
         assert!(g.cell(at(0, 0, 0)).iter().all(|o| k.blocks.is_hidden(o.block)), "the panel hid");
-        // The west brick lost a strip one sixteenth deep, beside the panel and its corners.
+        // The west brick lost a strip one texel deep, beside the panel and its corners.
         let west_now = g.cell(at(-1, 0, 0)).to_vec();
         assert_eq!(west_now.len(), 2, "a kept part and a hidden part");
         let hidden = west_now.iter().find(|o| k.blocks.is_hidden(o.block)).unwrap();
@@ -646,7 +646,7 @@ mod tests {
     }
 
     #[test]
-    fn reach_zero_takes_nothing_else() {
+    fn grab_zero_takes_nothing_else() {
         let mut k = kit();
         let panel = k.shaped(k.phasite, &grid(&[([0, 12, 0], [16, 16, 16])]));
         let mut g = Grid::default();
@@ -656,7 +656,7 @@ mod tests {
     }
 
     #[test]
-    fn phase_pieces_are_never_taken_by_reach() {
+    fn phase_pieces_are_never_grabbed() {
         let mut k = kit();
         let a = k.shaped(k.phasite, &grid(&[([0, 0, 0], [16, 4, 16])]));
         let b = k.shaped(k.antiphasite, &grid(&[([0, 4, 0], [16, 8, 16])]));

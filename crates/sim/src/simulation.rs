@@ -215,7 +215,7 @@ impl Simulation {
                 targets: &mut sim.targets,
                 generators: &sim.generators,
                 terrains: &mut sim.terrains,
-                reach: sim.signal_def.as_ref().map_or(0, SignalDef::reach_texels),
+                grab: sim.signal_def.as_ref().map_or(0, SignalDef::grab_texels),
             })?;
         }
         Ok(sim)
@@ -481,8 +481,8 @@ impl Simulation {
             }
             let added: Vec<Occupant> = place.occupants().collect();
             let hidden = starting_hidden(&self.blocks, place.pos, &added);
-            let reach = self.signal_def.as_ref().map_or(0, SignalDef::reach_texels);
-            let changed = crate::signal::hide_placed(self.universe.main_mut(), &mut self.blocks, &hidden, reach);
+            let grab = self.signal_def.as_ref().map_or(0, SignalDef::grab_texels);
+            let changed = crate::signal::hide_placed(self.universe.main_mut(), &mut self.blocks, &hidden, grab);
             for pos in changed {
                 self.changed.mark(pos);
             }
@@ -518,7 +518,7 @@ impl Simulation {
             let boxes: Vec<CellBox> = shape.to_boxes().into_iter().map(CellBox::from_block_box).collect();
             bodies_clear(None, targets.as_slice(), target_defs, pos, &boxes)
         };
-        let Ok(undo) = crate::signal::signal(self.universe.main_mut(), &mut self.blocks, &reached, def.reach_texels(), &clear)
+        let Ok(undo) = crate::signal::signal(self.universe.main_mut(), &mut self.blocks, &reached, def.grab_texels(), &clear)
         else {
             return;
         };
@@ -1365,8 +1365,8 @@ struct WorldEditor<'a> {
     targets: &'a mut Targets,
     generators: &'a [(String, Box<dyn Generator>)],
     terrains: &'a mut Vec<TerrainDef>,
-    /// The signal definition's reach, for pieces placed hidden.
-    reach: i32,
+    /// The signal definition's grab, for pieces placed hidden.
+    grab: i32,
 }
 
 impl WorldEditor<'_> {
@@ -1386,7 +1386,7 @@ impl WorldEditor<'_> {
     fn add_one(&mut self, pos: BoxelPos, id: BlockId, orientation: Orientation) -> Result<(), ApiError> {
         self.add(pos, id, orientation)?;
         let added = [Occupant::turned(id, orientation)];
-        crate::signal::hide_placed(self.grid, self.blocks, &starting_hidden(self.blocks, pos, &added), self.reach);
+        crate::signal::hide_placed(self.grid, self.blocks, &starting_hidden(self.blocks, pos, &added), self.grab);
         Ok(())
     }
 }
@@ -1440,7 +1440,7 @@ impl WorldEdit for WorldEditor<'_> {
             self.add(pos, b, orientation)?;
         }
         let added: Vec<Occupant> = blocks.iter().map(|&b| Occupant::turned(b, orientation)).collect();
-        crate::signal::hide_placed(self.grid, self.blocks, &starting_hidden(self.blocks, pos, &added), self.reach);
+        crate::signal::hide_placed(self.grid, self.blocks, &starting_hidden(self.blocks, pos, &added), self.grab);
         Ok(())
     }
 

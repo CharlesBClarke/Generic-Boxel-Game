@@ -7,7 +7,7 @@ use api::{ApiError, BlockBox, BlockDef, LookDef, ShapeGrid, Turning};
 
 use crate::Occupant;
 
-/// Volume units in a full boxel: one per sixteenth cubed. Amounts of material count in these,
+/// Volume units in a full boxel: one per texel cubed. Amounts of material count in these,
 /// so a slab's worth is a whole number.
 pub const FULL_VOLUME: u32 = (BlockBox::SIZE as u32).pow(3);
 
@@ -81,7 +81,7 @@ pub struct Derived {
     /// The occupant it was cut from. Never itself derived: cutting a derived piece again
     /// derives from the same occupant, so all the parts of one piece find each other.
     pub from: Occupant,
-    /// The sixteenths it fills in its boxel.
+    /// The texels it fills in its boxel.
     pub shape: ShapeGrid,
     /// Hidden pieces aren't solid, aren't drawn, and are aimed at only by someone holding a
     /// phase material.
@@ -187,7 +187,7 @@ impl BlockRegistry {
         self.id(&shaped_name(&entry.name, shape)).filter(|&id| self.shape(id) == *shape)
     }
 
-    /// A bundle of `pieces`, each a material and the sixteenths it fills, registering it the
+    /// A bundle of `pieces`, each a material and the texels it fills, registering it the
     /// first time: one carried kind whose pieces are placed together, each as a block of its
     /// own. Each piece block copies the material's part in that shape (see
     /// [`BlockRegistry::shaped`]) and breaks into it, so pieces come off one at a time as
@@ -305,7 +305,7 @@ impl BlockRegistry {
         self.derived(block).is_some_and(|d| d.hidden)
     }
 
-    /// The occupant a piece was cut from (itself if it wasn't), and the sixteenths the piece
+    /// The occupant a piece was cut from (itself if it wasn't), and the texels the piece
     /// fills in its boxel.
     pub fn origin(&self, occupant: Occupant) -> (Occupant, ShapeGrid) {
         match self.derived(occupant.block) {
@@ -314,7 +314,7 @@ impl BlockRegistry {
         }
     }
 
-    /// The sixteenths a block fills, unturned.
+    /// The texels a block fills, unturned.
     pub fn shape(&self, id: BlockId) -> ShapeGrid {
         self.get(id).map_or(ShapeGrid::EMPTY, |def| ShapeGrid::from_boxes(&def.shape))
     }

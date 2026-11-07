@@ -91,7 +91,7 @@ fn face(pos: BoxelPos, normal: I64Vec3) -> Hit {
     hit(pos, normal, Vec3::splat(0.5) + normal.as_vec3() * 0.5)
 }
 
-/// The space a placed occupant fills, in sixteenths.
+/// The space a placed occupant fills, in texels.
 fn space(sim: &Simulation, o: Occupant) -> Vec<BlockBox> {
     let def = sim.blocks().get(o.block).unwrap();
     def.shape.iter().map(|&b| o.orientation.apply_box(b)).collect()
