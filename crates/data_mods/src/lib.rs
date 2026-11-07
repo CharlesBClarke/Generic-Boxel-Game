@@ -29,7 +29,8 @@ use std::path::{Path, PathBuf};
 
 use api::block::is_valid_name;
 use api::{
-    ApiError, BlockBox, BlockDef, CraftingDef, InventoryDef, LookDef, Mod, ModelDef, Registrar, SoundDef, TargetDef, Turning,
+    ApiError, BlockBox, BlockDef, CraftingDef, InventoryDef, LookDef, Mod, ModelDef, Property, Registrar, SoundDef, TargetDef,
+    Turning,
 };
 use serde::Deserialize;
 use toml::Spanned;
@@ -180,6 +181,7 @@ struct BlockEntry {
     material: Option<Spanned<String>>,
     #[serde(default)]
     sounds: sounds::BlockSoundsEntry,
+    properties: Option<Spanned<Vec<String>>>,
 }
 
 /// A shape: the name of one in `[shapes]`, or boxes given in place.
@@ -389,7 +391,19 @@ fn block_def(
         }
     };
 
+    let mut properties = Vec::new();
+    if let Some(spanned) = &entry.properties {
+        for p in spanned.get_ref() {
+            let Some(property) = Property::from_name(p) else {
+                let message = format!("block {short:?} has property {p:?}: expected trigger, hinge or listener");
+                return Err(file.error_at(spanned, message));
+            };
+            properties.push(property);
+        }
+    }
+
     let mut def = BlockDef::new(name, entry.solid, color)
+        .with_properties(properties)
         .with_friction(friction)
         .with_placeable(entry.placeable)
         .with_shape(shape)
@@ -569,6 +583,22 @@ mod tests {
 
         let err = blocks_error("bad_material", "[[block]]\nname = \"a\"\ncolor = [1, 2, 3]\nmaterial = \"Stone\"\n", 4);
         assert!(err.contains("material"), "{err}");
+    }
+
+    #[test]
+    fn reads_properties() {
+        let folder = Folder::new("properties");
+        folder.write("mod.toml", MANIFEST).write(
+            "blocks.toml",
+            "[[block]]\nname = \"brass\"\ncolor = [1, 2, 3]\nproperties = [\"trigger\", \"listener\"]\n\n\
+             [[block]]\nname = \"plain\"\ncolor = [1, 2, 3]\n",
+        );
+        let m = folder.load().unwrap();
+        let [brass, plain] = m.blocks() else { panic!("two blocks") };
+        assert_eq!(brass.properties, [Property::Trigger, Property::Listener]);
+        assert!(plain.properties.is_empty());
+        let err = blocks_error("bad_property", "[[block]]\nname = \"a\"\ncolor = [1, 2, 3]\nproperties = [\"glow\"]\n", 4);
+        assert!(err.contains("glow"), "{err}");
     }
 
     #[test]

@@ -58,7 +58,7 @@ fn cells(rows: [&str; 4], m: MaterialId) -> Cells {
 const SLAB: [&str; 4] = ["2222"; 4];
 
 fn request(cells: Cells, count: u32) -> Craft {
-    Craft { table: table(), cells, flip: false, count }
+    Craft { table: table(), cells, side: false, flip: false, count }
 }
 
 fn craft(sim: &mut Simulation, cells: Cells, count: u32) {
@@ -188,4 +188,75 @@ fn discarding_throws_away_everything_of_one_part() {
     assert_eq!(sim.inventory().amount(slab), 0, "all five gone");
     assert!(sim.items().is_empty(), "thrown away, not dropped");
     assert_eq!(sim.inventory().amount(wood), 16 * FULL_VOLUME, "nothing else touched");
+}
+
+/// A door's lower half as the base game builds it, as cells on the table's side: wood with an
+/// iron strip up the left, a copper plate low on the right, a brass knob out from the wood.
+fn door_cells(sim: &Simulation) -> Cells {
+    let (wood, iron, brass, copper) =
+        (material(sim, base::WOOD), material(sim, base::IRON), material(sim, base::BRASS), material(sim, base::COPPER));
+    let mut grid = cells(["...."; 4], wood);
+    for (row, line) in grid.iter_mut().enumerate() {
+        for (col, stack) in line.iter_mut().enumerate() {
+            stack[0] = Some(Piece::new(match (row, col) {
+                (_, 0) => iron,
+                (3, 3) => copper,
+                _ => wood,
+            }));
+        }
+    }
+    grid[1][3][1] = Some(Piece::new(brass));
+    grid
+}
+
+#[test]
+fn several_materials_make_one_bundle_placed_whole_and_broken_piece_by_piece() {
+    let mut sim = base_sim();
+    let t = table();
+    stand(&mut sim, t.0.x + 1, t.0.y - 4);
+    let grid = door_cells(&sim);
+    let on_side = Craft { side: true, ..request(grid, 1) };
+    let plan = sim.craft_plan(&on_side).unwrap();
+    assert_eq!(plan.pieces.len(), 4);
+    // The same pieces as the test area's door, in the order the grid meets them.
+    let mut expected: Vec<_> = base::shapes::door_lower().iter().map(|(m, s)| (material(&sim, m), s.clone())).collect();
+    let mut pieces = plan.pieces.clone();
+    expected.sort_by_key(|(m, _)| *m);
+    pieces.sort_by_key(|(m, _)| *m);
+    assert_eq!(pieces, expected);
+    // On the top, the knob would rest on the wood just the same, but the door would lie flat.
+    let on_top = sim.craft_plan(&request(grid, 1)).unwrap();
+    assert!(on_top.shape.get(8, 8, 0) && !on_top.shape.get(8, 8, 15), "lying flat");
+
+    sim.step(&PlayerInput { craft: Some(on_side), ..Default::default() });
+    let Some(Ok((bundle, 1))) = sim.last_craft() else { panic!("a bundle: {:?}", sim.last_craft()) };
+    assert_eq!(sim.inventory().amount(bundle), plan.volume);
+    let first = sim.blocks().material_block(bundle);
+
+    // Placed on the floor looking north: every piece in one boxel, turned alike, upright.
+    let spot = BoxelPos::new(t.0.x + 1, t.0.y - 2, 0);
+    let (yaw, pitch) = aim(&sim, BoxelPos::new(spot.0.x, spot.0.y, -1), [0.5, 0.5, 1.0]);
+    sim.step(&PlayerInput { yaw, pitch, alt_pressed: true, alt_held: true, place_block: first, ..Default::default() });
+    let placed = sim.universe().main().cell(spot).to_vec();
+    assert_eq!(placed.iter().map(|o| o.block).collect::<Vec<_>>(), sim.blocks().pieces(bundle));
+    assert!(placed.iter().all(|o| o.orientation == api::Orientation::IDENTITY));
+    assert_eq!(sim.inventory().amount(bundle), 0, "used up whole");
+
+    // It's a working door half: the knob swings it.
+    let (yaw, pitch) = aim(&sim, spot, [0.875, 0.5, 0.625]);
+    sim.step(&PlayerInput { yaw, pitch, interact_pressed: true, ..Default::default() });
+    let cell = sim.universe().main().cell(spot).to_vec();
+    assert!(cell.iter().all(|o| sim.blocks().closed_of(o.block).is_some()), "swung open");
+    sim.step(&PlayerInput { yaw: 0.0, pitch: 0.0, ..Default::default() });
+    let (yaw, pitch) = aim(&sim, spot, [0.125, 0.0, 0.625]);
+    sim.step(&PlayerInput { yaw, pitch, interact_pressed: true, ..Default::default() });
+    assert_eq!(sim.universe().main().cell(spot).to_vec(), placed, "and back");
+
+    // Breaking takes off the piece aimed at, the knob, as an ordinary brass part.
+    let brass = material(&sim, base::BRASS);
+    let (yaw, pitch) = aim(&sim, spot, [0.875, 0.5, 0.625]);
+    sim.step(&PlayerInput { yaw, pitch, use_pressed: true, use_held: true, ..Default::default() });
+    assert_eq!(sim.universe().main().cell(spot).len(), 3);
+    let dropped: Vec<_> = sim.items().iter().map(|i| sim.blocks().part_of(i.drop.material)).collect();
+    assert_eq!(dropped, [Some(brass)]);
 }

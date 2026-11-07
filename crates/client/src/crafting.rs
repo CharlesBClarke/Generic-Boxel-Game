@@ -7,6 +7,8 @@
 //! turns a part brush a quarter turn. The craft button sends the craft with the next tick. The
 //! simulation decides what's made; this only asks and shows.
 
+use std::collections::HashMap;
+
 use api::crafting::GRID;
 use api::{BoxelPos, CraftError, Orientation, ShapeGrid, Vec3 as ZVec3};
 use bevy::prelude::*;
@@ -25,32 +27,136 @@ use crate::Look;
 pub struct CraftingMenu {
     /// The table it's open at, if it's open.
     pub open: Option<BoxelPos>,
-    /// Each cell's stack, bottom first, by row from the far side and column from the left.
-    pub cells: Cells,
+    /// Each view's stacks, the top's then the side's: each cell's stack, bottom first, by row
+    /// from the far side (or the top of the wall) and column from the left. Each view keeps its
+    /// own, so switching never makes the same stacks mean another shape.
+    pub grids: [Cells; 2],
+    /// Each view's flip: turn the made shape upside down.
+    pub flips: [bool; 2],
+    /// Build on the table's side: the grid is the wall, and stacks grow toward the player. Kept
+    /// between openings, so the menu opens in the view last used.
+    pub side: bool,
     /// What clicking a cell adds: a material, or a part turned some quarter turns.
     pub brush: Option<Piece>,
-    /// Turn the made shape upside down.
-    pub flip: bool,
     /// The stroke under way, if a button went down on the list or the grid and is still down.
     stroke: Option<Stroke>,
     /// A craft to send with the next tick.
     pub pending: Option<Craft>,
+    /// The craft last sent, so what it makes can be loaded back into the grid.
+    sent: Option<Craft>,
     /// What the last craft sent did.
     pub result: Option<Result<(MaterialId, u32), CraftRefusal>>,
     /// A part to throw away with the next tick.
     pub discard: Option<MaterialId>,
     /// The part being renamed, and the name typed so far.
     renaming: Option<(MaterialId, String)>,
+    /// What made each part crafted this session, by the part's name.
+    recipes: HashMap<String, Recipe>,
     /// Where the grid's column, the carried list and the result's column were drawn last frame.
     columns: [Option<egui::Rect>; 3],
 }
 
+/// What makes a part: the stacks, the view they're on and whether they're flipped.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Recipe {
+    pub cells: Cells,
+    pub side: bool,
+    pub flip: bool,
+}
+
 impl CraftingMenu {
-    /// The craft the stacks make at the open table, as many as asked for.
+    /// The open view's index into `grids` and `flips`.
+    fn view(&self) -> usize {
+        self.side as usize
+    }
+
+    /// The open view's stacks.
+    pub fn cells(&self) -> &Cells {
+        &self.grids[self.view()]
+    }
+
+    pub fn cells_mut(&mut self) -> &mut Cells {
+        let view = self.view();
+        &mut self.grids[view]
+    }
+
+    /// The open view's flip.
+    pub fn flip(&self) -> bool {
+        self.flips[self.view()]
+    }
+
+    /// The craft the open view's stacks make at the open table, as many as asked for.
     fn request(&self, count: u32) -> Option<Craft> {
         let table = self.open?;
-        Some(Craft { table, cells: self.cells, flip: self.flip, count })
+        Some(Craft { table, cells: *self.cells(), side: self.side, flip: self.flip(), count })
     }
+
+    /// The craft to send with this tick, if one is waiting; remembered until its outcome
+    /// comes back.
+    pub fn take_pending(&mut self) -> Option<Craft> {
+        let craft = self.pending.take();
+        if craft.is_some() {
+            self.sent = craft;
+        }
+        craft
+    }
+
+    /// A craft's outcome came back: remembers what made the part, so it can be loaded.
+    pub fn crafted(&mut self, blocks: &BlockRegistry, result: Result<(MaterialId, u32), CraftRefusal>) {
+        if let (Ok((part, _)), Some(sent)) = (result, self.sent.take()) {
+            let recipe = Recipe { cells: sent.cells, side: sent.side, flip: sent.flip };
+            self.recipes.insert(blocks.material_name(part).to_owned(), recipe);
+        }
+        self.result = Some(result);
+    }
+
+    /// What makes part or bundle `id`: how it was crafted this session, or else worked out
+    /// from its shape (see [`rebuild`]).
+    pub fn recipe(&self, blocks: &BlockRegistry, id: MaterialId) -> Option<Recipe> {
+        self.recipes.get(blocks.material_name(id)).copied().or_else(|| rebuild(blocks, id))
+    }
+
+    /// Puts `recipe` on the table: switches to its view and sets that view's stacks and flip.
+    pub fn load(&mut self, recipe: Recipe) {
+        self.side = recipe.side;
+        let view = self.view();
+        self.grids[view] = recipe.cells;
+        self.flips[view] = recipe.flip;
+    }
+}
+
+/// Stacks that make part or bundle `id`, worked out from its shape: each whole quarter of
+/// each piece a layer of its material. Tries the top view, then flipped, then the side, then
+/// flipped, and gives the first whose stacks rest. `None` for a material, or a shape with
+/// detail finer than quarters (which needed parts in layers to make).
+pub fn rebuild(blocks: &BlockRegistry, id: MaterialId) -> Option<Recipe> {
+    let pieces: Vec<(MaterialId, ShapeGrid)> = match blocks.pieces(id) {
+        [] => vec![(blocks.part_of(id)?, blocks.shape(blocks.material_block(id)))],
+        pieces => pieces.iter().map(|&b| Some((blocks.made_of(b)?, blocks.shape(b)))).collect::<Option<_>>()?,
+    };
+    for (side, flip) in [(false, false), (false, true), (true, false), (true, true)] {
+        // As built: undo the flip, then the tip (see `api::crafting::finished`).
+        let as_built = |shape: &ShapeGrid| {
+            let shape = if flip { api::crafting::flipped(shape) } else { shape.clone() };
+            if side { api::crafting::untipped(&shape) } else { shape }
+        };
+        let mut cells: Cells = Default::default();
+        let whole = pieces.iter().all(|(m, shape)| {
+            let Some(quarters) = as_built(shape).quarters() else {
+                return false;
+            };
+            for bit in (0..64).filter(|b| quarters & (1 << b) != 0) {
+                let (qx, qy, qz) = (bit % 4, bit / 4 % 4, bit / 16);
+                cells[GRID - 1 - qy][qx][qz] = Some(Piece::new(*m));
+            }
+            true
+        });
+        let stacks: api::Stacks = cells.map(|row| row.map(|stack| stack.map(|p| p.map(|_| api::Layer::Solid))));
+        if whole && api::crafting::stack_shape(&stacks).is_ok() {
+            return Some(Recipe { cells, side, flip });
+        }
+    }
+    None
 }
 
 /// Opens the menu at the table aimed at with the interact key, and closes it with the interact
@@ -97,7 +203,16 @@ fn aimed_table(world: &ClientWorld, look: &Look) -> Option<BoxelPos> {
     world.is_table(&hit).then_some(hit.pos)
 }
 
-/// A hint by the crosshair when it's on a table.
+/// The material of the trigger piece the player looks at, if it's one.
+fn aimed_trigger(world: &ClientWorld, look: &Look) -> Option<String> {
+    let hit = world.target(look.yaw, look.pitch)?;
+    let blocks = world.blocks();
+    let occupant = *world.universe().main().cell(hit.pos).get(hit.occupant)?;
+    blocks.get(occupant.block).filter(|def| def.has(api::Property::Trigger))?;
+    Some(blocks.made_of(occupant.block).map_or("trigger", |m| short(blocks.material_name(m))).to_owned())
+}
+
+/// A hint by the crosshair when it's on a table or a trigger.
 pub(crate) fn update_table_hint(
     world: Res<ClientWorld>,
     look: Res<Look>,
@@ -105,8 +220,11 @@ pub(crate) fn update_table_hint(
     controls: Res<Controls>,
     mut text: Single<&mut Text, With<TableHint>>,
 ) {
-    let line = match aimed_table(&world, &look) {
-        Some(_) if menu.open.is_none() => format!("crafting table: {} to craft", label(controls.interact)),
+    let key = label(controls.interact);
+    let line = match (aimed_table(&world, &look), aimed_trigger(&world, &look)) {
+        _ if menu.open.is_some() => String::new(),
+        (Some(_), _) => format!("crafting table: {key} to craft"),
+        (_, Some(material)) => format!("{material}: {key} to work it"),
         _ => String::new(),
     };
     if text.0 != line {
@@ -126,7 +244,7 @@ const ICON: f32 = 28.0;
 /// The grid's width: four cells and the gaps between them.
 const GRID_WIDTH: f32 = 4.0 * CELL + 3.0 * 2.0;
 /// The carried list's width. Fixed, like every column, so what's carried never moves the grid.
-const LIST_WIDTH: f32 = 340.0;
+const LIST_WIDTH: f32 = 380.0;
 /// How many "craft many" makes when there's no carrying limit.
 const MANY: u32 = 64;
 
@@ -176,19 +294,27 @@ fn show_menu(
             // width (it stays centered, so a wider window would move the grid).
             let gaps = 2.0 * (2.0 * ui.spacing().item_spacing.x + 6.0);
             ui.set_max_width(GRID_WIDTH + LIST_WIDTH + PREVIEW + gaps);
-            ui.label(
+            ui.horizontal(|ui| {
+                ui.selectable_value(&mut menu.side, false, "Build on the top");
+                ui.selectable_value(&mut menu.side, true, "Build on the side");
+            });
+            ui.label(if menu.side {
+                "Build on the table's side, the grid as the wall in front of you. Stacks grow out of the wall toward \
+                 you, and nothing may float off it. Placed, the wall side points the way you look."
+            } else {
                 "Build on the table top, seen from its front. Stacks rise from the table, and nothing may float. \
-                 Placed, the far side points the way you look.",
-            );
+                 Placed, the far side points the way you look."
+            });
             ui.horizontal_top(|ui| {
                 let grid_column = ui.vertical(|ui| {
                     ui.set_width(GRID_WIDTH);
                     ui.label("Click to add a layer, hold to level a row; right button takes one off");
-                    let CraftingMenu { cells, brush, stroke, .. } = &mut *menu;
-                    grid(ui, blocks, names, cells, *brush, stroke, bad);
+                    let view = menu.view();
+                    let CraftingMenu { grids, brush, stroke, .. } = &mut *menu;
+                    grid(ui, blocks, names, &mut grids[view], *brush, stroke, bad, view == 1);
                     ui.horizontal(|ui| {
                         if ui.button("Clear").clicked() {
-                            menu.cells = Default::default();
+                            *menu.cells_mut() = Default::default();
                         }
                         let turn = format!("Turn brush ({})", label(controls.turn_part));
                         let can_turn = menu.brush.is_some_and(|b| blocks.part_of(b.thing).is_some());
@@ -198,7 +324,7 @@ fn show_menu(
                             brush.turns = (brush.turns + 1) % 4;
                         }
                     });
-                    brush_line(ui, blocks, names, menu.brush);
+                    brush_line(ui, blocks, names, menu.brush, menu.side);
                 });
                 ui.separator();
                 // The tallest column's bottom: the result's is last frame's, as it comes after.
@@ -223,7 +349,7 @@ fn show_menu(
 }
 
 /// What the brush is, and how it's turned.
-fn brush_line(ui: &mut egui::Ui, blocks: &BlockRegistry, names: &PartNames, brush: Option<Piece>) {
+fn brush_line(ui: &mut egui::Ui, blocks: &BlockRegistry, names: &PartNames, brush: Option<Piece>, side: bool) {
     let Some(brush) = brush else {
         ui.label("brush: none (press something carried)");
         return;
@@ -231,7 +357,7 @@ fn brush_line(ui: &mut egui::Ui, blocks: &BlockRegistry, names: &PartNames, brus
     ui.horizontal(|ui| {
         ui.label("brush:");
         let (rect, _) = ui.allocate_exact_size(egui::vec2(ICON, ICON), egui::Sense::hover());
-        paint_piece(ui.painter(), rect, blocks, brush);
+        paint_piece(ui.painter(), rect, blocks, brush, side);
         let turned = match brush.turns {
             0 => String::new(),
             n => format!(", turned {} left", ["", "a quarter", "half", "three quarters"][n as usize]),
@@ -276,6 +402,7 @@ fn paint(stroke: &mut Option<Stroke>, brush: Option<Piece>, stack: &mut [Option<
 
 /// The 4×4 grid of stacks, painted by strokes. `bad` is a cell to mark as the reason nothing
 /// can be made.
+#[allow(clippy::too_many_arguments)]
 fn grid(
     ui: &mut egui::Ui,
     blocks: &BlockRegistry,
@@ -284,6 +411,7 @@ fn grid(
     brush: Option<Piece>,
     stroke: &mut Option<Stroke>,
     bad: Option<(usize, usize)>,
+    side: bool,
 ) {
     let (primary, secondary) = ui.ctx().input(|i| (i.pointer.primary_down(), i.pointer.secondary_down()));
     if !primary && !secondary {
@@ -307,7 +435,7 @@ fn grid(
                 // Taller stacks are lighter, so heights read at a glance.
                 painter.rect_filled(rect, 2.0, egui::Color32::from_gray(30 + 18 * h as u8));
                 if let Some(top) = h.checked_sub(1).and_then(|i| stack[i]) {
-                    paint_piece(&painter, rect.shrink(8.0), blocks, top);
+                    paint_piece(&painter, rect.shrink(8.0), blocks, top, side);
                 }
                 if h > 0 {
                     let at = rect.right_bottom() - egui::vec2(4.0, 2.0);
@@ -381,6 +509,16 @@ fn carried(
                 if ui.small_button("hold").on_hover_text("put it in hand").clicked() {
                     palette.select_part(world, id);
                 }
+                let recipe = menu.recipe(blocks, id);
+                let load = ui
+                    .add_enabled(recipe.is_some(), egui::Button::new("load").small())
+                    .on_hover_text("put what makes it on the table, to change it")
+                    .on_disabled_hover_text("not made this session, and too fine to work out from its shape");
+                if load.clicked()
+                    && let Some(recipe) = recipe
+                {
+                    menu.load(recipe);
+                }
                 match &mut menu.renaming {
                     Some((part, typed)) if *part == id => {
                         let field = ui.add(egui::TextEdit::singleline(typed).desired_width(110.0).hint_text("a name"));
@@ -422,12 +560,15 @@ fn result(
     let blocks = world.blocks();
     let (rect, _) = ui.allocate_exact_size(egui::vec2(PREVIEW, PREVIEW), egui::Sense::hover());
     ui.painter().rect_filled(rect, 4.0, egui::Color32::from_gray(25));
-    ui.checkbox(&mut menu.flip, "Flip upside down").on_hover_text("for things easier built top first, like a table");
+    let view = menu.view();
+    ui.checkbox(&mut menu.flips[view], "Flip upside down").on_hover_text("for things easier built top first, like a table");
     match &plan {
         Some(Ok(plan)) => {
-            let color = blocks.get(blocks.material_block(plan.material)).map_or([200; 3], |d| d.color);
-            paint_shape(ui.painter(), rect.shrink(12.0), &plan.shape, color);
-            let material = short(blocks.material_name(plan.material));
+            let pieces: Vec<(ShapeGrid, [u8; 3])> =
+                plan.pieces.iter().map(|(m, shape)| (shape.clone(), color_of(blocks, *m))).collect();
+            paint_pieces(ui.painter(), rect.shrink(12.0), &pieces);
+            let names: Vec<&str> = plan.pieces.iter().map(|(m, _)| short(blocks.material_name(*m))).collect();
+            let material = names.join(" and ");
             ui.label(format!(
                 "{} of a block of {material} each, free to make; {} at once",
                 crate::editing::fraction(plan.volume),
@@ -469,29 +610,46 @@ fn result(
     }
 }
 
-/// A layer as the grid shows it: a material's color, or a part's shape turned as it goes in.
-fn paint_piece(painter: &egui::Painter, rect: egui::Rect, blocks: &BlockRegistry, piece: Piece) {
-    let block = blocks.material_block(piece.thing);
+/// A layer as the grid shows it: a material's color, or a part's shape as it goes in: on the
+/// side, tipped back into the wall's frame, then turned (see `sim::crafting::plan`).
+fn paint_piece(painter: &egui::Painter, rect: egui::Rect, blocks: &BlockRegistry, piece: Piece, side: bool) {
     match blocks.part_of(piece.thing) {
         Some(_) => {
-            let color = blocks.get(block).map_or([200; 3], |d| d.color);
-            let shape = blocks.shape(block).turned(Orientation::quarter_turns(2, piece.turns as i32));
-            paint_shape(painter, rect, &shape, color);
+            let turn = Orientation::quarter_turns(2, piece.turns as i32);
+            let framed = |s: ShapeGrid| if side { api::crafting::untipped(&s) } else { s }.turned(turn);
+            let pieces: Vec<_> = pieces_of(blocks, piece.thing).into_iter().map(|(s, c)| (framed(s), c)).collect();
+            paint_pieces(painter, rect, &pieces);
         }
         None => paint_thing(painter, rect, blocks, piece.thing),
     }
 }
 
-/// A material as a solid square of its color, or a part as a picture of its shape.
+/// A material as a solid square of its color, or a part or bundle as a picture of its shape.
 pub(crate) fn paint_thing(painter: &egui::Painter, rect: egui::Rect, blocks: &BlockRegistry, id: MaterialId) {
-    let block = blocks.material_block(id);
-    let color = blocks.get(block).map_or([200; 3], |d| d.color);
     match blocks.part_of(id) {
-        Some(_) => paint_shape(painter, rect, &blocks.shape(block), color),
+        Some(_) => paint_pieces(painter, rect, &pieces_of(blocks, id)),
         None => {
+            let color = color_of(blocks, id);
             painter.rect_filled(rect, 2.0, egui::Color32::from_rgb(color[0], color[1], color[2]));
         }
     }
+}
+
+/// A part's shape in its color, or each of a bundle's pieces in its own.
+pub(crate) fn pieces_of(blocks: &BlockRegistry, id: MaterialId) -> Vec<(ShapeGrid, [u8; 3])> {
+    let block_color = |b| blocks.get(b).map_or([200; 3], |d| d.color);
+    match blocks.pieces(id) {
+        [] => {
+            let block = blocks.material_block(id);
+            vec![(blocks.shape(block), block_color(block))]
+        }
+        pieces => pieces.iter().map(|&b| (blocks.shape(b), block_color(b))).collect(),
+    }
+}
+
+/// A material's color: its block's.
+fn color_of(blocks: &BlockRegistry, material: MaterialId) -> [u8; 3] {
+    blocks.get(blocks.material_block(material)).map_or([200; 3], |d| d.color)
 }
 
 /// Where the pictures look from: in front of the shape (-Y, where someone at the table's front
@@ -503,10 +661,25 @@ struct Quad {
     depth: f32,
     corners: [ZVec3; 4],
     shade: f32,
+    color: [u8; 3],
 }
 
 /// The visible faces of `shape` from [`VIEW`], farthest first, in sixteenths.
+#[cfg(test)]
 fn quads(shape: &ShapeGrid) -> Vec<Quad> {
+    quads_of(&[(shape.clone(), [0; 3])])
+}
+
+/// The visible faces of the pieces from [`VIEW`], each in its piece's color, farthest first,
+/// in sixteenths. Where pieces overlap, the first one's color shows.
+fn quads_of(pieces: &[(ShapeGrid, [u8; 3])]) -> Vec<Quad> {
+    let color_at = |x: i32, y: i32, z: i32| {
+        let inside = (0..16).contains(&x) && (0..16).contains(&y) && (0..16).contains(&z);
+        if !inside {
+            return None;
+        }
+        pieces.iter().find(|(s, _)| s.get(x as usize, y as usize, z as usize)).map(|(_, c)| *c)
+    };
     let forward = ZVec3::from_array(VIEW).normalize();
     // The faces that turn toward the viewer, with the corners of a unit cube on them.
     let faces: [([i32; 3], [[f32; 3]; 4], f32); 3] = [
@@ -514,16 +687,14 @@ fn quads(shape: &ShapeGrid) -> Vec<Quad> {
         ([0, -1, 0], [[0., 0., 0.], [1., 0., 0.], [1., 0., 1.], [0., 0., 1.]], 0.8),
         ([0, 0, 1], [[0., 0., 1.], [1., 0., 1.], [1., 1., 1.], [0., 1., 1.]], 1.0),
     ];
-    let filled = |x: i32, y: i32, z: i32| {
-        (0..16).contains(&x) && (0..16).contains(&y) && (0..16).contains(&z) && shape.get(x as usize, y as usize, z as usize)
-    };
+    let filled = |x: i32, y: i32, z: i32| color_at(x, y, z).is_some();
     let mut out = Vec::new();
     for z in 0..16 {
         for y in 0..16 {
             for x in 0..16 {
-                if !filled(x, y, z) {
+                let Some(color) = color_at(x, y, z) else {
                     continue;
-                }
+                };
                 for (n, corners, shade) in &faces {
                     if filled(x + n[0], y + n[1], z + n[2]) {
                         continue;
@@ -531,7 +702,7 @@ fn quads(shape: &ShapeGrid) -> Vec<Quad> {
                     let at = ZVec3::new(x as f32, y as f32, z as f32);
                     let corners = corners.map(|c| at + ZVec3::from_array(c));
                     let middle = (corners[0] + corners[2]) * 0.5;
-                    out.push(Quad { depth: middle.dot(forward), corners, shade: *shade });
+                    out.push(Quad { depth: middle.dot(forward), corners, shade: *shade, color });
                 }
             }
         }
@@ -540,8 +711,9 @@ fn quads(shape: &ShapeGrid) -> Vec<Quad> {
     out
 }
 
-/// Draws `shape` in `rect` as a little 3D picture in `color`, seen from the front.
-pub(crate) fn paint_shape(painter: &egui::Painter, rect: egui::Rect, shape: &ShapeGrid, color: [u8; 3]) {
+/// Draws pieces together in `rect` as a little 3D picture, each in its color, seen from the
+/// front.
+pub(crate) fn paint_pieces(painter: &egui::Painter, rect: egui::Rect, pieces: &[(ShapeGrid, [u8; 3])]) {
     let forward = ZVec3::from_array(VIEW).normalize();
     let right = forward.cross(ZVec3::Z).normalize();
     let up = right.cross(forward);
@@ -554,7 +726,8 @@ pub(crate) fn paint_shape(painter: &egui::Painter, rect: egui::Rect, shape: &Sha
     let extent = corners.fold(egui::Vec2::ZERO, |m, c| m.max(c.abs()));
     let scale = (rect.width() / (2.0 * extent.x)).min(rect.height() / (2.0 * extent.y));
     let center = rect.center();
-    for quad in quads(shape) {
+    for quad in quads_of(pieces) {
+        let color = quad.color;
         let shade = |c: u8| (c as f32 * quad.shade) as u8;
         let fill = egui::Color32::from_rgb(shade(color[0]), shade(color[1]), shade(color[2]));
         let points = quad.corners.iter().map(|&p| center + flat(p) * scale).collect();
@@ -649,11 +822,11 @@ mod tests {
         let grid_at = menu.columns[0].unwrap().min;
         let brick = world.blocks().material(base::BRICK).unwrap();
         // A refusal, a line or two longer than the empty table's.
-        menu.cells[0][0][1] = Some(Piece::new(brick));
+        menu.cells_mut()[0][0][1] = Some(Piece::new(brick));
         draw(&ctx, &world, &mut menu);
         assert_eq!(menu.columns[0].unwrap().min, grid_at, "a refusal doesn't move the grid");
-        menu.cells[0][0][1] = None;
-        for row in &mut menu.cells {
+        menu.cells_mut()[0][0][1] = None;
+        for row in menu.cells_mut() {
             for stack in row {
                 stack[0] = Some(Piece::new(brick));
                 stack[1] = Some(Piece::new(brick));
@@ -685,11 +858,82 @@ mod tests {
     }
 
     #[test]
+    fn each_view_keeps_its_own_stacks_and_flip() {
+        let (_, world, mut menu) = at_table();
+        let brick = world.blocks().material(base::BRICK).unwrap();
+        menu.cells_mut()[3][0][0] = Some(Piece::new(brick));
+        menu.flips[0] = true;
+        menu.side = true;
+        assert_eq!(*menu.cells(), Cells::default(), "the side's grid is its own");
+        assert!(!menu.flip());
+        let side = menu.request(1).unwrap();
+        assert!(side.side && side.cells == Cells::default());
+        menu.side = false;
+        assert_eq!(menu.cells()[3][0][0], Some(Piece::new(brick)), "the top's stacks are where they were left");
+        assert!(menu.flip());
+    }
+
+    #[test]
+    fn a_crafted_part_loads_back_as_it_was_made() {
+        use crate::world::testing::step;
+        let (mut link, mut world, mut menu) = at_table();
+        let brick = world.blocks().material(base::BRICK).unwrap();
+        menu.side = true;
+        for col in 0..GRID {
+            menu.cells_mut()[3][col][0] = Some(Piece::new(brick));
+        }
+        menu.flips[1] = true;
+        menu.pending = menu.request(1);
+        let made = *menu.cells();
+        let craft = menu.take_pending();
+        step(&mut link, &mut world, &sim::PlayerInput { craft, ..Default::default() });
+        let result = world.take_craft().expect("an outcome");
+        menu.crafted(world.blocks(), result);
+        let Some(Ok((part, 1))) = menu.result else { panic!("{:?}", menu.result) };
+        // Clear both views and go to the top, then load.
+        menu.grids = Default::default();
+        menu.flips = [false; 2];
+        menu.side = false;
+        let recipe = menu.recipe(world.blocks(), part).unwrap();
+        assert_eq!(recipe, Recipe { cells: made, side: true, flip: true });
+        menu.load(recipe);
+        assert!(menu.side && menu.flip() && *menu.cells() == made);
+        assert_eq!(menu.grids[0], Cells::default(), "the top's grid untouched");
+    }
+
+    #[test]
+    fn parts_not_made_this_session_are_rebuilt_from_whole_quarters() {
+        let (_, world, _) = at_table();
+        let blocks = world.blocks();
+        let stone = blocks.material(base::STONE).unwrap();
+        let part = |shape: &ShapeGrid| blocks.drop(blocks.find_shaped(stone, shape).unwrap()).unwrap().material;
+        // The test area's stairs: on the top, two layers near, four far.
+        let stairs = rebuild(blocks, part(&base::shapes::stairs())).unwrap();
+        assert!(!stairs.side && !stairs.flip);
+        let height = |row: usize, col: usize| stairs.cells[row][col].iter().filter(|p| p.is_some()).count();
+        assert_eq!([height(0, 0), height(1, 2), height(2, 1), height(3, 3)], [4, 4, 2, 2]);
+        assert!(stairs.cells.iter().flatten().flatten().flatten().all(|p| p.thing == stone));
+        // A post is finer than quarters.
+        let wood = blocks.material(base::WOOD).unwrap();
+        let post = blocks.drop(blocks.find_shaped(wood, &base::shapes::post()).unwrap()).unwrap().material;
+        assert_eq!(rebuild(blocks, post), None);
+        // The door as a bundle: its knob floats on the top, so it's rebuilt on the side.
+        let mut blocks = world.blocks().clone();
+        let pieces: Vec<_> =
+            base::shapes::door_lower().into_iter().map(|(m, shape)| (blocks.material(m).unwrap(), shape)).collect();
+        let door = blocks.bundle(&pieces).unwrap();
+        let recipe = rebuild(&blocks, door).unwrap();
+        assert!(recipe.side && !recipe.flip);
+        let brass = blocks.material(base::BRASS).unwrap();
+        assert_eq!(recipe.cells[1][3][1], Some(Piece::new(brass)), "the knob, one layer out");
+    }
+
+    #[test]
     fn the_request_needs_an_open_table() {
         let mut menu = CraftingMenu::default();
         assert_eq!(menu.request(1), None);
         menu.open = Some(BoxelPos::new(1, 2, 3));
-        menu.flip = true;
+        menu.flips[0] = true;
         let craft = menu.request(5).unwrap();
         assert_eq!((craft.table, craft.flip, craft.count), (BoxelPos::new(1, 2, 3), true, 5));
     }

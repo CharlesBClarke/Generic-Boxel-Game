@@ -16,3 +16,7 @@ pickup_delay = 1.5
 [start]
 brick = 16
 wood = 16
+# Metals for doors and levers (see blocks.toml).
+brass = 4
+iron = 4
+copper = 4

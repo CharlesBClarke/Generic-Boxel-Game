@@ -3,6 +3,53 @@
 Moved out of `SLICES.md` on 2026-11-03 so the roadmap stays short. Each toy's full write-up, newest first, as it stood when it closed. `SLICES.md` keeps a one-line summary of each.
 
 
+#### Functional crafting (`toy-functional-crafting`)
+
+**Stage:** Done (2026-11-06). Verified by the user in play: the grid per view, loading a part, the window and list layout, the side L, and no flip high on a wall. Split at close at the user's request: what materials do (the trigger, hinge and listener built here) is planned again in Material behavior (`docs/notes/material-behavior.md`); the door and lever stay as that toy's first try.
+
+**Goal:** Several materials in one crafted shape, and materials with properties that act, enough for a door and a lever with no door code in the engine. Takes item 1, item 2 and item 4 of Crafting follow-ups and the proof toy of Generative crafting.
+
+**Plan**
+- *Several materials, as a bundle* (the user's choice of 2026-11-02). The table stops refusing mixed materials: each material's sixteenths become a piece, and nothing-floats checks the whole. One material makes an ordinary part as before. Several make a bundle: one carried kind listing its pieces (at most 4, the most a boxel holds), each a block of its own named from the bundle, breaking into an ordinary part. Placing checks room for every piece, then puts each piece in the boxel as its own occupant, all turned alike. Breaking takes off the piece aimed at. A bundle can go in a table layer, each piece shrinking with it. Menu pictures, the ghost and hotbar draw each piece in its color.
+- *Building on the side of the table* (follow-up 2). A top/side switch in the menu: on the side the grid is the wall as you face it and stacks grow toward you; the rule builds as usual and tips the result a quarter turn about X, so the wall becomes the far side.
+- *No upside-down flip on the upper half of a wall* in basic placement (follow-up 4); only ceilings flip.
+- *Properties from materials.* `api::Property` (`trigger`, `hinge`, `listener`), set on a material's block in `blocks.toml` (`properties = [...]`) and copied to every shape of it. New base materials: brass (trigger), iron (hinge), copper (listener). Rules, a boxel's occupants acting as one block:
+  - Trigger: interact (E) aimed at a trigger piece signals its boxel, and every touching boxel holding a listener. Left and right click never trigger.
+  - Hinge: a signaled boxel holding a hinge piece swings a quarter turn about the hinge piece's long axis (vertical when it has none), the way that leaves least sticking out of the boxel, then slides back inside. The swing reaches the boxels along the same hinge line, so a two-high door moves as one and double doors don't couple. Opened pieces become "open" kinds that remember what they were, so closing restores them exactly; open kinds break into the same part. Refused, nothing moving, if a body is in the way.
+  - Listener: takes signals from touching triggers; passes nothing on (no wiring yet).
+- API debt: the three properties are a fixed engine set (paid by the WebAssembly behavior seam's block behavior).
+- Test area: a doorway with a two-high door and a lever beside it, built with the same shapes players make.
+
+**Tests:** mixed stacks and the side tip in `api::crafting`; bundle plan and make, placing a bundle, breaking one piece; the swing (stays inside, open then close gives back the start, horizontal hinge); signals (lever through a listener, a two-high door together, double doors apart, a body blocks it); end to end through player input.
+
+**Done when**
+- Mixed materials make one design; placed, each piece shows its material, and breaking takes one piece.
+- Shapes can be built on the side of the table.
+- A two-high door (wood panel, iron hinge strip, brass knob) opens and closes with E on its knob, and won't swing into the player.
+- A brass lever beside a door with a copper listener opens it.
+- No door or lever code anywhere: it all comes from material properties.
+
+**Out of scope:** simple and advanced crafters, drag and drop, capacity, connectors (fences), wiring, the edge placement mode (follow-up 3).
+
+**Plan changes** (2026-11-06, from the user's first play)
+- *A grid per view.* Opening the menu from a side face switched it to side mode, so the stacks left on the top grid quietly made a different shape. Now the top and the side each keep their own stacks, and the menu opens in the view last used. Crafted parts stay shared: a part made in one view is a brush in the other.
+- *Loading a part into the grid* (a new feature the user asked for). A "load" button by each carried part or bundle puts back the stacks, view and flip that made it, remembered from the craft for the session. A part not crafted this session is rebuilt from its shape if it's whole quarters (top view first, then side); otherwise loading is greyed out.
+- The window widening when the preview appears and the carried list using only part of its column are older bugs, fixed on `fix-crafting-menu-layout`.
+
+**Implementation notes**
+- One detail differs from the plan's words, not its intent. A knob sticks out of the panel, so turning about the hinge alone pushes it out of the boxel. The swing picks the way that leaves less outside, then slides everything back in (a knobbed door swings toward its knob, its hinge moving in by the knob's depth). Since a slid swing can't be undone by turning back, open pieces are their own kinds (`BlockRegistry::opened`) that remember the closed occupant, which is the notes' "two kinds swapped in place".
+- Bundles: `BlockRegistry::bundle`; each piece is its own block kind (`<ns>:bundle_<hash>_<i>`), breaking into the ordinary part. The first piece is what's held and placed, and it brings the rest (`companions`, `cost`).
+- Signals and swings: `sim::signal`. Interact: `PlayerInput.interact_pressed` (the existing interact key, which also opens the table).
+- Opening the menu on a table's side face starts it in side mode.
+- The test area's door is at `DOOR_SPOT` (north of spawn, waypoint `door`); the player starts with 4 each of brass, iron and copper.
+- A part in a layer on the side is tipped back into the wall's frame before its turn (`api::crafting::untipped`), so it comes out of a craft standing as it stands in the world, in either view; the turn key turns it on the wall's face. Found in play: a standing L made on the side came back out turned a quarter wrong when used in the side's own grid.
+- Deferred: a thrown bundle is drawn as its first piece only.
+
+*Tests:* every crate passes, clippy clean. New: `sim/tests/doors.rs` (4: knob opens and closes exactly, lever through copper, interact on wood does nothing, won't swing into the player), `sim::signal` (7), bundle and side tests in `sim::crafting` and `sim/tests/crafting.rs` (a crafted side-built door placed and worked end to end), menu layout, views and loading in `client::crafting`.
+*Decisions:* parts keep how they stand in the world when they go in a layer, in either view; the top and side are two frames of one rule (side = built as on top, tipped); a design of several materials is a bundle placed whole; only ceilings turn shapes upside down in basic placement.
+*API debt added:* Fixed block properties.
+
+
 #### WebAssembly behavior seam (`seam-wasm-behavior`)
 
 **Stage:** Done (2026-11-06). Verified by the user in play ("cows feel good here anyway I don't notice any difference"); equivalence rests on the bit-for-bit tests.

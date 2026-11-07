@@ -23,6 +23,12 @@ pub const WOOD: &str = "base:wood";
 pub const LOG: &str = "base:log";
 pub const GRAVEL: &str = "base:gravel";
 pub const CRAFTING_TABLE: &str = "base:crafting_table";
+/// Brass: a trigger, for knobs and levers.
+pub const BRASS: &str = "base:brass";
+/// Iron: a hinge, for doors and trapdoors.
+pub const IRON: &str = "base:iron";
+/// Copper: a listener, so a lever beside a door reaches it.
+pub const COPPER: &str = "base:copper";
 
 /// The cow, defined in `mods/base/targets.toml`, with its brain in the `base_cow` crate.
 pub const COW: &str = "base:cow";
@@ -61,6 +67,10 @@ pub const SHAPES_SPOT: (i64, i64, i64) = (-5, 0, 0);
 /// Where the crafting table stands, relative to the test area's origin: north-west of spawn,
 /// its front facing south toward it.
 pub const TABLE_SPOT: (i64, i64, i64) = (-2, 3, 0);
+
+/// Where the door stands, relative to the test area's origin: in a brick wall north of spawn,
+/// its knob and the lever beside it facing south toward spawn.
+pub const DOOR_SPOT: (i64, i64, i64) = (2, 10, 0);
 
 /// Where the far copy of the test area sits, for checking that play is the same in the millions.
 pub const FAR_ORIGIN: BoxelPos = BoxelPos::new(3_000_000, -2_000_000, 1_000);
@@ -190,6 +200,8 @@ impl Mod for BaseMod {
         w.add_waypoint("far", spawn(FAR_ORIGIN));
         let (x, y, z) = SHAPES_SPOT;
         w.add_waypoint("shapes", WorldPos::new(origin.0 + I64Vec3::new(x, y, z), Vec3::new(0.5, 0.5, 0.0)));
+        let (x, y, z) = DOOR_SPOT;
+        w.add_waypoint("door", WorldPos::new(origin.0 + I64Vec3::new(x, y - 2, z), Vec3::new(0.5, 0.5, 0.0)));
         let (x, y, z) = COW_PEN_SPOT;
         w.add_waypoint("cow pen", WorldPos::new(origin.0 + I64Vec3::new(x, y, z), Vec3::new(0.5, 0.5, 0.0)));
         let (x, y, z) = PASTURE_SPOT;
@@ -358,9 +370,35 @@ fn build_shapes_corner(w: &mut dyn WorldEdit, o: BoxelPos) -> Result<(), ApiErro
     }
     w.fill(at(-7, 3, 0), at(-7, 3, 1), LOG)?;
 
+    build_door(w, o)?;
+
     // The crafting table, unturned: its front faces south.
     let (x, y, z) = TABLE_SPOT;
     w.add_block(at(x, y, z), CRAFTING_TABLE, Orientation::IDENTITY)
+}
+
+/// A brick wall 3 high with a doorway, a two-high door in it and a lever in the wall beside
+/// it, all facing south (built on the table's side and unturned, their wall side is north).
+/// Nothing here is a door to the engine: the door swings because its strip is iron, the knob
+/// and lever work because they're brass, and the lever reaches the door through its copper
+/// plate (see `blocks.toml`).
+fn build_door(w: &mut dyn WorldEdit, o: BoxelPos) -> Result<(), ApiError> {
+    let (x, y, z) = DOOR_SPOT;
+    let at = |dx: i64, dz: i64| o.offset(I64Vec3::new(x + dx, y, z + dz));
+    let south = Orientation::IDENTITY;
+    w.fill(at(-3, 0), at(3, 2), BRICK)?;
+    w.clear(at(0, 0), at(0, 1));
+    w.clear(at(1, 0), at(1, 0));
+    for (m, shape) in shapes::door_lower() {
+        w.add_shaped(at(0, 0), m, &shape, south)?;
+    }
+    for (m, shape) in shapes::door_upper() {
+        w.add_shaped(at(0, 1), m, &shape, south)?;
+    }
+    for (m, shape) in shapes::lever(BRICK) {
+        w.add_shaped(at(1, 0), m, &shape, south)?;
+    }
+    Ok(())
 }
 
 /// Things to move around on: jump gaps, a pillar line, a sprint straight, an ice patch and

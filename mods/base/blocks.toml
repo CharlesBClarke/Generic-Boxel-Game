@@ -16,6 +16,12 @@
 #              "any": the whole turn (slabs, stairs)
 #   material   what breaking it drops: its volume of this material, so a slab drops half.
 #              Defaults to the block's own name; blocks of one material share it.
+#   properties what a material does wherever a piece of it is, in any shape made of it; none
+#              by default. A boxel's pieces act as one block.
+#              "trigger": interact (E) on it signals its boxel and touching listeners
+#              "hinge": a signaled boxel swings a quarter turn about this piece's long
+#                       axis, with the boxels along the same hinge line, and back next time
+#              "listener": takes signals from triggers in touching boxels
 #
 # Every block here is a full block: shapes aren't listed, they're crafted. A crafting table
 # (see crafting.toml) turns a pattern of a material into a part of any shape, and the test
@@ -91,6 +97,18 @@ rings = { colors = [[196, 158, 102], [168, 132, 82]], spacing = 2, bark = [[91, 
 [looks.gravel]
 noise = { colors = [[78, 76, 74], [98, 94, 91], [120, 116, 111], [142, 136, 129]], scale = 1, seed = 8 }
 
+[looks.brass]
+sheen = { strength = 0.35, sharpness = 24 }
+noise = { colors = [[176, 140, 58], [188, 152, 66], [198, 163, 76]], scale = 4, seed = 11 }
+
+[looks.iron]
+sheen = { strength = 0.3, sharpness = 20 }
+noise = { colors = [[112, 114, 118], [122, 124, 128], [132, 134, 138]], scale = 3, seed = 12 }
+
+[looks.copper]
+sheen = { strength = 0.35, sharpness = 24 }
+noise = { colors = [[170, 96, 58], [184, 108, 66], [196, 120, 76]], scale = 4, seed = 13 }
+
 # Dark boards under a light top, so the table reads as a work surface.
 [looks.crafting_table]
 planks = { width = 4, colors = [[114, 80, 47], [118, 83, 49], [122, 86, 51], [126, 88, 53]], thickness = 2, shade = 0.07, cross = true, seed = 9 }
@@ -154,3 +172,23 @@ name = "crafting_table"
 sounds = { step = "step_on_crafting_table", broken = "break_wood", placed = "place_wood" }
 look = "crafting_table"
 turning = "any"
+
+# Metals with properties: what crafted shapes made with them do. A door is a wood panel with an
+# iron hinge strip and a brass knob; a brass lever beside a door with a copper plate opens it.
+[[block]]
+name = "brass"
+sounds = { step = "step_concrete", broken = "break_stone", placed = "place" }
+look = "brass"
+properties = ["trigger"]
+
+[[block]]
+name = "iron"
+sounds = { step = "step_concrete", broken = "break_stone", placed = "place" }
+look = "iron"
+properties = ["hinge"]
+
+[[block]]
+name = "copper"
+sounds = { step = "step_concrete", broken = "break_stone", placed = "place" }
+look = "copper"
+properties = ["listener"]

@@ -33,6 +33,39 @@ pub struct BlockDef {
     pub material: Option<String>,
     /// What it sounds like underfoot, breaking and being placed.
     pub sounds: BlockSounds,
+    /// What it does, brought by its material into every shape made of it (see [`Property`]).
+    pub properties: Vec<Property>,
+}
+
+/// Something a material does wherever a piece of it is, written by hand and given to materials
+/// by mods. A boxel's occupants act together as one block: a signal reaches the boxel, and
+/// every piece in it answers. A fixed set for now; mods can't add their own yet.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum Property {
+    /// Pressing interact aimed at a piece of it signals its boxel, and every touching boxel
+    /// with a listener in it. A knob, a lever.
+    Trigger,
+    /// A signaled boxel holding a piece of it swings a quarter turn about the piece's long
+    /// axis, with every boxel along the same hinge line, and back again on the next signal.
+    Hinge,
+    /// Takes signals from triggers in the boxels it touches. Passes nothing on.
+    Listener,
+}
+
+impl Property {
+    /// Its name in data files.
+    pub fn name(self) -> &'static str {
+        match self {
+            Property::Trigger => "trigger",
+            Property::Hinge => "hinge",
+            Property::Listener => "listener",
+        }
+    }
+
+    /// The property named `name` in data files.
+    pub fn from_name(name: &str) -> Option<Property> {
+        [Property::Trigger, Property::Hinge, Property::Listener].into_iter().find(|p| p.name() == name)
+    }
 }
 
 impl BlockDef {
@@ -49,6 +82,7 @@ impl BlockDef {
             turning: Turning::None,
             material: None,
             sounds: BlockSounds::default(),
+            properties: Vec::new(),
         }
     }
 
@@ -85,6 +119,15 @@ impl BlockDef {
     pub fn with_sounds(mut self, sounds: BlockSounds) -> Self {
         self.sounds = sounds;
         self
+    }
+
+    pub fn with_properties(mut self, properties: Vec<Property>) -> Self {
+        self.properties = properties;
+        self
+    }
+
+    pub fn has(&self, property: Property) -> bool {
+        self.properties.contains(&property)
     }
 
     /// Whether it fills its whole boxel. A full block shares its boxel with nothing.

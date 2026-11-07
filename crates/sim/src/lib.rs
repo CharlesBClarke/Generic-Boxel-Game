@@ -12,6 +12,7 @@ pub mod path;
 pub mod player;
 pub mod raycast;
 pub mod registry;
+pub mod signal;
 pub mod simulation;
 pub mod terrain;
 pub mod view;

@@ -25,10 +25,10 @@ pub mod shape;
 pub mod terrain;
 pub mod tuning;
 
-pub use block::{BlockBox, BlockDef, LookDef, Sheen, Turning};
+pub use block::{BlockBox, BlockDef, LookDef, Property, Sheen, Turning};
 pub use brain::{Attack, Brain, BrainContext, BrainOutput, Hurt, MAX_NEIGHBORS, Neighbor, Route, Seen};
 pub use combat::{HitBox, TargetDef, ToolDef};
-pub use crafting::{CraftError, CraftingDef, Layer, Stack, Stacks, craft_shape};
+pub use crafting::{CraftError, CraftingDef, Layer, Stack, Stacks, craft_shape, finished, stack_fill};
 pub use coords::{BoxelPos, CHUNK_SIZE, CHUNK_VOLUME, ChunkPos, LocalPos, WorldPos, look_direction};
 pub use crowd::CrowdDef;
 pub use error::ApiError;

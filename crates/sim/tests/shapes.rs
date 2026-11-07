@@ -168,12 +168,12 @@ fn basic_slabs_take_the_top_or_bottom_like_minecraft() {
     let slab = common::stone_slab(&sim);
     let place = sim.placement(&floor_at(0.5, 0.5), slab, EAST, -0.5, BASIC).unwrap();
     assert_eq!((place.pos, space(&sim, place.occupant)), (BoxelPos::new(-14, 0, 0), vec![BOTTOM_SLAB]));
-    // On a wall: the half aimed at, wherever across the wall.
+    // On a wall: upright wherever it's aimed; only ceilings turn shapes upside down.
     for x in [0.1, 0.5, 0.9] {
-        let low = sim.placement(&wall_at(x, 0.2), slab, -1.6, LEVEL, BASIC).unwrap();
-        assert_eq!((low.pos, space(&sim, low.occupant)), (BoxelPos::new(-10, 2, 2), vec![BOTTOM_SLAB]));
-        let high = sim.placement(&wall_at(x, 0.8), slab, -1.6, LEVEL, BASIC).unwrap();
-        assert_eq!(space(&sim, high.occupant), [TOP_SLAB]);
+        for y in [0.2, 0.8] {
+            let place = sim.placement(&wall_at(x, y), slab, -1.6, LEVEL, BASIC).unwrap();
+            assert_eq!((place.pos, space(&sim, place.occupant)), (BoxelPos::new(-10, 2, 2), vec![BOTTOM_SLAB]));
+        }
     }
 }
 
@@ -247,12 +247,13 @@ fn basic_stairs_rise_the_way_the_player_looks() {
         let o = sim.placement(&floor_at(0.5, 0.5), stairs, yaw, -0.5, BASIC).unwrap().occupant.orientation;
         assert_eq!((o.apply([0, 1, 0]), o.apply([0, 0, 1])), (rises, [0, 0, 1]), "looking along {yaw}");
     }
-    // Against a ceiling or high on a wall: upside down, still rising the way the player looks.
+    // Against a ceiling: upside down, still rising the way the player looks. High on a wall:
+    // upright, as low on it.
     let ceiling = face(BoxelPos::new(-14, 0, 3), I64Vec3::NEG_Z);
     let o = sim.placement(&ceiling, stairs, 1.5, 0.5, BASIC).unwrap().occupant.orientation;
     assert_eq!((o.apply([0, 1, 0]), o.apply([0, 0, 1])), ([0, 1, 0], [0, 0, -1]));
     let o = sim.placement(&wall_at(0.5, 0.8), stairs, -1.6, LEVEL, BASIC).unwrap().occupant.orientation;
-    assert_eq!((o.apply([0, 1, 0]), o.apply([0, 0, 1])), ([0, -1, 0], [0, 0, -1]));
+    assert_eq!((o.apply([0, 1, 0]), o.apply([0, 0, 1])), ([0, -1, 0], [0, 0, 1]));
 }
 
 #[test]

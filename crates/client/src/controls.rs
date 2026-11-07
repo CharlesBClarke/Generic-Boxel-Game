@@ -93,7 +93,7 @@ key_actions! {
     /// item line.
     drop = KeyQ, None;
     /// Opens the crafting menu at a crafting table aimed at, and closes it.
-    interact = KeyE, Some("craft at a table");
+    interact = KeyE, Some("craft at a table, work a knob or lever");
     /// Measures the frame rate for a few seconds and writes it down (see `crate::perf`).
     record_perf = F9, None;
     /// Goes back to where the last frame rate recording was made, looking the same way.

@@ -147,7 +147,7 @@ pub(crate) fn playing(cursor: &CursorOptions) -> bool {
     cursor.grab_mode != CursorGrabMode::None
 }
 
-/// Latches use and drop presses for the next tick, and picks the palette slot.
+/// Latches use, drop and interact presses for the next tick, and picks the palette slot.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn edit_input(
     keys: Res<ButtonInput<KeyCode>>,
@@ -170,6 +170,9 @@ pub(crate) fn edit_input(
     }
     if keys.just_pressed(controls.drop) {
         toggles.drop_pressed = true;
+    }
+    if keys.just_pressed(controls.interact) {
+        toggles.interact_pressed = true;
     }
     if controls.placement_mode.just_pressed(&keys, &mouse) {
         palette.precise = !palette.precise;
@@ -315,13 +318,16 @@ pub(crate) fn update_ghost(
         return;
     };
     visibility.set_if_neq(Visibility::Visible);
+    // A bundle's first piece brings the rest, so it stands for the whole ghost.
     if ghost.shown != Some(place.occupant) {
         let mut data = mesher::MeshData::default();
-        // Built around the boxel's center, so scaling shrinks it in place.
-        let boxes = mesher::alone(place.occupant, blocks);
-        let around = || boxes.as_slice();
         let (volumes, off) = (&chunk_meshes.volumes, &mesher::AoTuning::OFF);
-        mesher::mesh_occupant(&mut data, place.occupant, [-0.5; 3], blocks, volumes, |_| false, &around, off, &mut Vec::new());
+        for occupant in place.occupants() {
+            // Built around the boxel's center, so scaling shrinks it in place.
+            let boxes = mesher::alone(occupant, blocks);
+            let around = || boxes.as_slice();
+            mesher::mesh_occupant(&mut data, occupant, [-0.5; 3], blocks, volumes, |_| false, &around, off, &mut Vec::new());
+        }
         mesh.0 = meshes.add(crate::to_bevy_mesh(data));
         ghost.shown = Some(place.occupant);
     }
@@ -394,8 +400,17 @@ pub(crate) fn short(name: &str) -> &str {
 /// A part's name for people: its material, how much of a block it fills, and the first four
 /// digits of its shape's hash to tell parts of one size apart, like `wood ½ #3fa2`.
 pub(crate) fn part_name(blocks: &BlockRegistry, part: MaterialId) -> String {
-    let material = blocks.part_of(part).map_or("?", |m| short(blocks.material_name(m)));
-    let tag = blocks.material_name(part).rsplit_once("_s").map_or("", |(_, hash)| &hash[..hash.len().min(4)]);
+    let material = match blocks.pieces(part) {
+        [] => blocks.part_of(part).map_or("?", |m| short(blocks.material_name(m))).to_owned(),
+        pieces => {
+            let names: Vec<&str> =
+                pieces.iter().filter_map(|&b| blocks.made_of(b)).map(|m| short(blocks.material_name(m))).collect();
+            names.join("+")
+        }
+    };
+    let name = blocks.material_name(part);
+    let hash = name.rsplit_once("_s").or_else(|| name.rsplit_once("bundle_")).map_or("", |(_, hash)| hash);
+    let tag = &hash[..hash.len().min(4)];
     format!("{material} {} #{tag}", fraction(blocks.unit(part)))
 }
 
@@ -616,9 +631,10 @@ mod tests {
         let blocks = sim.blocks();
         let material = |name| Entry::Material(blocks.material(name).unwrap(), blocks.id(name).unwrap());
         let (brick, brick_block) = (blocks.material(base::BRICK).unwrap(), blocks.id(base::BRICK).unwrap());
-        // The base game starts with brick and wood; nothing else is carried, so nothing else is
-        // on offer, not even the test area's crafted shapes.
-        assert_eq!(entries(&sim), [Entry::Tool(club), material(base::BRICK), material(base::WOOD)]);
+        // The base game starts with brick, wood and the metals; nothing else is carried, so
+        // nothing else is on offer, not even the test area's crafted shapes.
+        let start = [base::BRICK, base::WOOD, base::BRASS, base::IRON, base::COPPER].map(material);
+        assert_eq!(entries(&sim), [&[Entry::Tool(club)][..], &start].concat());
 
         let at = |slot| Palette { slot, ..Default::default() };
         assert_eq!(at(0).held(&sim), Held::Tool(club));
@@ -634,16 +650,17 @@ mod tests {
         }
         let blocks = sim.blocks();
         let material = |name| Entry::Material(blocks.material(name).unwrap(), blocks.id(name).unwrap());
-        let slots =
-            [Entry::Tool(club), material(base::DIRT), material(base::BRICK), material(base::WOOD), Entry::Part(part, slab)];
+        let mut slots = vec![Entry::Tool(club), material(base::DIRT)];
+        slots.extend([base::BRICK, base::WOOD, base::BRASS, base::IRON, base::COPPER].map(material));
+        slots.push(Entry::Part(part, slab));
         assert_eq!(entries(&sim), slots);
         let mut palette = at(0);
         palette.select_part(&sim, part);
-        assert_eq!((palette.slot, palette.selected(&sim), palette.material(&sim)), (4, slab, Some(part)));
+        assert_eq!((palette.slot, palette.selected(&sim), palette.material(&sim)), (7, slab, Some(part)));
 
         // Throwing the part away takes it off the palette.
         step(&mut link, &mut sim, &PlayerInput { discard: Some(part), ..Default::default() });
-        assert_eq!(entries(&sim).len(), 4);
+        assert_eq!(entries(&sim).len(), 7);
     }
 
     #[test]
@@ -651,7 +668,7 @@ mod tests {
         let (_, sim) = connect(base_sim());
         let names = PartNames::default();
         let palette = Palette { slot: 1, ..Default::default() };
-        assert_eq!(carried_line(&sim), "carrying 32, no limit");
+        assert_eq!(carried_line(&sim), "carrying 44, no limit");
         let slots = entries(&sim);
         assert_eq!(slot_label(&sim, &names, &slots[0]), ("club".into(), None));
         assert_eq!(slot_label(&sim, &names, &slots[1]), ("brick".into(), Some("16".into())));

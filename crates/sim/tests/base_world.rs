@@ -2,7 +2,7 @@
 
 use std::collections::HashSet;
 
-use api::{ChunkPos, Turning, Vec3, WorldPos};
+use api::{ChunkPos, Property, Turning, Vec3, WorldPos};
 use glam::Vec2;
 use sim::{PlayerInput, SimError, Simulation};
 
@@ -38,7 +38,8 @@ fn base_blocks_come_from_its_data_files() {
     let blocks = sim.blocks();
     let def = |name| blocks.get(blocks.id(name).unwrap()).unwrap();
     // The data file's full blocks, then the shapes the test area was built with, crafted as it
-    // was built: brick slabs (the cow pen's steps), stone stairs, wood posts, a stone slab.
+    // was built: brick slabs (the cow pen's steps), stone stairs, wood posts, a stone slab, then
+    // the door's pieces (the upper half's hinge is the lower half's) and the lever's.
     let names: Vec<_> = blocks.iter().map(|(_, d)| d.name.as_str()).collect();
     let listed = [
         base::STONE,
@@ -51,14 +52,20 @@ fn base_blocks_come_from_its_data_files() {
         base::LOG,
         base::GRAVEL,
         base::CRAFTING_TABLE,
+        base::BRASS,
+        base::IRON,
+        base::COPPER,
     ];
     assert_eq!(names[..listed.len()], listed);
-    let crafted = [
+    let mut crafted = vec![
         (base::BRICK, base::shapes::slab()),
         (base::STONE, base::shapes::stairs()),
         (base::WOOD, base::shapes::post()),
         (base::STONE, base::shapes::slab()),
     ];
+    crafted.extend(base::shapes::door_lower());
+    crafted.extend(base::shapes::door_upper().into_iter().filter(|(m, _)| *m == base::WOOD));
+    crafted.extend(base::shapes::lever(base::BRICK));
     assert_eq!(names.len(), listed.len() + crafted.len(), "no other shapes: {names:?}");
     for (i, (material, shape)) in crafted.iter().enumerate() {
         let (id, d) = blocks.iter().nth(listed.len() + i).unwrap();
@@ -94,17 +101,25 @@ fn base_blocks_come_from_its_data_files() {
     assert_eq!(
         looks,
         [
+            "base:brass",
             "base:brick",
+            "base:copper",
             "base:crafting_table",
             "base:dirt",
             "base:grass",
             "base:gravel",
             "base:ice",
+            "base:iron",
             "base:log",
             "base:stone",
             "base:wood"
         ]
     );
+    // The metals bring what crafted shapes made with them do.
+    assert_eq!(def(base::BRASS).properties, [Property::Trigger]);
+    assert_eq!(def(base::IRON).properties, [Property::Hinge]);
+    assert_eq!(def(base::COPPER).properties, [Property::Listener]);
+    assert!(def(base::WOOD).properties.is_empty());
     for look in sim.looks().iter() {
         assert!(look.rgba.as_chunks::<4>().0.iter().all(|px| px[3] == 255), "{} should be opaque", look.name);
     }
