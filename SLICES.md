@@ -105,11 +105,11 @@ A run of small toy slices. Each one takes a single game-feel feature that doesn'
 ### Current toy
 
 **Waiting for a play check** (remind the user at the start of every session, and at good moments during one, until they confirm; then delete the line):
-- Sound (5): sounds pan as you turn and fade with distance (turn away from a mooing cow, walk off).
 
 **Low-priority play checks** (don't remind every session; check only when a toy makes it convenient, such as one that puts the player among moving cows; delete the line once seen):
 - Cow herd (1): a cow shoved well away from the herd walks back to it on its own.
 - Cow herd (3): a moving cow that runs into the player pushes them back, with no jitter or sticking.
+- Sound (5): sounds pan as you turn and fade with distance. Hard to judge with cows mooing rarely; check once something makes a steady or on-demand sound.
 
 - Cow pathfinding (low priority, 2026-11-06): the user called the toy "really good" without going through the five course checks one by one; note any that misbehave: cows through the pen's gap and up its terraces, up the mesa's steps, a charge baited off the mesa's cliff (landing hurt), waiting below the pillar (orange route), climbing hills on the generated terrain.
 
