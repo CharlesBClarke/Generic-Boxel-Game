@@ -1,8 +1,8 @@
 // The sky: one triangle over the whole screen at the far plane, colored by which way each
 // pixel looks (see `client::shading`).
 
-#import bevy_pbr::mesh_view_bindings::view
-#import boxel::atmosphere::{Atmosphere, sky}
+#import bevy_pbr::mesh_view_bindings::{view, globals}
+#import boxel::atmosphere::{Atmosphere, sky, sun}
 #ifdef TONEMAP_IN_SHADER
 #import bevy_core_pipeline::tonemapping::tone_mapping
 #endif
@@ -33,7 +33,7 @@ fn fragment(in: VertexOutput) -> @location(0) vec4<f32> {
     // A point on the near plane through this pixel, then the way from the eye to it.
     let near = view.world_from_clip * vec4<f32>(in.ndc, 1.0, 1.0);
     let dir = normalize(near.xyz / near.w - view.world_position);
-    var color = vec4<f32>(sky(atmosphere, dir, true), 1.0);
+    var color = vec4<f32>(sun(atmosphere, dir, sky(atmosphere, dir), globals.time), 1.0);
 #ifdef TONEMAP_IN_SHADER
     color = tone_mapping(color, view.color_grading);
 #endif

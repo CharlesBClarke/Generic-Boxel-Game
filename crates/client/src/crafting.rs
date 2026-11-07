@@ -636,7 +636,7 @@ fn carried_square(
     let part = blocks.part_of(id).is_some();
     let amount = match part {
         true => format!("×{}", amount / blocks.unit(id)),
-        false => crate::items::amount_label(amount),
+        false => crate::editing::carried_label(world, id, amount),
     };
     let picked = menu.brush.is_some_and(|b| b.thing == Thing::Material(id));
     let (rect, response) = ui.allocate_exact_size(egui::vec2(CARRIED_CELL, CARRIED_CELL), egui::Sense::click_and_drag());

@@ -188,6 +188,7 @@ impl Simulation {
                 None => report.skip(format!("carried {name}")),
             }
         }
+        self.refill_endless();
         self.items.clear();
         for item in &save.items {
             match (self.blocks.material(&item.material), self.blocks.id(&item.block)) {

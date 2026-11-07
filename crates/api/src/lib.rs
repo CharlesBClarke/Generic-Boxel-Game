@@ -35,7 +35,7 @@ pub use crowd::CrowdDef;
 pub use error::ApiError;
 pub use health::HealthDef;
 pub use interaction::{InteractionDef, PushOutDef};
-pub use item::{InventoryDef, ItemDropDef};
+pub use item::{ENDLESS_AMOUNT, InventoryDef, ItemDropDef};
 pub use media::{
     BlockSounds, Bone, BonePose, Clip, ModelDef, PlayerSounds, Skin, SoundDef, TargetSounds, Texture, ToolSounds, Track,
 };

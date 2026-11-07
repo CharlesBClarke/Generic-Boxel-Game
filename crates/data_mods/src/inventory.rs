@@ -5,6 +5,8 @@
 //! throw_speed = 6     # meters per second, along the look
 //! pickup_delay = 1.5  # seconds before a thrown item can be picked up again
 //!
+//! endless = ["copper"] # materials that never run out (optional)
+//!
 //! [start]             # what a player starts with, in boxels' worth (optional)
 //! brick = 16
 //! ```
@@ -30,6 +32,8 @@ struct InventoryFile {
     pickup_delay: f32,
     #[serde(default)]
     start: BTreeMap<Spanned<String>, Spanned<f32>>,
+    #[serde(default)]
+    endless: Vec<Spanned<String>>,
 }
 
 /// What `inventory.toml` in `dir` defines, or nothing if there's no such file. `blocks` are
@@ -41,17 +45,23 @@ pub(crate) fn load(dir: &Path, namespace: &str, blocks: &[BlockDef]) -> Result<O
     }
     let file = Source::read(path)?;
     let entries: InventoryFile = file.parse()?;
-    let mut start = Vec::new();
-    for (short, amount) in &entries.start {
+    // A material's full name, checked: a short one must be the material of one of this mod's blocks.
+    let material = |short: &Spanned<String>, what: &str| {
         let m = short.get_ref();
         let full = if m.contains(':') { m.clone() } else { format!("{namespace}:{m}") };
         if !is_valid_name(&full) {
-            let message = format!("start material {m:?}: use lowercase letters, digits and underscores");
+            let message = format!("{what} material {m:?}: use lowercase letters, digits and underscores");
             return Err(file.error_at(short, message));
         }
         if !m.contains(':') && !blocks.iter().any(|b| b.material.as_deref() == Some(full.as_str())) {
-            return Err(file.error_at(short, format!("start material {m:?}: no block in this mod is made of it")));
+            return Err(file.error_at(short, format!("{what} material {m:?}: no block in this mod is made of it")));
         }
+        Ok(full)
+    };
+    let mut start = Vec::new();
+    for (short, amount) in &entries.start {
+        let m = short.get_ref();
+        let full = material(short, "start")?;
         let amount = *amount.get_ref();
         if !(amount.is_finite() && amount >= 0.0) {
             return Err(file.error_at(short, format!("start amount of {m:?} must be at least 0, got {amount}")));
@@ -63,6 +73,7 @@ pub(crate) fn load(dir: &Path, namespace: &str, blocks: &[BlockDef]) -> Result<O
         throw_speed: entries.throw_speed,
         pickup_delay: entries.pickup_delay,
         start,
+        endless: entries.endless.iter().map(|m| material(m, "endless")).collect::<Result<_, _>>()?,
     };
     // Point at the capacity if there is one; it's what the start is measured against too.
     let at = entries.capacity.clone().unwrap_or_else(|| Spanned::new(0..0, 0.0));

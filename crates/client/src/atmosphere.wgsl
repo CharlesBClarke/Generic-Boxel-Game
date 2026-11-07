@@ -19,22 +19,72 @@ struct Atmosphere {
     edges: vec4<f32>,
     // Which parts are drawn, 1 or 0: edges, fog, sheen, light.
     parts: vec4<f32>,
+    // The sun's rays: how many, how far past the disc (in disc radii), how wide at the disc (a
+    // share of the gap between rays, up to 0.45), how strong.
+    rays: vec4<f32>,
+    // How much the rays' lengths vary, how much they fade toward their tips, how fast they turn
+    // (turns a minute), and the disc's radius in radians.
+    ray_shape: vec4<f32>,
 };
 
-// The sky looking along `dir` (a unit vector), with the sun's disc drawn or not. Fog fades to
-// it without the disc, so far terrain melts into the sky behind it.
-fn sky(a: Atmosphere, dir: vec3<f32>, disc: bool) -> vec3<f32> {
+// The sun's color at full brightness, whatever its strength.
+fn sun_hue(a: Atmosphere) -> vec3<f32> {
+    return a.sun_color.rgb / max(max(a.sun_color.r, a.sun_color.g), max(a.sun_color.b, 0.001));
+}
+
+// The sky looking along `dir` (a unit vector), with its glow around the sun but not the sun
+// itself. Fog fades to it, so far terrain melts into the sky behind it.
+fn sky(a: Atmosphere, dir: vec3<f32>) -> vec3<f32> {
     let up = clamp(dir.y, 0.0, 1.0);
-    var color = mix(a.horizon.rgb, a.zenith.rgb, sqrt(up));
+    let color = mix(a.horizon.rgb, a.zenith.rgb, sqrt(up));
     let toward = max(dot(dir, a.sun_direction.xyz), 0.0);
-    let sun = a.sun_color.rgb / max(max(a.sun_color.r, a.sun_color.g), max(a.sun_color.b, 0.001));
-    color += sun * a.sun_color.w * (0.25 * pow(toward, 8.0) + 0.75 * pow(toward, 256.0));
-    if disc {
-        let edge = a.sun_direction.w;
-        let soft = (1.0 - edge) * 0.15;
-        color = mix(color, sun * 2.0, smoothstep(edge - soft, edge + soft, toward));
+    return color + sun_hue(a) * a.sun_color.w * (0.25 * pow(toward, 8.0) + 0.75 * pow(toward, 256.0));
+}
+
+// A small hash of a ray's number, 0 to 1.
+fn ray_hash(i: f32) -> f32 {
+    return fract(sin(i * 12.9898 + 4.1414) * 43758.5453);
+}
+
+// The sun drawn over `color` (the sky looking along `dir`): a crisp disc and flat, pointed rays
+// out from it, like a drawn sun. `time` is in seconds, for turning the rays.
+fn sun(a: Atmosphere, dir: vec3<f32>, color: vec3<f32>, time: f32) -> vec3<f32> {
+    let s = a.sun_direction.xyz;
+    // How far from the sun's middle, in radians; one pixel's worth of that, for soft edges.
+    let away = atan2(length(cross(dir, s)), dot(dir, s));
+    let pixel = max(fwidth(away), 1e-6);
+    let radius = a.ray_shape.w;
+    let hue = sun_hue(a) * 2.0;
+    var out = color;
+
+    let count = round(a.rays.x);
+    let reach = a.rays.y * radius;
+    if count >= 1.0 && reach > 0.0 && a.rays.w > 0.0 && away > radius - pixel && away < radius + reach + pixel {
+        // Which way around the sun, from a side direction across it.
+        var side = cross(s, vec3<f32>(0.0, 1.0, 0.0));
+        if length(side) < 1e-3 {
+            side = vec3<f32>(1.0, 0.0, 0.0);
+        }
+        side = normalize(side);
+        let other = cross(side, s);
+        let turns = a.ray_shape.z * time / 60.0;
+        let around = (atan2(dot(dir, other), dot(dir, side)) / 6.2831853 + turns) * count;
+        let i = floor(around);
+        let ray = (i % count + count) % count;
+        let off = abs(fract(around) - 0.5);
+        // This ray's length, then how far along it this pixel is: 0 at the disc, 1 at the tip.
+        let span = reach * (1.0 - a.ray_shape.x * ray_hash(ray));
+        let t = clamp((away - radius) / max(span, 1e-6), 0.0, 1.0);
+        // Across the ray, in radians: positive inside its wedge.
+        let width = min(a.rays.z, 0.45) * (1.0 - t);
+        let inside = (width - off) / count * 6.2831853 * sin(away);
+        let along = span + radius - away;
+        let cover = smoothstep(-pixel, pixel, inside) * smoothstep(-pixel, pixel, along);
+        let fade = 1.0 - a.ray_shape.y * t;
+        out = mix(out, hue, clamp(cover * fade * a.rays.w, 0.0, 1.0));
     }
-    return color;
+
+    return mix(out, hue, smoothstep(-pixel, pixel, radius - away));
 }
 
 // How much fog there is at `distance` meters, from 0 to the fog's thickness.

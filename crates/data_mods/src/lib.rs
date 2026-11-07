@@ -934,6 +934,10 @@ mod tests {
         let start = [("other:clay".to_owned(), 1.0), ("test:stone".to_owned(), 2.0)];
         assert_eq!(def.start, start, "another mod's material is left for the engine to check");
         assert!(Folder::new("no_inventory").write("mod.toml", MANIFEST).load().unwrap().inventory().is_none());
+        assert!(def.endless.is_empty(), "nothing is endless unless listed");
+        let endless = INVENTORY.replacen("pickup_delay = 1\n", "pickup_delay = 1\nendless = [\"stone\", \"other:clay\"]\n", 1);
+        let endless = inventory_folder("inventory_endless", &endless).load().unwrap();
+        assert_eq!(endless.inventory().unwrap().endless, ["test:stone", "other:clay"]);
     }
 
     #[test]
@@ -952,6 +956,9 @@ mod tests {
         let (line, message) = error("i_amount", "stone = 2", "stone = -2");
         assert_eq!(line, Some(7));
         assert!(message.contains("at least 0"), "{message}");
+        let (line, message) = error("i_endless", "pickup_delay = 1", "pickup_delay = 1\nendless = [\"sand\"]");
+        assert_eq!(line, Some(5));
+        assert!(message.contains("endless material \"sand\"") && message.contains("no block"), "{message}");
         let (_, message) = error("i_field", "pickup_delay = 1", "pickup_delay = 1\n        weight = 3");
         assert!(message.contains("unknown field"), "{message}");
     }

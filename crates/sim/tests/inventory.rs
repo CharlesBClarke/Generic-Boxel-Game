@@ -61,7 +61,13 @@ impl Mod for Yard {
 
 /// Room for `capacity` boxels, starting with `stone` boxels of stone.
 fn inventory(capacity: f32, stone: f32) -> InventoryDef {
-    InventoryDef { capacity: Some(capacity), throw_speed: 6.0, pickup_delay: 1.0, start: vec![("test:stone".into(), stone)] }
+    InventoryDef {
+        capacity: Some(capacity),
+        throw_speed: 6.0,
+        pickup_delay: 1.0,
+        start: vec![("test:stone".into(), stone)],
+        endless: Vec::new(),
+    }
 }
 
 fn yard(inventory: Option<InventoryDef>) -> Simulation {
@@ -224,6 +230,31 @@ fn holding_drop_keeps_throwing_until_none_is_left() {
     assert_eq!(thrown, FULL_VOLUME * 3 / 2);
     // Nothing held, nothing thrown.
     sim.step(&PlayerInput { drop_pressed: true, drop_held: true, ..Default::default() });
+}
+
+#[test]
+fn an_endless_material_is_topped_back_up_after_placing_and_after_a_load() {
+    let def = InventoryDef { endless: vec!["test:stone".into()], ..inventory(8.0, 0.0) };
+    let mut sim = yard(Some(def));
+    let (stone, full) = (stone(&sim), block(&sim, "test:stone"));
+    let endless = (api::ENDLESS_AMOUNT * FULL_VOLUME as f32) as u32;
+    assert_eq!(sim.inventory().amount(stone), endless, "topped up from the start, past the capacity");
+    assert!(place_on_floor(&mut sim, -1, 0, full));
+    sim.step(&PlayerInput::default());
+    assert_eq!(sim.inventory().amount(stone), endless, "placing used some, and it came back");
+
+    // A save that carries none, like one written before the material was endless.
+    let mut save = sim.save();
+    save.inventory.clear();
+    sim.load(&save).unwrap();
+    assert_eq!(sim.inventory().amount(stone), endless, "a load tops it up too");
+}
+
+#[test]
+fn an_endless_material_must_exist() {
+    let def = InventoryDef { endless: vec!["test:clay".into()], ..inventory(8.0, 0.0) };
+    let err = Simulation::with_mods(&[&Yard { inventory: Some(def) }]).err().unwrap();
+    assert_eq!(err, SimError::Api(ApiError::UnknownMaterial("test:clay".into())));
 }
 
 #[test]

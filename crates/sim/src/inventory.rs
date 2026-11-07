@@ -39,6 +39,12 @@ impl Inventory {
         taken
     }
 
+    /// Raises `material` to at least `amount`, whatever the capacity.
+    pub fn top_up(&mut self, material: MaterialId, amount: u32) {
+        let short = amount.saturating_sub(self.amount(material));
+        self.add(material, short, None);
+    }
+
     /// Takes `amount` of `material` out, if that much is carried. Returns whether it was.
     pub fn take(&mut self, material: MaterialId, amount: u32) -> bool {
         match self.amounts.get_mut(material.index()) {
@@ -67,6 +73,16 @@ mod tests {
 
     fn materials() -> (MaterialId, MaterialId) {
         (MaterialId::from_index(0), MaterialId::from_index(1))
+    }
+
+    #[test]
+    fn topping_up_raises_but_never_lowers() {
+        let (stone, wood) = materials();
+        let mut inv = Inventory::default();
+        inv.add(wood, 9, None);
+        inv.top_up(stone, 4);
+        inv.top_up(wood, 4);
+        assert_eq!((inv.amount(stone), inv.amount(wood)), (4, 9));
     }
 
     #[test]
