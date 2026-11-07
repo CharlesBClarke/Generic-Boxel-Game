@@ -23,6 +23,7 @@ pub mod tuning_file;
 pub mod view;
 pub mod volumes;
 pub mod world;
+pub mod world_menu;
 
 use std::time::{Duration, Instant};
 
@@ -84,6 +85,7 @@ pub fn run(connection: Box<dyn Connection>) {
         .init_resource::<dev::DevMode>()
         .init_resource::<Palette>()
         .init_resource::<crafting::CraftingMenu>()
+        .init_resource::<world_menu::WorldMenu>()
         .init_resource::<PartNames>()
         .init_resource::<items::ItemViews>()
         .init_resource::<DoubleTapSprint>()
@@ -147,7 +149,7 @@ pub fn run(connection: Box<dyn Connection>) {
             )
                 .chain(),
         )
-        .add_systems(EguiPrimaryContextPass, (editing::hotbar, tuning::tuning_panel, crafting::crafting_menu).chain())
+        .add_systems(EguiPrimaryContextPass, (editing::hotbar, tuning::tuning_panel, crafting::crafting_menu, world_menu::world_menu).chain())
         .add_systems(Update, world_notes)
         .add_systems(Last, (save_on_exit, limit_frame_rate))
         .run();
@@ -163,6 +165,7 @@ fn world_notes(mut world: ResMut<ClientWorld>, mut look: ResMut<Look>, mut reado
     for note in world.take_world_notes() {
         readout.show(match note {
             WorldNote::Saved { name } => format!("WORLD {name} SAVED"),
+            WorldNote::Loaded { name, fresh: true, .. } => format!("NEW WORLD {name}"),
             WorldNote::Loaded { name, skipped, .. } if skipped.is_empty() => format!("WORLD {name} LOADED"),
             WorldNote::Loaded { name, skipped, .. } => {
                 for s in &skipped {
@@ -375,6 +378,7 @@ fn tick_simulation(
     cursor: Single<&CursorOptions, With<PrimaryWindow>>,
     mut toggles: ResMut<PendingToggles>,
     mut menu: ResMut<crafting::CraftingMenu>,
+    world_menu: Res<world_menu::WorldMenu>,
     stop: Res<combat::HitStop>,
     mut link: ResMut<Link>,
 ) {
@@ -382,9 +386,9 @@ fn tick_simulation(
     // it to end, as they did when it paused the simulation; held buttons and keys carry on.
     let frozen = stop.frozen();
     let take = |pressed: &mut bool| !frozen && std::mem::take(pressed);
-    // With the crafting menu open, keys belong to it (a part's name is being typed, say), so the
-    // body stands still.
-    let free = menu.open.is_none();
+    // With the crafting or world menu open, keys belong to it (a name is being typed, say), so
+    // the body stands still.
+    let free = menu.open.is_none() && !world_menu.open;
     let down = |key: KeyCode| free && keys.pressed(key);
     let axis = |pos: KeyCode, neg: KeyCode| down(pos) as i32 as f32 - down(neg) as i32 as f32;
     let playing = editing::playing(&cursor);
@@ -428,20 +432,25 @@ fn grab_cursor(
     controls: Res<Controls>,
     mut panel: ResMut<TuningPanel>,
     mut menu: ResMut<crafting::CraftingMenu>,
+    mut worlds: ResMut<world_menu::WorldMenu>,
 ) {
-    if keys.just_pressed(controls.tuning) {
+    // Names are typed into the world menu, so the tuning key is just a letter there.
+    if keys.just_pressed(controls.tuning) && !worlds.open {
         panel.open = !panel.open;
         set_grab(&mut cursor, !panel.open && menu.open.is_none());
     }
-    // While the panel or the crafting menu is open, clicks belong to it.
-    if mouse.just_pressed(MouseButton::Left) && !panel.open && menu.open.is_none() {
+    // While a panel or menu is open, clicks belong to it.
+    if mouse.just_pressed(MouseButton::Left) && !panel.open && menu.open.is_none() && !worlds.open {
         set_grab(&mut cursor, true);
     }
     if keys.just_pressed(KeyCode::Escape) {
-        // Escape closes the crafting menu and goes back to playing; otherwise it lets the mouse go.
-        let crafting = menu.open.take().is_some();
-        panel.open = false;
-        set_grab(&mut cursor, crafting);
+        // Escape closes the crafting menu, the tuning panel or the world menu and goes back to
+        // playing; while playing it opens the world menu.
+        let closed = menu.open.take().is_some() | std::mem::take(&mut panel.open) | std::mem::take(&mut worlds.open);
+        if !closed {
+            worlds.show();
+        }
+        set_grab(&mut cursor, closed);
     }
 }
 
@@ -481,10 +490,11 @@ fn sprint_toggle(
     keys: Res<ButtonInput<KeyCode>>,
     controls: Res<Controls>,
     menu: Res<crafting::CraftingMenu>,
+    worlds: Res<world_menu::WorldMenu>,
     mut toggle: ResMut<SprintToggle>,
 ) {
-    // Shift typed into the crafting menu (a capital in a part's name) isn't a sprint.
-    let pressed = menu.open.is_none() && keys.just_pressed(controls.sprint);
+    // Shift typed into a menu (a capital in a name) isn't a sprint.
+    let pressed = menu.open.is_none() && !worlds.open && keys.just_pressed(controls.sprint);
     toggle.update(pressed, keys.pressed(controls.forward));
 }
 
@@ -499,9 +509,10 @@ fn debug_keys(
     mut window: Single<&mut Window, With<PrimaryWindow>>,
     mut waypoint: ResMut<WaypointCursor>,
     menu: Res<crafting::CraftingMenu>,
+    worlds: Res<world_menu::WorldMenu>,
 ) {
-    // Keys belong to the crafting menu while it's open.
-    if menu.open.is_some() {
+    // Keys belong to the crafting or world menu while it's open.
+    if menu.open.is_some() || worlds.open {
         return;
     }
     if keys.just_pressed(controls.fly) {

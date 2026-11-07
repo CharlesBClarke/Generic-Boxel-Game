@@ -46,7 +46,7 @@ impl Copy {
             }
             ServerMsg::Chunk(chunk) => self.universe.main_mut().import_chunk(chunk),
             ServerMsg::Blocks(blocks) => self.blocks = blocks.len(),
-            ServerMsg::Tick(_) | ServerMsg::Defs(_) | ServerMsg::Sounds(_) | ServerMsg::World(_) => {}
+            ServerMsg::Tick(_) | ServerMsg::Defs(_) | ServerMsg::Sounds(_) | ServerMsg::World(_) | ServerMsg::Worlds(_) => {}
         }
     }
 }
@@ -219,6 +219,72 @@ fn saving_then_loading_puts_the_world_back_and_the_copy_follows() {
     }
     assert!(same_by_name(&saved, server.simulation()), "back as saved");
     assert!(same_world(copy.universe.main(), server.simulation().universe().main()), "the copy follows");
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
+/// Breaks and places all around for a while.
+fn edit(server: &mut Server, ticks: usize) {
+    for i in 0..ticks {
+        let input = PlayerInput {
+            yaw: i as f32 * 0.37,
+            pitch: -0.2 - (i % 7) as f32 * 0.15,
+            use_pressed: i % 3 == 0,
+            alt_pressed: i % 3 == 1,
+            place_block: server.simulation().blocks().id(base::BRICK).unwrap(),
+            movement: api::Vec2::new(((i / 40) % 2) as f32, 0.0),
+            ..Default::default()
+        };
+        server.handle(ClientMsg::Input(Box::new(input)));
+    }
+}
+
+fn worlds(server: &mut Server) -> Vec<String> {
+    match server.handle(ClientMsg::Command(Command::ListWorlds)).into_iter().next() {
+        Some(ServerMsg::Worlds(names)) => names,
+        _ => panic!("a list of worlds"),
+    }
+}
+
+#[test]
+fn worlds_are_saved_as_opened_and_started_fresh() {
+    let dir = std::env::temp_dir().join(format!("boxel-server-worlds-test-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    let file = WorldFile::in_folder(&dir, "first").unwrap();
+    let mut sim = base_sim();
+    sim.world_settings_mut().terrain_width = 2;
+    sim.world_settings_mut().terrain_height = 16;
+    let fresh = sim.save();
+    sim.generate_terrain().unwrap();
+    let mut server = Server::new(sim).with_world(file.clone(), false).with_fresh(fresh);
+    let cmd = |c| ClientMsg::Command(c);
+
+    edit(&mut server, 120);
+    assert_eq!(note(server.handle(cmd(Command::SaveWorldAs("second".into())))), WorldNote::Saved { name: "second".into() });
+    assert_eq!(worlds(&mut server), ["second"], "the first was never saved");
+    let mut edited = base_sim();
+    edited.load(&file.sibling("second").unwrap().read().unwrap().unwrap()).unwrap();
+    assert!(!same_by_name(&edited, &small_world()));
+
+    // A new world starts as the game built it, and the one left is saved first.
+    edit(&mut server, 30);
+    let WorldNote::Loaded { name, fresh: true, .. } = note(server.handle(cmd(Command::OpenWorld("third".into())))) else {
+        panic!("a fresh world")
+    };
+    assert_eq!(name, "third");
+    assert!(same_by_name(server.simulation(), &small_world()), "untouched");
+    let mut left = base_sim();
+    left.load(&file.sibling("second").unwrap().read().unwrap().unwrap()).unwrap();
+    assert!(!same_by_name(&left, &edited), "the edits since Save as were saved on leaving");
+
+    // Back to the second, as it was left.
+    let WorldNote::Loaded { fresh: false, .. } = note(server.handle(cmd(Command::OpenWorld("second".into())))) else {
+        panic!("loaded")
+    };
+    assert!(same_by_name(server.simulation(), &left));
+    assert_eq!(worlds(&mut server), ["third", "second"], "last saved first");
+
+    assert!(matches!(note(server.handle(cmd(Command::OpenWorld("../x".into())))), WorldNote::Failed(_)));
+    assert!(matches!(note(server.handle(cmd(Command::SaveWorldAs("".into())))), WorldNote::Failed(_)));
     std::fs::remove_dir_all(&dir).unwrap();
 }
 

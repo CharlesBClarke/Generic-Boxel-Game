@@ -44,6 +44,10 @@ pub struct ClientWorld {
     look_to: Option<(f32, f32)>,
     /// The world came from a save, so its terrain values are the save's.
     from_save: bool,
+    /// The world being played, if the server saves worlds.
+    world_name: Option<String>,
+    /// Every saved world, last saved first, as the server last listed them.
+    saved_worlds: Vec<String>,
 }
 
 impl ClientWorld {
@@ -73,6 +77,8 @@ impl ClientWorld {
             world_notes: Vec::new(),
             look_to: welcome.loaded_look,
             from_save: welcome.loaded_look.is_some(),
+            world_name: welcome.world,
+            saved_worlds: Vec::new(),
         };
         world.take_snapshot(welcome.snapshot);
         world.show_latest();
@@ -98,11 +104,17 @@ impl ClientWorld {
             }
             ServerMsg::Sounds(Err(why)) => self.sound_reload = Some(Err(why)),
             ServerMsg::World(note) => {
-                if let WorldNote::Loaded { look, .. } = &note {
-                    self.look_to = Some(*look);
+                match &note {
+                    WorldNote::Loaded { look, name, .. } => {
+                        self.look_to = Some(*look);
+                        self.world_name = Some(name.clone());
+                    }
+                    WorldNote::Saved { name } => self.world_name = Some(name.clone()),
+                    WorldNote::Failed(_) => {}
                 }
                 self.world_notes.push(note);
             }
+            ServerMsg::Worlds(names) => self.saved_worlds = names,
         }
     }
 
@@ -300,6 +312,16 @@ impl ClientWorld {
     /// Where to look now, as a loaded world was saved, once.
     pub fn take_look(&mut self) -> Option<(f32, f32)> {
         self.look_to.take()
+    }
+
+    /// The world being played, if the server saves worlds.
+    pub fn world_name(&self) -> Option<&str> {
+        self.world_name.as_deref()
+    }
+
+    /// Every saved world, last saved first, as the server last listed them.
+    pub fn saved_worlds(&self) -> &[String] {
+        &self.saved_worlds
     }
 
     /// Whether the world came from a save when the game started.

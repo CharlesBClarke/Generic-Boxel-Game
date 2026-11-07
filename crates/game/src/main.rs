@@ -36,10 +36,11 @@ fn main() {
         Some(_) => eprintln!("world: {} (loaded from {})", world.name, world.path().display()),
         None => eprintln!("world: {} (new; saves to {})", world.name, world.path().display()),
     }
-    let sim = game::load_world(&data, code, save.as_ref()).unwrap_or_else(|e| fail(e.to_string()));
+    let (sim, fresh) = game::load_world(&data, code, save.as_ref()).unwrap_or_else(|e| fail(e.to_string()));
     let sounds = data.clone();
     let server = server::Server::new(sim)
         .with_sound_source(Box::new(move || data_mods::load_sounds(&sounds).map_err(|e| e.to_string())))
-        .with_world(world, save.is_some());
+        .with_world(world, save.is_some())
+        .with_fresh(fresh);
     client::run(Box::new(server::LocalConnection::new(server)));
 }

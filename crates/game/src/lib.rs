@@ -56,12 +56,13 @@ pub fn load(code: Code) -> Result<Simulation, Box<dyn Error>> {
 /// The engine with the base mod's data half read from `data`, the player spawned and the
 /// terrain generated.
 pub fn load_from(data: &Path, code: Code) -> Result<Simulation, Box<dyn Error>> {
-    load_world(data, code, None)
+    load_world(data, code, None).map(|(sim, _)| sim)
 }
 
 /// The engine with the base mod's data half read from `data` and the player spawned, then
-/// either the terrain generated or, given a save, the world put back as it was saved.
-pub fn load_world(data: &Path, code: Code, save: Option<&SaveData>) -> Result<Simulation, Box<dyn Error>> {
+/// either the terrain generated or, given a save, the world put back as it was saved. Also
+/// returns the world as the game built it, before the terrain, to start fresh worlds from.
+pub fn load_world(data: &Path, code: Code, save: Option<&SaveData>) -> Result<(Simulation, SaveData), Box<dyn Error>> {
     let data = data_mods::load(data)?;
     let wasm_cow = match code.brain {
         Where::Native => None,
@@ -84,6 +85,7 @@ pub fn load_world(data: &Path, code: Code, save: Option<&SaveData>) -> Result<Si
         sim.add_movement_controller(&name, Box::new(controller))?;
     }
     sim.spawn_player()?;
+    let fresh = sim.save();
     match save {
         None => {
             sim.generate_terrain()?;
@@ -97,5 +99,5 @@ pub fn load_world(data: &Path, code: Code, save: Option<&SaveData>) -> Result<Si
     if let Some(stats) = sim.generation() {
         eprintln!("terrain: {} chunks ({} of one block all through) in {:.2} s", stats.chunks, stats.uniform, stats.seconds);
     }
-    Ok(sim)
+    Ok((sim, fresh))
 }

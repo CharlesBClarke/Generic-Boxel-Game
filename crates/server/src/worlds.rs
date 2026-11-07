@@ -35,6 +35,28 @@ impl WorldFile {
         Ok(WorldFile { name: name.to_owned(), folder: worlds.join(name) })
     }
 
+    /// The world `name` in the same folder of worlds as this one.
+    pub fn sibling(&self, name: &str) -> Result<WorldFile, String> {
+        let worlds = self.folder.parent().ok_or("a world outside any folder")?;
+        WorldFile::in_folder(worlds, name)
+    }
+
+    /// The names of every saved world in the same folder as this one, last saved first.
+    pub fn saved_worlds(&self) -> Vec<String> {
+        let Some(Ok(entries)) = self.folder.parent().map(std::fs::read_dir) else { return Vec::new() };
+        let mut worlds: Vec<(std::time::SystemTime, String)> = entries
+            .filter_map(|e| {
+                let e = e.ok()?;
+                let name = e.file_name().into_string().ok()?;
+                let file = self.sibling(&name).ok()?;
+                let modified = std::fs::metadata(file.path()).ok()?.modified().ok()?;
+                Some((modified, name))
+            })
+            .collect();
+        worlds.sort_by(|a, b| b.0.cmp(&a.0).then_with(|| a.1.cmp(&b.1)));
+        worlds.into_iter().map(|(_, name)| name).collect()
+    }
+
     /// The save file itself.
     pub fn path(&self) -> PathBuf {
         self.folder.join("world.bin")
@@ -84,6 +106,22 @@ mod tests {
         file.write(&newer).unwrap();
         assert_eq!(file.read(), Ok(Some(newer)));
         assert!(!dir.join("door-test_2").join("world.bin.part").exists());
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn saved_worlds_are_listed_last_saved_first() {
+        let dir = scratch("list");
+        let a = WorldFile::in_folder(&dir, "a").unwrap();
+        assert_eq!(a.saved_worlds(), Vec::<String>::new(), "no folder yet");
+        a.write(&SaveData::default()).unwrap();
+        let b = a.sibling("b").unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        b.write(&SaveData::default()).unwrap();
+        // A folder without a save isn't a world.
+        std::fs::create_dir_all(dir.join("empty")).unwrap();
+        assert_eq!(a.saved_worlds(), ["b", "a"]);
+        assert!(a.sibling("../x").is_err());
         std::fs::remove_dir_all(&dir).unwrap();
     }
 
