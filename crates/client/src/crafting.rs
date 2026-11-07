@@ -1147,7 +1147,15 @@ struct Quad {
     corners: [ZVec3; 4],
     shade: f32,
     color: [u8; 3],
+    /// How squarely it faces the viewer, 0 (edge-on) to 1.
+    facing: f32,
 }
+
+/// Faces turned less than this toward the viewer aren't drawn: edge-on, they'd be slivers.
+const EDGE_ON: f32 = 0.08;
+/// Faces turned less than this toward the viewer get no hairline: on a thin sliver it spikes
+/// out past its corners.
+const STEEP: f32 = 0.3;
 
 /// The visible faces of `shape` from [`VIEW`], farthest first, in texels.
 #[cfg(test)]
@@ -1166,11 +1174,12 @@ fn quads_of(pieces: &[(ShapeGrid, [u8; 3])], yaw: f32) -> Vec<Quad> {
         pieces.iter().find(|(s, _)| s.get(x as usize, y as usize, z as usize)).map(|(_, c)| *c)
     };
     let forward = view_at(yaw);
-    // The sides that turn toward the viewer.
-    let faces: Vec<([i32; 3], [ZVec3; 4], f32)> = FACES
+    // The sides that turn toward the viewer, and how squarely.
+    let faces: Vec<([i32; 3], [ZVec3; 4], f32, f32)> = FACES
         .iter()
-        .filter(|(n, _)| ZVec3::new(n[0] as f32, n[1] as f32, n[2] as f32).dot(forward) < -1e-4)
-        .map(|&(n, shade)| (n, face_corners(n), shade))
+        .map(|&(n, shade)| (n, shade, -ZVec3::new(n[0] as f32, n[1] as f32, n[2] as f32).dot(forward)))
+        .filter(|&(_, _, facing)| facing > EDGE_ON)
+        .map(|(n, shade, facing)| (n, face_corners(n), shade, facing))
         .collect();
     let filled = |x: i32, y: i32, z: i32| color_at(x, y, z).is_some();
     let mut out = Vec::new();
@@ -1180,14 +1189,14 @@ fn quads_of(pieces: &[(ShapeGrid, [u8; 3])], yaw: f32) -> Vec<Quad> {
                 let Some(color) = color_at(x, y, z) else {
                     continue;
                 };
-                for (n, corners, shade) in &faces {
+                for (n, corners, shade, facing) in &faces {
                     if filled(x + n[0], y + n[1], z + n[2]) {
                         continue;
                     }
                     let at = ZVec3::new(x as f32, y as f32, z as f32);
                     let corners = corners.map(|c| at + c);
                     let middle = (corners[0] + corners[2]) * 0.5;
-                    out.push(Quad { depth: middle.dot(forward), corners, shade: *shade, color });
+                    out.push(Quad { depth: middle.dot(forward), corners, shade: *shade, color, facing: *facing });
                 }
             }
         }
@@ -1232,7 +1241,8 @@ fn paint_pieces_turned(painter: &egui::Painter, rect: egui::Rect, pieces: &[(Sha
         let fill = egui::Color32::from_rgb(shade(color[0]), shade(color[1]), shade(color[2]));
         let points = quad.corners.iter().map(|&p| center + flat(at, p) * scale).collect();
         // A hairline of the same color closes the seams between neighboring faces.
-        painter.add(egui::Shape::convex_polygon(points, fill, egui::Stroke::new(0.6_f32, fill)));
+        let hairline: f32 = if quad.facing > STEEP { 0.6 } else { 0.0 };
+        painter.add(egui::Shape::convex_polygon(points, fill, egui::Stroke::new(hairline, fill)));
     }
 }
 
