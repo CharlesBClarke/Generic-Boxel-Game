@@ -100,6 +100,10 @@ key_actions! {
     perf_spot = F10, None;
     /// In the crafting menu: turns the part being painted with a quarter turn.
     turn_part = KeyR, None;
+    /// Saves the world. Quitting saves it too.
+    save_world = F2, Some("save world");
+    /// Puts the world back as it was last saved.
+    reload_world = F8, Some("reload saved world");
 }
 
 /// All bindings. Plain key actions live in [`Keys`] (one table above); the rest are the ones

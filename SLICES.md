@@ -113,7 +113,27 @@ A run of small toy slices. Each one takes a single game-feel feature that doesn'
 
 - Cow pathfinding (low priority, 2026-11-06): the user called the toy "really good" without going through the five course checks one by one; note any that misbehave: cows through the pen's gap and up its terraces, up the mesa's steps, a charge baited off the mesa's cliff (landing hurt), waiting below the pillar (orange route), climbing hills on the generated terrain.
 
-None. Plan the next toy in a new session.
+#### Saving (branch `toy-saving`)
+
+**Stage:** Verify
+
+**Goal:** the world survives quitting, and a save can be gone back to, so builds can be kept and compared (see Test worlds for comparing rules). Engine work kept whatever happens to generative crafting.
+
+**Plan** (approved 2026-11-07 in the session that reordered the backlog around proving crafting; planned in that session rather than a fresh one, at the user's go. The user's answers: cows start fresh but should be saved someday, autosave on quit, F6/F8)
+- *What's kept:* chunks that loading can't make again (every chunk outside the generated terrain, plus the generated chunks edited since they were generated), with generated terrain made again from the saved `world` and generator values; blocks by name, never ID, and blocks made while playing (crafted shapes, bundles, pieces cut by hiding) as recipes to make again; the player (position, look, fly mode, health), the inventory and loose items by name. Creatures aren't saved: the herd starts fresh.
+- *Where:* `sim::save` (plain data and its bytes) and `Simulation::save`/`load` (in `sim/src/simulation/save.rs`), no file access in `sim`; `server::worlds` writes `~/.local/share/boxel/worlds/<name>/world.bin`; `Command::SaveWorld`/`LoadWorld` answered with `ServerMsg::World`; a load's changes reach the client through the normal tick (new blocks, then chunks).
+- *Controls:* `--world <name>` (default `default`), save and reload keys, autosave on quit.
+- *Tests:* round trips by name into a new game whose made blocks got other IDs, loading undoing edits since the save (test area, door and dug terrain), a missing mod's blocks left out with a report, damaged saves refused, and through the server with the client's copy following.
+
+*Changed while building:* the save key is **F2**, not F6 (F6 already respawns targets); F8 reloads. One hand-written binary file (`world.bin`, versioned) instead of a TOML header plus a new crate: shapes are 512-byte bit grids, so a readable header bought little. The hotbar slot isn't saved (client state). A world loaded at startup ignores the tuning file's terrain values, since regenerating would wipe its edits; the panel's Regenerate button still regenerates (edits lost until F8). A save that can't be read stops the game instead of starting fresh, so quitting can't save over it.
+
+*Implemented:* `api::ShapeGrid::rows`/`from_rows`; `sim::save` (`SaveData`, `Made`, `SavedChunk`, `SavedPlayer`, `SavedItem`, `to_bytes`/`from_bytes` with run-length cells); `ChangedChunks` also keeps the chunks edited since they were last generated; `Simulation::save`, `load` (returns a `LoadReport` of what a missing mod named), `look`; `Body::set_flying`; `Items::clear`. `server::worlds::WorldFile` (writes a `.part` file then renames); `Server::with_world`; `Welcome.loaded_look`. `game::load_world` and `--world`. Client: `save_world` (F2) and `reload_world` (F8), a note on screen, the view turned to the saved look, `save_on_exit` in `Last` on `AppExit`. Both keys added to the user's controls file.
+
+*Tests:* 616 pass across the workspace (3 ignored, as before); clippy clean natively and for `wasm32`. New: save bytes (2: round trip, damaged saves refused), changed-chunk edits (in an existing test), `sim/tests/saving.rs` (4: a world back the same in a new game with other IDs, including a dug terrain chunk, crafted slab and bundle, the door's cut pieces, fly mode and items; loading undoes edits since the save; terrain values come back; a missing mod's names left out), `server::worlds` (3), the server through messages (1). The game starts cleanly with a new world.
+
+*Done when:* (1) build a door, quit and restart: it's there and works; (2) F2 saves and F8 puts the world back as saved; (3) named worlds stay separate (`--world door-test`); (4) tests pass and clippy is clean.
+
+*Deferred:* saving creatures (the user wants it eventually); the hotbar slot; saving the world now and then while playing (only on quit and F2).
 
 ### Toy backlog
 
@@ -137,8 +157,9 @@ None. Plan the next toy in a new session.
 - **Interaction controls.** Split out of Block editing (2026-10-25). Fix Minecraft's ambiguous right click once there are things to use, like crystals or devices. Principles: one input, one action (no catch-all "use" button that changes meaning with what you hold or look at), and what you see is what you get (a ghost of the result, red when not allowed).
   - *Added 2026-10-28:* decide how players reach shared boxels. Placing into an occupied boxel makes placement harder to read (every click has two possible boxels), so it may become a deliberate trick (a key, a tool, or a property of blocks like water) instead of happening on any click. Decide once combat and usable items show how crowded the controls get; the engine keeps full support either way. Also from play: two slabs at right angles make a stair, so a separate stairs block may not be needed.
 - **Block interactions.** Unstable crystals: two block types, a touch trigger, a directional blast, and a way to push blocks so devices are possible.
-- **Review placement against the checklist.** Added 2026-11-06 at the user's request: placement grew by fixing annoyances one at a time; check its rules against the checklist in `docs/notes/material-behavior.md` (no hidden tiebreaks, one sentence, predictable).
+- **Review placement against the checklist.** Added 2026-11-06 at the user's request: placement grew by fixing annoyances one at a time; check its rules against the checklist in `docs/notes/material-behavior.md` (no hidden tiebreaks, one sentence, predictable). *2026-11-07, the user:* placing rules are tied closely to the problems with crafting, so this belongs to proving crafting (see `docs/notes/crafting-3d.md`).
 - **Speed build.** Added 2026-11-06 at the user's request, as a way to find better rules: the game sets placing challenges (start in a hollow cube, put stairs in every inner corner, vertical ones too) and the user builds them as fast as they can. Compare rules or two kinds of stairs, then write a short report on what felt good and what didn't. Notes: `docs/notes/speed-build.md`.
+- **Test worlds for comparing rules.** Added 2026-11-07 at the user's request: toys like crafting and placing may be best judged as little games. Build a set of things (a door, a trapdoor, a mesh), save that world, then load it again under changed rules and feel how many steps each takes and what got better or worse. Needs saving. Goes with Speed build. Notes: `docs/notes/speed-build.md`.
 - **Recheck the crafting rules.** Added 2026-11-06 at the user's request, during Functional crafting: a restriction should exist only to make players build blocks they know how to place. The top and side views accept the same stacks, but each makes shapes rest on a different face (the bottom, the back), and "nothing floats" means a knob beside a panel can't be built on top. A gentler rule (a layer may touch anything already connected to the base) would let both views make doors. Pairs with the 3D crafting view.
 - **3D crafting view.** Added 2026-11-06 at the user's request, during Functional crafting: "maybe we should re think the grid maybe a 3d gui is more natural here, but that can be done later". Replace the 4×4 grid of stacks with a 3D view of the boxel to build in. *2026-11-06, from Material behavior:* the user enjoys designing components but fights the UI and hates building near-identical parts that are just rotations of each other ("like MC but shrunk down"). Notes: `docs/notes/crafting-3d.md`.
 - **Crafting follow-ups.** *Items 1, 2 and 4 done in Functional crafting (2026-11-06); the edge mode (3) is left.* Four changes agreed with the user, to plan together: several materials in one shape as a bundle, building on the side of the table, an "edge" placement mode on middle click to compare, and no upside-down flip on the upper half of a wall. Notes: `docs/notes/crafting-follow-ups.md`.
@@ -156,7 +177,7 @@ Ideas that come up while playing get added here.
 
 ### Infrastructure (added when a toy needs it)
 
-- Saving and loading, with block names in the save
+- ~~Saving and loading, with block names in the save~~ Being built (Saving, 2026-11-07).
 - World generation. *The generator is done (Generated terrain, 2026-11-05); streaming is next, as startup meshing grows with the area.* Staging (generator, then streaming, then saving and LOD) and the creatures-on-terrain checklist. Notes: `docs/notes/world-generation.md`.
 - LOD, once world generation exists
 

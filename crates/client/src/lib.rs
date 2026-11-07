@@ -33,7 +33,7 @@ use bevy::mesh::{Indices, PrimitiveTopology, VertexAttributeValues};
 use bevy::prelude::*;
 use bevy::window::{CursorGrabMode, CursorOptions, PresentMode, PrimaryWindow};
 use bevy_egui::{EguiPlugin, EguiPrimaryContextPass};
-use protocol::{ClientMsg, Command, Connection};
+use protocol::{ClientMsg, Command, Connection, WorldNote};
 use sim::PlayerInput;
 
 use crate::controls::{Controls, DoubleTapSprint, SprintToggle, label};
@@ -148,8 +148,49 @@ pub fn run(connection: Box<dyn Connection>) {
                 .chain(),
         )
         .add_systems(EguiPrimaryContextPass, (editing::hotbar, tuning::tuning_panel, crafting::crafting_menu).chain())
-        .add_systems(Last, limit_frame_rate)
+        .add_systems(Update, world_notes)
+        .add_systems(Last, (save_on_exit, limit_frame_rate))
         .run();
+}
+
+/// Shows how saving or loading the world went, and turns the view to where a loaded world's
+/// player was looking.
+fn world_notes(mut world: ResMut<ClientWorld>, mut look: ResMut<Look>, mut readout: ResMut<combat::HitReadout>) {
+    if let Some((yaw, pitch)) = world.take_look() {
+        look.yaw = yaw;
+        look.pitch = pitch;
+    }
+    for note in world.take_world_notes() {
+        readout.show(match note {
+            WorldNote::Saved { name } => format!("WORLD {name} SAVED"),
+            WorldNote::Loaded { name, skipped, .. } if skipped.is_empty() => format!("WORLD {name} LOADED"),
+            WorldNote::Loaded { name, skipped, .. } => {
+                for s in &skipped {
+                    warn!("loading world {name}: left out {s}");
+                }
+                format!("WORLD {name} LOADED, {} THINGS LEFT OUT (see the log)", skipped.len())
+            }
+            WorldNote::Failed(why) => {
+                warn!("{why}");
+                format!("WORLD NOT SAVED OR LOADED: {why}")
+            }
+        });
+    }
+}
+
+/// Saves the world as the game closes.
+fn save_on_exit(mut exits: MessageReader<AppExit>, mut link: ResMut<Link>, mut world: ResMut<ClientWorld>) {
+    if exits.read().next().is_none() {
+        return;
+    }
+    link.command(Command::SaveWorld, &mut world);
+    for note in world.take_world_notes() {
+        match note {
+            WorldNote::Saved { name } => info!("world {name} saved"),
+            WorldNote::Failed(why) => error!("saving the world on quitting: {why}"),
+            WorldNote::Loaded { .. } => {}
+        }
+    }
 }
 
 /// The camera's facing, applied every frame rather than every tick so looking feels instant.
@@ -475,6 +516,12 @@ fn debug_keys(
     }
     if keys.just_pressed(controls.reload_sounds) {
         link.command(Command::ReloadSounds, &mut world);
+    }
+    if keys.just_pressed(controls.save_world) {
+        link.command(Command::SaveWorld, &mut world);
+    }
+    if keys.just_pressed(controls.reload_world) {
+        link.command(Command::LoadWorld, &mut world);
     }
     if keys.just_pressed(controls.teleport) && !world.waypoints().is_empty() {
         waypoint.0 = (waypoint.0 + 1) % world.waypoints().len();

@@ -248,6 +248,11 @@ impl Body {
         self.flying
     }
 
+    /// Turns fly mode on or off, as a loaded save left it.
+    pub fn set_flying(&mut self, on: bool) {
+        self.flying = on;
+    }
+
     /// How many times the player has landed. Lets a renderer notice landings it didn't see
     /// the tick of.
     pub fn landings(&self) -> u32 {

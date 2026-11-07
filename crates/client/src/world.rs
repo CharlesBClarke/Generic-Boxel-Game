@@ -10,7 +10,7 @@ use std::sync::Mutex;
 
 use api::{ChunkPos, HealthDef, InteractionDef, InventoryDef, ItemDropDef, ModelDef, SoundDef, TargetDef, ToolDef, WorldPos};
 use bevy::prelude::*;
-use protocol::{ClientMsg, Command, Connection, Defs, Event, ServerMsg, Snapshot, Welcome};
+use protocol::{ClientMsg, Command, Connection, Defs, Event, ServerMsg, Snapshot, Welcome, WorldNote};
 use sim::{
     Body, BlockRegistry, Craft, CraftPlan, CraftRefusal, Hit, Inventory, Item, LookRegistry, MaterialId, PlaceTarget,
     PlayerHurt, Slam, Strike, Swing, Target, TargetKind, ToolId, Universe, View,
@@ -38,6 +38,12 @@ pub struct ClientWorld {
     heard: Vec<Event>,
     /// The outcome of reading the sounds again, until [`ClientWorld::take_sound_reload`].
     sound_reload: Option<Result<(), String>>,
+    /// How saving and loading the world went, until [`ClientWorld::take_world_notes`].
+    world_notes: Vec<WorldNote>,
+    /// Where to look, once: as the loaded world was saved. Until [`ClientWorld::take_look`].
+    look_to: Option<(f32, f32)>,
+    /// The world came from a save, so its terrain values are the save's.
+    from_save: bool,
 }
 
 impl ClientWorld {
@@ -64,6 +70,9 @@ impl ClientWorld {
             craft: None,
             heard: Vec::new(),
             sound_reload: None,
+            world_notes: Vec::new(),
+            look_to: welcome.loaded_look,
+            from_save: welcome.loaded_look.is_some(),
         };
         world.take_snapshot(welcome.snapshot);
         world.show_latest();
@@ -88,6 +97,12 @@ impl ClientWorld {
                 self.sound_reload = Some(Ok(()));
             }
             ServerMsg::Sounds(Err(why)) => self.sound_reload = Some(Err(why)),
+            ServerMsg::World(note) => {
+                if let WorldNote::Loaded { look, .. } = &note {
+                    self.look_to = Some(*look);
+                }
+                self.world_notes.push(note);
+            }
         }
     }
 
@@ -275,6 +290,21 @@ impl ClientWorld {
     /// [`ClientWorld::sounds`], or here's why not.
     pub fn take_sound_reload(&mut self) -> Option<Result<(), String>> {
         self.sound_reload.take()
+    }
+
+    /// How saving and loading the world went since the last call, oldest first.
+    pub fn take_world_notes(&mut self) -> Vec<WorldNote> {
+        std::mem::take(&mut self.world_notes)
+    }
+
+    /// Where to look now, as a loaded world was saved, once.
+    pub fn take_look(&mut self) -> Option<(f32, f32)> {
+        self.look_to.take()
+    }
+
+    /// Whether the world came from a save when the game started.
+    pub fn from_save(&self) -> bool {
+        self.from_save
     }
 
     /// Every event since the last call, oldest first, for sound to hear.

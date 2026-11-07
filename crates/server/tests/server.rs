@@ -2,8 +2,8 @@
 //! A client keeps a copy of the world from the messages alone, so the copy must match.
 
 use api::{BoxelPos, I64Vec3, Mod, Vec3, WorldPos};
-use protocol::{ClientMsg, Command, Connection, Event, ServerMsg, Snapshot};
-use server::{LocalConnection, Server, ThreadConnection};
+use protocol::{ClientMsg, Command, Connection, Event, ServerMsg, Snapshot, WorldNote};
+use server::{LocalConnection, Server, ThreadConnection, WorldFile};
 use sim::{Cells, Craft, Grid, MaterialId, Piece, PlayerInput, Simulation, Universe};
 
 fn base_sim() -> Simulation {
@@ -46,7 +46,7 @@ impl Copy {
             }
             ServerMsg::Chunk(chunk) => self.universe.main_mut().import_chunk(chunk),
             ServerMsg::Blocks(blocks) => self.blocks = blocks.len(),
-            ServerMsg::Tick(_) | ServerMsg::Defs(_) | ServerMsg::Sounds(_) => {}
+            ServerMsg::Tick(_) | ServerMsg::Defs(_) | ServerMsg::Sounds(_) | ServerMsg::World(_) => {}
         }
     }
 }
@@ -138,6 +138,88 @@ fn the_copy_matches_the_server_through_edits_and_crafts() {
     assert_eq!(copy.blocks, server.simulation().blocks().len());
     let crafted = snapshot(&msgs).events.iter().any(|e| matches!(e, Event::Craft(Ok(_))));
     assert!(crafted, "the craft's outcome is in the tick's events");
+}
+
+/// The base game with a small terrain generated, so saving and loading stay quick.
+fn small_world() -> Simulation {
+    let mut sim = base_sim();
+    sim.world_settings_mut().terrain_width = 2;
+    sim.world_settings_mut().terrain_height = 16;
+    sim.generate_terrain().unwrap();
+    sim
+}
+
+/// Whether two games' worlds hold the same blocks everywhere, by name: separate games may
+/// number the blocks they made differently.
+fn same_by_name(a: &Simulation, b: &Simulation) -> bool {
+    let named = |s: &Simulation, pos| {
+        let data = s.universe().main().export_chunk(pos);
+        let lists: Vec<Vec<(String, api::Orientation)>> = data
+            .lists
+            .iter()
+            .map(|l| l.iter().map(|o| (s.blocks().get(o.block).unwrap().name.clone(), o.orientation)).collect())
+            .collect();
+        (0..api::CHUNK_VOLUME)
+            .map(|i| match &data.cells {
+                sim::Layer::Uniform(v) => lists[*v as usize].clone(),
+                sim::Layer::Dense(values) => lists[values[i] as usize].clone(),
+            })
+            .collect::<Vec<_>>()
+    };
+    let (ga, gb) = (a.universe().main(), b.universe().main());
+    let chunks: Vec<_> = ga.chunks().chain(gb.chunks()).map(|(pos, _)| pos).collect();
+    chunks.into_iter().all(|pos| named(a, pos) == named(b, pos))
+}
+
+/// The note a save or load command answered with.
+fn note(msgs: Vec<ServerMsg>) -> WorldNote {
+    match msgs.into_iter().next() {
+        Some(ServerMsg::World(note)) => note,
+        _ => panic!("saving and loading answer with a note"),
+    }
+}
+
+#[test]
+fn saving_then_loading_puts_the_world_back_and_the_copy_follows() {
+    let dir = std::env::temp_dir().join(format!("boxel-server-test-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    let file = WorldFile::in_folder(&dir, "test").unwrap();
+    let mut server = Server::new(small_world()).with_world(file.clone(), false);
+    let mut copy = Copy { universe: Universe::default(), blocks: 0 };
+    copy.apply(&ServerMsg::Welcome(Box::new(server.welcome())));
+
+    let load = || ClientMsg::Command(Command::LoadWorld);
+    assert!(matches!(note(server.handle(load())), WorldNote::Failed(_)), "nothing saved yet");
+    assert_eq!(note(server.handle(ClientMsg::Command(Command::SaveWorld))), WorldNote::Saved { name: "test".into() });
+    let mut saved = base_sim();
+    saved.load(&file.read().unwrap().unwrap()).unwrap();
+    assert!(same_by_name(&saved, server.simulation()));
+
+    // Break and place all around.
+    for i in 0..120 {
+        let input = PlayerInput {
+            yaw: i as f32 * 0.37,
+            pitch: -0.2 - (i % 7) as f32 * 0.15,
+            use_pressed: i % 3 == 0,
+            alt_pressed: i % 3 == 1,
+            place_block: server.simulation().blocks().id(base::BRICK).unwrap(),
+            movement: api::Vec2::new(((i / 40) % 2) as f32, 0.0),
+            ..Default::default()
+        };
+        for msg in server.handle(ClientMsg::Input(Box::new(input))) {
+            copy.apply(&msg);
+        }
+    }
+    assert!(!same_by_name(&saved, server.simulation()), "edited since");
+
+    let WorldNote::Loaded { name, skipped, .. } = note(server.handle(load())) else { panic!("loaded") };
+    assert_eq!((name.as_str(), skipped.len()), ("test", 0));
+    for msg in server.handle(input(PlayerInput::default())) {
+        copy.apply(&msg);
+    }
+    assert!(same_by_name(&saved, server.simulation()), "back as saved");
+    assert!(same_world(copy.universe.main(), server.simulation().universe().main()), "the copy follows");
+    std::fs::remove_dir_all(&dir).unwrap();
 }
 
 #[test]

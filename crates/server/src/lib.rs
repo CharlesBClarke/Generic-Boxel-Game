@@ -6,8 +6,12 @@ use std::sync::mpsc::{Receiver, Sender, channel};
 use std::thread::JoinHandle;
 
 use api::Tunables;
-use protocol::{ClientMsg, Command, Connection, Content, Defs, Event, ServerMsg, Snapshot, TuningSection, Welcome};
+use protocol::{ClientMsg, Command, Connection, Content, Defs, Event, ServerMsg, Snapshot, TuningSection, Welcome, WorldNote};
 use sim::{PlayerInput, Simulation};
+
+pub mod worlds;
+
+pub use worlds::{DEFAULT_WORLD, WorldFile};
 
 /// Reads the sounds again from wherever the mods came from.
 pub type SoundSource = Box<dyn FnMut() -> Result<Vec<api::SoundDef>, String> + Send>;
@@ -20,12 +24,23 @@ pub struct Server {
     sound_source: Option<SoundSource>,
     /// Why the last regeneration failed, if it did.
     generation_error: Option<String>,
+    /// Where the world is saved and loaded from; without one it can't be.
+    world: Option<WorldFile>,
+    /// The world was loaded from its file when the server started.
+    loaded: bool,
 }
 
 impl Server {
     /// A server running `sim`, which must already have its mods loaded and its player spawned.
     pub fn new(sim: Simulation) -> Self {
-        Self { sim, blocks_sent: 0, sound_source: None, generation_error: None }
+        Self { sim, blocks_sent: 0, sound_source: None, generation_error: None, world: None, loaded: false }
+    }
+
+    /// Saves and loads the world at `file`. `loaded` says `sim` was loaded from it already.
+    pub fn with_world(mut self, file: WorldFile, loaded: bool) -> Self {
+        self.world = Some(file);
+        self.loaded = loaded;
+        self
     }
 
     /// Lets clients have the sounds read again from `source` while the game runs.
@@ -54,6 +69,7 @@ impl Server {
             spawn: self.sim.spawn(),
             waypoints: self.sim.waypoints().to_vec(),
             snapshot,
+            loaded_look: self.loaded.then(|| self.sim.look()),
         }
     }
 
@@ -62,6 +78,8 @@ impl Server {
         match msg {
             ClientMsg::Input(input) => self.tick(&input),
             ClientMsg::Command(Command::ReloadSounds) => vec![ServerMsg::Sounds(self.reload_sounds())],
+            ClientMsg::Command(Command::SaveWorld) => vec![ServerMsg::World(self.save_world())],
+            ClientMsg::Command(Command::LoadWorld) => vec![ServerMsg::World(self.load_world())],
             ClientMsg::Command(command) => {
                 self.command(command);
                 vec![ServerMsg::Defs(Box::new(self.defs()))]
@@ -117,6 +135,35 @@ impl Server {
         Ok(self.sim.sounds().to_vec())
     }
 
+    /// Writes the world to its file.
+    fn save_world(&mut self) -> WorldNote {
+        let Some(file) = &self.world else { return WorldNote::Failed("this server has no world file".into()) };
+        match file.write(&self.sim.save()) {
+            Ok(()) => WorldNote::Saved { name: file.name.clone() },
+            Err(e) => WorldNote::Failed(format!("saving: {e}")),
+        }
+    }
+
+    /// Puts the world back as its file has it.
+    fn load_world(&mut self) -> WorldNote {
+        let Some(file) = &self.world else { return WorldNote::Failed("this server has no world file".into()) };
+        let save = match file.read() {
+            Ok(Some(save)) => save,
+            Ok(None) => return WorldNote::Failed(format!("world {} hasn't been saved yet", file.name)),
+            Err(e) => return WorldNote::Failed(format!("loading: {e}")),
+        };
+        match self.sim.load(&save) {
+            Ok(report) => {
+                self.generation_error = None;
+                for skipped in &report.skipped {
+                    eprintln!("server: loading {}: left out {skipped}", file.name);
+                }
+                WorldNote::Loaded { name: file.name.clone(), look: self.sim.look(), skipped: report.skipped }
+            }
+            Err(e) => WorldNote::Failed(format!("loading: {e}")),
+        }
+    }
+
     fn command(&mut self, command: Command) {
         let sim = &mut self.sim;
         match command {
@@ -136,7 +183,7 @@ impl Server {
                     eprintln!("server: generating the terrain failed: {e}");
                 }
             }
-            Command::ReloadSounds => {}
+            Command::ReloadSounds | Command::SaveWorld | Command::LoadWorld => {}
         }
     }
 

@@ -38,15 +38,17 @@ impl Repeater {
     }
 }
 
-/// Chunks whose blocks changed, plus neighbors whose border faces the change affects.
+/// Chunks whose blocks changed, plus neighbors whose border faces the change affects; and,
+/// kept separately for saving, the chunks edited since they were last made from scratch.
 #[derive(Debug, Default)]
-pub struct ChangedChunks(HashSet<ChunkPos>);
+pub struct ChangedChunks(HashSet<ChunkPos>, HashSet<ChunkPos>);
 
 impl ChangedChunks {
-    /// Records a change to the boxel at `pos`.
+    /// Records a change to the boxel at `pos`. Its chunk counts as edited.
     pub fn mark(&mut self, pos: BoxelPos) {
         let (chunk, local) = pos.split();
         self.0.insert(chunk);
+        self.1.insert(chunk);
         let local = local.to_ivec().to_array();
         for axis in 0..3 {
             let mut side = [0i64; 3];
@@ -70,6 +72,27 @@ impl ChangedChunks {
     /// Every chunk changed since the last call, in no particular order.
     pub fn take(&mut self) -> Vec<ChunkPos> {
         self.0.drain().collect()
+    }
+
+    /// Every chunk a boxel changed in since the chunk was last made from scratch (see
+    /// [`ChangedChunks::forget_edits`]). Unlike [`ChangedChunks::take`], it isn't drained.
+    pub fn edited(&self) -> &HashSet<ChunkPos> {
+        &self.1
+    }
+
+    /// Stops counting `chunk` as edited, once it's been made again from scratch.
+    pub fn forget_edits(&mut self, chunk: ChunkPos) {
+        self.1.remove(&chunk);
+    }
+
+    /// Stops counting any chunk as edited.
+    pub fn forget_all_edits(&mut self) {
+        self.1.clear();
+    }
+
+    /// Counts `chunk` as edited, as when it's loaded from a save.
+    pub fn mark_edited(&mut self, chunk: ChunkPos) {
+        self.1.insert(chunk);
     }
 }
 
@@ -130,6 +153,9 @@ mod tests {
         changed.mark(BoxelPos::new(5, 5, 5));
         assert_eq!(changed.take(), [ChunkPos::new(0, 0, 0)]);
         assert!(changed.take().is_empty(), "take drains");
+        assert!(changed.edited().contains(&ChunkPos::new(0, 0, 0)), "edits are remembered");
+        changed.forget_edits(ChunkPos::new(0, 0, 0));
+        assert!(changed.edited().is_empty());
     }
 
     #[test]

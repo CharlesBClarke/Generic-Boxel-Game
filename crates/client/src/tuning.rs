@@ -343,7 +343,12 @@ pub fn tuning_panel(
             info!("{}", panel.note);
         }
     }
-    let sent = changes(&before, &server);
+    let mut sent = changes(&before, &server);
+    if load && world.from_save() {
+        // A loaded world keeps the terrain it was saved with; generating it again would lose
+        // the edits in it.
+        sent.retain(|c| !shapes_terrain(c));
+    }
     // Saved terrain values only show once the terrain is made again with them.
     regenerate |= load && sent.iter().any(shapes_terrain);
     for command in sent {

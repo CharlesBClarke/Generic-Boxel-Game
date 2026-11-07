@@ -47,6 +47,11 @@ pub enum Command {
     /// Reads the sounds again, for trying sound files without a restart. The server answers
     /// with [`ServerMsg::Sounds`].
     ReloadSounds,
+    /// Saves the world to the server's world file. The server answers with [`ServerMsg::World`].
+    SaveWorld,
+    /// Puts the world back as it was last saved. The server answers with [`ServerMsg::World`];
+    /// the changed blocks and chunks come with the next tick.
+    LoadWorld,
 }
 
 /// From the server to the client.
@@ -64,6 +69,18 @@ pub enum ServerMsg {
     /// Every sound after [`Command::ReloadSounds`], or why reading them again failed (the old
     /// ones stay).
     Sounds(Result<Vec<SoundDef>, String>),
+    /// The world was saved or loaded, or that failed.
+    World(WorldNote),
+}
+
+/// How saving or loading the world went.
+#[derive(Clone, Debug, PartialEq)]
+pub enum WorldNote {
+    Saved { name: String },
+    /// Loaded, with where the player looked when it was saved, and anything a missing mod named
+    /// that was left out.
+    Loaded { name: String, look: (f32, f32), skipped: Vec<String> },
+    Failed(String),
 }
 
 /// What a client needs to start: the content, the world and where things stand.
@@ -77,6 +94,9 @@ pub struct Welcome {
     /// Named spots in the world, in the order the mods made them.
     pub waypoints: Vec<(String, WorldPos)>,
     pub snapshot: Snapshot,
+    /// The world came from a save: where the player looked when it was saved. Its terrain
+    /// values are the save's, so a client shouldn't generate the terrain again with its own.
+    pub loaded_look: Option<(f32, f32)>,
 }
 
 /// Content that never changes while the game runs.

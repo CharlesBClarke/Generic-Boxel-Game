@@ -5,7 +5,7 @@ use std::error::Error;
 use std::path::Path;
 
 use api::{ApiError, Mod, Registrar};
-use sim::Simulation;
+use sim::{SaveData, Simulation};
 
 /// The base game's movement controller, compiled to a WebAssembly component by `build.rs`.
 pub const BASE_MOVEMENT_WASM: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/base_movement.wasm"));
@@ -56,6 +56,12 @@ pub fn load(code: Code) -> Result<Simulation, Box<dyn Error>> {
 /// The engine with the base mod's data half read from `data`, the player spawned and the
 /// terrain generated.
 pub fn load_from(data: &Path, code: Code) -> Result<Simulation, Box<dyn Error>> {
+    load_world(data, code, None)
+}
+
+/// The engine with the base mod's data half read from `data` and the player spawned, then
+/// either the terrain generated or, given a save, the world put back as it was saved.
+pub fn load_world(data: &Path, code: Code, save: Option<&SaveData>) -> Result<Simulation, Box<dyn Error>> {
     let data = data_mods::load(data)?;
     let wasm_cow = match code.brain {
         Where::Native => None,
@@ -78,7 +84,18 @@ pub fn load_from(data: &Path, code: Code) -> Result<Simulation, Box<dyn Error>> 
         sim.add_movement_controller(&name, Box::new(controller))?;
     }
     sim.spawn_player()?;
-    let stats = sim.generate_terrain()?;
-    eprintln!("terrain: {} chunks ({} of one block all through) in {:.2} s", stats.chunks, stats.uniform, stats.seconds);
+    match save {
+        None => {
+            sim.generate_terrain()?;
+        }
+        Some(save) => {
+            for skipped in sim.load(save)?.skipped {
+                eprintln!("loading the world: left out {skipped}");
+            }
+        }
+    }
+    if let Some(stats) = sim.generation() {
+        eprintln!("terrain: {} chunks ({} of one block all through) in {:.2} s", stats.chunks, stats.uniform, stats.seconds);
+    }
     Ok(sim)
 }
