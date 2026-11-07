@@ -137,6 +137,12 @@ pub struct Simulation {
     signal_def: Option<SignalDef>,
     /// The last craft: the part made and how many, or why nothing was.
     last_craft: Option<Result<(MaterialId, u32), CraftRefusal>>,
+    /// The player's blueprints.
+    blueprints: crate::Library,
+    /// Goes up whenever the blueprints change, so a server knows to send them.
+    blueprints_revision: u64,
+    /// The last edit to the blueprints: the blueprint made or changed, or why nothing was.
+    last_blueprint: Option<Result<crate::BlueprintId, crate::BlueprintRefusal>>,
     targets: Targets,
     swing: Option<Swing>,
     guarding: bool,
@@ -368,6 +374,13 @@ impl Simulation {
     /// creatures' attacks that hit the player hurt them.
     pub fn step(&mut self, input: &PlayerInput) {
         self.look = (input.yaw, input.pitch);
+        if let Some(edit) = &input.blueprint {
+            let result = self.blueprints.edit(&self.blocks, edit);
+            if result.is_ok() {
+                self.blueprints_revision += 1;
+            }
+            self.last_blueprint = Some(result);
+        }
         if let Some(craft) = &input.craft {
             self.last_craft = Some(self.craft(craft));
         }
@@ -430,6 +443,7 @@ impl Simulation {
             crafting: self.crafting_def.as_ref(),
             inventory: &self.inventory,
             inventory_def: self.inventory_def.as_ref(),
+            blueprints: &self.blueprints,
         }
     }
 
@@ -889,6 +903,28 @@ impl Simulation {
     /// The last craft's outcome: the part made and how many, or why nothing was.
     pub fn last_craft(&self) -> Option<Result<(MaterialId, u32), CraftRefusal>> {
         self.last_craft
+    }
+
+    /// The last edit to the blueprints' outcome: the blueprint made or changed, or why nothing
+    /// was.
+    pub fn last_blueprint(&self) -> Option<&Result<crate::BlueprintId, crate::BlueprintRefusal>> {
+        self.last_blueprint.as_ref()
+    }
+
+    /// The player's blueprints.
+    pub fn blueprints(&self) -> &crate::Library {
+        &self.blueprints
+    }
+
+    /// Goes up whenever the blueprints change, loading included.
+    pub fn blueprints_revision(&self) -> u64 {
+        self.blueprints_revision
+    }
+
+    /// Replaces the player's blueprints, for loading and tests.
+    pub fn set_blueprints(&mut self, library: crate::Library) {
+        self.blueprints = library;
+        self.blueprints_revision += 1;
     }
 
     pub fn crafting_def(&self) -> Option<&CraftingDef> {

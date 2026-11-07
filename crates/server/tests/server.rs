@@ -4,7 +4,7 @@
 use api::{BoxelPos, I64Vec3, Mod, Vec3, WorldPos};
 use protocol::{ClientMsg, Command, Connection, Event, ServerMsg, Snapshot, WorldNote};
 use server::{LocalConnection, Server, ThreadConnection, WorldFile};
-use sim::{Cells, Craft, Grid, MaterialId, Piece, PlayerInput, Simulation, Universe};
+use sim::{BlueprintEdit, BlueprintRefusal, Cells, Craft, Grid, MaterialId, Piece, PlayerInput, Recipe, Simulation, Universe};
 
 fn base_sim() -> Simulation {
     let data = data_mods::load(std::path::Path::new(base::DATA_DIR)).unwrap();
@@ -46,7 +46,12 @@ impl Copy {
             }
             ServerMsg::Chunk(chunk) => self.universe.main_mut().import_chunk(chunk),
             ServerMsg::Blocks(blocks) => self.blocks = blocks.len(),
-            ServerMsg::Tick(_) | ServerMsg::Defs(_) | ServerMsg::Sounds(_) | ServerMsg::World(_) | ServerMsg::Worlds(_) => {}
+            ServerMsg::Tick(_)
+            | ServerMsg::Blueprints(_)
+            | ServerMsg::Defs(_)
+            | ServerMsg::Sounds(_)
+            | ServerMsg::World(_)
+            | ServerMsg::Worlds(_) => {}
         }
     }
 }
@@ -129,7 +134,7 @@ fn the_copy_matches_the_server_through_edits_and_crafts() {
     let mut cells: Cells = Default::default();
     cells[0][0][0] = Some(Piece::new(brick));
     let before = server.simulation().blocks().len();
-    let msgs = server.handle(input(PlayerInput { craft: Some(Craft { table, cells, side: false, flip: false, count: 1 }), ..Default::default() }));
+    let msgs = server.handle(input(PlayerInput { craft: Some(Craft::grid(table, cells, false, false, 1)), ..Default::default() }));
     for msg in &msgs {
         copy.apply(msg);
     }
@@ -138,6 +143,29 @@ fn the_copy_matches_the_server_through_edits_and_crafts() {
     assert_eq!(copy.blocks, server.simulation().blocks().len());
     let crafted = snapshot(&msgs).events.iter().any(|e| matches!(e, Event::Craft(Ok(_))));
     assert!(crafted, "the craft's outcome is in the tick's events");
+}
+
+#[test]
+fn blueprint_edits_send_the_library_before_the_tick_and_refusals_in_its_events() {
+    let mut server = Server::new(base_sim());
+    let welcome = server.welcome();
+    assert!(welcome.blueprints.is_empty());
+    let brick: MaterialId = server.simulation().blocks().material(base::BRICK).unwrap();
+    let mut cells: Cells = Default::default();
+    cells[0][0][0] = Some(Piece::new(brick));
+    let save = BlueprintEdit::Save { name: "nub".into(), recipe: Recipe::top(cells) };
+    let msgs = server.handle(input(PlayerInput { blueprint: Some(save), ..Default::default() }));
+    let ServerMsg::Blueprints(library) = &msgs[0] else { panic!("the library comes first") };
+    let id = library.find("nub").expect("saved");
+    assert!(snapshot(&msgs).events.contains(&Event::Blueprint(Ok(id))));
+    // Nothing changed, nothing sent.
+    let msgs = server.handle(input(PlayerInput::default()));
+    assert!(!msgs.iter().any(|m| matches!(m, ServerMsg::Blueprints(_))));
+    // A refusal changes nothing, so only its outcome comes.
+    let undo = BlueprintEdit::Undo { id };
+    let msgs = server.handle(input(PlayerInput { blueprint: Some(undo), ..Default::default() }));
+    assert!(!msgs.iter().any(|m| matches!(m, ServerMsg::Blueprints(_))));
+    assert!(snapshot(&msgs).events.contains(&Event::Blueprint(Err(BlueprintRefusal::NoChanges))));
 }
 
 /// The base game with a small terrain generated, so saving and loading stay quick.

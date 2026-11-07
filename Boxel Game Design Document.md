@@ -60,6 +60,8 @@ The project's words, used the same way in conversation, code and docs. When a ne
 | Boxel | One grid cell of the world. Used instead of "voxel" throughout the project. |
 | Texel | One sixteenth of a boxel along each side, 4096 to a boxel: the finest detail a shape or a look has. (Older notes say "sixteenth".) |
 | Quarter | Four texels across: one cell of the crafting grid. |
+| Variant | A blueprint linked to another (its base) with changes: turned, mirrored, shifted or with one material swapped for another. Editing the base changes the variant. |
+| Shift | Sliding a whole gadget inside its boxel, a quarter at a time or to the middle. Example: a gadget built in the upper right quarter of the grid, shifted to be centered. |
 | Chunk | A 32×32×32 cube of boxels, the unit of storage and meshing. |
 | Sub-grid | A volume of boxels with its own position and rotation, separate from the main world grid. Ships, vehicles and contraptions are sub-grids. |
 | World view | A camera into any grid, loaded and drawn by the client. The player's own view is one world view among possibly many. |
@@ -68,6 +70,7 @@ The project's words, used the same way in conversation, code and docs. When a ne
 | Shape | Which texels of a boxel something fills. |
 | Gadget | Anything that comes out of a crafting table, of one material or several, carried and placed as its own item. Replaces "part" (2026-11-07; the code still says part). Example: an insulated door corner, or the door it goes into. |
 | Blueprint | The plan a gadget is made from: kept in a list, not carried, editable, and makeable without crafting it. A blueprint can use other blueprints, folded under it (a door's corners under the door). |
+| Drafting | Designing a blueprint: in a view of its own, anywhere, with no table and no materials. Crafting is making gadgets from a blueprint at a table. Agreed 2026-11-07 as two separate things; drafting isn't built as its own step yet. |
 | Bundle | A gadget of several materials (up to 8), placed whole into one boxel as one occupant per material. |
 | Piece | One occupant of a bundle, or part of an occupant cut by hiding. |
 | Look | How a material is drawn: a 16×16×16 volume of colors, one per texel, so any cut shows what's inside. |

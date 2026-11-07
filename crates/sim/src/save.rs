@@ -26,6 +26,39 @@ pub struct SaveData {
     /// What the player carries: each material or gadget by name, with how much.
     pub inventory: Vec<(String, u32)>,
     pub items: Vec<SavedItem>,
+    /// The player's blueprints, in the order they were made. Added in version 2.
+    pub blueprints: Vec<SavedBlueprint>,
+}
+
+/// A blueprint by name, naming the materials and blueprints it uses.
+#[derive(Clone, Debug, PartialEq)]
+pub struct SavedBlueprint {
+    pub name: String,
+    pub design: SavedDesign,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub enum SavedDesign {
+    /// Every layer of every stack, row by row from the far side, then column, then layer from
+    /// the bottom: what it holds and its quarter turns.
+    Recipe { layers: Vec<Option<(SavedThing, u8)>>, side: bool, flip: bool },
+    Variant { base: String, changes: Vec<SavedChange> },
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub enum SavedThing {
+    /// A material, part or bundle, by its material name.
+    Material(String),
+    Blueprint(String),
+}
+
+/// A variant's change (see [`crate::Change`]), naming materials.
+#[derive(Clone, Debug, PartialEq)]
+pub enum SavedChange {
+    Turn { axis: u8, quarters: u8 },
+    Mirror { axis: u8 },
+    Shift([i8; 3]),
+    Swap { from: String, to: String },
 }
 
 /// How to make again a block the game made while it ran.
@@ -73,7 +106,7 @@ pub struct SavedItem {
 /// The first bytes of every save.
 const MAGIC: &[u8; 8] = b"BOXELSAV";
 /// Goes up whenever the layout changes.
-pub const VERSION: u32 = 1;
+pub const VERSION: u32 = 2;
 
 impl SaveData {
     pub fn to_bytes(&self) -> Vec<u8> {
@@ -185,6 +218,60 @@ impl SaveData {
             w.pos(item.pos);
             w.vec3(item.velocity);
         }
+        w.len(self.blueprints.len());
+        for b in &self.blueprints {
+            w.str(&b.name);
+            match &b.design {
+                SavedDesign::Recipe { layers, side, flip } => {
+                    w.u8(0);
+                    w.u8(*side as u8);
+                    w.u8(*flip as u8);
+                    w.len(layers.len());
+                    for layer in layers {
+                        match layer {
+                            None => w.u8(0),
+                            Some((SavedThing::Material(name), turns)) => {
+                                w.u8(1);
+                                w.str(name);
+                                w.u8(*turns);
+                            }
+                            Some((SavedThing::Blueprint(name), turns)) => {
+                                w.u8(2);
+                                w.str(name);
+                                w.u8(*turns);
+                            }
+                        }
+                    }
+                }
+                SavedDesign::Variant { base, changes } => {
+                    w.u8(1);
+                    w.str(base);
+                    w.len(changes.len());
+                    for change in changes {
+                        match change {
+                            SavedChange::Turn { axis, quarters } => {
+                                w.u8(0);
+                                w.u8(*axis);
+                                w.u8(*quarters);
+                            }
+                            SavedChange::Mirror { axis } => {
+                                w.u8(1);
+                                w.u8(*axis);
+                            }
+                            SavedChange::Shift(by) => {
+                                w.u8(2);
+                                by.iter().for_each(|&b| w.u8(b as u8));
+                            }
+                            SavedChange::Swap { from, to } => {
+                                w.u8(3);
+                                w.str(from);
+                                w.str(to);
+                            }
+                        }
+                    }
+                }
+            }
+        }
         w.0
     }
 
@@ -194,8 +281,8 @@ impl SaveData {
             return Err("not a boxel save".into());
         }
         let version = r.u32()?;
-        if version != VERSION {
-            return Err(format!("a save from version {version}; this game reads version {VERSION}"));
+        if !(1..=VERSION).contains(&version) {
+            return Err(format!("a save from version {version}; this game reads up to version {VERSION}"));
         }
         let mut save = SaveData { tick: r.u64()?, ..SaveData::default() };
         for _ in 0..r.len()? {
@@ -265,6 +352,42 @@ impl SaveData {
                 pos: r.pos()?,
                 velocity: r.vec3()?,
             });
+        }
+        if version >= 2 {
+            for _ in 0..r.len()? {
+                let name = r.str()?;
+                let design = match r.u8()? {
+                    0 => {
+                        let (side, flip) = (r.u8()? != 0, r.u8()? != 0);
+                        let mut layers = Vec::new();
+                        for _ in 0..r.len()? {
+                            layers.push(match r.u8()? {
+                                0 => None,
+                                1 => Some((SavedThing::Material(r.str()?), r.u8()?)),
+                                2 => Some((SavedThing::Blueprint(r.str()?), r.u8()?)),
+                                kind => return Err(format!("unknown kind of layer {kind}")),
+                            });
+                        }
+                        SavedDesign::Recipe { layers, side, flip }
+                    }
+                    1 => {
+                        let base = r.str()?;
+                        let mut changes = Vec::new();
+                        for _ in 0..r.len()? {
+                            changes.push(match r.u8()? {
+                                0 => SavedChange::Turn { axis: r.u8()?, quarters: r.u8()? },
+                                1 => SavedChange::Mirror { axis: r.u8()? },
+                                2 => SavedChange::Shift([r.u8()? as i8, r.u8()? as i8, r.u8()? as i8]),
+                                3 => SavedChange::Swap { from: r.str()?, to: r.str()? },
+                                kind => return Err(format!("unknown kind of change {kind}")),
+                            });
+                        }
+                        SavedDesign::Variant { base, changes }
+                    }
+                    kind => return Err(format!("unknown kind of blueprint {kind}")),
+                };
+                save.blueprints.push(SavedBlueprint { name, design });
+            }
         }
         if r.at != bytes.len() {
             return Err("extra bytes after the save".into());
@@ -430,6 +553,34 @@ mod tests {
                 pos: WorldPos::new(I64Vec3::new(1, 2, 3), Vec3::splat(0.5)),
                 velocity: Vec3::new(0.0, 0.0, -3.0),
             }],
+            blueprints: vec![
+                SavedBlueprint {
+                    name: "corner".into(),
+                    design: SavedDesign::Recipe {
+                        layers: (0..64)
+                            .map(|i| match i {
+                                0 => Some((SavedThing::Material("base:wood".into()), 0)),
+                                5 => Some((SavedThing::Blueprint("post".into()), 3)),
+                                _ => None,
+                            })
+                            .collect(),
+                        side: true,
+                        flip: false,
+                    },
+                },
+                SavedBlueprint {
+                    name: "corner mirrored".into(),
+                    design: SavedDesign::Variant {
+                        base: "corner".into(),
+                        changes: vec![
+                            SavedChange::Turn { axis: 2, quarters: 3 },
+                            SavedChange::Mirror { axis: 0 },
+                            SavedChange::Shift([-4, 0, 6]),
+                            SavedChange::Swap { from: "base:phasite".into(), to: "base:antiphasite".into() },
+                        ],
+                    },
+                },
+            ],
         }
     }
 
@@ -439,6 +590,16 @@ mod tests {
         assert_eq!(SaveData::from_bytes(&save.to_bytes()), Ok(save));
         let empty = SaveData::default();
         assert_eq!(SaveData::from_bytes(&empty.to_bytes()), Ok(empty));
+    }
+
+    #[test]
+    fn a_version_1_save_reads_with_no_blueprints() {
+        let save = SaveData { blueprints: Vec::new(), ..sample() };
+        let mut bytes = save.to_bytes();
+        // Version 1 ended before the blueprints' count.
+        bytes.truncate(bytes.len() - 4);
+        bytes[8..12].copy_from_slice(&1u32.to_le_bytes());
+        assert_eq!(SaveData::from_bytes(&bytes), Ok(save));
     }
 
     #[test]

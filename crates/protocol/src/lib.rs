@@ -10,7 +10,7 @@ use api::{
     SoundDef, TargetDef, ToolDef, Tunable, WorldPos,
 };
 use sim::{
-    BlockEdit, Body, BlockRegistry, ChunkData, CraftRefusal, GenerationStats, Inventory, Item, LookRegistry, MaterialId, PlayerHurt,
+    BlockEdit, BlueprintId, BlueprintRefusal, Body, BlockRegistry, ChunkData, Library, CraftRefusal, GenerationStats, Inventory, Item, LookRegistry, MaterialId, PlayerHurt,
     PlayerInput, Slam, Strike, Swing, Target,
 };
 
@@ -72,6 +72,9 @@ pub enum ServerMsg {
     Chunk(ChunkData),
     /// Blocks were added, by crafting a new shape. Comes before the tick they were added in.
     Blocks(Box<BlockRegistry>),
+    /// The player's blueprints changed, by an edit or a load. Comes before the tick they
+    /// changed in.
+    Blueprints(Box<Library>),
     /// Definitions or tuning changed, by a command.
     Defs(Box<Defs>),
     /// Every sound after [`Command::ReloadSounds`], or why reading them again failed (the old
@@ -97,6 +100,8 @@ pub enum WorldNote {
 pub struct Welcome {
     pub content: Content,
     pub blocks: BlockRegistry,
+    /// The player's blueprints.
+    pub blueprints: Library,
     pub defs: Defs,
     /// Every chunk in the world.
     pub chunks: Vec<ChunkData>,
@@ -177,6 +182,9 @@ pub enum Event {
     BlockEdit(BlockEdit),
     /// A craft the input asked for: the part made and how many, or why nothing was.
     Craft(Result<(MaterialId, u32), CraftRefusal>),
+    /// An edit to the blueprints the input asked for: the blueprint made or changed, or why
+    /// nothing was.
+    Blueprint(Result<BlueprintId, BlueprintRefusal>),
 }
 
 /// A client's end of its link to a server.

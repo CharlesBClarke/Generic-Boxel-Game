@@ -1,26 +1,49 @@
 //! Crafting at a table: what the player stacked on it, turned into parts. The shape rule
 //! itself is the API's ([`api::crafting`]); this adds materials and room. Every layer holds
-//! a material, or a part (a bundle's pieces each bring their own). Layers of one material make
-//! a part of it; several materials make a bundle, one piece per material. Crafting is free for
-//! now (paying for it is deferred): a part costs nothing to make, but takes its volume of the
-//! capacity to carry.
+//! a material, a part (a bundle's pieces each bring their own) or a blueprint (see
+//! [`crate::blueprint`]), which brings what it makes without anything being carried. Layers of
+//! one material make a part of it; several materials make a bundle, one piece per material.
+//! Crafting is free for now (paying for it is deferred): a part costs nothing to make, but
+//! takes its volume of the capacity to carry.
 
 use api::crafting::GRID;
 use api::{BoxelPos, CraftError, Layer, Orientation, ShapeGrid, Stacks, finished, stack_fill};
 
+use crate::blueprint::{BlueprintId, Library};
 use crate::{BlockRegistry, Inventory, MaterialId};
 
-/// One layer on the table: a material, or a part turned some quarter turns.
+/// What a layer holds.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Thing {
+    /// A material, or a part or bundle carried.
+    Material(MaterialId),
+    /// What a blueprint makes.
+    Blueprint(BlueprintId),
+}
+
+impl From<MaterialId> for Thing {
+    fn from(m: MaterialId) -> Thing {
+        Thing::Material(m)
+    }
+}
+
+impl From<BlueprintId> for Thing {
+    fn from(b: BlueprintId) -> Thing {
+        Thing::Blueprint(b)
+    }
+}
+
+/// One layer on the table: a material, or a part or blueprint turned some quarter turns.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Piece {
-    pub thing: MaterialId,
+    pub thing: Thing,
     /// Quarter turns counterclockwise seen from above, 0 to 3. A material ignores it.
     pub turns: u8,
 }
 
 impl Piece {
-    pub fn new(thing: MaterialId) -> Piece {
-        Piece { thing, turns: 0 }
+    pub fn new(thing: impl Into<Thing>) -> Piece {
+        Piece { thing: thing.into(), turns: 0 }
     }
 }
 
@@ -28,18 +51,49 @@ impl Piece {
 /// from the left.
 pub type Cells = [[[Option<Piece>; GRID]; GRID]; GRID];
 
+/// Stacks on the table and how they're made: the view they're on and whether they're flipped.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Recipe {
+    pub cells: Cells,
+    /// Built on the table's side: the grid is the wall, and stacks grow toward the player.
+    pub side: bool,
+    /// Turn the made shape upside down.
+    pub flip: bool,
+}
+
+impl Recipe {
+    /// Stacks on the table's top, unflipped.
+    pub fn top(cells: Cells) -> Recipe {
+        Recipe { cells, side: false, flip: false }
+    }
+}
+
+/// What a craft makes from.
+// The grid's stacks are big, but a craft is sent at most once a tick and stays `Copy` unboxed.
+#[allow(clippy::large_enum_variant)]
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Source {
+    /// Stacks on the table.
+    Grid(Recipe),
+    /// A blueprint in the player's library.
+    Blueprint(BlueprintId),
+}
+
 /// A request to craft at a table, as the player makes it.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Craft {
     /// Where the table is.
     pub table: BoxelPos,
-    pub cells: Cells,
-    /// Turn the made shape upside down.
-    pub flip: bool,
-    /// Built on the table's side: the grid is the wall, and stacks grow toward the player.
-    pub side: bool,
+    pub source: Source,
     /// The most parts to make; as many as there's room to carry, up to this.
     pub count: u32,
+}
+
+impl Craft {
+    /// A craft from stacks on the table at `table`.
+    pub fn grid(table: BoxelPos, cells: Cells, side: bool, flip: bool, count: u32) -> Craft {
+        Craft { table, source: Source::Grid(Recipe { cells, side, flip }), count }
+    }
 }
 
 /// What a craft would make.
@@ -48,7 +102,7 @@ pub struct CraftPlan {
     /// Each material it's made of and the texels it fills, in the order first stacked:
     /// one makes a part, several a bundle.
     pub pieces: Vec<(MaterialId, ShapeGrid)>,
-    /// The whole shape, in the table's frame.
+    /// The whole shape, as it stands in the world.
     pub shape: ShapeGrid,
     /// Each part's volume, in [`crate::FULL_VOLUME`] units: the room it takes.
     pub volume: u32,
@@ -75,6 +129,12 @@ pub enum CraftRefusal {
     NotShapeable,
     /// No room to carry even one.
     Full,
+    /// A blueprint asked for is gone.
+    NoBlueprint,
+    /// A blueprint uses itself, however far down.
+    Loop,
+    /// A shift slides it out of its boxel.
+    OutOfBoxel,
 }
 
 impl std::fmt::Display for CraftRefusal {
@@ -88,29 +148,31 @@ impl std::fmt::Display for CraftRefusal {
             CraftRefusal::FullBlock => write!(f, "that's a full block, nothing to shape"),
             CraftRefusal::NotShapeable => write!(f, "that material can't be shaped"),
             CraftRefusal::Full => write!(f, "no room to carry it"),
+            CraftRefusal::NoBlueprint => write!(f, "that blueprint is gone"),
+            CraftRefusal::Loop => write!(f, "a blueprint can't use itself"),
+            CraftRefusal::OutOfBoxel => write!(f, "a shift slides it out of its boxel"),
         }
     }
 }
 
-/// What `cells` make, built on the side if `side`, flipped if `flip`, and how many fit in
-/// `inventory` under `capacity`, up to `count`.
-#[allow(clippy::too_many_arguments)]
-pub fn plan(
+/// What `recipe` makes, as it stands in the world: each material's texels, in the order first
+/// stacked, and the whole. Blueprints in layers are worked out from `library`; `path` holds
+/// the blueprints being worked out on the way here, so one using itself is caught.
+pub(crate) fn design(
     blocks: &BlockRegistry,
-    inventory: &Inventory,
-    capacity: Option<u32>,
-    cells: &Cells,
-    side: bool,
-    flip: bool,
-    count: u32,
-) -> Result<CraftPlan, CraftRefusal> {
+    library: &Library,
+    recipe: &Recipe,
+    path: &mut Vec<BlueprintId>,
+) -> Result<(Vec<(MaterialId, ShapeGrid)>, ShapeGrid), CraftRefusal> {
+    let Recipe { cells, side, flip } = recipe;
+    let side = *side;
     // The whole, and each material's own layers, by material in the order first met.
     let mut whole: Stacks = Default::default();
     let mut by_material: Vec<(MaterialId, Stacks)> = Vec::new();
     for (row, line) in cells.iter().enumerate() {
         for (col, stack) in line.iter().enumerate() {
             for (layer_index, &piece) in stack.iter().enumerate() {
-                let Some(piece) = piece.filter(|p| p.thing.index() < blocks.material_count()) else {
+                let Some(piece) = piece else {
                     continue;
                 };
                 // A part goes in as it stands in the world: on the side, tipped back into the
@@ -121,11 +183,16 @@ pub fn plan(
                     let shape = if side { api::crafting::untipped(&shape) } else { shape };
                     Layer::Shape(Box::new(shape.turned(turn)))
                 };
-                let id = piece.thing;
-                let layers: Vec<(MaterialId, Layer)> = match (blocks.pieces(id), blocks.part_of(id)) {
-                    ([], None) => vec![(id, Layer::Solid)],
-                    ([], Some(of)) => vec![(of, framed(blocks.shape(blocks.material_block(id))))],
-                    (pieces, _) => pieces.iter().filter_map(|&b| Some((blocks.made_of(b)?, framed(blocks.shape(b))))).collect(),
+                let layers: Vec<(MaterialId, Layer)> = match piece.thing {
+                    Thing::Material(id) if id.index() >= blocks.material_count() => continue,
+                    Thing::Material(id) => match (blocks.pieces(id), blocks.part_of(id)) {
+                        ([], None) => vec![(id, Layer::Solid)],
+                        ([], Some(of)) => vec![(of, framed(blocks.shape(blocks.material_block(id))))],
+                        (pieces, _) => pieces.iter().filter_map(|&b| Some((blocks.made_of(b)?, framed(blocks.shape(b))))).collect(),
+                    },
+                    Thing::Blueprint(b) => {
+                        library.resolve_from(blocks, b, path)?.into_iter().map(|(m, shape)| (m, framed(shape))).collect()
+                    }
                 };
                 let mut shape = ShapeGrid::EMPTY;
                 for (material, layer) in layers {
@@ -148,21 +215,43 @@ pub fn plan(
         }
     }
     let shape = api::crafting::stack_shape(&whole).map_err(CraftRefusal::Pattern)?;
-    if shape.is_full() && by_material.len() == 1 {
-        return Err(CraftRefusal::FullBlock);
-    }
-    if by_material.len() > crate::MAX_MATERIALS {
-        return Err(CraftRefusal::TooManyMaterials);
-    }
     let mut pieces = Vec::new();
     for (material, stacks) in &by_material {
+        let own = stack_fill(stacks).map_err(CraftRefusal::Pattern)?;
+        pieces.push((*material, finished(&own, side, *flip)));
+    }
+    Ok((pieces, finished(&shape, side, *flip)))
+}
+
+/// What crafting from `source` makes, and how many fit in `inventory` under `capacity`, up to
+/// `count`.
+pub fn plan(
+    blocks: &BlockRegistry,
+    library: &Library,
+    inventory: &Inventory,
+    capacity: Option<u32>,
+    source: &Source,
+    count: u32,
+) -> Result<CraftPlan, CraftRefusal> {
+    let pieces = match source {
+        Source::Grid(recipe) => design(blocks, library, recipe, &mut Vec::new())?.0,
+        Source::Blueprint(id) => library.resolve(blocks, *id)?,
+    };
+    let shape = pieces.iter().fold(ShapeGrid::EMPTY, |a, (_, s)| a.union(s));
+    if shape.is_empty() {
+        return Err(CraftRefusal::Pattern(CraftError::Empty));
+    }
+    if shape.is_full() && pieces.len() == 1 {
+        return Err(CraftRefusal::FullBlock);
+    }
+    if pieces.len() > crate::MAX_MATERIALS {
+        return Err(CraftRefusal::TooManyMaterials);
+    }
+    for (material, _) in &pieces {
         if !blocks.get(blocks.material_block(*material)).is_some_and(|def| def.is_full()) {
             return Err(CraftRefusal::NotShapeable);
         }
-        let own = stack_fill(stacks).map_err(CraftRefusal::Pattern)?;
-        pieces.push((*material, finished(&own, side, flip)));
     }
-    let shape = finished(&shape, side, flip);
     let volume = shape.volume();
     let count = count.min(inventory.room(capacity) / volume);
     if count == 0 {
@@ -199,6 +288,20 @@ mod tests {
     use super::*;
     use crate::FULL_VOLUME;
     use api::BlockDef;
+
+    /// [`super::plan`] from stacks, with no blueprints.
+    fn plan(
+        blocks: &BlockRegistry,
+        inventory: &Inventory,
+        capacity: Option<u32>,
+        cells: &Cells,
+        side: bool,
+        flip: bool,
+        count: u32,
+    ) -> Result<CraftPlan, CraftRefusal> {
+        let source = Source::Grid(Recipe { cells: *cells, side, flip });
+        super::plan(blocks, &Library::default(), inventory, capacity, &source, count)
+    }
 
     fn setup() -> (BlockRegistry, Inventory, MaterialId, MaterialId) {
         let mut blocks = BlockRegistry::default();
@@ -240,7 +343,7 @@ mod tests {
         assert_eq!(inventory.amount(part), FULL_VOLUME / 2, "one slab");
         assert_eq!(blocks.part_of(part), Some(stone));
         // None of a material is needed to shape it.
-        let wood_slab = super::plan(&blocks, &inventory, CAPACITY, &cells(SLAB, wood), false, false, 1).unwrap();
+        let wood_slab = self::plan(&blocks, &inventory, CAPACITY, &cells(SLAB, wood), false, false, 1).unwrap();
         assert_eq!(wood_slab.pieces[0].0, wood);
     }
 
@@ -377,7 +480,7 @@ mod tests {
         one[3][0][0] = Some(Piece::new(wall));
         let plain = plan(&blocks, &inventory, CAPACITY, &one, false, false, 1).unwrap().shape;
         assert!(plain.get(0, 3, 0) && !plain.get(0, 0, 0), "the wall on the far side of its quarter");
-        one[3][0][0] = Some(Piece { thing: wall, turns: 1 });
+        one[3][0][0] = Some(Piece { thing: wall.into(), turns: 1 });
         let turned = plan(&blocks, &inventory, CAPACITY, &one, false, false, 1).unwrap().shape;
         assert!(turned.get(0, 0, 0) && !turned.get(3, 0, 0), "a quarter turn counterclockwise puts it at the left");
         let flipped = plan(&blocks, &inventory, CAPACITY, &cells(SLAB, stone), false, true, 1).unwrap().shape;

@@ -75,6 +75,8 @@ pub struct PlayerInput {
     pub place_precise: bool,
     /// Crafts at a table this tick.
     pub craft: Option<crate::crafting::Craft>,
+    /// Changes the player's blueprint library this tick.
+    pub blueprint: Option<crate::blueprint::BlueprintEdit>,
     /// Throws away everything carried of this material or part, without dropping it.
     pub discard: Option<crate::MaterialId>,
     /// The interact button went down since the last tick: works a trigger aimed at.

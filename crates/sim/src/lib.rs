@@ -1,6 +1,7 @@
 //! Engine simulation. Holds the world and advances it in fixed ticks. Knows nothing about
 //! rendering, so a headless server is just this crate plus mods.
 
+pub mod blueprint;
 pub mod cell;
 pub mod combat;
 pub mod crafting;
@@ -21,7 +22,8 @@ pub mod world;
 
 pub use combat::{Blow, Slam, StepContext, Strike, Swing, SwingStage, Target, TargetHit, TargetKind, Targets, ToolId};
 pub use cell::{CellBox, CellId, CellTable, MAX_MATERIALS, MAX_OCCUPANTS, Occupant, ShareError, can_share, occupant_boxes};
-pub use crafting::{Cells, Craft, CraftPlan, CraftRefusal, Piece};
+pub use blueprint::{Blueprint, BlueprintEdit, BlueprintId, BlueprintRefusal, Change, Design, Library, Variation};
+pub use crafting::{Cells, Craft, CraftPlan, CraftRefusal, Piece, Recipe, Source, Thing};
 pub use inventory::Inventory;
 pub use items::{Collector, Item, Items};
 pub use layer::Layer;

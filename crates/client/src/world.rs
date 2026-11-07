@@ -12,7 +12,7 @@ use api::{ChunkPos, HealthDef, InteractionDef, InventoryDef, ItemDropDef, ModelD
 use bevy::prelude::*;
 use protocol::{ClientMsg, Command, Connection, Defs, Event, ServerMsg, Snapshot, Welcome, WorldNote};
 use sim::{
-    Body, BlockRegistry, Craft, CraftPlan, CraftRefusal, Hit, Inventory, Item, LookRegistry, MaterialId, PlaceTarget,
+    Body, BlockRegistry, BlueprintId, BlueprintRefusal, Craft, Library, CraftPlan, CraftRefusal, Hit, Inventory, Item, LookRegistry, MaterialId, PlaceTarget,
     PlayerHurt, Slam, Strike, Swing, Target, TargetKind, ToolId, Universe, View,
 };
 
@@ -22,6 +22,10 @@ pub struct ClientWorld {
     models: Vec<ModelDef>,
     sounds: Vec<SoundDef>,
     blocks: BlockRegistry,
+    /// The player's blueprints, as the server last sent them.
+    blueprints: Library,
+    /// The last blueprint edit's outcome, until [`ClientWorld::take_blueprint_note`].
+    blueprint_note: Option<Result<BlueprintId, BlueprintRefusal>>,
     defs: Defs,
     universe: Universe,
     spawn: WorldPos,
@@ -61,6 +65,8 @@ impl ClientWorld {
             models: welcome.content.models,
             sounds: welcome.content.sounds,
             blocks: welcome.blocks,
+            blueprints: welcome.blueprints,
+            blueprint_note: None,
             defs: welcome.defs,
             universe,
             spawn: welcome.spawn,
@@ -97,6 +103,7 @@ impl ClientWorld {
                 }
             }
             ServerMsg::Blocks(blocks) => self.blocks = *blocks,
+            ServerMsg::Blueprints(library) => self.blueprints = *library,
             ServerMsg::Defs(defs) => self.defs = *defs,
             ServerMsg::Sounds(Ok(sounds)) => {
                 self.sounds = sounds;
@@ -126,6 +133,7 @@ impl ClientWorld {
                 Event::Slam(s) => self.slams.push(s),
                 Event::PlayerHurt(h) => self.hurts.push(h),
                 Event::Craft(c) => self.craft = Some(c),
+                Event::Blueprint(b) => self.blueprint_note = Some(b),
                 Event::BlockEdit(_) => {}
             }
         }
@@ -153,6 +161,7 @@ impl ClientWorld {
             crafting: defs.crafting.as_ref(),
             inventory: &self.shown.inventory,
             inventory_def: defs.inventory.as_ref(),
+            blueprints: &self.blueprints,
         }
     }
 
@@ -335,6 +344,16 @@ impl ClientWorld {
     }
 
     /// The outcome of the last craft since the last call.
+    /// The player's blueprints.
+    pub fn blueprints(&self) -> &Library {
+        &self.blueprints
+    }
+
+    /// The last blueprint edit's outcome, once.
+    pub fn take_blueprint_note(&mut self) -> Option<Result<BlueprintId, BlueprintRefusal>> {
+        self.blueprint_note.take()
+    }
+
     pub fn take_craft(&mut self) -> Option<Result<(MaterialId, u32), CraftRefusal>> {
         self.craft.take()
     }

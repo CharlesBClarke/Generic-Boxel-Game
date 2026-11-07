@@ -215,7 +215,7 @@ fn holding_drop_keeps_throwing_until_none_is_left() {
     let mut sim = yard(Some(inventory(8.0, 1.5)));
     let stone = stone(&sim);
     let ahead = PlayerInput { drop_held: true, drop_material: Some(stone), ..Default::default() };
-    sim.step(&PlayerInput { drop_pressed: true, ..ahead });
+    sim.step(&PlayerInput { drop_pressed: true, ..ahead.clone() });
     for _ in 0..15 {
         sim.step(&ahead);
     }
