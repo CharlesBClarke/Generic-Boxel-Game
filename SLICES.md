@@ -115,7 +115,7 @@ A run of small toy slices. Each one takes a single game-feel feature that doesn'
 
 ### Functional crafting (`toy-functional-crafting`)
 
-**Stage:** Implement (plan changed during Verify, 2026-11-06: see Plan changes)
+**Stage:** Verify (plan changes built 2026-11-06; waiting for the user to play it. `fix-crafting-menu-layout` is merged into this branch and goes to `master` once the user has seen it)
 
 **Goal:** Several materials in one crafted shape, and materials with properties that act, enough for a door and a lever with no door code in the engine. Takes item 1, item 2 and item 4 of Crafting follow-ups and the proof toy of Generative crafting.
 

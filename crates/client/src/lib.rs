@@ -353,13 +353,13 @@ fn tick_simulation(
         drop_pressed: take(&mut toggles.drop_pressed),
         drop_held: playing && keys.pressed(controls.drop),
         drop_material: palette.material(&world),
-        craft: if frozen { None } else { menu.pending.take() },
+        craft: if frozen { None } else { menu.take_pending() },
         discard: if frozen { None } else { menu.discard.take() },
         interact_pressed: take(&mut toggles.interact_pressed),
     };
     link.send(ClientMsg::Input(Box::new(input)), &mut world);
     if let Some(result) = world.take_craft() {
-        menu.result = Some(result);
+        menu.crafted(world.blocks(), result);
     }
     if !frozen {
         world.show_latest();
