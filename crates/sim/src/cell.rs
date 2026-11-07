@@ -140,7 +140,8 @@ impl std::fmt::Display for ShareError {
 /// Whether `new` may join a boxel that holds `existing`. Loose for now: up to
 /// [`MAX_OCCUPANTS`], no full block shares, and no two blocks fill exactly the same space,
 /// whatever they're made of (a slab turned about its own axis still fills the same space).
-/// Overlap is allowed, so a fence post can poke through a slab.
+/// Overlap is allowed, so a fence post can poke through a slab. Hidden pieces count toward
+/// the limit but take up no space.
 pub fn can_share(existing: &[Occupant], new: Occupant, blocks: &BlockRegistry) -> Result<(), ShareError> {
     let def = blocks.get(new.block).ok_or(ShareError::Unknown)?;
     if existing.is_empty() {
@@ -148,6 +149,10 @@ pub fn can_share(existing: &[Occupant], new: Occupant, blocks: &BlockRegistry) -
     }
     if existing.len() >= MAX_OCCUPANTS {
         return Err(ShareError::Crowded);
+    }
+    let existing: Vec<Occupant> = existing.iter().copied().filter(|o| !blocks.is_hidden(o.block)).collect();
+    if existing.is_empty() || blocks.is_hidden(new.block) {
+        return Ok(());
     }
     if def.is_full() || existing.iter().any(|o| blocks.get(o.block).is_some_and(|d| d.is_full())) {
         return Err(ShareError::Full);

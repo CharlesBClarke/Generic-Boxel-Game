@@ -60,12 +60,20 @@ impl View<'_> {
     /// placed block would go on. `None` with nothing in reach, no player, or no mod defining
     /// interaction.
     pub fn target(&self, yaw: f32, pitch: f32) -> Option<Hit> {
+        self.target_seeing(yaw, pitch, false)
+    }
+
+    /// [`View::target`], seeing hidden pieces too if `hidden`, as someone holding a phase
+    /// material does.
+    pub fn target_seeing(&self, yaw: f32, pitch: f32, hidden: bool) -> Option<Hit> {
         let player = self.player?;
         let reach = self.interaction?.reach;
         let (grid, blocks) = (self.grid, self.blocks);
         raycast(player.eye(), look_direction(yaw, pitch), reach, |p, out| {
             for (i, &o) in grid.cell(p).iter().enumerate() {
-                out.extend(occupant_boxes(o, blocks).map(|b| (b, i)));
+                if hidden || !blocks.is_hidden(o.block) {
+                    out.extend(occupant_boxes(o, blocks).map(|b| (b, i)));
+                }
             }
         })
     }
@@ -158,11 +166,7 @@ impl View<'_> {
 
     /// Whether no body at all overlaps solid `boxes` at `pos`: nothing is pushed aside.
     pub fn bodies_clear(&self, pos: BoxelPos, boxes: &[CellBox]) -> bool {
-        if boxes.is_empty() {
-            return true;
-        }
-        let targets = self.targets.iter().any(|t| t.overlaps_boxes(&self.target_defs[t.kind.index()], pos, boxes));
-        !targets && !self.player.is_some_and(|p| p.overlaps_boxes(pos, boxes))
+        bodies_clear(self.player, self.targets, self.target_defs, pos, boxes)
     }
 
     /// How `player` would get out of a solid block filling `boxes` at `pos`, if there's a rule
@@ -329,4 +333,13 @@ fn orient(turning: Turning, aim: &Aim) -> Orientation {
         Turning::Axis => Orientation::z_along(up.iter().position(|&c| c != 0).expect("a unit axis")),
         Turning::Any => Orientation::from_axes(up, forward).expect("two axes at right angles"),
     }
+}
+
+/// Whether `player` and `targets` leave room for solid `boxes` at `pos`.
+pub fn bodies_clear(player: Option<&Body>, targets: &[Target], target_defs: &[TargetDef], pos: BoxelPos, boxes: &[CellBox]) -> bool {
+    if boxes.is_empty() {
+        return true;
+    }
+    let hit = targets.iter().any(|t| t.overlaps_boxes(&target_defs[t.kind.index()], pos, boxes));
+    !hit && !player.is_some_and(|p| p.overlaps_boxes(pos, boxes))
 }

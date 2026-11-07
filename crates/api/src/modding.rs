@@ -2,7 +2,7 @@
 
 use crate::{
     ApiError, BlockDef, Brain, BoxelPos, CraftingDef, CrowdDef, HealthDef, InteractionDef, InventoryDef, ItemDropDef, LookDef, ModelDef,
-    Generator, MovementController, Orientation, PlayerDef, PushOutDef, ShapeGrid, SoundDef, TargetDef, TerrainDef, ToolDef,
+    Generator, MovementController, Orientation, PlayerDef, PushOutDef, ShapeGrid, SignalDef, SoundDef, TargetDef, TerrainDef, ToolDef,
     WorldPos,
 };
 
@@ -54,6 +54,8 @@ pub trait Registrar {
     /// Registers the crafting table. Its block is checked once every mod has registered its
     /// blocks.
     fn register_crafting(&mut self, def: CraftingDef) -> Result<(), ApiError>;
+    /// Registers how signals behave: without it, triggers do nothing.
+    fn register_signals(&mut self, def: SignalDef) -> Result<(), ApiError>;
     /// Registers a model for content to name. Like looks, names are checked once all mods have
     /// registered, so a target may name a model another mod registers later.
     fn register_model(&mut self, def: ModelDef) -> Result<(), ApiError>;
@@ -80,6 +82,16 @@ pub trait WorldEdit {
         pos: BoxelPos,
         material: &str,
         shape: &ShapeGrid,
+        orientation: Orientation,
+    ) -> Result<(), ApiError>;
+    /// Adds a bundle of `pieces`, each a material and the sixteenths it fills, turned alike by
+    /// `orientation`, to what's already in the boxel: the same bundle crafting those pieces
+    /// makes, placed whole. The same rules as a player placing it decide whether it fits, and
+    /// a piece that starts hidden is placed hidden.
+    fn add_bundle(
+        &mut self,
+        pos: BoxelPos,
+        pieces: &[(&str, ShapeGrid)],
         orientation: Orientation,
     ) -> Result<(), ApiError>;
     /// Empties the boxel.

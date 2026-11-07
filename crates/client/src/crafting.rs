@@ -917,14 +917,15 @@ mod tests {
         let wood = blocks.material(base::WOOD).unwrap();
         let post = blocks.drop(blocks.find_shaped(wood, &base::shapes::post()).unwrap()).unwrap().material;
         assert_eq!(rebuild(blocks, post), None);
-        // The door as a bundle: its knob floats on the top, so it's rebuilt on the side.
+        // A door as a bundle, a panel against the far side with a knob out from it: the knob
+        // floats on the top, so it's rebuilt on the side.
         let mut blocks = world.blocks().clone();
-        let pieces: Vec<_> =
-            base::shapes::door_lower().into_iter().map(|(m, shape)| (blocks.material(m).unwrap(), shape)).collect();
+        let (phasite, brass) = (blocks.material(base::PHASITE).unwrap(), blocks.material(base::BRASS).unwrap());
+        let cube = |min, max| ShapeGrid::from_boxes(&[api::BlockBox::new(min, max)]);
+        let pieces = [(phasite, cube([0, 12, 0], [16, 16, 16])), (brass, cube([12, 8, 8], [16, 12, 12]))];
         let door = blocks.bundle(&pieces).unwrap();
         let recipe = rebuild(&blocks, door).unwrap();
         assert!(recipe.side && !recipe.flip);
-        let brass = blocks.material(base::BRASS).unwrap();
         assert_eq!(recipe.cells[1][3][1], Some(Piece::new(brass)), "the knob, one layer out");
     }
 

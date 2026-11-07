@@ -197,6 +197,9 @@ fn sections(sim: &mut Simulation) -> Vec<TuningSection> {
     if let Some(d) = sim.inventory_def() {
         add("inventory".into(), d.tunables());
     }
+    if let Some(d) = sim.signal_def() {
+        add("signals".into(), d.tunables());
+    }
     for tool in sim.tools() {
         add(format!("tool {}", tool.name), tool.tunables());
     }
@@ -230,6 +233,7 @@ fn tune(sim: &mut Simulation, section: &str, name: &str, value: f32) -> bool {
         "health" => set(sim.health_def_mut().map(|d| d as &mut dyn Tunables), name, value),
         "item_drops" => set(sim.item_drop_def_mut().map(|d| d as &mut dyn Tunables), name, value),
         "inventory" => set(sim.inventory_def_mut().map(|d| d as &mut dyn Tunables), name, value),
+        "signals" => set(sim.signal_def_mut().map(|d| d as &mut dyn Tunables), name, value),
         "world" => sim.world_settings_mut().set_tunable(name, value),
         _ => {
             if let Some(tool) = section.strip_prefix("tool ") {

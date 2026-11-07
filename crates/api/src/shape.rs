@@ -126,6 +126,24 @@ impl ShapeGrid {
         out
     }
 
+    /// Every sixteenth filled in both.
+    pub fn intersection(&self, other: &ShapeGrid) -> ShapeGrid {
+        let mut out = self.clone();
+        for (a, b) in out.rows.iter_mut().zip(&other.rows) {
+            *a &= b;
+        }
+        out
+    }
+
+    /// Every sixteenth filled in this one but not in `other`.
+    pub fn minus(&self, other: &ShapeGrid) -> ShapeGrid {
+        let mut out = self.clone();
+        for (a, b) in out.rows.iter_mut().zip(&other.rows) {
+            *a &= !b;
+        }
+        out
+    }
+
     /// Whether any sixteenth is filled in both.
     pub fn overlaps(&self, other: &ShapeGrid) -> bool {
         self.rows.iter().zip(&other.rows).any(|(a, b)| a & b != 0)

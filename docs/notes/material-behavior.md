@@ -1,5 +1,7 @@
 # Material behavior (next toy after Functional crafting)
 
+*Planned and built 2026-11-06: the vanisher became phasite and antiphasite (see the plan in `SLICES.md`); the checklist below is in the design doc.*
+
 Split out of Functional crafting on 2026-11-06 at the user's request: that toy closes with several materials in one shape; what materials *do* is planned again here.
 
 ## What exists (first try, built in Functional crafting)

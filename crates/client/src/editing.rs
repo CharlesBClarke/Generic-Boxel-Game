@@ -93,6 +93,18 @@ impl Palette {
         }
     }
 
+    /// Whether the player sees hidden pieces: holding a phase material, as the simulation
+    /// judges it.
+    pub fn sees_hidden(&self, world: &ClientWorld) -> bool {
+        world.blocks().get(self.selected(world)).is_some_and(|d| d.has(api::Property::Phase))
+    }
+
+    /// The occupant breaking would remove looking along `look`, seeing hidden pieces when
+    /// holding a phase material.
+    pub(crate) fn aimed(&self, world: &ClientWorld, look: &Look) -> Option<sim::Hit> {
+        world.target_seeing(look.yaw, look.pitch, self.sees_hidden(world))
+    }
+
     /// Selects the slot holding part `part`, if it's carried.
     pub fn select_part(&mut self, world: &ClientWorld, part: MaterialId) {
         if let Some(i) = entries(world).iter().position(|e| matches!(e, Entry::Part(p, _) if *p == part)) {
@@ -202,7 +214,7 @@ pub(crate) fn draw_outline(world: Res<ClientWorld>, look: Res<Look>, palette: Re
     if palette.tool(&world).is_some() {
         return;
     }
-    let Some(hit) = world.target(look.yaw, look.pitch) else {
+    let Some(hit) = palette.aimed(&world, &look) else {
         return;
     };
     let Some(&occupant) = world.universe().main().cell(hit.pos).get(hit.occupant) else {
@@ -233,7 +245,7 @@ pub(crate) fn draw_region_guide(
     if !palette.precise || palette.tool(&world).is_some() {
         return;
     }
-    let Some(hit) = world.target(look.yaw, look.pitch) else {
+    let Some(hit) = palette.aimed(&world, &look) else {
         return;
     };
     if hit.normal == api::I64Vec3::ZERO {
@@ -310,8 +322,8 @@ pub(crate) fn update_ghost(
         return;
     };
     let blocks = world.blocks();
-    let place = world
-        .target(look.yaw, look.pitch)
+    let place = palette
+        .aimed(&world, &look)
         .and_then(|hit| world.placement(&hit, palette.selected(&world), look.yaw, look.pitch, palette.precise));
     let Some(place) = place else {
         visibility.set_if_neq(Visibility::Hidden);
@@ -340,11 +352,75 @@ pub(crate) fn update_ghost(
         .with_scale(Vec3::splat(GHOST_SCALE));
 }
 
+/// See-through copies of the hidden pieces near the player, shown while they hold a phase
+/// material, so what's hidden can be found, aimed at and broken.
+#[derive(Resource)]
+pub(crate) struct HiddenGhosts {
+    pub entity: Entity,
+    /// The chunk the mesh was built around, while it's shown.
+    pub around: Option<ChunkPos>,
+    /// Blocks changed since it was built.
+    pub dirty: bool,
+}
+
+/// How far from the player hidden pieces are shown, in boxels.
+const HIDDEN_RANGE: i64 = 24;
+
+/// Shows the hidden pieces near the player while they hold a phase material, rebuilding the
+/// mesh when blocks change or the player reaches another chunk.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn update_hidden_ghosts(
+    world: Res<ClientWorld>,
+    palette: Res<Palette>,
+    origin: Res<RenderOrigin>,
+    chunk_meshes: Res<ChunkMeshes>,
+    mut ghosts: ResMut<HiddenGhosts>,
+    mut meshes: ResMut<Assets<Mesh>>,
+    mut parts: Query<(&mut Mesh3d, &mut Transform, &mut Visibility)>,
+) {
+    let Ok((mut mesh, mut transform, mut visibility)) = parts.get_mut(ghosts.entity) else {
+        return;
+    };
+    let (Some(player), true) = (world.player(), palette.sees_hidden(&world)) else {
+        visibility.set_if_neq(Visibility::Hidden);
+        ghosts.around = None;
+        return;
+    };
+    let center = player.pos().boxel();
+    let chunk = center.chunk();
+    if ghosts.around != Some(chunk) || ghosts.dirty {
+        let (grid, blocks) = (world.universe().main(), world.blocks());
+        let anchor = chunk.origin();
+        let mut data = mesher::MeshData::default();
+        let r = HIDDEN_RANGE;
+        for z in -r..=r {
+            for y in -r..=r {
+                for x in -r..=r {
+                    let pos = center.offset(api::I64Vec3::new(x, y, z));
+                    for &o in grid.cell(pos).iter().filter(|o| blocks.is_hidden(o.block)) {
+                        let boxes = mesher::alone(o, blocks);
+                        let around = || boxes.as_slice();
+                        let at = (pos.0 - anchor.0).as_vec3().to_array();
+                        let (volumes, off) = (&chunk_meshes.volumes, &mesher::AoTuning::OFF);
+                        mesher::mesh_occupant(&mut data, o, at, blocks, volumes, |_| false, &around, off, &mut Vec::new());
+                    }
+                }
+            }
+        }
+        mesh.0 = meshes.add(crate::to_bevy_mesh(data));
+        ghosts.around = Some(chunk);
+        ghosts.dirty = false;
+    }
+    visibility.set_if_neq(Visibility::Visible);
+    *transform = crate::chunk_transform(chunk, origin.cell);
+}
+
 /// Remeshing at least this many chunks at once is timed for the readout.
 const BIG_REMESH: usize = 64;
 
 /// Rebuilds the meshes of chunks the simulation changed, and of every chunk when the ambient
 /// occlusion tuning changes.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn remesh_changed_chunks(
     mut commands: Commands,
     mut world: ResMut<ClientWorld>,
@@ -353,6 +429,7 @@ pub(crate) fn remesh_changed_chunks(
     mut chunk_meshes: ResMut<ChunkMeshes>,
     mut handles: Query<&mut Mesh3d, With<ChunkMesh>>,
     ao: Res<mesher::AoTuning>,
+    mut hidden: ResMut<HiddenGhosts>,
 ) {
     // Crafting registers blocks while playing; their looks must be known before they're drawn.
     chunk_meshes.volumes.sync(world.blocks());
@@ -361,6 +438,7 @@ pub(crate) fn remesh_changed_chunks(
     if ao.is_changed() && !ao.is_added() {
         changed = grid.chunks().map(|(pos, _)| pos).collect();
     }
+    hidden.dirty |= !changed.is_empty();
     let start = std::time::Instant::now();
     let meshed = mesher::mesh_chunks(grid, &changed, world.blocks(), &chunk_meshes.volumes, &ao);
     if changed.len() >= BIG_REMESH {
@@ -631,9 +709,10 @@ mod tests {
         let blocks = sim.blocks();
         let material = |name| Entry::Material(blocks.material(name).unwrap(), blocks.id(name).unwrap());
         let (brick, brick_block) = (blocks.material(base::BRICK).unwrap(), blocks.id(base::BRICK).unwrap());
-        // The base game starts with brick, wood and the metals; nothing else is carried, so
-        // nothing else is on offer, not even the test area's crafted shapes.
-        let start = [base::BRICK, base::WOOD, base::BRASS, base::IRON, base::COPPER].map(material);
+        // The base game starts with brick, wood, the metals and the phase materials; nothing
+        // else is carried, so nothing else is on offer, not even the test area's crafted shapes.
+        let carried = [base::BRICK, base::WOOD, base::BRASS, base::IRON, base::COPPER, base::PHASITE, base::ANTIPHASITE];
+        let start = carried.map(material);
         assert_eq!(entries(&sim), [&[Entry::Tool(club)][..], &start].concat());
 
         let at = |slot| Palette { slot, ..Default::default() };
@@ -651,16 +730,16 @@ mod tests {
         let blocks = sim.blocks();
         let material = |name| Entry::Material(blocks.material(name).unwrap(), blocks.id(name).unwrap());
         let mut slots = vec![Entry::Tool(club), material(base::DIRT)];
-        slots.extend([base::BRICK, base::WOOD, base::BRASS, base::IRON, base::COPPER].map(material));
+        slots.extend(carried.map(material));
         slots.push(Entry::Part(part, slab));
         assert_eq!(entries(&sim), slots);
         let mut palette = at(0);
         palette.select_part(&sim, part);
-        assert_eq!((palette.slot, palette.selected(&sim), palette.material(&sim)), (7, slab, Some(part)));
+        assert_eq!((palette.slot, palette.selected(&sim), palette.material(&sim)), (9, slab, Some(part)));
 
         // Throwing the part away takes it off the palette.
         step(&mut link, &mut sim, &PlayerInput { discard: Some(part), ..Default::default() });
-        assert_eq!(entries(&sim).len(), 7);
+        assert_eq!(entries(&sim).len(), 9);
     }
 
     #[test]
@@ -668,7 +747,7 @@ mod tests {
         let (_, sim) = connect(base_sim());
         let names = PartNames::default();
         let palette = Palette { slot: 1, ..Default::default() };
-        assert_eq!(carried_line(&sim), "carrying 44, no limit");
+        assert_eq!(carried_line(&sim), "carrying 52, no limit");
         let slots = entries(&sim);
         assert_eq!(slot_label(&sim, &names, &slots[0]), ("club".into(), None));
         assert_eq!(slot_label(&sim, &names, &slots[1]), ("brick".into(), Some("16".into())));

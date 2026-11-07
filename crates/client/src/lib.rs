@@ -37,7 +37,7 @@ use protocol::{ClientMsg, Command, Connection};
 use sim::PlayerInput;
 
 use crate::controls::{Controls, DoubleTapSprint, SprintToggle, label};
-use crate::editing::{ChunkMeshes, Ghost, Palette, PartNames};
+use crate::editing::{ChunkMeshes, Ghost, HiddenGhosts, Palette, PartNames};
 use crate::feel::{CameraFeel, FeelState, Motion};
 use crate::mesher::MeshData;
 use crate::solid::{ATTRIBUTE_EDGES, ATTRIBUTE_FACE, ATTRIBUTE_SOLID, SolidMaterial, SolidPlugin};
@@ -135,6 +135,7 @@ pub fn run(connection: Box<dyn Connection>) {
                 (update_camera, sync_chunk_transforms, view::apply_render_distance, sound::play_sounds).chain(),
                 editing::draw_outline,
                 editing::update_ghost,
+                editing::update_hidden_ghosts,
                 items::sync_items,
                 (combat::sync_targets, combat::update_chunks, combat::animate_weapon, combat::draw_hit_boxes, combat::draw_routes, combat::update_readout, hurt::update_health)
                     .chain(),
@@ -258,6 +259,19 @@ fn spawn_chunk_meshes(
         shown: None,
     };
     commands.insert_resource(ghost);
+    let hidden = HiddenGhosts {
+        entity: commands
+            .spawn((
+                Mesh3d(meshes.add(to_bevy_mesh(MeshData::default()))),
+                MeshMaterial3d(materials.add(ghost_material(Color::srgba(1.0, 1.0, 1.0, 0.3)))),
+                Transform::default(),
+                Visibility::Hidden,
+            ))
+            .id(),
+        around: None,
+        dirty: false,
+    };
+    commands.insert_resource(hidden);
     let grid = world.universe().main();
     let mut entities = std::collections::HashMap::new();
     let mut quads = std::collections::HashMap::new();
@@ -303,7 +317,7 @@ pub(crate) fn to_bevy_mesh(data: MeshData) -> Mesh {
         .with_inserted_indices(Indices::U32(data.indices))
 }
 
-fn chunk_transform(pos: ChunkPos, origin: I64Vec3) -> Transform {
+pub(crate) fn chunk_transform(pos: ChunkPos, origin: I64Vec3) -> Transform {
     Transform::from_translation(coords::render_translation(WorldPos::at_boxel(pos.origin()), origin))
 }
 

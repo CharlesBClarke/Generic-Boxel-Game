@@ -39,7 +39,9 @@ fn base_blocks_come_from_its_data_files() {
     let def = |name| blocks.get(blocks.id(name).unwrap()).unwrap();
     // The data file's full blocks, then the shapes the test area was built with, crafted as it
     // was built: brick slabs (the cow pen's steps), stone stairs, wood posts, a stone slab, then
-    // the door's pieces (the upper half's hinge is the lower half's) and the lever's.
+    // the lever's, the wire and the door's pieces (the upper half's are the lower half's). The
+    // door's bundle pieces, and the pieces cut and hidden by its open panel starting hidden,
+    // come in between.
     let names: Vec<_> = blocks.iter().map(|(_, d)| d.name.as_str()).collect();
     let listed = [
         base::STONE,
@@ -55,6 +57,8 @@ fn base_blocks_come_from_its_data_files() {
         base::BRASS,
         base::IRON,
         base::COPPER,
+        base::PHASITE,
+        base::ANTIPHASITE,
     ];
     assert_eq!(names[..listed.len()], listed);
     let mut crafted = vec![
@@ -63,12 +67,13 @@ fn base_blocks_come_from_its_data_files() {
         (base::WOOD, base::shapes::post()),
         (base::STONE, base::shapes::slab()),
     ];
-    crafted.extend(base::shapes::door_lower());
-    crafted.extend(base::shapes::door_upper().into_iter().filter(|(m, _)| *m == base::WOOD));
     crafted.extend(base::shapes::lever(base::BRICK));
-    assert_eq!(names.len(), listed.len() + crafted.len(), "no other shapes: {names:?}");
-    for (i, (material, shape)) in crafted.iter().enumerate() {
-        let (id, d) = blocks.iter().nth(listed.len() + i).unwrap();
+    crafted.push((base::COPPER, base::shapes::wire()));
+    crafted.extend(base::shapes::door_lower());
+    let made = |id| blocks.bundle_of(id).is_some() || blocks.derived(id).is_some();
+    let shapes: Vec<_> = blocks.iter().skip(listed.len()).filter(|(id, _)| !made(*id)).collect();
+    assert_eq!(shapes.len(), crafted.len(), "no other shapes: {names:?}");
+    for ((material, shape), &(id, d)) in crafted.iter().zip(&shapes) {
         let m = blocks.material(material).unwrap();
         assert_eq!(blocks.find_shaped(m, shape), Some(id), "{}", d.name);
         assert!(d.name.starts_with(&format!("{material}_s")), "{}", d.name);
@@ -80,7 +85,7 @@ fn base_blocks_come_from_its_data_files() {
     // Everything is placeable but grass (it breaks into dirt) and the debug marker. Every block
     // is full but the crafted ones.
     let hidden = [base::GRASS, base::MARKER];
-    for (id, d) in blocks.iter() {
+    for (id, d) in blocks.iter().filter(|(id, _)| blocks.derived(*id).is_none()) {
         let shaped = blocks.drop(id).is_some_and(|drop| blocks.part_of(drop.material).is_some());
         assert!(d.solid, "{}", d.name);
         assert_eq!(d.placeable, !hidden.contains(&d.name.as_str()), "{}", d.name);
@@ -101,6 +106,7 @@ fn base_blocks_come_from_its_data_files() {
     assert_eq!(
         looks,
         [
+            "base:antiphasite",
             "base:brass",
             "base:brick",
             "base:copper",
@@ -111,14 +117,17 @@ fn base_blocks_come_from_its_data_files() {
             "base:ice",
             "base:iron",
             "base:log",
+            "base:phasite",
             "base:stone",
             "base:wood"
         ]
     );
     // The metals bring what crafted shapes made with them do.
     assert_eq!(def(base::BRASS).properties, [Property::Trigger]);
-    assert_eq!(def(base::IRON).properties, [Property::Hinge]);
-    assert_eq!(def(base::COPPER).properties, [Property::Listener]);
+    assert!(def(base::IRON).properties.is_empty());
+    assert_eq!(def(base::COPPER).properties, [Property::Conductor]);
+    assert_eq!(def(base::PHASITE).properties, [Property::Phase]);
+    assert_eq!(def(base::ANTIPHASITE).properties, [Property::Phase, Property::StartsHidden]);
     assert!(def(base::WOOD).properties.is_empty());
     for look in sim.looks().iter() {
         assert!(look.rgba.as_chunks::<4>().0.iter().all(|px| px[3] == 255), "{} should be opaque", look.name);

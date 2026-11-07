@@ -6,7 +6,7 @@ use std::fmt;
 use api::block::is_valid_name;
 use api::{
     ApiError, BlockDef, BoxelPos, Brain, ChunkPos, CraftingDef, CrowdDef, Generator, HealthDef, InteractionDef, InventoryDef, ItemDropDef,
-    LookDef, ModelDef, Mod, MovementController, Orientation, PlayerDef, PushOutDef, Registrar, ShapeGrid, SoundDef,
+    LookDef, ModelDef, Mod, MovementController, Orientation, PlayerDef, PushOutDef, Registrar, ShapeGrid, SignalDef, SoundDef,
     TargetDef, TerrainDef, ToolDef, Vec2, Vec3, WorldEdit, WorldPos, look_direction,
 };
 
@@ -16,7 +16,7 @@ use crate::edit::{ChangedChunks, Repeater};
 use crate::inventory::{Inventory, capacity_units};
 use crate::items::{Collector, Items, pop_velocity};
 use crate::terrain::{GenerationStats, WorldSettings};
-use crate::view::{GridTerrain, PlaceTarget, View};
+use crate::view::{GridTerrain, PlaceTarget, View, bodies_clear};
 use crate::{
     BlockId, BlockRegistry, CellBox, Grid, Hit, MaterialId, Occupant, Player, PlayerInput, LookRegistry, Universe, can_share,
     occupant_boxes, raycast,
@@ -130,6 +130,7 @@ pub struct Simulation {
     /// What the player carries.
     inventory: Inventory,
     crafting_def: Option<CraftingDef>,
+    signal_def: Option<SignalDef>,
     /// The last craft: the part made and how many, or why nothing was.
     last_craft: Option<Result<(MaterialId, u32), CraftRefusal>>,
     targets: Targets,
@@ -171,6 +172,7 @@ impl Simulation {
                 item_drops: &mut sim.item_drop_def,
                 inventory: &mut sim.inventory_def,
                 crafting: &mut sim.crafting_def,
+                signals: &mut sim.signal_def,
                 models: &mut sim.models,
                 sounds: &mut sim.sounds,
                 targets: &mut sim.target_defs,
@@ -213,6 +215,7 @@ impl Simulation {
                 targets: &mut sim.targets,
                 generators: &sim.generators,
                 terrains: &mut sim.terrains,
+                reach: sim.signal_def.as_ref().map_or(0, SignalDef::reach_texels),
             })?;
         }
         Ok(sim)
@@ -426,6 +429,11 @@ impl Simulation {
         self.view().target(yaw, pitch)
     }
 
+    /// See [`View::target_seeing`].
+    pub fn target_seeing(&self, yaw: f32, pitch: f32, hidden: bool) -> Option<Hit> {
+        self.view().target_seeing(yaw, pitch, hidden)
+    }
+
     /// See [`View::placement`].
     pub fn placement(&self, hit: &Hit, block: BlockId, yaw: f32, pitch: f32, precise: bool) -> Option<PlaceTarget> {
         self.view().placement(hit, block, yaw, pitch, precise)
@@ -453,12 +461,12 @@ impl Simulation {
         if !breaking && !placing {
             return;
         }
-        let hit = self.target(input.yaw, input.pitch);
+        let hit = self.target_seeing(input.yaw, input.pitch, self.sees_hidden(input));
         if breaking {
             if let Some(hit) = hit
                 && let Some(&occupant) = self.universe.main().cell(hit.pos).get(hit.occupant)
             {
-                self.remove_occupant(hit.pos, hit.occupant);
+                self.break_occupant(hit.pos, hit.occupant);
                 self.block_edits.push(BlockEdit { pos: hit.pos, block: occupant.block, placed: false });
             }
             return;
@@ -471,78 +479,61 @@ impl Simulation {
             for occupant in place.occupants() {
                 self.add_occupant(place.pos, occupant);
             }
+            let added: Vec<Occupant> = place.occupants().collect();
+            let hidden = starting_hidden(&self.blocks, place.pos, &added);
+            let reach = self.signal_def.as_ref().map_or(0, SignalDef::reach_texels);
+            let changed = crate::signal::hide(self.universe.main_mut(), &mut self.blocks, &hidden, reach);
+            for pos in changed {
+                self.changed.mark(pos);
+            }
             self.block_edits.push(BlockEdit { pos: place.pos, block: place.occupant.block, placed: true });
         }
     }
 
-    /// Works the trigger aimed at, if the interact button went down: signals reach its boxel and
-    /// the listeners touching it, and each hinge line they reach swings once (see
-    /// [`crate::signal`]).
+    /// Works the trigger aimed at, if the interact button went down: the signal reaches its
+    /// boxel and the conductors joined to it, and every phase group there flips (see
+    /// [`crate::signal`]). Needs a signal definition.
     fn interact(&mut self, input: &PlayerInput) {
         if !input.interact_pressed {
             return;
         }
+        let Some(def) = self.signal_def.clone() else {
+            return;
+        };
         let Some(hit) = self.target(input.yaw, input.pitch) else {
             return;
         };
         let grid = self.universe.main();
-        let trigger = grid.cell(hit.pos).get(hit.occupant).and_then(|o| self.blocks.get(o.block));
-        if !trigger.is_some_and(|def| def.has(api::Property::Trigger)) {
+        let trigger = grid.cell(hit.pos).get(hit.occupant).copied();
+        let works = trigger.is_some_and(|o| {
+            !self.blocks.is_hidden(o.block) && self.blocks.get(o.block).is_some_and(|d| d.has(api::Property::Trigger))
+        });
+        if !works {
             return;
         }
-        let mut swung: Vec<BoxelPos> = Vec::new();
-        for pos in crate::signal::reached(grid, &self.blocks, hit.pos) {
-            if swung.contains(&pos) {
-                continue;
-            }
-            let grid = self.universe.main();
-            if let Some(swing) = crate::signal::swing(grid, &self.blocks, pos) {
-                swung.extend(swing.iter().map(|(p, _)| *p));
-                self.swing_hinges(swing);
+        let reached = crate::signal::reached(grid, &self.blocks, hit.pos, def.conduct_limit);
+        let (player, targets, target_defs) = (self.player.as_ref().map(|p| p.body()), &self.targets, &self.target_defs);
+        let clear = |pos: BoxelPos, shape: &ShapeGrid| {
+            let boxes: Vec<CellBox> = shape.to_boxes().into_iter().map(CellBox::from_block_box).collect();
+            bodies_clear(player, targets.as_slice(), target_defs, pos, &boxes)
+        };
+        let changed = crate::signal::signal(self.universe.main_mut(), &mut self.blocks, &reached, def.reach_texels(), &clear);
+        self.mark_signaled(&changed);
+    }
+
+    /// Records boxels a signal changed: remeshing, and an edit for each so it's heard.
+    fn mark_signaled(&mut self, changed: &[BoxelPos]) {
+        for &pos in changed {
+            self.changed.mark(pos);
+            if let Some(first) = self.universe.main().cell(pos).first() {
+                self.block_edits.push(BlockEdit { pos, block: first.block, placed: true });
             }
         }
     }
 
-    /// Swings a hinge line, unless a body is in the way of where it goes.
-    fn swing_hinges(&mut self, swing: crate::signal::Swing) {
-        use crate::signal::Change;
-        let view = self.view();
-        let blocks = &self.blocks;
-        let clear = swing.iter().all(|(pos, changes)| {
-            let boxes: Vec<CellBox> = changes
-                .iter()
-                .flat_map(|c| -> Vec<CellBox> {
-                    match c {
-                        Change::Open { closed, shape } if blocks.is_solid(closed.block) => {
-                            shape.to_boxes().into_iter().map(CellBox::from_block_box).collect()
-                        }
-                        Change::Close(o) | Change::Keep(o) if blocks.is_solid(o.block) => occupant_boxes(*o, blocks).collect(),
-                        _ => Vec::new(),
-                    }
-                })
-                .collect();
-            view.bodies_clear(*pos, &boxes)
-        });
-        if !clear {
-            return;
-        }
-        for (pos, changes) in swing {
-            let mut cell = Vec::new();
-            for change in changes {
-                cell.push(match change {
-                    Change::Open { closed, shape } => match self.blocks.opened(closed, &shape) {
-                        Ok(id) => Occupant::new(id),
-                        Err(_) => closed,
-                    },
-                    Change::Close(o) | Change::Keep(o) => o,
-                });
-            }
-            self.universe.main_mut().set_cell(pos, &cell);
-            self.changed.mark(pos);
-            if let Some(first) = cell.first() {
-                self.block_edits.push(BlockEdit { pos, block: first.block, placed: true });
-            }
-        }
+    /// Whether the player sees hidden pieces: holding a phase material.
+    fn sees_hidden(&self, input: &PlayerInput) -> bool {
+        input.tool.is_none() && self.blocks.get(input.place_block).is_some_and(|d| d.has(api::Property::Phase))
     }
 
     /// Throws a full block's worth of the material the input names, or what's left of it if less,
@@ -743,6 +734,53 @@ impl Simulation {
 
     /// Removes one occupant from a boxel, by its index in the boxel's list. It drops its
     /// material as a loose item, from the middle of the space it filled, if items are defined.
+    /// Breaks the occupant at `index` in the boxel at `pos`. A piece of a bundle takes every
+    /// piece of that bundle in the boxel with it, cut and hidden parts included, and drops the
+    /// bundle once if they make it whole; otherwise each comes off as its own.
+    fn break_occupant(&mut self, pos: BoxelPos, index: usize) {
+        let cell = self.universe.main().cell(pos).to_vec();
+        let Some(&occupant) = cell.get(index) else {
+            return;
+        };
+        let blocks = &self.blocks;
+        let bundle_of = |o: Occupant| blocks.bundle_of(blocks.origin(o).0.block);
+        let Some(bundle) = bundle_of(occupant) else {
+            self.remove_occupant(pos, index);
+            return;
+        };
+        let (mine, rest): (Vec<Occupant>, Vec<Occupant>) = cell.iter().partition(|&&o| bundle_of(o) == Some(bundle));
+        // Whole when every piece of the bundle is here, all its parts together.
+        let mut have: Vec<(Occupant, api::ShapeGrid)> = Vec::new();
+        for &o in &mine {
+            let (from, shape) = blocks.origin(o);
+            match have.iter_mut().find(|(f, _)| *f == from) {
+                Some((_, s)) => *s = s.union(&shape),
+                None => have.push((from, shape)),
+            }
+        }
+        let pieces = self.blocks.pieces(bundle);
+        let whole = pieces.len() == have.len()
+            && have.iter().all(|(from, shape)| {
+                pieces.contains(&from.block) && *shape == self.blocks.shape(from.block).turned(from.orientation)
+            });
+        if !whole {
+            for _ in 0..mine.len() {
+                let blocks = &self.blocks;
+                let at = self.universe.main().cell(pos).iter().position(|&o| blocks.bundle_of(blocks.origin(o).0.block) == Some(bundle));
+                match at {
+                    Some(i) => self.remove_occupant(pos, i),
+                    None => break,
+                }
+            }
+            return;
+        }
+        self.universe.main_mut().set_cell(pos, &rest);
+        self.changed.mark(pos);
+        let drop = crate::Drop { material: bundle, amount: self.blocks.unit(bundle) };
+        let boxes: Vec<_> = mine.iter().flat_map(|&o| occupant_boxes(o, &self.blocks)).collect();
+        self.spawn_drop(pos, drop, self.blocks.material_block(bundle), &boxes);
+    }
+
     fn remove_occupant(&mut self, pos: BoxelPos, index: usize) {
         let grid = self.universe.main_mut();
         let mut cell = grid.cell(pos).to_vec();
@@ -752,13 +790,22 @@ impl Simulation {
         let occupant = cell.remove(index);
         grid.set_cell(pos, &cell);
         self.changed.mark(pos);
-        if let (Some(def), Some(drop)) = (&self.item_drop_def, self.blocks.drop(occupant.block)) {
+        if let Some(drop) = self.blocks.drop(occupant.block) {
             let boxes: Vec<_> = occupant_boxes(occupant, &self.blocks).collect();
-            let middle = CellBox::bounds(&boxes).map_or(Vec3::splat(0.5), |b| (b.min + b.max) * 0.5);
-            let seed = self.tick ^ (pos.0.x as u64).rotate_left(21) ^ (pos.0.y as u64).rotate_left(42) ^ pos.0.z as u64;
-            let at = WorldPos::at_boxel(pos).translate(middle);
-            self.items.spawn(drop, occupant.block, &self.blocks, at, pop_velocity(def, seed));
+            self.spawn_drop(pos, drop, occupant.block, &boxes);
         }
+    }
+
+    /// Drops `drop` drawn as `block`, popping out of the middle of `boxes` in the boxel at
+    /// `pos`. Nothing without an item drop definition.
+    fn spawn_drop(&mut self, pos: BoxelPos, drop: crate::Drop, block: BlockId, boxes: &[CellBox]) {
+        let Some(def) = &self.item_drop_def else {
+            return;
+        };
+        let middle = CellBox::bounds(boxes).map_or(Vec3::splat(0.5), |b| (b.min + b.max) * 0.5);
+        let seed = self.tick ^ (pos.0.x as u64).rotate_left(21) ^ (pos.0.y as u64).rotate_left(42) ^ pos.0.z as u64;
+        let at = WorldPos::at_boxel(pos).translate(middle);
+        self.items.spawn(drop, block, &self.blocks, at, pop_velocity(def, seed));
     }
 
     /// Adds an occupant to a boxel. A solid block appearing inside the player pushes it out, if
@@ -806,6 +853,15 @@ impl Simulation {
 
     pub fn crafting_def(&self) -> Option<&CraftingDef> {
         self.crafting_def.as_ref()
+    }
+
+    pub fn signal_def(&self) -> Option<&SignalDef> {
+        self.signal_def.as_ref()
+    }
+
+    /// For engine tools such as the tuning panel.
+    pub fn signal_def_mut(&mut self) -> Option<&mut SignalDef> {
+        self.signal_def.as_mut()
     }
 
     /// The block of `material` in `shape`, registering it if it's new, as crafting does. For
@@ -1110,6 +1166,7 @@ struct ContentRegistrar<'a> {
     item_drops: &'a mut Option<ItemDropDef>,
     inventory: &'a mut Option<InventoryDef>,
     crafting: &'a mut Option<CraftingDef>,
+    signals: &'a mut Option<SignalDef>,
     models: &'a mut Vec<ModelDef>,
     sounds: &'a mut Vec<SoundDef>,
     targets: &'a mut Vec<TargetDef>,
@@ -1201,6 +1258,15 @@ impl Registrar for ContentRegistrar<'_> {
         Ok(())
     }
 
+    fn register_signals(&mut self, def: SignalDef) -> Result<(), ApiError> {
+        if self.signals.is_some() {
+            return Err(ApiError::DuplicateSignalDef);
+        }
+        def.validate().map_err(ApiError::InvalidDef)?;
+        *self.signals = Some(def);
+        Ok(())
+    }
+
     fn register_item_drops(&mut self, def: ItemDropDef) -> Result<(), ApiError> {
         if self.item_drops.is_some() {
             return Err(ApiError::DuplicateItemDropDef);
@@ -1268,6 +1334,8 @@ struct WorldEditor<'a> {
     targets: &'a mut Targets,
     generators: &'a [(String, Box<dyn Generator>)],
     terrains: &'a mut Vec<TerrainDef>,
+    /// The signal definition's reach, for pieces placed hidden.
+    reach: i32,
 }
 
 impl WorldEditor<'_> {
@@ -1282,6 +1350,23 @@ impl WorldEditor<'_> {
         self.grid.set_cell(pos, &cell);
         Ok(())
     }
+
+    /// Adds one block, then hides it if it starts hidden.
+    fn add_one(&mut self, pos: BoxelPos, id: BlockId, orientation: Orientation) -> Result<(), ApiError> {
+        self.add(pos, id, orientation)?;
+        let added = [Occupant::turned(id, orientation)];
+        crate::signal::hide(self.grid, self.blocks, &starting_hidden(self.blocks, pos, &added), self.reach);
+        Ok(())
+    }
+}
+
+/// The pieces of `added` at `pos` that start hidden.
+fn starting_hidden(blocks: &BlockRegistry, pos: BoxelPos, added: &[Occupant]) -> Vec<crate::signal::Piece> {
+    added
+        .iter()
+        .filter(|o| blocks.get(o.block).is_some_and(|d| d.has(api::Property::StartsHidden)))
+        .map(|&occupant| crate::signal::Piece { pos, occupant })
+        .collect()
 }
 
 impl WorldEdit for WorldEditor<'_> {
@@ -1293,7 +1378,7 @@ impl WorldEdit for WorldEditor<'_> {
 
     fn add_block(&mut self, pos: BoxelPos, name: &str, orientation: Orientation) -> Result<(), ApiError> {
         let id = self.blocks.id(name).ok_or_else(|| ApiError::UnknownBlock(name.into()))?;
-        self.add(pos, id, orientation)
+        self.add_one(pos, id, orientation)
     }
 
     fn add_shaped(
@@ -1305,7 +1390,27 @@ impl WorldEdit for WorldEditor<'_> {
     ) -> Result<(), ApiError> {
         let m = self.blocks.material(material).ok_or_else(|| ApiError::UnknownMaterial(material.into()))?;
         let id = self.blocks.shaped(m, shape)?;
-        self.add(pos, id, orientation)
+        self.add_one(pos, id, orientation)
+    }
+
+    fn add_bundle(
+        &mut self,
+        pos: BoxelPos,
+        pieces: &[(&str, ShapeGrid)],
+        orientation: Orientation,
+    ) -> Result<(), ApiError> {
+        let mut made = Vec::new();
+        for (material, shape) in pieces {
+            made.push((self.blocks.material(material).ok_or_else(|| ApiError::UnknownMaterial((*material).into()))?, shape.clone()));
+        }
+        let bundle = self.blocks.bundle(&made)?;
+        let blocks: Vec<BlockId> = self.blocks.pieces(bundle).to_vec();
+        for &b in &blocks {
+            self.add(pos, b, orientation)?;
+        }
+        let added: Vec<Occupant> = blocks.iter().map(|&b| Occupant::turned(b, orientation)).collect();
+        crate::signal::hide(self.grid, self.blocks, &starting_hidden(self.blocks, pos, &added), self.reach);
+        Ok(())
     }
 
     fn clear_block(&mut self, pos: BoxelPos) {

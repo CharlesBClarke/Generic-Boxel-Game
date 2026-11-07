@@ -39,6 +39,18 @@ Power means control over the environment, not bigger stats. To test: stressors s
 
 The gripes, stories and tentative directions below are mostly ways of applying these two pillars.
 
+### A checklist for rules
+
+Rules grew by fixing little annoyances one at a time, and the result was rules nobody could predict (the hinge's tiebreaks and slides). Agreed 2026-11-06, from Material behavior: check every rule against this list before building it.
+
+1. Predictable from what you see; if not, show it first (like the placement ghost).
+2. No hidden tiebreaks: a rule that needs one is wrong; let the player choose, or refuse with a reason.
+3. Fits in one sentence (the crosshair hint). "Unless" means it's too fussy.
+4. Local and stateless where possible.
+5. Undoable: doing it again gets back exactly.
+6. Restrictions only stop the player making things they can't use or place.
+7. Small verbs that combine, over clever ones with cases.
+
 ## Terminology
 
 | Term | Meaning |
@@ -118,6 +130,7 @@ Connected blocks such as wires, pipes and cables form graph networks rather than
 - **Parallel per network.** Separate networks solve independently on different cores.
 - **Cheap to render.** Wires look up their network's value in the shader, so a lever lights the whole line without remeshing chunks.
 - **Open choices:** whether values are on/off or numbers (and how inputs combine), and whether a wire can carry several channels.
+- **Built so far (2026-11-06, Material behavior):** a much simpler stand-in. A conductor (copper) carries a signal from a trigger through face-touching boxels holding it, found by a flood fill when the signal is sent, with no stored networks and no values: a signal is a single pulse that flips what it reaches.
 
 ## World model
 
