@@ -3,6 +3,35 @@
 Moved out of `SLICES.md` on 2026-11-03 so the roadmap stays short. Each toy's full write-up, newest first, as it stood when it closed. `SLICES.md` keeps a one-line summary of each.
 
 
+#### Blueprint library (`toy-blueprint-library`)
+
+**Stage:** Done (2026-11-07). Verified by the user in play: variants, center, swaps, blueprints inside blueprints, saving and reloading all work; the window stays put and the carried icon grid works. The menu itself was judged too heavy (too many views), recorded for the next crafting toy.
+
+**Goal:** stop remaking near-identical gadgets by hand, keep the list tidy, and make icons readable. From the user's frustrations in `docs/notes/crafting-3d.md`.
+
+**Plan** (approved 2026-11-07)
+- **Blueprints in `sim`, per player, saved with the world by name** (save version 2; version 1 saves load with none). A blueprint is a name and either a recipe (stacks, view, flip) or a **linked variant**: a base blueprint and a list of changes, so editing the base changes every variant.
+- **A grid layer can hold a blueprint**, not only a carried material or gadget, so inner gadgets need never be made or carried. Crafting is free, so planning works a nested blueprint's shape out itself; a blueprint that uses itself is refused.
+- **Variants:** turn a quarter about each axis, mirror on each axis, shift a quarter along each axis or center it on one, swap one material for another (phasite for antiphasite). A change on a recipe blueprint makes a new variant of it; a change on a variant changes that variant (undo takes the last one off). A shift that would leave the boxel is refused; a gadget off the quarter grid still places but can't go in a layer.
+- **The table menu:** a blueprint list beside what's carried, as a tree (a blueprint folds under each one using it in a layer, a variant under its base). Save the grid as a blueprint without crafting, make ×N from one, load a recipe blueprint into the grid and save over it, rename, delete (refused while another uses it).
+- **Icons** keep their angle, spin once now and then, and spin while hovered.
+- Crates: `api::crafting` (the variant changes on shapes), `sim::blueprint` (new: library, resolving), `sim::crafting`, `sim::save`, `protocol` and `server` (edits in, library out), `client::crafting`.
+- Tests: each change (four turns or two mirrors get back the start, shifts, swaps merging pieces), nested and looping blueprints, the tree, save round trip, edits through the server. Then play: rebuild the door and trapdoor in a test world.
+- Deferred: renaming "part" to "gadget" in the code (backlog). The placement review is the next toy.
+
+*Changed while building:* `Craft` carries a `Source` (stacks on the table, or a blueprint) instead of the stacks directly; `Piece.thing` is a `Thing` (a material or part, or a blueprint); the client's `Recipe` moved to `sim` and blueprints keep it. A gadget made from a blueprint is named after it. Blueprint edits ride in `PlayerInput.blueprint`, outcomes come back as `Event::Blueprint`, and the server sends the whole library (`ServerMsg::Blueprints`) when its revision changes, edits and loads alike. Save version 2 adds the library at the end; version 1 reads with none. A variant's changes merge with the last one where alike (turns about one axis, mirrors, shifts), so four quarter turns come to nothing. Center is worked out when pressed and kept as a plain shift.
+
+*Implemented:* `api::ShapeGrid::mirrored`, `shifted`, `bounds`. `sim::blueprint` (`Library`, `Blueprint`, `Design`, `Change`, `Variation`, `BlueprintEdit`, `BlueprintRefusal`; `resolve`, `edit`, `uses`, `children`, `roots`); `sim::crafting::design` (planning from stacks, resolving blueprints in layers, catching loops); `CraftRefusal::NoBlueprint`, `Loop`, `OutOfBoxel`; `Simulation::blueprints`, `blueprints_revision`, `set_blueprints`, `last_blueprint`; `View.blueprints`; save `SavedBlueprint`/`SavedDesign`/`SavedThing`/`SavedChange`, loading in two passes (names first) and leaving out a blueprint naming a lost material along with those using it. Client: a blueprint column (tree with folding, the picked blueprint's picture, Make, Load, Rename, Copy, Delete, rows of turn, mirror, shift, center, a swap pair and undo); Save as blueprint and Save over under the grid; pictures that turn now and then and while hovered (any of the six faces, a fixed scale through the turn).
+
+*Verify rounds:* (1) streaks while a picture turned: near edge-on faces became slivers whose hairline spiked past their corners; faces turned less than 0.08 toward the viewer aren't drawn and those under 0.3 get no hairline (checked by rendering turned frames to images). (2) The window moved under the pointer: pinned by its center, anything making it taller moved the grid, and a turned brush with a long name widened it (1174 to 2059 px), shifting the grid onto Clear. Now pinned by its top, long lines cut to one with tooltips, and carried things are a grid of icons with tooltips and a right-click menu (put the brush down, hold, load, rename, throw away). A test pins it, and fails on the old code.
+
+*Tests:* 637 pass across the workspace; clippy clean. New: shape mirror and shift (2), save bytes with blueprints and a version 1 save (1 new, 1 extended), `sim::blueprint` (7: turns and mirrors round trip, a variant follows its base, centering and refused shifts, swaps merging pieces, a blueprint in a layer without carrying it, loops refused, the tree and unique names), `sim/tests/blueprints.rs` (4: an antiphasite variant made without its base, painting into a layer with variants following, a save round trip by name, a lost material leaving out its users), the server (1), the client (3: turned pictures show the back, saved stacks become the picked blueprint and name what's made, nothing moves the grid).
+
+*Deferred:* shifts by a texel (a gadget off the quarters can't go in a layer; revisit once drafting is 3D at texel detail); renaming "part" to "gadget" in the code; blueprints for mods (they're the player's, in `sim`, like the inventory).
+
+*Decisions:* blueprints are the player's, kept per world by name; variants are linked to their base; a layer may hold a blueprint, so nothing used inside a design must be carried; shifts step by quarters so gadgets stay usable in layers; menus must never move what's under the pointer when something changes size.
+
+
 #### Saving (`toy-saving`)
 
 **Stage:** Done (2026-11-07). Verified by the user in play: a door survives quitting and restarting and still works, F8 puts the world back as last saved, `--world` keeps worlds separate, and the Escape menu works.
