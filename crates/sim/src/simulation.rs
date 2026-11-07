@@ -18,7 +18,7 @@ use crate::items::{Collector, Items, pop_velocity};
 use crate::terrain::{GenerationStats, WorldSettings};
 use crate::view::{GridTerrain, PlaceTarget, View, bodies_clear};
 use crate::{
-    BlockId, BlockRegistry, CellBox, Grid, Hit, MaterialId, Occupant, Player, PlayerInput, LookRegistry, Universe, can_share,
+    BlockId, BlockRegistry, CellBox, Grid, Hit, MaterialId, Occupant, Player, PlayerInput, LookRegistry, PushOut, Universe, can_share,
     occupant_boxes, raycast,
 };
 
@@ -482,7 +482,7 @@ impl Simulation {
             let added: Vec<Occupant> = place.occupants().collect();
             let hidden = starting_hidden(&self.blocks, place.pos, &added);
             let reach = self.signal_def.as_ref().map_or(0, SignalDef::reach_texels);
-            let changed = crate::signal::hide(self.universe.main_mut(), &mut self.blocks, &hidden, reach);
+            let changed = crate::signal::hide_placed(self.universe.main_mut(), &mut self.blocks, &hidden, reach);
             for pos in changed {
                 self.changed.mark(pos);
             }
@@ -512,13 +512,44 @@ impl Simulation {
             return;
         }
         let reached = crate::signal::reached(grid, &self.blocks, hit.pos, def.conduct_limit);
-        let (player, targets, target_defs) = (self.player.as_ref().map(|p| p.body()), &self.targets, &self.target_defs);
+        // Creatures block what would come back; the player is pushed out of it below.
+        let (targets, target_defs) = (&self.targets, &self.target_defs);
         let clear = |pos: BoxelPos, shape: &ShapeGrid| {
             let boxes: Vec<CellBox> = shape.to_boxes().into_iter().map(CellBox::from_block_box).collect();
-            bodies_clear(player, targets.as_slice(), target_defs, pos, &boxes)
+            bodies_clear(None, targets.as_slice(), target_defs, pos, &boxes)
         };
-        let changed = crate::signal::signal(self.universe.main_mut(), &mut self.blocks, &reached, def.reach_texels(), &clear);
-        self.mark_signaled(&changed);
+        let Ok(undo) = crate::signal::signal(self.universe.main_mut(), &mut self.blocks, &reached, def.reach_texels(), &clear)
+        else {
+            return;
+        };
+        let changed = undo.changed();
+        match self.push_out_of(&changed) {
+            Ok(push) => {
+                if let (Some(push), Some(def), Some(player)) = (push, &self.push_out_def, &mut self.player) {
+                    player.apply_push_out(push, def.strength);
+                }
+                self.mark_signaled(&changed);
+            }
+            Err(()) => undo.undo(self.universe.main_mut()),
+        }
+    }
+
+    /// How the player gets out of what's solid in `boxels`, as out of a block placed on them:
+    /// `None` if they aren't inside any of it, an error if they are and can't be pushed out
+    /// (no push-out rule, or no room).
+    fn push_out_of(&self, boxels: &[BoxelPos]) -> Result<Option<PushOut>, ()> {
+        let Some(player) = self.player.as_ref().map(|p| p.body()) else {
+            return Ok(None);
+        };
+        let grid = self.universe.main();
+        for &pos in boxels {
+            let solid = grid.cell(pos).iter().filter(|o| self.blocks.is_solid(o.block));
+            let boxes: Vec<CellBox> = solid.flat_map(|&o| occupant_boxes(o, &self.blocks)).collect();
+            if player.overlaps_boxes(pos, &boxes) {
+                return self.view().push_out(player, pos, &boxes).map(Some).ok_or(());
+            }
+        }
+        Ok(None)
     }
 
     /// Records boxels a signal changed: remeshing, and an edit for each so it's heard.
@@ -1355,7 +1386,7 @@ impl WorldEditor<'_> {
     fn add_one(&mut self, pos: BoxelPos, id: BlockId, orientation: Orientation) -> Result<(), ApiError> {
         self.add(pos, id, orientation)?;
         let added = [Occupant::turned(id, orientation)];
-        crate::signal::hide(self.grid, self.blocks, &starting_hidden(self.blocks, pos, &added), self.reach);
+        crate::signal::hide_placed(self.grid, self.blocks, &starting_hidden(self.blocks, pos, &added), self.reach);
         Ok(())
     }
 }
@@ -1409,7 +1440,7 @@ impl WorldEdit for WorldEditor<'_> {
             self.add(pos, b, orientation)?;
         }
         let added: Vec<Occupant> = blocks.iter().map(|&b| Occupant::turned(b, orientation)).collect();
-        crate::signal::hide(self.grid, self.blocks, &starting_hidden(self.blocks, pos, &added), self.reach);
+        crate::signal::hide_placed(self.grid, self.blocks, &starting_hidden(self.blocks, pos, &added), self.reach);
         Ok(())
     }
 

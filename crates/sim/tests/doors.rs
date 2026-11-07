@@ -117,21 +117,24 @@ fn the_wired_lever_reaches_the_door_through_copper() {
 }
 
 #[test]
-fn the_open_panel_stays_hidden_while_the_player_stands_in_its_place() {
+fn the_open_panel_pushes_the_player_out_of_its_place() {
     let mut sim = base_sim();
-    let (lower, upper, lever, _) = spots();
+    let (lower, _, lever, _) = spots();
     // In the doorway's south-west, where the open panel goes.
     stand(&mut sim, lower.0.x, lower.0.y, [0.2, 0.3]);
     assert_eq!(sim.player().unwrap().pos().cell(), lower.0, "standing in the doorway");
     interact(&mut sim, lever, HANDLE);
-    for p in [lower, upper] {
-        assert!(!shown(&sim, p, base::PHASITE), "the closed panel goes");
-        assert!(!shown(&sim, p, base::ANTIPHASITE), "the open one can't come");
+    assert!(is_open(&sim), "the whole door swaps, never half");
+    for _ in 0..30 {
+        sim.step(&PlayerInput::default());
     }
-    // Stepping out and pulling again brings back what's hidden.
+    let (body, blocks, grid) = (sim.player().unwrap(), sim.blocks(), sim.universe().main());
+    let boxes: Vec<_> = grid.cell(lower).iter().filter(|o| blocks.is_solid(o.block)).flat_map(|&o| sim::occupant_boxes(o, blocks)).collect();
+    assert!(!body.overlaps_boxes(lower, &boxes), "pushed out of the panel");
+    // And it closes again.
     stand(&mut sim, lever.0.x, lever.0.y - 2, [0.5, 0.5]);
     interact(&mut sim, lever, HANDLE);
-    assert!(shown(&sim, lower, base::PHASITE) && shown(&sim, lower, base::ANTIPHASITE), "a group with nothing shown shows");
+    assert!(!is_open(&sim));
 }
 
 #[test]
