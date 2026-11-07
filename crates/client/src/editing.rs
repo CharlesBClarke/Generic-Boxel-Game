@@ -611,9 +611,13 @@ pub(crate) fn hotbar(
     names: Res<PartNames>,
     controls: Res<Controls>,
 ) -> Result {
+    draw_hotbar(contexts.ctx_mut()?, &world, &palette, &names, &controls);
+    Ok(())
+}
+
+/// Draws the hotbar (see [`hotbar`]) in `ctx`.
+fn draw_hotbar(ctx: &bevy_egui::egui::Context, world: &ClientWorld, palette: &Palette, names: &PartNames, controls: &Controls) {
     use bevy_egui::egui;
-    let ctx = contexts.ctx_mut()?;
-    let world = &world;
     let blocks = world.blocks();
     let shadow = egui::Color32::from_black_alpha(150);
     egui::Area::new(egui::Id::new("hotbar"))
@@ -621,12 +625,25 @@ pub(crate) fn hotbar(
         .interactable(false)
         .show(ctx, |ui| {
             egui::Frame::new().fill(shadow).corner_radius(6.0).inner_margin(6.0).show(ui, |ui| {
+                // Centering spreads out to the width egui remembers from the last frame, so
+                // the bar could grow but never shrink: give it this frame's width instead.
+                let line = |text: String| {
+                    let font = egui::TextStyle::Body.resolve(ui.style());
+                    ui.painter().layout_no_wrap(text, font, egui::Color32::WHITE)
+                };
+                let carried = line(carried_line(world));
+                let held = Some(held_line(world, palette, names, controls)).filter(|h| !h.is_empty()).map(line);
+                let slots = entries(world);
+                let size = egui::vec2(SLOT_ICON + 16.0, SLOT_ICON + 30.0);
+                let gap = ui.spacing().item_spacing.x;
+                let row = slots.len() as f32 * (size.x + gap) - gap;
+                let texts = held.iter().chain([&carried]).map(|g| g.size().x);
+                ui.set_width(texts.fold(row, f32::max));
                 ui.vertical_centered(|ui| {
-                    ui.label(egui::RichText::new(carried_line(world)).color(egui::Color32::WHITE));
+                    ui.label(carried);
                     ui.horizontal(|ui| {
-                        for (i, entry) in entries(world).iter().enumerate() {
-                            let (name, amount) = slot_label(world, &names, entry);
-                            let size = egui::vec2(SLOT_ICON + 16.0, SLOT_ICON + 30.0);
+                        for (i, entry) in slots.iter().enumerate() {
+                            let (name, amount) = slot_label(world, names, entry);
                             let (rect, _) = ui.allocate_exact_size(size, egui::Sense::hover());
                             let selected = i == palette.slot;
                             let painter = ui.painter();
@@ -663,14 +680,12 @@ pub(crate) fn hotbar(
                             painter.text(at, egui::Align2::CENTER_BOTTOM, label, small, egui::Color32::LIGHT_GRAY);
                         }
                     });
-                    let held = held_line(world, &palette, &names, &controls);
-                    if !held.is_empty() {
-                        ui.label(egui::RichText::new(held).color(egui::Color32::WHITE));
+                    if let Some(held) = held {
+                        ui.label(held);
                     }
                 });
             });
         });
-    Ok(())
 }
 
 
@@ -755,6 +770,44 @@ mod tests {
         assert!(held.starts_with("brick block, shapes are crafted at a table, Q throws"), "{held}");
         assert_eq!((fraction(sim::FULL_VOLUME / 2), fraction(sim::FULL_VOLUME * 3 / 16)), ("½".into(), "3/16".into()));
         assert_eq!(fraction(sim::FULL_VOLUME * 2), "2");
+    }
+
+    #[test]
+    fn the_hotbar_shrinks_when_slots_go() {
+        // Dirt and a part lie at the player's feet, to be picked up once the game runs.
+        let mut sim = base_sim();
+        let wood = sim.blocks().material(base::WOOD).unwrap();
+        let dirt = sim.blocks().material(base::DIRT).unwrap();
+        let slab = sim.shaped_block(wood, &base::shapes::slab()).unwrap();
+        let part = sim.blocks().drop(slab).unwrap().material;
+        sim.spawn_player().unwrap();
+        let feet = sim.player().unwrap().pos();
+        sim.spawn_item(part, sim::FULL_VOLUME / 2, feet);
+        sim.spawn_item(dirt, sim::FULL_VOLUME, feet);
+        let (mut link, mut world) = connect(sim);
+        let ctx = bevy_egui::egui::Context::default();
+        // The club is held, so there's no line under the slots and the row sets the width.
+        let width = |world: &ClientWorld| {
+            let input = || bevy_egui::egui::RawInput {
+                screen_rect: Some(bevy_egui::egui::Rect::from_min_size(Default::default(), bevy_egui::egui::vec2(1600.0, 1000.0))),
+                ..Default::default()
+            };
+            let (palette, names) = (Palette::default(), PartNames::default());
+            for _ in 0..4 {
+                let _ = ctx.run(input(), |ctx| draw_hotbar(ctx, world, &palette, &names, &Controls::default()));
+            }
+            ctx.memory(|m| m.area_rect(bevy_egui::egui::Id::new("hotbar"))).expect("the hotbar is drawn").width()
+        };
+        let before = width(&world);
+        for _ in 0..5 {
+            step(&mut link, &mut world, &PlayerInput::default());
+        }
+        let wider = width(&world);
+        assert!(wider > before + 100.0, "picking up two things widens it: {before} to {wider}");
+        step(&mut link, &mut world, &PlayerInput { discard: Some(part), ..Default::default() });
+        step(&mut link, &mut world, &PlayerInput { discard: Some(dirt), ..Default::default() });
+        let after = width(&world);
+        assert!((after - before).abs() < 1.0, "throwing them away shrinks it back: {before}, {wider}, then {after}");
     }
 
     #[test]
