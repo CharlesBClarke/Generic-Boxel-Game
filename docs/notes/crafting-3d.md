@@ -24,3 +24,13 @@ Open: resolution (quarters as now, or finer).
 ## Placing is part of the crafting problem
 
 Recorded 2026-11-07 at the user's request: placing rules are tied closely to the problems with crafting, so proving crafting includes reviewing placement (backlog: Review placement against the checklist, Speed build). How a part goes into the world decides how it has to be built at the table, and the other way round.
+
+## The user's crafting frustrations (2026-11-07)
+
+Recorded for planning the next crafting toy (a blueprint library). Words: a **gadget** is anything that comes out of a crafting table; a **blueprint** is the plan it's made from (see the design doc's Terminology table).
+
+- **Remaking near-identical gadgets.** Changing only the turn, a mirror, inside and out, or phasite for antiphasite means building the gadget again by hand. Wanted: one-click variants of a blueprint (turn, mirror, swap materials). The user: "we are going to have to play with it, and revisit the exact rules", so build them, then settle the rules in play.
+- **Ambiguous icons.** Example: an insulated corner for a door, insulation around phasite on three sides; unless it's built carefully, its icon doesn't show what it is. Wanted: the preview stays at the angle icons use now, and does a quick spin now and then, or when hovered.
+- **Clutter versus remaking.** A gadget only useful inside a bigger one has to be kept in the inventory (clutter) or remade to edit the bigger one. Wanted: blueprints made without crafting, and a hierarchy: the gadgets a blueprint uses fold under it (a door's gadgets under the door), so the list stays tidy.
+- **Placing goes with it.** Placing rules are tied closely to these problems (see "Placing is part of the crafting problem" above), so the placement review belongs in the same push.
+- **Judging it.** Test worlds (Save as in the world menu) let a set of builds (a door, a trapdoor, a mesh) be kept and redone under changed rules; see `docs/notes/speed-build.md`. If generative crafting can't be made to feel really good it may be cut (backing the cut), leaving the engine and perhaps borrowed MIT Minecraft-mod content; the texel-scale graphics toys wait on that.
