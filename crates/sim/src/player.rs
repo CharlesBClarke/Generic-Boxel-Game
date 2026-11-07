@@ -566,10 +566,13 @@ pub(crate) fn sweep_stepping(
         return (plain, 0.0);
     }
 
-    // Try again from higher up: rise, move sideways, then settle back down.
-    let up = clamp_axis(2, step_height, min, max, cell, terrain);
+    // Try again from higher up: rise, move sideways, then settle back down. Rise no higher
+    // than the ceiling over both here and where the move goes, or a lower ceiling ahead
+    // blocks the sideways move even when the ledge needs only a little rise.
+    let side = Vec3::new(delta.x, delta.y, 0.0);
+    let up = clamp_axis(2, step_height, min.min(min + side), max.max(max + side), cell, terrain);
     let lift = Vec3::new(0.0, 0.0, up);
-    let side = sweep_box(min + lift, max + lift, Vec3::new(delta.x, delta.y, 0.0), cell, terrain);
+    let side = sweep_box(min + lift, max + lift, side, cell, terrain);
     let raised = lift + side;
     let down = clamp_axis(2, -up + delta.z.min(0.0), min + raised, max + raised, cell, terrain);
     let stepped = Vec3::new(side.x, side.y, up + down);
@@ -915,6 +918,35 @@ mod tests {
         run(&mut p, &PlayerInput::default(), 5, &one_high);
         run(&mut p, &walk_east(), 60, &one_high);
         assert_eq!(p.pos().cell().z, 0, "step-up is off at height 0");
+    }
+
+    #[test]
+    fn step_up_rises_no_higher_than_the_ceiling_ahead() {
+        // A 2-high tunnel running east, narrowed at x = 3 by a floor and a roof that each stick
+        // out 3 texels on the west half and 4 on the east half: 1.5 boxels of room at the
+        // tightest. Rising the whole step height on the west half would bump the lower roof
+        // ahead, though a texel's rise is all the lip needs.
+        struct Tunnel;
+        impl Terrain for Tunnel {
+            fn boxes(&self, pos: BoxelPos, out: &mut Vec<CellBox>) {
+                let BoxelPos(I64Vec3 { x, y, z }) = pos;
+                let part = |min: [f32; 3], max: [f32; 3]| CellBox { min: min.into(), max: max.into() };
+                let (three, four) = (3.0 / 16.0, 4.0 / 16.0);
+                match (x, z) {
+                    _ if !(0..2).contains(&z) || y != 0 => out.push(CellBox::FULL),
+                    (3, 0) => out.extend([part([0.0, 0.0, 0.0], [0.5, 1.0, three]), part([0.5, 0.0, 0.0], [1.0, 1.0, four])]),
+                    (3, 1) => out.extend([part([0.0, 0.0, 1.0 - three], [0.5, 1.0, 1.0]), part([0.5, 0.0, 1.0 - four], [1.0, 1.0, 1.0])]),
+                    _ => {}
+                }
+            }
+            fn friction(&self, _: BoxelPos) -> f32 {
+                1.0
+            }
+        }
+        let mut p = Player::with_shape(shape(0.6), at(0.5, 0.5, 0.0));
+        run(&mut p, &PlayerInput::default(), 5, &Tunnel);
+        run(&mut p, &PlayerInput { crouch: true, ..walk_east() }, 120, &Tunnel);
+        assert!(p.pos().cell().x >= 5, "stuck in the narrowing at x = {}", p.pos().cell().x as f32 + p.pos().offset().x);
     }
 
     #[test]
