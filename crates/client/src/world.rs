@@ -133,6 +133,11 @@ impl ClientWorld {
         self.view().target(yaw, pitch)
     }
 
+    /// See [`View::target_seeing`].
+    pub fn target_seeing(&self, yaw: f32, pitch: f32, hidden: bool) -> Option<Hit> {
+        self.view().target_seeing(yaw, pitch, hidden)
+    }
+
     pub fn placement(&self, hit: &Hit, block: sim::BlockId, yaw: f32, pitch: f32, precise: bool) -> Option<PlaceTarget> {
         self.view().placement(hit, block, yaw, pitch, precise)
     }

@@ -1,8 +1,9 @@
-//! The base game's door and lever: nothing in the engine knows about doors. The door swings
-//! because its strip is iron (a hinge), the knob and lever work because they're brass (a
-//! trigger), and the lever reaches the door through its copper plate (a listener).
+//! The base game's door and levers: nothing in the engine knows about doors. The door's two
+//! panels swap because one is phasite and the other antiphasite (phase materials, the second
+//! starting hidden), the levers work because their handles are brass (a trigger), and the
+//! signal reaches the door through copper (a conductor).
 
-use api::{BoxelPos, I64Vec3, Mod, ShapeGrid, Vec3, WorldPos};
+use api::{BoxelPos, I64Vec3, Mod, Vec3, WorldPos};
 use sim::{Occupant, PlayerInput, Simulation};
 
 fn base_sim() -> Simulation {
@@ -13,11 +14,14 @@ fn base_sim() -> Simulation {
     sim
 }
 
-/// The door's lower and upper boxels, and the lever's.
-fn spots() -> (BoxelPos, BoxelPos, BoxelPos) {
+/// The door's lower and upper boxels, the lever beside it and the wired lever.
+fn spots() -> (BoxelPos, BoxelPos, BoxelPos, BoxelPos) {
     let (x, y, z) = base::DOOR_SPOT;
-    (BoxelPos::new(x, y, z), BoxelPos::new(x, y, z + 1), BoxelPos::new(x + 1, y, z))
+    (BoxelPos::new(x, y, z), BoxelPos::new(x, y, z + 1), BoxelPos::new(x + 1, y, z), BoxelPos::new(x + 3, y, z))
 }
+
+/// The handle on a lever's south face.
+const HANDLE: [f32; 3] = [0.5, 0.0, 0.5];
 
 /// Stands the feet at `offset` in boxel `(x, y, 0)` and lets the body settle.
 fn stand(sim: &mut Simulation, x: i64, y: i64, offset: [f32; 2]) {
@@ -27,10 +31,15 @@ fn stand(sim: &mut Simulation, x: i64, y: i64, offset: [f32; 2]) {
     }
 }
 
+/// The look toward `point` in boxel `cell`.
+fn aim(sim: &Simulation, cell: BoxelPos, point: [f32; 3]) -> (f32, f32) {
+    let to = sim.player().unwrap().eye().delta_to(WorldPos::new(cell.0, Vec3::from_array(point)));
+    (to.y.atan2(to.x), to.z.atan2(to.truncate().length()))
+}
+
 /// Presses interact looking at `point` in boxel `cell`.
 fn interact(sim: &mut Simulation, cell: BoxelPos, point: [f32; 3]) {
-    let to = sim.player().unwrap().eye().delta_to(WorldPos::new(cell.0, Vec3::from_array(point)));
-    let (yaw, pitch) = (to.y.atan2(to.x), to.z.atan2(to.truncate().length()));
+    let (yaw, pitch) = aim(sim, cell, point);
     let hit = sim.target(yaw, pitch).expect("in reach");
     assert_eq!(hit.pos, cell, "aimed at the right boxel");
     sim.step(&PlayerInput { yaw, pitch, interact_pressed: true, ..Default::default() });
@@ -40,82 +49,142 @@ fn cell(sim: &Simulation, pos: BoxelPos) -> Vec<Occupant> {
     sim.universe().main().cell(pos).to_vec()
 }
 
-/// Everything in the boxel, as one shape.
-fn filled(sim: &Simulation, pos: BoxelPos) -> ShapeGrid {
+/// Whether the boxel's piece of `material` is shown.
+fn shown(sim: &Simulation, pos: BoxelPos, material: &str) -> bool {
     let blocks = sim.blocks();
-    cell(sim, pos).iter().fold(ShapeGrid::EMPTY, |all, o| all.union(&blocks.shape(o.block).turned(o.orientation)))
+    let m = blocks.material(material).unwrap();
+    let piece = cell(sim, pos).into_iter().find(|o| blocks.made_of(o.block) == Some(m)).expect("a piece of it");
+    !blocks.is_hidden(piece.block)
 }
 
-fn is_open(sim: &Simulation, pos: BoxelPos) -> bool {
-    let c = cell(sim, pos);
-    !c.is_empty() && c.iter().all(|o| sim.blocks().closed_of(o.block).is_some())
-}
-
-/// The knob, closed: sticking out of the panel's south face near its east end, halfway up.
-const KNOB_CLOSED: [f32; 3] = [0.875, 0.5, 0.625];
-/// The knob, open: on the panel's west face, at its south end.
-const KNOB_OPEN: [f32; 3] = [0.125, 0.0, 0.625];
-
-#[test]
-fn the_door_opens_and_closes_with_its_knob() {
-    let mut sim = base_sim();
-    let (lower, upper, _) = spots();
-    let before = (cell(&sim, lower), cell(&sim, upper));
-    assert_eq!(before.0.len(), 4, "wood, iron, brass and copper");
-    assert!(filled(&sim, lower).get(10, 14, 2), "closed: the panel across the north side");
-    stand(&mut sim, lower.0.x, lower.0.y - 2, [0.5, 0.5]);
-
-    interact(&mut sim, lower, KNOB_CLOSED);
-    assert!(is_open(&sim, lower) && is_open(&sim, upper), "both halves swing, as one hinge line");
-    let open = filled(&sim, lower);
-    assert!(!open.get(10, 14, 2) && open.get(6, 6, 2), "open: the panel along the west side");
-    assert_eq!(filled(&sim, upper).get(6, 6, 2), open.get(6, 6, 2), "the halves line up");
-    // Open pieces break into the parts they were made as.
-    let blocks = sim.blocks();
-    for (o, closed) in cell(&sim, lower).iter().zip(&before.0) {
-        assert_eq!(blocks.drop(o.block), blocks.drop(closed.block));
+/// Whether the door stands open: the closed panel hidden and the open one shown, both halves.
+fn is_open(sim: &Simulation) -> bool {
+    let (lower, upper, ..) = spots();
+    let open = |p| !shown(sim, p, base::PHASITE) && shown(sim, p, base::ANTIPHASITE);
+    let shut = |p| shown(sim, p, base::PHASITE) && !shown(sim, p, base::ANTIPHASITE);
+    match (open(lower), open(upper), shut(lower), shut(upper)) {
+        (true, true, ..) => true,
+        (_, _, true, true) => false,
+        _ => panic!("half open"),
     }
+}
 
-    interact(&mut sim, lower, KNOB_OPEN);
-    assert_eq!((cell(&sim, lower), cell(&sim, upper)), before, "closed again exactly as it was");
+/// Every boxel around the door, the wall and the wire.
+fn around(sim: &Simulation) -> Vec<Vec<Occupant>> {
+    let (lower, ..) = spots();
+    let mut out = Vec::new();
+    for dz in -1..=2 {
+        for dy in -1..=1 {
+            for dx in -2..=4 {
+                out.push(cell(sim, lower.offset(I64Vec3::new(dx, dy, dz))));
+            }
+        }
+    }
+    out
 }
 
 #[test]
-fn the_lever_beside_it_opens_it_through_the_copper_plate() {
+fn the_door_starts_shut_with_its_open_panel_hidden() {
+    let sim = base_sim();
+    assert!(!is_open(&sim));
+    let (lower, ..) = spots();
+    assert_eq!(cell(&sim, lower).len(), 3, "phasite, antiphasite and copper");
+}
+
+#[test]
+fn the_lever_beside_it_swaps_the_panels_and_back_exactly() {
     let mut sim = base_sim();
-    let (lower, upper, lever) = spots();
+    let (_, _, lever, _) = spots();
+    let before = around(&sim);
     stand(&mut sim, lever.0.x, lever.0.y - 2, [0.5, 0.5]);
-    // The handle sticks out of the lever's south face, a little west of its middle.
-    interact(&mut sim, lever, [0.375, 0.0, 0.625]);
-    assert!(is_open(&sim, lower) && is_open(&sim, upper));
-    assert_eq!(cell(&sim, lever).len(), 2, "the lever itself doesn't move");
-    interact(&mut sim, lever, [0.375, 0.0, 0.625]);
-    assert!(!is_open(&sim, lower) && !is_open(&sim, upper));
+    interact(&mut sim, lever, HANDLE);
+    assert!(is_open(&sim));
+    assert_ne!(around(&sim), before, "the frame lost what touched the closed panel");
+    interact(&mut sim, lever, HANDLE);
+    assert!(!is_open(&sim));
+    assert_eq!(around(&sim), before, "everything back exactly as it was");
 }
 
 #[test]
-fn interact_on_the_door_itself_does_nothing() {
+fn the_wired_lever_reaches_the_door_through_copper() {
     let mut sim = base_sim();
-    let (lower, upper, _) = spots();
-    stand(&mut sim, lower.0.x, lower.0.y - 2, [0.5, 0.5]);
-    // Interact on the wood does nothing: only the trigger works it.
-    interact(&mut sim, upper, [0.5, 0.75, 0.5]);
-    assert!(!is_open(&sim, lower) && !is_open(&sim, upper));
+    let (.., far) = spots();
+    stand(&mut sim, far.0.x, far.0.y - 2, [0.5, 0.5]);
+    interact(&mut sim, far, HANDLE);
+    assert!(is_open(&sim));
+    interact(&mut sim, far, HANDLE);
+    assert!(!is_open(&sim));
 }
 
 #[test]
-fn the_door_wont_swing_into_the_player() {
+fn the_open_panel_pushes_the_player_out_of_its_place() {
     let mut sim = base_sim();
-    let (lower, upper, _) = spots();
-    // In the doorway's south-west, clear of the closed door but where it would swing.
-    stand(&mut sim, lower.0.x, lower.0.y, [0.4, 0.3]);
-    let feet = sim.player().unwrap().pos();
-    assert_eq!(feet.cell(), lower.0, "standing in the doorway");
-    let before = (cell(&sim, lower), cell(&sim, upper));
-    interact(&mut sim, lower, KNOB_CLOSED);
-    assert_eq!((cell(&sim, lower), cell(&sim, upper)), before, "refused: nothing moved");
-    // Stepping out, it opens.
+    let (lower, _, lever, _) = spots();
+    // In the doorway's south-west, where the open panel goes.
+    stand(&mut sim, lower.0.x, lower.0.y, [0.2, 0.3]);
+    assert_eq!(sim.player().unwrap().pos().cell(), lower.0, "standing in the doorway");
+    interact(&mut sim, lever, HANDLE);
+    assert!(is_open(&sim), "the whole door swaps, never half");
+    for _ in 0..30 {
+        sim.step(&PlayerInput::default());
+    }
+    let (body, blocks, grid) = (sim.player().unwrap(), sim.blocks(), sim.universe().main());
+    let boxes: Vec<_> = grid.cell(lower).iter().filter(|o| blocks.is_solid(o.block)).flat_map(|&o| sim::occupant_boxes(o, blocks)).collect();
+    assert!(!body.overlaps_boxes(lower, &boxes), "pushed out of the panel");
+    // And it closes again.
+    stand(&mut sim, lever.0.x, lever.0.y - 2, [0.5, 0.5]);
+    interact(&mut sim, lever, HANDLE);
+    assert!(!is_open(&sim));
+}
+
+#[test]
+fn hidden_pieces_are_aimed_at_only_holding_a_phase_material() {
+    let mut sim = base_sim();
+    let (lower, ..) = spots();
     stand(&mut sim, lower.0.x, lower.0.y - 2, [0.5, 0.5]);
-    interact(&mut sim, lower, KNOB_CLOSED);
-    assert!(is_open(&sim, lower));
+    // The hidden open panel, along the doorway's west side.
+    let (yaw, pitch) = aim(&sim, lower, [0.125, 0.25, 0.5]);
+    let blocks = sim.blocks();
+    let hit = |hidden: bool| sim.target_seeing(yaw, pitch, hidden).map(|h| (h.pos, cell(&sim, h.pos)[h.occupant]));
+    let seen = hit(true).expect("the ghost");
+    assert_eq!(seen.0, lower);
+    assert!(blocks.is_hidden(seen.1.block));
+    let through = hit(false).expect("the closed panel behind it");
+    assert!(!blocks.is_hidden(through.1.block), "looking through it");
+}
+
+#[test]
+fn breaking_any_piece_of_the_door_takes_its_half_whole() {
+    let mut sim = base_sim();
+    let (lower, upper, ..) = spots();
+    let antiphasite = sim.blocks().id(base::ANTIPHASITE).unwrap();
+    stand(&mut sim, lower.0.x, lower.0.y - 2, [0.5, 0.5]);
+    let before_upper = cell(&sim, upper);
+    // Holding antiphasite, the hidden open panel can be aimed at and broken.
+    let (yaw, pitch) = aim(&sim, lower, [0.125, 0.25, 0.5]);
+    let input = PlayerInput { yaw, pitch, place_block: antiphasite, use_pressed: true, use_held: true, ..Default::default() };
+    sim.step(&input);
+    let blocks = sim.blocks();
+    assert!(cell(&sim, lower).is_empty(), "every piece of the lower half");
+    assert_eq!(cell(&sim, upper), before_upper, "the upper half is a bundle of its own");
+    let items: Vec<_> = sim.items().iter().map(|i| i.drop).collect();
+    assert_eq!(items.len(), 1, "one item: {items:?}");
+    assert_eq!(blocks.pieces(items[0].material).len(), 3, "the lower half's bundle, whole");
+}
+
+#[test]
+fn antiphasite_is_placed_hidden() {
+    let mut sim = base_sim();
+    let (lower, ..) = spots();
+    let antiphasite = sim.blocks().id(base::ANTIPHASITE).unwrap();
+    // On the floor two boxels in front of the door.
+    stand(&mut sim, lower.0.x, lower.0.y - 4, [0.5, 0.5]);
+    let spot = BoxelPos::new(lower.0.x, lower.0.y - 2, 0);
+    let (yaw, pitch) = aim(&sim, spot.offset(-I64Vec3::Z), [0.5, 0.5, 1.0]);
+    sim.step(&PlayerInput { yaw, pitch, alt_pressed: true, alt_held: true, place_block: antiphasite, ..Default::default() });
+    let placed = cell(&sim, spot);
+    assert_eq!(placed.len(), 1);
+    assert!(sim.blocks().is_hidden(placed[0].block), "there, but hidden");
+    // The floor under it lost the sixteenth touching it.
+    assert_eq!(cell(&sim, spot.offset(-I64Vec3::Z)).len(), 2);
 }

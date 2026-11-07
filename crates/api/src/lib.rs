@@ -22,6 +22,7 @@ pub mod orientation;
 pub mod movement;
 pub mod player;
 pub mod shape;
+pub mod signal;
 pub mod terrain;
 pub mod tuning;
 
@@ -44,5 +45,6 @@ pub use orientation::Orientation;
 pub use movement::{Ground, MoveContext, MoveInput, MoveOutput, MovementController};
 pub use player::PlayerDef;
 pub use shape::ShapeGrid;
+pub use signal::SignalDef;
 pub use terrain::{ChunkFill, Generator, TerrainDef};
 pub use tuning::{Tunable, Tunables};

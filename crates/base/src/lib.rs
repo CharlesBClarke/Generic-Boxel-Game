@@ -2,7 +2,7 @@
 //! and their looks are a data mod in `mods/base`, loaded by the engine alongside it.
 
 use api::{
-    ApiError, BoxelPos, CrowdDef, HealthDef, I64Vec3, InteractionDef, ItemDropDef, Mod, Orientation, PlayerDef, PlayerSounds, PushOutDef, Registrar,
+    ApiError, BoxelPos, CrowdDef, HealthDef, I64Vec3, InteractionDef, ItemDropDef, Mod, Orientation, PlayerDef, PlayerSounds, PushOutDef, Registrar, SignalDef,
     TerrainDef, ToolDef, ToolSounds, Vec3, WorldEdit, WorldPos,
 };
 
@@ -25,10 +25,14 @@ pub const GRAVEL: &str = "base:gravel";
 pub const CRAFTING_TABLE: &str = "base:crafting_table";
 /// Brass: a trigger, for knobs and levers.
 pub const BRASS: &str = "base:brass";
-/// Iron: a hinge, for doors and trapdoors.
+/// Iron: a plain metal.
 pub const IRON: &str = "base:iron";
-/// Copper: a listener, so a lever beside a door reaches it.
+/// Copper: a conductor, a wire carrying signals on.
 pub const COPPER: &str = "base:copper";
+/// Phasite, make-believe: a signal flips it between shown and hidden, taking what touches it.
+pub const PHASITE: &str = "base:phasite";
+/// Antiphasite: phasite that starts hidden, for what a signal brings in, like an open door.
+pub const ANTIPHASITE: &str = "base:antiphasite";
 
 /// The cow, defined in `mods/base/targets.toml`, with its brain in the `base_cow` crate.
 pub const COW: &str = "base:cow";
@@ -138,6 +142,8 @@ impl Mod for BaseMod {
         r.register_interaction(InteractionDef { reach: 4.5, repeat_rate: 4.0 })?;
         // Block-jumping: placing a block at your feet lifts you onto it and launches you.
         r.register_push_out(PushOutDef { strength: 6.0, upward_bias: 1.0 })?;
+        // Hiding takes what touches a phase group, a sixteenth deep; a wire carries far.
+        r.register_signals(SignalDef { reach: 1.0, conduct_limit: 4096 })?;
         // Creatures see each other across a herd, and bodies push apart firmly enough that you
         // can't walk through a cow; the player is a little lighter than one (2.5).
         r.register_crowd(CrowdDef { sight: 12.0, push: 25.0, max_push: 8.0, player_weight: 1.5 })?;
@@ -377,27 +383,31 @@ fn build_shapes_corner(w: &mut dyn WorldEdit, o: BoxelPos) -> Result<(), ApiErro
     w.add_block(at(x, y, z), CRAFTING_TABLE, Orientation::IDENTITY)
 }
 
-/// A brick wall 3 high with a doorway, a two-high door in it and a lever in the wall beside
-/// it, all facing south (built on the table's side and unturned, their wall side is north).
-/// Nothing here is a door to the engine: the door swings because its strip is iron, the knob
-/// and lever work because they're brass, and the lever reaches the door through its copper
-/// plate (see `blocks.toml`).
+/// A brick wall 3 high with a doorway, a two-high door in it like a Minecraft door, a lever
+/// in the wall beside it, and another lever further along wired to the door through copper
+/// along the foot of the wall, all facing south. Nothing here is a door to the engine: the
+/// panels swap because they're phasite and antiphasite, the levers work because their handles
+/// are brass, and the signal reaches the door through copper (see `blocks.toml`).
 fn build_door(w: &mut dyn WorldEdit, o: BoxelPos) -> Result<(), ApiError> {
     let (x, y, z) = DOOR_SPOT;
-    let at = |dx: i64, dz: i64| o.offset(I64Vec3::new(x + dx, y, z + dz));
+    let at = |dx: i64, dy: i64, dz: i64| o.offset(I64Vec3::new(x + dx, y + dy, z + dz));
     let south = Orientation::IDENTITY;
-    w.fill(at(-3, 0), at(3, 2), BRICK)?;
-    w.clear(at(0, 0), at(0, 1));
-    w.clear(at(1, 0), at(1, 0));
-    for (m, shape) in shapes::door_lower() {
-        w.add_shaped(at(0, 0), m, &shape, south)?;
+    w.fill(at(-3, 0, 0), at(3, 0, 2), BRICK)?;
+    w.clear(at(0, 0, 0), at(0, 0, 1));
+    w.clear(at(1, 0, 0), at(1, 0, 0));
+    w.clear(at(3, 0, 0), at(3, 0, 0));
+    for dx in [1, 3] {
+        for (m, shape) in shapes::lever(BRICK) {
+            w.add_shaped(at(dx, 0, 0), m, &shape, south)?;
+        }
     }
-    for (m, shape) in shapes::door_upper() {
-        w.add_shaped(at(0, 1), m, &shape, south)?;
+    // The wire: from in front of the far lever to in front of the door, whose copper it meets.
+    for dx in 0..=3 {
+        w.add_shaped(at(dx, -1, 0), COPPER, &shapes::wire(), south)?;
     }
-    for (m, shape) in shapes::lever(BRICK) {
-        w.add_shaped(at(1, 0), m, &shape, south)?;
-    }
+    // The door last, so its open panel, starting hidden, takes its reach of all the rest.
+    w.add_bundle(at(0, 0, 0), &shapes::door_lower(), south)?;
+    w.add_bundle(at(0, 0, 1), &shapes::door_upper(), south)?;
     Ok(())
 }
 

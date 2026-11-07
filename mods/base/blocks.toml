@@ -109,6 +109,15 @@ noise = { colors = [[112, 114, 118], [122, 124, 128], [132, 134, 138]], scale = 
 sheen = { strength = 0.35, sharpness = 24 }
 noise = { colors = [[170, 96, 58], [184, 108, 66], [196, 120, 76]], scale = 4, seed = 13 }
 
+# Make-believe: a pale violet and its opposite, a sea green, both with a glassy sheen.
+[looks.phasite]
+sheen = { strength = 0.45, sharpness = 32 }
+noise = { colors = [[150, 120, 196], [162, 132, 208], [174, 146, 218]], scale = 5, seed = 14 }
+
+[looks.antiphasite]
+sheen = { strength = 0.45, sharpness = 32 }
+noise = { colors = [[96, 176, 150], [108, 188, 162], [120, 200, 174]], scale = 5, seed = 15 }
+
 # Dark boards under a light top, so the table reads as a work surface.
 [looks.crafting_table]
 planks = { width = 4, colors = [[114, 80, 47], [118, 83, 49], [122, 86, 51], [126, 88, 53]], thickness = 2, shade = 0.07, cross = true, seed = 9 }
@@ -173,8 +182,10 @@ sounds = { step = "step_on_crafting_table", broken = "break_wood", placed = "pla
 look = "crafting_table"
 turning = "any"
 
-# Metals with properties: what crafted shapes made with them do. A door is a wood panel with an
-# iron hinge strip and a brass knob; a brass lever beside a door with a copper plate opens it.
+# Materials with properties: what crafted shapes made with them do. Brass is a trigger (a knob,
+# a lever); copper carries a signal on, like a wire. Phasite and antiphasite are make-believe:
+# a signal flips them between shown and hidden, taking what touches them along; antiphasite
+# starts hidden. A Minecraft door is a phasite panel and an antiphasite panel swung open.
 [[block]]
 name = "brass"
 sounds = { step = "step_concrete", broken = "break_stone", placed = "place" }
@@ -185,10 +196,21 @@ properties = ["trigger"]
 name = "iron"
 sounds = { step = "step_concrete", broken = "break_stone", placed = "place" }
 look = "iron"
-properties = ["hinge"]
 
 [[block]]
 name = "copper"
 sounds = { step = "step_concrete", broken = "break_stone", placed = "place" }
 look = "copper"
-properties = ["listener"]
+properties = ["conductor"]
+
+[[block]]
+name = "phasite"
+sounds = { step = "step_concrete", broken = "break_stone", placed = "place" }
+look = "phasite"
+properties = ["phase"]
+
+[[block]]
+name = "antiphasite"
+sounds = { step = "step_concrete", broken = "break_stone", placed = "place" }
+look = "antiphasite"
+properties = ["phase", "starts_hidden"]

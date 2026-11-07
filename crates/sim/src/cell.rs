@@ -8,8 +8,12 @@ use api::{BlockBox, Orientation, Vec3};
 
 use crate::{BlockId, BlockRegistry};
 
-/// The most occupants one boxel can hold.
-pub const MAX_OCCUPANTS: usize = 4;
+/// The most occupants one boxel can hold: room for a design of [`MAX_MATERIALS`] pieces, and
+/// for each piece to be cut in two by hiding (see [`crate::signal`]).
+pub const MAX_OCCUPANTS: usize = 2 * MAX_MATERIALS;
+
+/// The most materials one crafted design holds, each placed as an occupant of its own.
+pub const MAX_MATERIALS: usize = 8;
 
 /// One thing in a boxel.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
@@ -140,7 +144,8 @@ impl std::fmt::Display for ShareError {
 /// Whether `new` may join a boxel that holds `existing`. Loose for now: up to
 /// [`MAX_OCCUPANTS`], no full block shares, and no two blocks fill exactly the same space,
 /// whatever they're made of (a slab turned about its own axis still fills the same space).
-/// Overlap is allowed, so a fence post can poke through a slab.
+/// Overlap is allowed, so a fence post can poke through a slab. Hidden pieces count toward
+/// the limit but take up no space.
 pub fn can_share(existing: &[Occupant], new: Occupant, blocks: &BlockRegistry) -> Result<(), ShareError> {
     let def = blocks.get(new.block).ok_or(ShareError::Unknown)?;
     if existing.is_empty() {
@@ -148,6 +153,10 @@ pub fn can_share(existing: &[Occupant], new: Occupant, blocks: &BlockRegistry) -
     }
     if existing.len() >= MAX_OCCUPANTS {
         return Err(ShareError::Crowded);
+    }
+    let existing: Vec<Occupant> = existing.iter().copied().filter(|o| !blocks.is_hidden(o.block)).collect();
+    if existing.is_empty() || blocks.is_hidden(new.block) {
+        return Ok(());
     }
     if def.is_full() || existing.iter().any(|o| blocks.get(o.block).is_some_and(|d| d.is_full())) {
         return Err(ShareError::Full);
@@ -257,8 +266,9 @@ mod tests {
         // Slabs against four different sides of the boxel.
         let sides = [Orientation::IDENTITY, flipped(), Orientation::z_along(0), Orientation::z_along(1)];
         let four: Vec<_> = sides.iter().map(|&o| Occupant::turned(slab, o)).collect();
-        assert_eq!(ok(&four, Occupant::new(post)), Err(ShareError::Crowded));
-        assert_eq!(ok(&four[..3], Occupant::new(post)), Ok(()));
+        assert_eq!(ok(&four, Occupant::new(post)), Ok(()), "room for more than four");
+        let crowded = vec![Occupant::new(slab); MAX_OCCUPANTS];
+        assert_eq!(ok(&crowded, Occupant::new(post)), Err(ShareError::Crowded));
     }
 
     #[test]

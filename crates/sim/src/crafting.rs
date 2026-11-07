@@ -83,7 +83,7 @@ impl std::fmt::Display for CraftRefusal {
             CraftRefusal::NoCrafting => write!(f, "nothing can be crafted"),
             CraftRefusal::NoTable => write!(f, "no crafting table there"),
             CraftRefusal::TooFar => write!(f, "the table is out of reach"),
-            CraftRefusal::TooManyMaterials => write!(f, "at most {} materials in one shape", crate::MAX_OCCUPANTS),
+            CraftRefusal::TooManyMaterials => write!(f, "at most {} materials in one shape", crate::MAX_MATERIALS),
             CraftRefusal::Pattern(e) => write!(f, "{e}"),
             CraftRefusal::FullBlock => write!(f, "that's a full block, nothing to shape"),
             CraftRefusal::NotShapeable => write!(f, "that material can't be shaped"),
@@ -151,7 +151,7 @@ pub fn plan(
     if shape.is_full() && by_material.len() == 1 {
         return Err(CraftRefusal::FullBlock);
     }
-    if by_material.len() > crate::MAX_OCCUPANTS {
+    if by_material.len() > crate::MAX_MATERIALS {
         return Err(CraftRefusal::TooManyMaterials);
     }
     let mut pieces = Vec::new();
@@ -308,22 +308,23 @@ mod tests {
     }
 
     #[test]
-    fn at_most_four_materials() {
+    fn at_most_eight_materials() {
         let (mut blocks, inventory, stone, wood) = setup();
-        let more: Vec<MaterialId> = ["a", "b", "c"]
+        let more: Vec<MaterialId> = ["a", "b", "c", "d", "e", "f", "g"]
             .iter()
             .map(|n| {
                 blocks.register(BlockDef::new(format!("test:{n}"), true, [0; 3]).with_material(format!("test:{n}"))).unwrap();
                 blocks.material(&format!("test:{n}")).unwrap()
             })
             .collect();
-        let mut five = cells(["1111"; 4], stone);
-        for (i, &m) in [wood, more[0], more[1], more[2]].iter().enumerate() {
-            five[i][0][0] = Some(Piece::new(m));
+        // Stone, wood and seven more: nine.
+        let mut nine = cells(["1111"; 4], stone);
+        for (i, &m) in std::iter::once(&wood).chain(&more).enumerate() {
+            nine[i / 4][i % 4][0] = Some(Piece::new(m));
         }
-        assert_eq!(plan(&blocks, &inventory, CAPACITY, &five, false, false, 1), Err(CraftRefusal::TooManyMaterials));
-        five[3][0][0] = Some(Piece::new(stone));
-        assert!(plan(&blocks, &inventory, CAPACITY, &five, false, false, 1).is_ok());
+        assert_eq!(plan(&blocks, &inventory, CAPACITY, &nine, false, false, 1), Err(CraftRefusal::TooManyMaterials));
+        nine[1][3][0] = Some(Piece::new(stone));
+        assert_eq!(plan(&blocks, &inventory, CAPACITY, &nine, false, false, 1).unwrap().pieces.len(), 8);
     }
 
     #[test]

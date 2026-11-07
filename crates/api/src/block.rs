@@ -38,18 +38,21 @@ pub struct BlockDef {
 }
 
 /// Something a material does wherever a piece of it is, written by hand and given to materials
-/// by mods. A boxel's occupants act together as one block: a signal reaches the boxel, and
-/// every piece in it answers. A fixed set for now; mods can't add their own yet.
+/// by mods. Signals go to boxels, and the pieces in a signaled boxel answer. A fixed set for
+/// now; mods can't add their own yet.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Property {
-    /// Pressing interact aimed at a piece of it signals its boxel, and every touching boxel
-    /// with a listener in it. A knob, a lever.
+    /// Pressing interact aimed at a piece of it signals its boxel. A knob, a lever.
     Trigger,
-    /// A signaled boxel holding a piece of it swings a quarter turn about the piece's long
-    /// axis, with every boxel along the same hinge line, and back again on the next signal.
-    Hinge,
-    /// Takes signals from triggers in the boxels it touches. Passes nothing on.
-    Listener,
+    /// Carries signals: a signal reaching a boxel goes on into every face-touching boxel with a
+    /// shown piece of it, and every boxel reached is signaled. A wire.
+    Conductor,
+    /// A signal to a boxel holding a piece of it flips the piece's group, every piece of the
+    /// material touching it face to face, between shown and hidden. Hiding takes everything
+    /// else within reach of the group with it; showing brings that back.
+    Phase,
+    /// Placed hidden, taking what's within reach of it, as if it had just been signaled to hide.
+    StartsHidden,
 }
 
 impl Property {
@@ -57,14 +60,18 @@ impl Property {
     pub fn name(self) -> &'static str {
         match self {
             Property::Trigger => "trigger",
-            Property::Hinge => "hinge",
-            Property::Listener => "listener",
+            Property::Conductor => "conductor",
+            Property::Phase => "phase",
+            Property::StartsHidden => "starts_hidden",
         }
     }
 
+    /// Every property, for listing them.
+    pub const ALL: [Property; 4] = [Property::Trigger, Property::Conductor, Property::Phase, Property::StartsHidden];
+
     /// The property named `name` in data files.
     pub fn from_name(name: &str) -> Option<Property> {
-        [Property::Trigger, Property::Hinge, Property::Listener].into_iter().find(|p| p.name() == name)
+        Self::ALL.into_iter().find(|p| p.name() == name)
     }
 }
 

@@ -39,6 +39,18 @@ Power means control over the environment, not bigger stats. To test: stressors s
 
 The gripes, stories and tentative directions below are mostly ways of applying these two pillars.
 
+### A checklist for rules
+
+Rules grew by fixing little annoyances one at a time, and the result was rules nobody could predict (the hinge's tiebreaks and slides). Agreed 2026-11-06, from Material behavior: check every rule against this list before building it.
+
+1. Predictable from what you see; if not, show it first (like the placement ghost).
+2. No hidden tiebreaks: a rule that needs one is wrong; let the player choose, or refuse with a reason.
+3. Fits in one sentence (the crosshair hint). "Unless" means it's too fussy.
+4. Local and stateless where possible.
+5. Undoable: doing it again gets back exactly.
+6. Restrictions only stop the player making things they can't use or place.
+7. Small verbs that combine, over clever ones with cases.
+
 ## Terminology
 
 | Term | Meaning |
@@ -118,6 +130,7 @@ Connected blocks such as wires, pipes and cables form graph networks rather than
 - **Parallel per network.** Separate networks solve independently on different cores.
 - **Cheap to render.** Wires look up their network's value in the shader, so a lever lights the whole line without remeshing chunks.
 - **Open choices:** whether values are on/off or numbers (and how inputs combine), and whether a wire can carry several channels.
+- **Built so far (2026-11-06, Material behavior):** a much simpler stand-in. A conductor (copper) carries a signal from a trigger through face-touching boxels holding it, found by a flood fill when the signal is sent, with no stored networks and no values: a signal is a single pulse that flips what it reaches.
 
 ## World model
 
@@ -125,7 +138,7 @@ The engine's data model assumes these capabilities from day one, because retrofi
 
 **Sub-grids.** Any volume of boxels can have its own position and rotation. Ships, vehicles, elevators and moving contraptions are sub-grids, with collision, lighting, rendering and syncing handled by the engine rather than each mod. A sub-grid can be moved by simple rules or by a physics controller, so rigid-body physics stays possible.
 
-**Multiple occupants per boxel.** One boxel position can hold more than one thing, generalizing Minecraft's waterlogging beyond "a block plus water." Built in the block shapes toy (2026-10-28): a boxel holds up to four occupants, each a block and its orientation, in the order they were placed, and storage, collision, aiming, breaking and meshing all handle them. Where two occupants' faces coincide, the oldest one's face shows. This is a fundamental engine capability, deliberately there from the start; how players get at it (on any click, or as a deliberate trick) is still open. Since 2026-11-06 (functional crafting), a crafted design of several materials is placed as one occupant per material in one boxel, so the four-occupant limit is also the most materials a design can hold.
+**Multiple occupants per boxel.** One boxel position can hold more than one thing, generalizing Minecraft's waterlogging beyond "a block plus water." Built in the block shapes toy (2026-10-28): a boxel holds up to four occupants, each a block and its orientation, in the order they were placed, and storage, collision, aiming, breaking and meshing all handle them. Where two occupants' faces coincide, the oldest one's face shows. This is a fundamental engine capability, deliberately there from the start; how players get at it (on any click, or as a deliberate trick) is still open. Since 2026-11-06 (functional crafting), a crafted design of several materials is placed as one occupant per material in one boxel. Raised the same day (material behavior), since a door wants wood, brass, copper and two phase materials: a design holds up to eight materials, and a boxel up to sixteen occupants, room for each piece of a full design to be cut in two by hiding.
 
 **Multiple world views.** The client can load and draw any grid from any camera, not just the world the player stands in. Uses include portals, security cameras and screens, mirrors, blueprint previews, structures shown inside menus, minimaps, replays, split-screen and pocket dimensions.
 

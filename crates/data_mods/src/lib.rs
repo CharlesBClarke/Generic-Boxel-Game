@@ -395,7 +395,8 @@ fn block_def(
     if let Some(spanned) = &entry.properties {
         for p in spanned.get_ref() {
             let Some(property) = Property::from_name(p) else {
-                let message = format!("block {short:?} has property {p:?}: expected trigger, hinge or listener");
+                let names: Vec<&str> = Property::ALL.iter().map(|p| p.name()).collect();
+                let message = format!("block {short:?} has property {p:?}: expected one of {}", names.join(", "));
                 return Err(file.error_at(spanned, message));
             };
             properties.push(property);
@@ -590,12 +591,12 @@ mod tests {
         let folder = Folder::new("properties");
         folder.write("mod.toml", MANIFEST).write(
             "blocks.toml",
-            "[[block]]\nname = \"brass\"\ncolor = [1, 2, 3]\nproperties = [\"trigger\", \"listener\"]\n\n\
+            "[[block]]\nname = \"brass\"\ncolor = [1, 2, 3]\nproperties = [\"trigger\", \"conductor\"]\n\n\
              [[block]]\nname = \"plain\"\ncolor = [1, 2, 3]\n",
         );
         let m = folder.load().unwrap();
         let [brass, plain] = m.blocks() else { panic!("two blocks") };
-        assert_eq!(brass.properties, [Property::Trigger, Property::Listener]);
+        assert_eq!(brass.properties, [Property::Trigger, Property::Conductor]);
         assert!(plain.properties.is_empty());
         let err = blocks_error("bad_property", "[[block]]\nname = \"a\"\ncolor = [1, 2, 3]\nproperties = [\"glow\"]\n", 4);
         assert!(err.contains("glow"), "{err}");

@@ -1,5 +1,5 @@
 //! Culled meshing: every face of every occupant's boxes becomes a quad, unless it lies on the
-//! boxel's side against a full block. Where faces of two occupants of one boxel lie on the same
+//! boxel's side against a full block. Hidden pieces (see [`sim::signal`]) aren't there to it. Where faces of two occupants of one boxel lie on the same
 //! plane facing the same way, the part they share is drawn only from the older occupant (the
 //! one placed first), so they never fight over which shows. Output is plain Z-up vertex data in chunk-local space;
 //! turning it into a Bevy mesh happens elsewhere. Every vertex carries where it sits in its
@@ -155,7 +155,7 @@ fn neighborhood<'a>(at: I64Vec3, occupants_at: impl Fn(I64Vec3) -> &'a [Occupant
     let mut boxes = Vec::new();
     for d in (0..27).map(|i| [i % 3 - 1, i / 3 % 3 - 1, i / 9 - 1]) {
         for occupant in occupants_at(at + I64Vec3::new(d[0] as i64, d[1] as i64, d[2] as i64)) {
-            let Some(def) = blocks.get(occupant.block) else {
+            let Some(def) = blocks.get(occupant.block).filter(|_| !blocks.is_hidden(occupant.block)) else {
                 continue;
             };
             for &b in &def.shape {
@@ -259,7 +259,7 @@ fn buried(grid: &Grid, pos: ChunkPos, blocks: &BlockRegistry) -> bool {
         let Some(id) = grid.chunk(p).and_then(|c| c.cells.uniform()) else {
             return false;
         };
-        grid.occupants(id).iter().any(|o| blocks.get(o.block).is_some_and(|d| d.is_full()))
+        grid.occupants(id).iter().any(|o| !blocks.is_hidden(o.block) && blocks.get(o.block).is_some_and(|d| d.is_full()))
     };
     let sides = [I64Vec3::X, I64Vec3::NEG_X, I64Vec3::Y, I64Vec3::NEG_Y, I64Vec3::Z, I64Vec3::NEG_Z];
     solid(pos) && sides.iter().all(|&d| solid(ChunkPos(pos.0 + d)))
@@ -307,7 +307,9 @@ pub fn mesh_chunk(grid: &Grid, pos: ChunkPos, blocks: &BlockRegistry, volumes: &
     }
 
     let near = |local: I64Vec3| occupants_at(grid, chunk, pos, local);
-    let full = |local: I64Vec3| near(local).iter().any(|o| blocks.get(o.block).is_some_and(|def| def.is_full()));
+    let full = |local: I64Vec3| {
+        near(local).iter().any(|o| !blocks.is_hidden(o.block) && blocks.get(o.block).is_some_and(|def| def.is_full()))
+    };
 
     for index in 0..CHUNK_VOLUME {
         let local = LocalPos::from_index(index);
@@ -320,7 +322,7 @@ pub fn mesh_chunk(grid: &Grid, pos: ChunkPos, blocks: &BlockRegistry, volumes: &
         // Only gathered once a face of this boxel is drawn; most boxels are buried.
         let boxes = OnceCell::new();
         let around = || boxes.get_or_init(|| neighborhood(at, near, blocks)).as_slice();
-        for &occupant in grid.occupants(id) {
+        for &occupant in grid.occupants(id).iter().filter(|o| !blocks.is_hidden(o.block)) {
             let hidden = |n: [i32; 3]| full(at + I64Vec3::new(n[0] as i64, n[1] as i64, n[2] as i64));
             mesh_occupant(&mut mesh, occupant, at.as_vec3().to_array(), blocks, volumes, hidden, &around, ao, &mut drawn);
         }
@@ -550,6 +552,16 @@ mod tests {
             let alone = super::mesh_chunk(&grid, *pos, &blocks, &volumes, &AoTuning::default());
             assert_eq!((alone.positions.clone(), alone.indices.clone()), (mesh.positions.clone(), mesh.indices.clone()), "{:?}", pos.0);
         }
+    }
+
+    #[test]
+    fn hidden_pieces_are_not_drawn_and_hide_no_faces() {
+        let (mut grid, mut blocks, stone) = setup();
+        let hidden = blocks.derive(Occupant::new(stone), &api::ShapeGrid::FULL, true).unwrap();
+        grid.set_block(BoxelPos::new(5, 5, 5), stone);
+        grid.set_block(BoxelPos::new(6, 5, 5), hidden);
+        let mesh = mesh_chunk(&grid, ChunkPos::new(0, 0, 0), &blocks);
+        assert_eq!(mesh.quad_count(), 6, "the stone's east face shows through");
     }
 
     #[test]

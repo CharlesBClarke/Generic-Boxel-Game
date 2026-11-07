@@ -70,8 +70,22 @@ pub struct BlockRegistry {
     materials: Vec<Material>,
     /// Each bundle piece's bundle.
     bundle_of: HashMap<BlockId, MaterialId>,
-    /// Each open kind's closed occupant: what it was before it swung open.
-    closed_of: HashMap<BlockId, Occupant>,
+    /// Each derived kind: a cut piece's kept part, or a hidden piece (see [`Derived`]).
+    derived: HashMap<BlockId, Derived>,
+}
+
+/// A piece made from part of another occupant: what's left shown of a piece cut by hiding, or
+/// the hidden part of one. Its block fills `shape` unturned, so it's placed unturned.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Derived {
+    /// The occupant it was cut from. Never itself derived: cutting a derived piece again
+    /// derives from the same occupant, so all the parts of one piece find each other.
+    pub from: Occupant,
+    /// The sixteenths it fills in its boxel.
+    pub shape: ShapeGrid,
+    /// Hidden pieces aren't solid, aren't drawn, and are aimed at only by someone holding a
+    /// phase material.
+    pub hidden: bool,
 }
 
 #[derive(Clone)]
@@ -180,8 +194,8 @@ impl BlockRegistry {
     /// ordinary parts. Named from the first material's namespace and a hash of the pieces, like
     /// `base:bundle_0123456789abcdef`, its pieces with `_0`, `_1`… after that.
     pub fn bundle(&mut self, pieces: &[(MaterialId, ShapeGrid)]) -> Result<MaterialId, ApiError> {
-        if !(2..=crate::MAX_OCCUPANTS).contains(&pieces.len()) {
-            return Err(ApiError::InvalidDef(format!("a bundle has 2 to {} pieces", crate::MAX_OCCUPANTS)));
+        if !(2..=crate::MAX_MATERIALS).contains(&pieces.len()) {
+            return Err(ApiError::InvalidDef(format!("a bundle has 2 to {} pieces", crate::MAX_MATERIALS)));
         }
         let mut hash = Fnv::default();
         for (material, shape) in pieces {
@@ -248,27 +262,56 @@ impl BlockRegistry {
         Some(self.part_of(drop.material).unwrap_or(drop.material))
     }
 
-    /// The open kind of `closed` filling `shape` unturned, registering it the first time: what
-    /// a swung piece becomes. It copies the closed block, breaks into the same thing, isn't
-    /// placed by players, and remembers `closed`, so swinging back gives exactly it.
-    pub fn opened(&mut self, closed: Occupant, shape: &ShapeGrid) -> Result<BlockId, ApiError> {
-        let def = self.get(closed.block).ok_or_else(|| ApiError::InvalidDef("no such block".into()))?;
+    /// The derived kind of `from` filling `shape` in its boxel, registering it the first time:
+    /// the shown or hidden part of a piece cut by hiding (see [`Derived`]). It copies `from`'s
+    /// block, but breaks into its volume of the material `from` is made of, isn't placed by
+    /// players, and isn't solid when hidden. `from` may itself be derived; the new kind derives
+    /// from what that one came from.
+    pub fn derive(&mut self, from: Occupant, shape: &ShapeGrid, hidden: bool) -> Result<BlockId, ApiError> {
+        let from = self.derived(from.block).map_or(from, |d| d.from);
+        let def = self.get(from.block).ok_or_else(|| ApiError::InvalidDef("no such block".into()))?;
+        if shape.is_empty() {
+            return Err(ApiError::InvalidDef("an empty shape".into()));
+        }
         let mut hash = Fnv::default();
-        hash.add(&closed.orientation.apply([1, 2, 3]).map(|c| c as i8 as u8));
+        hash.add(&from.orientation.apply([1, 2, 3]).map(|c| c as i8 as u8));
         hash.add(&shape.hash64().to_le_bytes());
-        let name = format!("{}_o{:016x}", def.name, hash.0);
+        let name = format!("{}_{}{:016x}", def.name, if hidden { 'h' } else { 'c' }, hash.0);
         if let Some(id) = self.id(&name) {
             return Ok(id);
         }
-        let def = BlockDef { name, shape: shape.to_boxes(), turning: Turning::Any, placeable: false, ..def.clone() };
+        let material = self.made_of(from.block).map(|m| self.material_name(m).to_owned());
+        let def = BlockDef {
+            name,
+            shape: shape.to_boxes(),
+            turning: Turning::Any,
+            placeable: false,
+            solid: def.solid && !hidden,
+            material,
+            ..def.clone()
+        };
         let id = self.register(def)?;
-        self.closed_of.insert(id, closed);
+        self.derived.insert(id, Derived { from, shape: shape.clone(), hidden });
         Ok(id)
     }
 
-    /// For an open kind, what it was closed.
-    pub fn closed_of(&self, block: BlockId) -> Option<Occupant> {
-        self.closed_of.get(&block).copied()
+    /// What a derived kind was cut from, and which part of it it is.
+    pub fn derived(&self, block: BlockId) -> Option<&Derived> {
+        self.derived.get(&block)
+    }
+
+    /// Whether `block` is a hidden piece.
+    pub fn is_hidden(&self, block: BlockId) -> bool {
+        self.derived(block).is_some_and(|d| d.hidden)
+    }
+
+    /// The occupant a piece was cut from (itself if it wasn't), and the sixteenths the piece
+    /// fills in its boxel.
+    pub fn origin(&self, occupant: Occupant) -> (Occupant, ShapeGrid) {
+        match self.derived(occupant.block) {
+            Some(d) => (d.from, d.shape.clone()),
+            None => (occupant, self.shape(occupant.block).turned(occupant.orientation)),
+        }
     }
 
     /// The sixteenths a block fills, unturned.
