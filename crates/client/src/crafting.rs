@@ -329,6 +329,8 @@ const CELL: f32 = 52.0;
 const PREVIEW: f32 = 170.0;
 /// The size of a part's picture in the list.
 const ICON: f32 = 28.0;
+/// The size of a square in the carried grid.
+const CARRIED_CELL: f32 = 46.0;
 /// The grid's width: four cells and the gaps between them.
 const GRID_WIDTH: f32 = 4.0 * CELL + 3.0 * 2.0;
 /// The carried list's width. Fixed, like every column, so what's carried never moves the grid.
@@ -383,7 +385,9 @@ fn show_menu(
     egui::Window::new("Crafting")
         .collapsible(false)
         .resizable(false)
-        .anchor(egui::Align2::CENTER_CENTER, [0.0, -40.0])
+        // Pinned by its top, so anything that makes it taller only pushes what's below down:
+        // the grid and its buttons never move under the pointer.
+        .anchor(egui::Align2::CENTER_TOP, [0.0, 60.0])
         .show(ctx, |ui| {
             // Columns have fixed widths, and text wraps to them, so the window never changes
             // width (it stays centered, so a wider window would move the grid).
@@ -468,7 +472,8 @@ fn brush_line(ui: &mut egui::Ui, blocks: &BlockRegistry, library: &Library, name
             0 => String::new(),
             n => format!(", turned {} left", ["", "a quarter", "half", "three quarters"][n as usize]),
         };
-        ui.label(format!("{}{turned}", thing_label(blocks, library, names, brush.thing)));
+        // Cut to one line: a long name or a turn never widens the column (and so the window).
+        ui.add(egui::Label::new(format!("{}{turned}", thing_label(blocks, library, names, brush.thing))).truncate());
     });
 }
 
@@ -565,9 +570,11 @@ fn grid(
     });
 }
 
-/// Everything carried, in a list `height` tall. Pressing one picks it as the brush and starts a stroke, so holding on
-/// the way to the grid paints; right-clicking drops the brush. A part also has buttons to hold
-/// it, rename it and throw all of it away.
+/// Everything carried, as a grid of squares `height` tall: each a picture and how many, named
+/// in its tooltip. Pressing one picks it as the brush and starts a stroke, so holding on the
+/// way to the grid paints. Right-clicking opens a menu: put the brush down, and for a part,
+/// hold it, load it, rename it or throw all of it away. Squares never change size, whatever
+/// their names, so nothing moves.
 fn carried(
     ui: &mut egui::Ui,
     world: &ClientWorld,
@@ -581,84 +588,121 @@ fn carried(
     if things.is_empty() {
         ui.label("nothing");
     }
-    let list = egui::ScrollArea::vertical().auto_shrink([false, false]).max_height(height).show(ui, |ui| {
-        for (id, amount) in things {
-            ui.horizontal(|ui| {
-                let amount = match blocks.part_of(id) {
-                    Some(_) => format!("×{}", amount / blocks.unit(id)),
-                    None => crate::items::amount_label(amount),
-                };
-                let picked = menu.brush.is_some_and(|b| b.thing == Thing::Material(id));
-                let text = egui::WidgetText::from(format!("{} {amount}", names.label(blocks, id)));
-                let galley = text.into_galley(ui, None, f32::INFINITY, egui::TextStyle::Button);
-                let size = egui::vec2(ICON + 6.0 + galley.size().x + 8.0, ICON.max(galley.size().y) + 4.0);
-                let (rect, response) = ui.allocate_exact_size(size, egui::Sense::click_and_drag());
-                if response.is_pointer_button_down_on() && ui.ctx().input(|i| i.pointer.primary_down()) {
-                    // Picking the same thing again keeps its turn.
-                    if !picked {
-                        menu.brush = Some(Piece::new(id));
-                    }
-                    menu.stroke = Some(Stroke::Add(None));
-                }
-                if response.secondary_clicked() {
-                    menu.brush = None;
-                }
-                let visuals = ui.style().interact_selectable(&response, picked);
-                ui.painter().rect_filled(rect, 3.0, visuals.weak_bg_fill);
-                let icon = egui::Rect::from_min_size(rect.min + egui::vec2(2.0, 2.0), egui::vec2(ICON, ICON));
-                match blocks.part_of(id) {
-                    Some(_) => {
-                        let yaw = spin(ui, response.hovered(), id.index() as u64);
-                        paint_pieces_turned(ui.painter(), icon, &pieces_of(blocks, id), yaw);
-                    }
-                    None => paint_thing(ui.painter(), icon, blocks, id),
-                }
-                let at = egui::pos2(icon.max.x + 6.0, rect.center().y - galley.size().y / 2.0);
-                ui.painter().galley(at, galley, visuals.text_color());
-                response.on_hover_text("press to paint with it, hold to paint on the grid; right-click to put it down");
-                if blocks.part_of(id).is_none() {
-                    return;
-                }
-                if ui.small_button("hold").on_hover_text("put it in hand").clicked() {
-                    palette.select_part(world, id);
-                }
-                let recipe = menu.recipe(blocks, id);
-                let load = ui
-                    .add_enabled(recipe.is_some(), egui::Button::new("load").small())
-                    .on_hover_text("put what makes it on the table, to change it")
-                    .on_disabled_hover_text("not made this session, and too fine to work out from its shape");
-                if load.clicked()
-                    && let Some(recipe) = recipe
-                {
-                    menu.load(recipe);
-                    menu.editing = None;
-                }
-                match &mut menu.renaming {
-                    Some((part, typed)) if *part == id => {
-                        let field = ui.add(egui::TextEdit::singleline(typed).desired_width(110.0).hint_text("a name"));
-                        field.request_focus();
-                        let done = ui.small_button("ok").clicked() || ui.input(|i| i.key_pressed(egui::Key::Enter));
-                        if done {
-                            names.set(blocks, id, typed);
-                            menu.renaming = None;
-                        }
-                    }
-                    _ => {
-                        if ui.small_button("rename").clicked() {
-                            menu.renaming = Some((id, names.given(blocks, id).unwrap_or_default().to_owned()));
-                        }
-                    }
-                }
-                if ui.small_button("discard").on_hover_text("throw all of them away").clicked() {
-                    menu.discard = Some(id);
-                    if picked {
-                        menu.brush = None;
-                    }
-                }
-            });
+    let top = ui.cursor().top();
+    // Renaming happens in a line above the grid.
+    if let Some((part, typed)) = &mut menu.renaming {
+        let part = *part;
+        ui.horizontal(|ui| {
+            ui.add(egui::Label::new(format!("rename {}:", names.label(blocks, part))).truncate());
+        });
+        let done = ui
+            .horizontal(|ui| {
+                let field = ui.add(egui::TextEdit::singleline(typed).desired_width(LIST_WIDTH - 80.0).hint_text("a name"));
+                field.request_focus();
+                ui.small_button("ok").clicked() || ui.input(|i| i.key_pressed(egui::Key::Enter))
+            })
+            .inner;
+        if done {
+            names.set(blocks, part, typed);
+            menu.renaming = None;
         }
+    }
+    let height = (height - (ui.cursor().top() - top)).max(CARRIED_CELL);
+    let list = egui::ScrollArea::vertical().auto_shrink([false, false]).max_height(height).show(ui, |ui| {
+        let per_row = ((LIST_WIDTH + 2.0) / (CARRIED_CELL + 2.0)).floor().max(1.0) as usize;
+        egui::Grid::new("carried_grid").spacing([2.0, 2.0]).show(ui, |ui| {
+            for (n, (id, amount)) in things.into_iter().enumerate() {
+                carried_square(ui, world, palette, names, menu, id, amount);
+                if (n + 1) % per_row == 0 {
+                    ui.end_row();
+                }
+            }
+        });
     });
     menu.columns[1] = Some(list.inner_rect);
+}
+
+/// One carried thing's square in the grid, and its right-click menu.
+fn carried_square(
+    ui: &mut egui::Ui,
+    world: &ClientWorld,
+    palette: &mut Palette,
+    names: &PartNames,
+    menu: &mut CraftingMenu,
+    id: MaterialId,
+    amount: u32,
+) {
+    let blocks = world.blocks();
+    let part = blocks.part_of(id).is_some();
+    let amount = match part {
+        true => format!("×{}", amount / blocks.unit(id)),
+        false => crate::items::amount_label(amount),
+    };
+    let picked = menu.brush.is_some_and(|b| b.thing == Thing::Material(id));
+    let (rect, response) = ui.allocate_exact_size(egui::vec2(CARRIED_CELL, CARRIED_CELL), egui::Sense::click_and_drag());
+    if response.is_pointer_button_down_on() && ui.ctx().input(|i| i.pointer.primary_down()) {
+        // Picking the same thing again keeps its turn.
+        if !picked {
+            menu.brush = Some(Piece::new(id));
+        }
+        menu.stroke = Some(Stroke::Add(None));
+    }
+    let visuals = ui.style().interact_selectable(&response, picked);
+    ui.painter().rect_filled(rect, 3.0, visuals.weak_bg_fill);
+    if picked {
+        ui.painter().rect_stroke(rect, 3.0, egui::Stroke::new(1.5_f32, egui::Color32::from_gray(220)), egui::StrokeKind::Inside);
+    }
+    let icon = rect.shrink(7.0);
+    match part {
+        true => {
+            let yaw = spin(ui, response.hovered(), id.index() as u64);
+            paint_pieces_turned(ui.painter(), icon, &pieces_of(blocks, id), yaw);
+        }
+        false => paint_thing(ui.painter(), icon.shrink(3.0), blocks, id),
+    }
+    let at = rect.right_bottom() - egui::vec2(3.0, 1.0);
+    let font = egui::FontId::proportional(11.0);
+    // A dark edge, so the count reads on any color.
+    ui.painter().text(at + egui::vec2(1.0, 1.0), egui::Align2::RIGHT_BOTTOM, &amount, font.clone(), egui::Color32::BLACK);
+    ui.painter().text(at, egui::Align2::RIGHT_BOTTOM, &amount, font, egui::Color32::WHITE);
+    let tip = format!("{} {amount}\npress to pick it, hold to paint on the grid; right-click for more", names.label(blocks, id));
+    let response = response.on_hover_text(tip);
+    response.context_menu(|ui| {
+        if ui.add_enabled(picked, egui::Button::new("Put the brush down")).clicked() {
+            menu.brush = None;
+            ui.close();
+        }
+        if !part {
+            return;
+        }
+        if ui.button("Hold it").on_hover_text("put it in hand").clicked() {
+            palette.select_part(world, id);
+            ui.close();
+        }
+        let recipe = menu.recipe(blocks, id);
+        let load = ui
+            .add_enabled(recipe.is_some(), egui::Button::new("Load it into the grid"))
+            .on_hover_text("put what makes it on the table, to change it")
+            .on_disabled_hover_text("not made this session, and too fine to work out from its shape");
+        if load.clicked()
+            && let Some(recipe) = recipe
+        {
+            menu.load(recipe);
+            menu.editing = None;
+            ui.close();
+        }
+        if ui.button("Rename").clicked() {
+            menu.renaming = Some((id, names.given(blocks, id).unwrap_or_default().to_owned()));
+            ui.close();
+        }
+        if ui.button("Throw all away").clicked() {
+            menu.discard = Some(id);
+            if picked {
+                menu.brush = None;
+            }
+            ui.close();
+        }
+    });
 }
 
 /// The picture of what the stacks make, the flip switch, and the craft buttons.
@@ -715,7 +759,7 @@ fn result(
     }
     match &menu.result {
         Some(Ok((part, count))) => {
-            ui.label(format!("made {count}: {} (in hand)", names.label(blocks, *part)));
+            ui.add(egui::Label::new(format!("made {count}: {} (in hand)", names.label(blocks, *part))).truncate());
         }
         Some(Err(why)) => {
             ui.colored_label(egui::Color32::from_rgb(230, 120, 100), why.to_string());
@@ -820,7 +864,12 @@ fn save_buttons(ui: &mut egui::Ui, world: &ClientWorld, menu: &mut CraftingMenu,
         }
         if let Some((id, b)) = over {
             let hint = "put these stacks in it; its variants and the blueprints using it change too";
-            if ui.button(format!("Save over {}", b.name)).on_hover_text(hint).clicked() {
+            // A long name is cut, so the button stays on its line.
+            let name: String = match b.name.chars().count() > 18 {
+                true => b.name.chars().take(17).chain(['…']).collect(),
+                false => b.name.clone(),
+            };
+            if ui.button(format!("Save over {name}")).on_hover_text(format!("{}: {hint}", b.name)).clicked() {
                 menu.blueprint_edit = Some(BlueprintEdit::Overwrite { id, recipe: menu.stacks() });
             }
         }
@@ -847,7 +896,8 @@ fn blueprints(ui: &mut egui::Ui, world: &ClientWorld, menu: &mut CraftingMenu, s
         }
     }
     if let Some(Err(why)) = &menu.blueprint_note {
-        ui.colored_label(egui::Color32::from_rgb(230, 120, 100), why.to_string());
+        let text = egui::RichText::new(why.to_string()).color(egui::Color32::from_rgb(230, 120, 100));
+        ui.add(egui::Label::new(text).truncate());
     }
 }
 
@@ -870,8 +920,10 @@ fn tree_row(ui: &mut egui::Ui, world: &ClientWorld, menu: &mut CraftingMenu, id:
         }
         let brushed = menu.brush.is_some_and(|p| p.thing == Thing::Blueprint(id));
         let chosen = menu.selected == Some(id);
+        // Cut to fit the column, the full name in the tooltip.
+        let room = BLUEPRINT_WIDTH - depth as f32 * 14.0 - 16.0 - ICON - 30.0;
         let text = egui::WidgetText::from(b.name.clone());
-        let galley = text.into_galley(ui, None, f32::INFINITY, egui::TextStyle::Button);
+        let galley = text.into_galley(ui, Some(egui::TextWrapMode::Truncate), room.max(40.0), egui::TextStyle::Button);
         let size = egui::vec2(ICON + 6.0 + galley.size().x + 8.0, ICON.max(galley.size().y) + 4.0);
         let (rect, response) = ui.allocate_exact_size(size, egui::Sense::click_and_drag());
         if response.is_pointer_button_down_on() && ui.ctx().input(|i| i.pointer.primary_down()) {
@@ -897,8 +949,8 @@ fn tree_row(ui: &mut egui::Ui, world: &ClientWorld, menu: &mut CraftingMenu, id:
         let at = egui::pos2(icon.max.x + 6.0, rect.center().y - galley.size().y / 2.0);
         ui.painter().galley(at, galley, visuals.text_color());
         match &made {
-            Ok(_) => response.on_hover_text("press to pick it and paint with it; right-click to put it down"),
-            Err(why) => response.on_hover_text(format!("makes nothing: {why}")),
+            Ok(_) => response.on_hover_text(format!("{}\npress to pick it and paint with it; right-click to put it down", b.name)),
+            Err(why) => response.on_hover_text(format!("{}\nmakes nothing: {why}", b.name)),
         };
     });
     if open && !path.contains(&id) {
@@ -943,23 +995,24 @@ fn picked(ui: &mut egui::Ui, world: &ClientWorld, menu: &mut CraftingMenu, id: B
                     }
                 }
                 _ => {
-                    ui.strong(&b.name);
+                    ui.add(egui::Label::new(egui::RichText::new(&b.name).strong()).truncate());
                 }
             }
             match &b.design {
                 Design::Recipe(r) => {
                     let view = if r.side { "built on the side" } else { "built on the top" };
-                    ui.label(if r.flip { format!("{view}, flipped") } else { view.to_owned() });
+                    ui.add(egui::Label::new(if r.flip { format!("{view}, flipped") } else { view.to_owned() }).truncate());
                 }
                 Design::Variant { base, changes } => {
                     let base = library.get(*base).map_or("a deleted blueprint", |b| b.name.as_str());
-                    ui.label(format!("variant of {base}"));
+                    ui.add(egui::Label::new(format!("variant of {base}")).truncate());
                     let changes: Vec<String> = changes.iter().map(|c| c.describe(blocks)).collect();
-                    ui.label(if changes.is_empty() { "no changes".to_owned() } else { changes.join(", ") });
+                    ui.add(egui::Label::new(if changes.is_empty() { "no changes".to_owned() } else { changes.join(", ") }).truncate());
                 }
             }
             if let Err(why) = &made {
-                ui.colored_label(egui::Color32::from_rgb(230, 120, 100), format!("makes nothing: {why}"));
+                let text = egui::RichText::new(format!("makes nothing: {why}")).color(egui::Color32::from_rgb(230, 120, 100));
+                ui.add(egui::Label::new(text).truncate());
             }
         });
     });
@@ -978,7 +1031,7 @@ fn picked(ui: &mut egui::Ui, world: &ClientWorld, menu: &mut CraftingMenu, id: B
                 }
             }
             Some(Err(why)) if made.is_ok() => {
-                ui.label(format!("can't make it: {why}"));
+                ui.add(egui::Label::new(format!("can't make it: {why}")).truncate());
             }
             _ => {}
         }
@@ -1498,5 +1551,52 @@ mod tests {
         menu.blueprint_edit = Some(BlueprintEdit::Delete { id });
         send(&mut link, &mut world, &mut menu, &mut names);
         assert!(matches!(&menu.blueprint_note, Some(Err(BlueprintRefusal::InUse(by))) if by == "nub mirrored X"));
+    }
+
+    #[test]
+    fn long_names_turned_brushes_and_long_changes_never_move_the_grid() {
+        let (mut link, mut world, mut menu) = at_table();
+        let ctx = egui::Context::default();
+        let (mut palette, mut names) = (Palette::default(), PartNames::default());
+        let mut frame = |world: &ClientWorld, menu: &mut CraftingMenu, names: &mut PartNames| {
+            let input = || egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1600.0, 1000.0))),
+                ..Default::default()
+            };
+            for _ in 0..4 {
+                let _ = ctx.run(input(), |ctx| show_menu(ctx, world, &Controls::default(), menu, &mut palette, names));
+            }
+            let window = ctx.memory(|m| m.area_rect(egui::Id::new("Crafting"))).unwrap();
+            (window.min.x, window.width(), menu.columns[0].unwrap().min)
+        };
+        let start = frame(&world, &mut menu, &mut names);
+        // A part with a very long name, as the brush, turned.
+        let brick = world.blocks().material(base::BRICK).unwrap();
+        menu.cells_mut()[3][0][0] = Some(Piece::new(brick));
+        menu.pending = menu.request(1);
+        send(&mut link, &mut world, &mut menu, &mut names);
+        let Some(Ok((part, _))) = menu.result else { panic!("crafted") };
+        names.set(world.blocks(), part, &"a very long name for a little brick nub ".repeat(4));
+        menu.brush = Some(Piece { thing: part.into(), turns: 3 });
+        assert_eq!(frame(&world, &mut menu, &mut names), start, "a long, turned brush");
+        // A picked variant with a long name and a long list of changes, and a refusal.
+        let long = "an insulated corner for the left door, upper half ".repeat(3);
+        menu.blueprint_edit = Some(BlueprintEdit::Save { name: long, recipe: menu.stacks() });
+        send(&mut link, &mut world, &mut menu, &mut names);
+        let base = menu.selected.unwrap();
+        menu.blueprint_edit = Some(BlueprintEdit::Vary { id: base, variation: Variation::Change(Change::Mirror { axis: 0 }) });
+        send(&mut link, &mut world, &mut menu, &mut names);
+        let variant = menu.selected.unwrap();
+        for axis in 0..3 {
+            for change in [Change::Turn { axis, quarters: 1 }, Change::Mirror { axis }] {
+                menu.blueprint_edit = Some(BlueprintEdit::Vary { id: variant, variation: Variation::Change(change) });
+                send(&mut link, &mut world, &mut menu, &mut names);
+            }
+        }
+        menu.blueprint_edit = Some(BlueprintEdit::Delete { id: base });
+        send(&mut link, &mut world, &mut menu, &mut names);
+        assert!(matches!(menu.blueprint_note, Some(Err(_))), "a refusal to show");
+        menu.renaming = Some((part, "typing".into()));
+        assert_eq!(frame(&world, &mut menu, &mut names), start, "a long variant, a refusal and a rename");
     }
 }

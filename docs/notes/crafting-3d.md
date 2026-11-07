@@ -34,3 +34,13 @@ Recorded for planning the next crafting toy (a blueprint library). Words: a **ga
 - **Clutter versus remaking.** A gadget only useful inside a bigger one has to be kept in the inventory (clutter) or remade to edit the bigger one. Wanted: blueprints made without crafting, and a hierarchy: the gadgets a blueprint uses fold under it (a door's gadgets under the door), so the list stays tidy.
 - **Placing goes with it.** Placing rules are tied closely to these problems (see "Placing is part of the crafting problem" above), so the placement review belongs in the same push.
 - **Judging it.** Test worlds (Save as in the world menu) let a set of builds (a door, a trapdoor, a mesh) be kept and redone under changed rules; see `docs/notes/speed-build.md`. If generative crafting can't be made to feel really good it may be cut (backing the cut), leaving the engine and perhaps borrowed MIT Minecraft-mod content; the texel-scale graphics toys wait on that.
+
+## After playing Blueprint library (2026-11-07)
+
+The blueprint mechanics went in (a library per world, linked variants, blueprints inside blueprints), but the user found the table menu too heavy.
+
+- **Too many views:** grid, carried list, preview and blueprints, plus the top and side views. Wanted: one 3D view to build in ("you build in the 3d view").
+- **Transforms by hand, not buttons:** "a 3d pop up for transform and you can drag, rotate and mirror from there", in place of the rows of turn, mirror, shift and center buttons.
+- **Drafting and crafting are two things** (Terminology table): drafting designs a blueprint anywhere, with no table or materials; crafting makes gadgets from it at a table.
+- **It's one problem, not pieces:** "all of these seem related, generative crafting sits on shaky ground, we need to make the process not so artificial and tedious, a little more fun, and these systems are compounding." Drafting, crafting and placing are closely tied, so the next crafting toy should look at the whole loop from the player's side (get a material, draft, craft, place) and cut what's tedious, rather than add another piece on top. The inventory is more self-contained and comes after (backlog: Rethink the inventory; the user: "maybe it's time for a real inventory").
+- **Layout lessons, fixed in the toy:** anything whose size changes (a long name, a turned brush, a variant's changes, a refusal) must not move what's under the pointer: the window is pinned by its top, lines are cut to one with the full text in a tooltip, and carried things are a grid of icons with tooltips. Keep this in any new menu.
