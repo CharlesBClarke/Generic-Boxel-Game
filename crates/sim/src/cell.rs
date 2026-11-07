@@ -8,8 +8,12 @@ use api::{BlockBox, Orientation, Vec3};
 
 use crate::{BlockId, BlockRegistry};
 
-/// The most occupants one boxel can hold.
-pub const MAX_OCCUPANTS: usize = 4;
+/// The most occupants one boxel can hold: room for a design of [`MAX_MATERIALS`] pieces, and
+/// for each piece to be cut in two by hiding (see [`crate::signal`]).
+pub const MAX_OCCUPANTS: usize = 2 * MAX_MATERIALS;
+
+/// The most materials one crafted design holds, each placed as an occupant of its own.
+pub const MAX_MATERIALS: usize = 8;
 
 /// One thing in a boxel.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
@@ -262,8 +266,9 @@ mod tests {
         // Slabs against four different sides of the boxel.
         let sides = [Orientation::IDENTITY, flipped(), Orientation::z_along(0), Orientation::z_along(1)];
         let four: Vec<_> = sides.iter().map(|&o| Occupant::turned(slab, o)).collect();
-        assert_eq!(ok(&four, Occupant::new(post)), Err(ShareError::Crowded));
-        assert_eq!(ok(&four[..3], Occupant::new(post)), Ok(()));
+        assert_eq!(ok(&four, Occupant::new(post)), Ok(()), "room for more than four");
+        let crowded = vec![Occupant::new(slab); MAX_OCCUPANTS];
+        assert_eq!(ok(&crowded, Occupant::new(post)), Err(ShareError::Crowded));
     }
 
     #[test]

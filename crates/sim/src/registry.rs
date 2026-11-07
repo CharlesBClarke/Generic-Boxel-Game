@@ -194,8 +194,8 @@ impl BlockRegistry {
     /// ordinary parts. Named from the first material's namespace and a hash of the pieces, like
     /// `base:bundle_0123456789abcdef`, its pieces with `_0`, `_1`… after that.
     pub fn bundle(&mut self, pieces: &[(MaterialId, ShapeGrid)]) -> Result<MaterialId, ApiError> {
-        if !(2..=crate::MAX_OCCUPANTS).contains(&pieces.len()) {
-            return Err(ApiError::InvalidDef(format!("a bundle has 2 to {} pieces", crate::MAX_OCCUPANTS)));
+        if !(2..=crate::MAX_MATERIALS).contains(&pieces.len()) {
+            return Err(ApiError::InvalidDef(format!("a bundle has 2 to {} pieces", crate::MAX_MATERIALS)));
         }
         let mut hash = Fnv::default();
         for (material, shape) in pieces {

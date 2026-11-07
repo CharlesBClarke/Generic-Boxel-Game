@@ -12,7 +12,7 @@ use crate::crafting::{Craft, CraftPlan, CraftRefusal};
 use crate::inventory::capacity_units;
 use crate::player::{Body, PushOut, Terrain};
 use crate::{
-    BlockId, BlockRegistry, CellBox, Grid, Hit, Inventory, MAX_OCCUPANTS, Occupant, Target, can_share, occupant_boxes,
+    BlockId, BlockRegistry, CellBox, Grid, Hit, Inventory, MAX_MATERIALS, Occupant, Target, can_share, occupant_boxes,
     raycast,
 };
 
@@ -27,7 +27,7 @@ pub struct PlaceTarget {
     /// The block, turned by the placement rule.
     pub occupant: Occupant,
     /// The rest of a bundle placed with it, turned alike, in the bundle's order.
-    pub companions: [Option<Occupant>; MAX_OCCUPANTS - 1],
+    pub companions: [Option<Occupant>; MAX_MATERIALS - 1],
     /// Whether it may go there. A refused placement still says where it would have gone, so
     /// a preview can show it as not allowed.
     pub allowed: bool,
@@ -111,7 +111,7 @@ impl View<'_> {
             };
             let orientation = orient(def.turning, &aim);
             let occupant = Occupant::turned(block, orientation);
-            let mut companions = [None; MAX_OCCUPANTS - 1];
+            let mut companions = [None; MAX_MATERIALS - 1];
             for (slot, &b) in companions.iter_mut().zip(self.blocks.companions(block)) {
                 *slot = Some(Occupant::turned(b, orientation));
             }
