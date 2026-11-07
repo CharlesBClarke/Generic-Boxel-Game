@@ -237,7 +237,7 @@ fn several_materials_make_one_bundle_placed_whole_and_broken_whole() {
     assert!(placed.iter().all(|o| o.orientation == api::Orientation::IDENTITY));
     assert_eq!(sim.inventory().amount(bundle), 0, "used up whole");
 
-    // It's a working door: the knob hides the panel and the sixteenth of itself touching it,
+    // It's a working door: the knob hides the panel and the texel of itself touching it,
     // then brings them back.
     let knob = [0.875, 0.5, 0.625];
     let (yaw, pitch) = aim(&sim, spot, knob);

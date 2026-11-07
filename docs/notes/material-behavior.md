@@ -31,7 +31,7 @@ The hinge fails 1 to 3. Placement likely fails 2 and 3 in places (see the backlo
 ## Candidates to replace the hinge
 
 - **A vanisher (the user's idea).** "When signaled, a vanisher hides itself and everything within reach of it, any material, any boxel; the next signal brings it all back." Players insulate what should stay (a handle) with a gap: sub-boxel play. Open:
-  - Reach: one sixteenth (as the user said) or one quarter (the crafting grid's unit, so an insulating gap is one empty cell on the table; recommended).
+  - Reach: one texel (as the user said) or one quarter (the crafting grid's unit, so an insulating gap is one empty cell on the table; recommended).
   - Touching vanishers act as one (a two-high door goes together); plain materials never pass it on.
   - Pieces partly within reach are cut, the rest stays; each boxel's originals are kept in a record in the simulation and restored exactly. Refused if a body or something built since is in the way.
   - A signal to any boxel the vanishing touched brings it back (the surviving handle, or a lever over copper).

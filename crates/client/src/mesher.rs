@@ -92,7 +92,7 @@ pub struct AoTuning {
     /// turns ambient occlusion off, 1 makes such a corner black. A floor corner against one
     /// full wall is half filled; where two walls meet, three quarters.
     pub strength: f32,
-    /// How far from a corner shapes count, in sixteenths, rounded; 16 is a whole block.
+    /// How far from a corner shapes count, in texels, rounded; 16 is a whole block.
     pub reach: f32,
     /// How full the space has to be for a corner to darken by the whole `strength`. Two
     /// walls meeting fill three quarters.
@@ -145,12 +145,12 @@ impl Tunables for AoTuning {
     }
 }
 
-/// A box in sixteenths, relative to some boxel's minimum corner: min and max.
-pub type Sixteenths = ([i32; 3], [i32; 3]);
+/// A box in texels, relative to some boxel's minimum corner: min and max.
+pub type TexelBox = ([i32; 3], [i32; 3]);
 
 /// The boxes filled by everything in the 27 boxels around (and including) the boxel at `at`,
-/// in sixteenths relative to that boxel, turned as they stand in the world.
-fn neighborhood<'a>(at: I64Vec3, occupants_at: impl Fn(I64Vec3) -> &'a [Occupant], blocks: &BlockRegistry) -> Vec<Sixteenths> {
+/// in texels relative to that boxel, turned as they stand in the world.
+fn neighborhood<'a>(at: I64Vec3, occupants_at: impl Fn(I64Vec3) -> &'a [Occupant], blocks: &BlockRegistry) -> Vec<TexelBox> {
     let size = BlockBox::SIZE as i32;
     let mut boxes = Vec::new();
     for d in (0..27).map(|i| [i % 3 - 1, i / 3 % 3 - 1, i / 9 - 1]) {
@@ -170,27 +170,27 @@ fn neighborhood<'a>(at: I64Vec3, occupants_at: impl Fn(I64Vec3) -> &'a [Occupant
 
 /// The boxes of `occupant` alone, as [`mesh_occupant`] wants what's around a block drawn away
 /// from the world (the ghost, items): its edges all show as ridges or creases within itself.
-pub fn alone(occupant: Occupant, blocks: &BlockRegistry) -> Vec<Sixteenths> {
+pub fn alone(occupant: Occupant, blocks: &BlockRegistry) -> Vec<TexelBox> {
     let only = [occupant];
     neighborhood(I64Vec3::ZERO, |at| if at == I64Vec3::ZERO { &only[..] } else { &[] }, blocks)
 }
 
 /// What lies past each edge of a face, texel by texel, as [`MeshData::edges`] holds it. The
-/// face's corners `q` are in sixteenths relative to the same boxel as `boxes`, in order
+/// face's corners `q` are in texels relative to the same boxel as `boxes`, in order
 /// (counterclockwise from outside), and it faces along `normal`.
-fn edges(boxes: &[Sixteenths], q: [[i32; 3]; 4], normal: [i32; 3]) -> [u32; 4] {
+fn edges(boxes: &[TexelBox], q: [[i32; 3]; 4], normal: [i32; 3]) -> [u32; 4] {
     let axis = normal.iter().position(|&n| n != 0).expect("a unit normal");
     let plane = q[0][axis];
-    // One sixteenth in front of the face's plane, and one behind it.
+    // One texel in front of the face's plane, and one behind it.
     let (front, behind) = if normal[axis] > 0 { ((plane, plane + 1), (plane - 1, plane)) } else { ((plane - 1, plane), (plane, plane + 1)) };
     std::array::from_fn(|k| {
         let (a, b, opposite) = (q[k], q[(k + 1) % 4], q[(k + 2) % 4]);
         let along = (0..3).find(|&i| a[i] != b[i]).expect("an edge has length");
         let out = 3 - axis - along;
-        // The row of sixteenths just past the edge, away from the face.
+        // The row of texels just past the edge, away from the face.
         let past = if a[out] > opposite[out] { (a[out], a[out] + 1) } else { (a[out] - 1, a[out]) };
         let (lo, hi) = (a[along].min(b[along]), a[along].max(b[along]));
-        // Which sixteenths along the edge, counted from corner `a`, a box fills in a row.
+        // Which texels along the edge, counted from corner `a`, a box fills in a row.
         let filled = |across: (i32, i32)| -> u32 {
             let mut bits = 0u32;
             for (min, max) in boxes {
@@ -223,8 +223,8 @@ fn edges(boxes: &[Sixteenths], q: [[i32; 3]; 4], normal: [i32; 3]) -> [u32; 4] {
 /// How much of the space in front of a face around its corner `corner` is filled, from 0 to 1.
 /// The space is four cubes `reach` on a side, all in front of the face (the way `normal`
 /// points) and meeting at the corner: over the face, past each of the corner's two edges, and
-/// past the corner. `boxes` and `corner` are in sixteenths relative to the same boxel.
-fn occlusion(boxes: &[Sixteenths], corner: [i32; 3], normal: [i32; 3], reach: i32) -> f32 {
+/// past the corner. `boxes` and `corner` are in texels relative to the same boxel.
+fn occlusion(boxes: &[TexelBox], corner: [i32; 3], normal: [i32; 3], reach: i32) -> f32 {
     let axis = normal.iter().position(|&n| n != 0).expect("a unit normal");
     // The cubes together: in front along the normal, either side along the other two axes.
     let (mut lo, mut hi) = (corner.map(|c| c - reach), corner.map(|c| c + reach));
@@ -330,7 +330,7 @@ pub fn mesh_chunk(grid: &Grid, pos: ChunkPos, blocks: &BlockRegistry, volumes: &
     mesh
 }
 
-/// A face already drawn in a boxel, in sixteenths: which way it faces, where its plane is along
+/// A face already drawn in a boxel, in texels: which way it faces, where its plane is along
 /// that axis, and the rectangle it covers on the two axes after it.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct DrawnFace {
@@ -367,7 +367,7 @@ fn subtract((min, max): ([u8; 2], [u8; 2]), cut: &DrawnFace) -> Vec<([u8; 2], [u
 /// boxel's side facing direction `n` is left out if `hidden(n)`. Parts of faces that lie on
 /// faces in `drawn`, from older occupants of the same boxel, are left out too, and this
 /// occupant's faces are added to `drawn`. `around` gives the boxes near the boxel, in
-/// sixteenths of it as it stands in the world, for each face's edges and its corners'
+/// texels of it as it stands in the world, for each face's edges and its corners'
 /// ambient occlusion; pass [`alone`]'s boxes and [`AoTuning::OFF`] where there are no
 /// neighbors.
 #[allow(clippy::too_many_arguments)]
@@ -378,7 +378,7 @@ pub fn mesh_occupant<'b>(
     blocks: &BlockRegistry,
     volumes: &Volumes,
     hidden: impl Fn([i32; 3]) -> bool,
-    around: &impl Fn() -> &'b [Sixteenths],
+    around: &impl Fn() -> &'b [TexelBox],
     ao: &AoTuning,
     drawn: &mut Vec<DrawnFace>,
 ) {
@@ -397,7 +397,7 @@ pub fn mesh_occupant<'b>(
         (Orientation::IDENTITY, def.shape.iter().map(|&b| occupant.orientation.apply_box(b)).collect())
     };
     let half = BlockBox::SIZE as i32 / 2;
-    // A point in sixteenths, unturned, to sixteenths of the boxel turned about the center.
+    // A point in texels, unturned, to texels of the boxel turned about the center.
     let place = |p: [i32; 3]| turn.apply(p.map(|c| c - half)).map(|c| c + half);
 
     let mine_from = drawn.len();
@@ -428,7 +428,7 @@ pub fn mesh_occupant<'b>(
     }
 }
 
-/// Adds one face of box `b` (in sixteenths, before turning) as a quad facing `normal` once
+/// Adds one face of box `b` (in texels, before turning) as a quad facing `normal` once
 /// turned by `place`, drawn from look `volume`, its edges and corners read from `around`.
 #[allow(clippy::too_many_arguments)]
 fn quad<'b>(
@@ -440,12 +440,12 @@ fn quad<'b>(
     base: [f32; 3],
     volume: u32,
     place: &impl Fn([i32; 3]) -> [i32; 3],
-    around: &impl Fn() -> &'b [Sixteenths],
+    around: &impl Fn() -> &'b [TexelBox],
     ao: &AoTuning,
 ) {
     let first = mesh.positions.len() as u32;
     let texels = LookDef::SIZE as f32 / BlockBox::SIZE as f32;
-    // The corners of this box, in sixteenths, before turning, then as they stand in the world.
+    // The corners of this box, in texels, before turning, then as they stand in the world.
     let p = face.corners.map(|c| [0, 1, 2].map(|i| if c[i] == 0 { b.min[i] as i32 } else { b.max[i] as i32 }));
     let q = p.map(place);
     let boxes = around();
@@ -1042,7 +1042,7 @@ mod tests {
         }
         let mesh = lit(&grid, &blocks, ChunkPos::new(0, 0, 0));
         let tile = [2.5, 1.5, 1.0];
-        assert_eq!(edge(&mesh, UP, tile, EAST).len(), 16, "a texel a sixteenth");
+        assert_eq!(edge(&mesh, UP, tile, EAST).len(), 16, "one texel each");
         assert!(all(&edge(&mesh, UP, tile, EAST), CREASE), "the wall stands past the east edge");
         assert!(all(&edge(&mesh, UP, tile, WEST), FLAT), "the floor carries on west");
         assert!(all(&edge(&mesh, UP, [0.5, 1.5, 1.0], WEST), RIDGE), "the floor ends at x = 0");

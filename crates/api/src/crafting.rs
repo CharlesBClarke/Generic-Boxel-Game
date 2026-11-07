@@ -7,7 +7,7 @@
 //! A material layer is a solid quarter cube. A shape layer is that shape shrunk to a quarter,
 //! turned as it is given, so a shape with detail finer than quarters can't go in a layer.
 //!
-//! **Nothing floats.** Every vertical line of sixteenths in the result must be filled from the
+//! **Nothing floats.** Every vertical line of texels in the result must be filled from the
 //! bottom with no gaps: what's on the table rests on the table, and each layer on what's below.
 //! So every shape grows out of one flat side, its bottom, which is what placing puts against a
 //! face.
@@ -24,14 +24,14 @@
 //! world, whichever view made it.
 //!
 //! **Several materials.** The rule only sees filled space. A caller with several materials
-//! checks the whole with [`stack_shape`] and gets each material's own sixteenths with
+//! checks the whole with [`stack_shape`] and gets each material's own texels with
 //! [`stack_fill`] on stacks holding only that material's layers.
 
 use crate::shape::ShapeGrid;
 use crate::Orientation;
 
 /// Cells along each side of the crafting grid, and layers a stack can hold. Four, so a shape
-/// shrunk to a cell lands exactly on sixteenths.
+/// shrunk to a cell lands exactly on texels.
 pub const GRID: usize = 4;
 
 /// What makes a crafting table, registered by a mod.
@@ -100,7 +100,7 @@ pub fn stack_shape(stacks: &Stacks) -> Result<ShapeGrid, CraftError> {
     Ok(out)
 }
 
-/// The sixteenths `stacks` fill, as built, without asking whether anything floats: empty for
+/// The texels `stacks` fill, as built, without asking whether anything floats: empty for
 /// empty stacks. Only a layer too fine to shrink is refused.
 pub fn stack_fill(stacks: &Stacks) -> Result<ShapeGrid, CraftError> {
     let mut out = ShapeGrid::EMPTY;
@@ -124,7 +124,7 @@ pub fn stack_fill(stacks: &Stacks) -> Result<ShapeGrid, CraftError> {
     Ok(out)
 }
 
-/// The first vertical line of sixteenths with a gap under something filled, as `(x, y)`.
+/// The first vertical line of texels with a gap under something filled, as `(x, y)`.
 pub fn floating(shape: &ShapeGrid) -> Option<(usize, usize)> {
     let n = 16;
     for y in 0..n {
@@ -255,7 +255,7 @@ mod tests {
         assert!(craft_shape(&stacks, false).is_ok(), "resting on the one below");
     }
 
-    /// A quarter slab made of materials, shrunk: one sixteenth thick in a layer.
+    /// A quarter slab made of materials, shrunk: one texel thick in a layer.
     fn quarter_slab() -> ShapeGrid {
         craft(["1111"; 4]).unwrap()
     }
@@ -265,7 +265,7 @@ mod tests {
         let mut stacks = heights(["....", "....", "....", "4..."]);
         stacks[3][1][0] = Some(Layer::Shape(Box::new(quarter_slab())));
         let made = craft_shape(&stacks, false).unwrap();
-        // A full column at the near left, and one sixteenth of floor in the cell beside it.
+        // A full column at the near left, and one texel of floor in the cell beside it.
         assert_eq!(made.volume(), 4 * 4 * 16 + 4 * 4);
         assert!(made.get(4, 0, 0) && !made.get(4, 0, 1));
         assert!(made.quarters().is_none(), "finer than quarters now");

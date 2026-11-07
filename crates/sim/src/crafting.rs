@@ -45,7 +45,7 @@ pub struct Craft {
 /// What a craft would make.
 #[derive(Clone, Debug, PartialEq)]
 pub struct CraftPlan {
-    /// Each material it's made of and the sixteenths it fills, in the order first stacked:
+    /// Each material it's made of and the texels it fills, in the order first stacked:
     /// one makes a part, several a bundle.
     pub pieces: Vec<(MaterialId, ShapeGrid)>,
     /// The whole shape, in the table's frame.

@@ -492,7 +492,7 @@ pub(crate) fn part_name(blocks: &BlockRegistry, part: MaterialId) -> String {
     format!("{material} {} #{tag}", fraction(blocks.unit(part)))
 }
 
-/// A volume as a fraction of a boxel, in the simplest sixteenths, sixty-fourths and so on it
+/// A volume as a fraction of a boxel, in the simplest texels, sixty-fourths and so on it
 /// makes: `½`, `¾`, `3/16`.
 pub(crate) fn fraction(volume: u32) -> String {
     let full = sim::FULL_VOLUME;

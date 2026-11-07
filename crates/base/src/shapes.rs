@@ -20,7 +20,7 @@ pub fn stairs() -> ShapeGrid {
     craft(&heights(["4444", "4444", "2222", "2222"]))
 }
 
-/// A post a quarter of a boxel across (4 sixteenths), standing in the middle. It straddles
+/// A post a quarter of a boxel across (4 texels), standing in the middle. It straddles
 /// the middle cells rather than filling one, so it takes two crafts: a column in one corner of
 /// the table, then that column shrunk and stacked four high in each middle cell, turned so the
 /// four meet in the middle.
@@ -38,7 +38,7 @@ pub fn post() -> ShapeGrid {
     craft(&stacks)
 }
 
-/// The sixteenths from `min` to `max`.
+/// The texels from `min` to `max`.
 fn cube(min: [u8; 3], max: [u8; 3]) -> ShapeGrid {
     ShapeGrid::from_boxes(&[BlockBox::new(min, max)])
 }

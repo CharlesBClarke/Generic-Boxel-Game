@@ -53,14 +53,32 @@ Rules grew by fixing little annoyances one at a time, and the result was rules n
 
 ## Terminology
 
+The project's words, used the same way in conversation, code and docs. When a new word comes up, or an old one gets a second meaning, it's settled here first.
+
 | Term | Meaning |
 | --- | --- |
 | Boxel | One grid cell of the world. Used instead of "voxel" throughout the project. |
+| Texel | One sixteenth of a boxel along each side, 4096 to a boxel: the finest detail a shape or a look has. (Older notes say "sixteenth".) |
+| Quarter | Four texels across: one cell of the crafting grid. |
+| Chunk | A 32×32×32 cube of boxels, the unit of storage and meshing. |
 | Sub-grid | A volume of boxels with its own position and rotation, separate from the main world grid. Ships, vehicles and contraptions are sub-grids. |
 | World view | A camera into any grid, loaded and drawn by the client. The player's own view is one world view among possibly many. |
-| Occupant | Something that fills a boxel position. One position can hold several occupants, which generalizes Minecraft's waterlogging. |
+| Occupant | Something that fills a boxel position: a block and how it's turned. One position can hold several occupants (up to 16), which generalizes Minecraft's waterlogging. |
+| Material | What a block is made of (stone, wood, brass). Its look and properties come with it into every shape made of it. |
+| Shape | Which texels of a boxel something fills. |
+| Part | A crafted shape of one material, carried and placed as its own item. |
+| Bundle | A crafted design of several materials (up to 8), placed whole into one boxel as one occupant per material. |
+| Piece | One occupant of a bundle, or part of an occupant cut by hiding. |
+| Look | How a material is drawn: a 16×16×16 volume of colors, one per texel, so any cut shows what's inside. |
+| Property | Something a material does, wherever a piece of it is: trigger, conductor, phase, starts hidden. |
+| Signal | What a trigger sends: it reaches the trigger's boxel and on through conductors, and what's there answers. |
+| Phase group | Phase pieces of one material touching face to face; a signal flips them between shown and hidden together. |
+| Grab | How far hiding a phase group takes other things with it, in texels (1 by default). Not to be confused with reach. |
+| Reach | How far a player can break, place and work things, in meters. |
+| Hidden piece, ghost | A hidden piece is still in the world but not solid or drawn; a ghost is how it's drawn, see-through, while the player holds a phase material. The placement ghost is the see-through preview of what placing would put down. |
 | Engine | The Rust core. Ships with no game content. |
 | Base game | The built-in content, written as a mod on the public API. |
+| Slice, toy, seam | Units of work: a slice is any one of them; a toy is one game-feel feature made playable; a seam pays down API debt or adds one real mod feature. |
 
 ## Engine and mods
 
@@ -165,7 +183,7 @@ Sub-grids and world views may be one system: worlds are grids, and the client ca
 - **Runs on integrated GPUs.** Advanced GPU features (indirect-count drawing, mesh shaders, hardware ray tracing) are optional fast paths, always with a fallback.
 - **Colored light from the start.** Stored light holds red, green, blue and sky channels. Moving lights, such as held torches and lights on sub-grids, are drawn as dynamic lights rather than written into the stored grid.
 - **Rasterizer first.** A traditional triangle renderer comes first. Ray marching through boxel data comes later, for shadows, ambient occlusion and lighting effects.
-- **Baked ambient occlusion.** Inside corners darken per vertex, baked by the mesher from how much of the space in front of each corner block shapes fill, measured in sixteenths so partial shapes count by volume. Free each frame and cheap on integrated GPUs, unlike screen-space AO (2026-11-02). On a curve, so creases go dark while slight occlusion stays light. Over it, the shader draws a crisp line a few texels wide along each inside crease (darker) and outside ridge (lighter), from what the mesher records past each quad's edges, texel by texel (2026-11-05). Real occlusion at texel scale waits for ray marching through boxel data.
+- **Baked ambient occlusion.** Inside corners darken per vertex, baked by the mesher from how much of the space in front of each corner block shapes fill, measured in texels so partial shapes count by volume. Free each frame and cheap on integrated GPUs, unlike screen-space AO (2026-11-02). On a curve, so creases go dark while slight occlusion stays light. Over it, the shader draws a crisp line a few texels wide along each inside crease (darker) and outside ridge (lighter), from what the mesher records past each quad's edges, texel by texel (2026-11-05). Real occlusion at texel scale waits for ray marching through boxel data.
 - **Light and air in the shader.** Faces are lit by a sun direction and the sky's light, not baked brightness, so the sun moves without remeshing; looks can have a sheen (Blinn-Phong) as data; the sky is a gradient with a sun, and fog fades the far world to the sky's color in that direction, hiding the render distance's edge (2026-11-05). The game renders natively through wgpu (Vulkan, DirectX 12 or Metal); there is no browser build.
 - **32×32×32 chunks.**
 - **Culled meshing by default.** Each visible face becomes its own quad. Identical neighboring faces are merged (greedy meshing) only when texture, lighting and shading match; blocks that need per-face variation opt out.
@@ -226,7 +244,7 @@ These came up in discussion but are not confirmed. Tick the ones to keep.
 - [ ] Micro-blocks or variable-resolution blocks for detail smaller than one boxel
 - [ ] Cheap arbitrary data on any block, without a heavy block entity
 - [ ] Fluids with simple, learnable rules rather than realistic simulation
-- [ ] Arbitrary block orientations, slopes and rotated collision boxes. *Partly built (2026-10-28):* blocks can take any of the 24 grid-aligned orientations, with shapes made of boxes in sixteenths of a boxel and collision on those boxes. Slopes and free angles are still open.
+- [ ] Arbitrary block orientations, slopes and rotated collision boxes. *Partly built (2026-10-28):* blocks can take any of the 24 grid-aligned orientations, with shapes made of boxes in texels of a boxel and collision on those boxes. Slopes and free angles are still open.
 - [ ] Persistent block damage, and structural support as a simple rule rather than a physics simulation
 
 **Platform ideas from earlier research**

@@ -185,6 +185,6 @@ fn antiphasite_is_placed_hidden() {
     let placed = cell(&sim, spot);
     assert_eq!(placed.len(), 1);
     assert!(sim.blocks().is_hidden(placed[0].block), "there, but hidden");
-    // The floor under it lost the sixteenth touching it.
+    // The floor under it lost the texel touching it.
     assert_eq!(cell(&sim, spot.offset(-I64Vec3::Z)).len(), 2);
 }

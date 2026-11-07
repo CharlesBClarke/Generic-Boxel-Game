@@ -1,15 +1,15 @@
-//! Shapes as grids of filled sixteenths: the form crafting works in. A block's shape is a list
-//! of boxes ([`BlockBox`]); a [`ShapeGrid`] says, for each of the 16×16×16 sixteenths of a
+//! Shapes as grids of filled texels: the form crafting works in. A block's shape is a list
+//! of boxes ([`BlockBox`]); a [`ShapeGrid`] says, for each of the 16×16×16 texels of a
 //! boxel, whether it's filled, and converts to and from boxes.
 
 use std::fmt;
 
 use crate::{BlockBox, Orientation};
 
-/// Sixteenths along each side of a boxel.
+/// Texels along each side of a boxel.
 const N: usize = BlockBox::SIZE as usize;
 
-/// Which sixteenths of a boxel a shape fills. Plain data: one row of 16 bits per `(y, z)`, bit
+/// Which texels of a boxel a shape fills. Plain data: one row of 16 bits per `(y, z)`, bit
 /// `x` set where filled.
 #[derive(Clone, PartialEq, Eq, Hash)]
 pub struct ShapeGrid {
@@ -38,7 +38,7 @@ impl ShapeGrid {
         y + N * z
     }
 
-    /// Whether sixteenth `(x, y, z)` is filled, each below 16.
+    /// Whether texel `(x, y, z)` is filled, each below 16.
     pub fn get(&self, x: usize, y: usize, z: usize) -> bool {
         self.rows[Self::row(y, z)] & (1 << x) != 0
     }
@@ -60,12 +60,12 @@ impl ShapeGrid {
         self.rows.iter().all(|&r| r == u16::MAX)
     }
 
-    /// How many sixteenths are filled: the shape's volume in 1/4096ths of a boxel.
+    /// How many texels are filled: the shape's volume in 1/4096ths of a boxel.
     pub fn volume(&self) -> u32 {
         self.rows.iter().map(|r| r.count_ones()).sum()
     }
 
-    /// Every sixteenth inside any of `boxes`. Boxes outside the boxel are cut to it.
+    /// Every texel inside any of `boxes`. Boxes outside the boxel are cut to it.
     pub fn from_boxes(boxes: &[BlockBox]) -> ShapeGrid {
         let mut grid = Self::EMPTY;
         for b in boxes {
@@ -84,7 +84,7 @@ impl ShapeGrid {
         grid
     }
 
-    /// The shape as boxes that cover every filled sixteenth exactly once, merged greedily: each
+    /// The shape as boxes that cover every filled texel exactly once, merged greedily: each
     /// box grows along X, then Y, then Z as far as the shape allows.
     pub fn to_boxes(&self) -> Vec<BlockBox> {
         let mut left = self.rows;
@@ -117,7 +117,7 @@ impl ShapeGrid {
         boxes
     }
 
-    /// Every sixteenth filled in either.
+    /// Every texel filled in either.
     pub fn union(&self, other: &ShapeGrid) -> ShapeGrid {
         let mut out = self.clone();
         for (a, b) in out.rows.iter_mut().zip(&other.rows) {
@@ -126,7 +126,7 @@ impl ShapeGrid {
         out
     }
 
-    /// Every sixteenth filled in both.
+    /// Every texel filled in both.
     pub fn intersection(&self, other: &ShapeGrid) -> ShapeGrid {
         let mut out = self.clone();
         for (a, b) in out.rows.iter_mut().zip(&other.rows) {
@@ -135,7 +135,7 @@ impl ShapeGrid {
         out
     }
 
-    /// Every sixteenth filled in this one but not in `other`.
+    /// Every texel filled in this one but not in `other`.
     pub fn minus(&self, other: &ShapeGrid) -> ShapeGrid {
         let mut out = self.clone();
         for (a, b) in out.rows.iter_mut().zip(&other.rows) {
@@ -144,7 +144,7 @@ impl ShapeGrid {
         out
     }
 
-    /// Whether any sixteenth is filled in both.
+    /// Whether any texel is filled in both.
     pub fn overlaps(&self, other: &ShapeGrid) -> bool {
         self.rows.iter().zip(&other.rows).any(|(a, b)| a & b != 0)
     }
@@ -156,7 +156,7 @@ impl ShapeGrid {
             for y in 0..N {
                 for x in 0..N {
                     if self.get(x, y, z) {
-                        // A sixteenth's center, doubled so it's a whole number about the middle.
+                        // A texel's center, doubled so it's a whole number about the middle.
                         let p = [x, y, z].map(|c| 2 * c as i32 - (N as i32 - 1));
                         let [a, b, c] = orientation.apply(p).map(|c| ((c + N as i32 - 1) / 2) as usize);
                         out.set(a, b, c, true);
@@ -168,7 +168,7 @@ impl ShapeGrid {
     }
 
     /// The shape at quarter detail, if it has no finer detail: bit `qx + 4 qy + 16 qz` set where
-    /// the 4×4×4 sixteenths of quarter `(qx, qy, qz)` are all filled. `None` if any quarter is
+    /// the 4×4×4 texels of quarter `(qx, qy, qz)` are all filled. `None` if any quarter is
     /// only partly filled.
     pub fn quarters(&self) -> Option<u64> {
         let mut out = 0u64;
@@ -197,7 +197,7 @@ impl ShapeGrid {
         Some(out)
     }
 
-    /// A hash of the filled sixteenths, the same on every machine (64-bit FNV-1a), for naming
+    /// A hash of the filled texels, the same on every machine (64-bit FNV-1a), for naming
     /// shapes.
     pub fn hash64(&self) -> u64 {
         let mut h = 0xcbf2_9ce4_8422_2325u64;
@@ -218,7 +218,7 @@ mod tests {
     const SLAB: BlockBox = BlockBox::new([0, 0, 0], [16, 16, 8]);
     const STAIRS: [BlockBox; 2] = [SLAB, BlockBox::new([0, 8, 8], [16, 16, 16])];
 
-    /// Every sixteenth `boxes` cover, counting overlaps.
+    /// Every texel `boxes` cover, counting overlaps.
     fn coverage(boxes: &[BlockBox]) -> Vec<u8> {
         let mut count = vec![0u8; N * N * N];
         for b in boxes {
@@ -261,7 +261,7 @@ mod tests {
     }
 
     #[test]
-    fn merged_boxes_cover_every_sixteenth_once() {
+    fn merged_boxes_cover_every_texel_once() {
         // A scatter that leaves little to merge, and a hollow pipe.
         let mut scatter = ShapeGrid::EMPTY;
         let mut n = 12345u32;

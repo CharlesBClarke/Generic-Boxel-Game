@@ -84,7 +84,7 @@ pub trait WorldEdit {
         shape: &ShapeGrid,
         orientation: Orientation,
     ) -> Result<(), ApiError>;
-    /// Adds a bundle of `pieces`, each a material and the sixteenths it fills, turned alike by
+    /// Adds a bundle of `pieces`, each a material and the texels it fills, turned alike by
     /// `orientation`, to what's already in the boxel: the same bundle crafting those pieces
     /// makes, placed whole. The same rules as a player placing it decide whether it fits, and
     /// a piece that starts hidden is placed hidden.
