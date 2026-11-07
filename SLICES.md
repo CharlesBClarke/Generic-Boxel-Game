@@ -113,29 +113,7 @@ A run of small toy slices. Each one takes a single game-feel feature that doesn'
 
 - Cow pathfinding (low priority, 2026-11-06): the user called the toy "really good" without going through the five course checks one by one; note any that misbehave: cows through the pen's gap and up its terraces, up the mesa's steps, a charge baited off the mesa's cliff (landing hurt), waiting below the pillar (orange route), climbing hills on the generated terrain.
 
-#### Saving (branch `toy-saving`)
-
-**Stage:** Verify
-
-**Goal:** the world survives quitting, and a save can be gone back to, so builds can be kept and compared (see Test worlds for comparing rules). Engine work kept whatever happens to generative crafting.
-
-**Plan** (approved 2026-11-07 in the session that reordered the backlog around proving crafting; planned in that session rather than a fresh one, at the user's go. The user's answers: cows start fresh but should be saved someday, autosave on quit, F6/F8)
-- *What's kept:* chunks that loading can't make again (every chunk outside the generated terrain, plus the generated chunks edited since they were generated), with generated terrain made again from the saved `world` and generator values; blocks by name, never ID, and blocks made while playing (crafted shapes, bundles, pieces cut by hiding) as recipes to make again; the player (position, look, fly mode, health), the inventory and loose items by name. Creatures aren't saved: the herd starts fresh.
-- *Where:* `sim::save` (plain data and its bytes) and `Simulation::save`/`load` (in `sim/src/simulation/save.rs`), no file access in `sim`; `server::worlds` writes `~/.local/share/boxel/worlds/<name>/world.bin`; `Command::SaveWorld`/`LoadWorld` answered with `ServerMsg::World`; a load's changes reach the client through the normal tick (new blocks, then chunks).
-- *Controls:* `--world <name>` (default `default`), save and reload keys, autosave on quit.
-- *Tests:* round trips by name into a new game whose made blocks got other IDs, loading undoing edits since the save (test area, door and dug terrain), a missing mod's blocks left out with a report, damaged saves refused, and through the server with the client's copy following.
-
-*Changed while building:* the save key is **F2**, not F6 (F6 already respawns targets); F8 reloads. One hand-written binary file (`world.bin`, versioned) instead of a TOML header plus a new crate: shapes are 512-byte bit grids, so a readable header bought little. The hotbar slot isn't saved (client state). A world loaded at startup ignores the tuning file's terrain values, since regenerating would wipe its edits; the panel's Regenerate button still regenerates (edits lost until F8). A save that can't be read stops the game instead of starting fresh, so quitting can't save over it.
-
-*Implemented:* `api::ShapeGrid::rows`/`from_rows`; `sim::save` (`SaveData`, `Made`, `SavedChunk`, `SavedPlayer`, `SavedItem`, `to_bytes`/`from_bytes` with run-length cells); `ChangedChunks` also keeps the chunks edited since they were last generated; `Simulation::save`, `load` (returns a `LoadReport` of what a missing mod named), `look`; `Body::set_flying`; `Items::clear`. `server::worlds::WorldFile` (writes a `.part` file then renames); `Server::with_world`; `Welcome.loaded_look`. `game::load_world` and `--world`. Client: `save_world` (F2) and `reload_world` (F8), a note on screen, the view turned to the saved look, `save_on_exit` in `Last` on `AppExit`. Both keys added to the user's controls file.
-
-*Tests:* 616 pass across the workspace (3 ignored, as before); clippy clean natively and for `wasm32`. New: save bytes (2: round trip, damaged saves refused), changed-chunk edits (in an existing test), `sim/tests/saving.rs` (4: a world back the same in a new game with other IDs, including a dug terrain chunk, crafted slab and bundle, the door's cut pieces, fly mode and items; loading undoes edits since the save; terrain values come back; a missing mod's names left out), `server::worlds` (3), the server through messages (1). The game starts cleanly with a new world.
-
-*Plan change at Verify* (2026-11-07, the user, after playing it: "ok it works", then asked for an Escape menu because F keys are hard to reach on their keyboard; engaged; the open question, whether opening another world saves the one left, went to the recommendation: yes). **World menu** (`client::world_menu`): Escape opens it while playing (before, it only let the mouse go) and closes it again, after closing the crafting menu or tuning panel first. It shows the world played, Save, Reload last save, Save as (plays on in the copy), the saved worlds last saved first with Open, New world (as the game starts, with the terrain as tuned now), Back to playing and Save and quit. New commands `SaveWorldAs`, `OpenWorld` (saves the world left first; reads the next one before leaving, so a damaged save changes nothing) and `ListWorlds`; the server keeps the world as the game built it, before terrain or any save (`game::load_world` returns it), to start fresh worlds from. Keys are blocked while the menu is open, so names can be typed. Tests: 619 pass (3 ignored); new: the saved-worlds list (1), world names in the client (1), saving as, opening, starting fresh and the list through the server (1).
-
-*Done when:* (1) build a door, quit and restart: it's there and works; (2) F2 saves and F8 puts the world back as saved; (3) named worlds stay separate (`--world door-test`); (4) tests pass and clippy is clean; (5) the Escape menu saves, reloads, saves as, opens a saved world and starts a new one, and typing a name doesn't move or act.
-
-*Deferred:* saving creatures (the user wants it eventually); the hotbar slot; saving the world now and then while playing (only on quit and F2).
+None. Plan the next toy in a new session.
 
 ### Toy backlog
 
@@ -179,7 +157,7 @@ Ideas that come up while playing get added here.
 
 ### Infrastructure (added when a toy needs it)
 
-- ~~Saving and loading, with block names in the save~~ Being built (Saving, 2026-11-07).
+- ~~Saving and loading, with block names in the save~~ Done (Saving, 2026-11-07), see Done toys. Creatures aren't saved yet.
 - World generation. *The generator is done (Generated terrain, 2026-11-05); streaming is next, as startup meshing grows with the area.* Staging (generator, then streaming, then saving and LOD) and the creatures-on-terrain checklist. Notes: `docs/notes/world-generation.md`.
 - LOD, once world generation exists
 
@@ -214,6 +192,7 @@ Shortcuts taken around the API, each with the toy that needed it. Paid down in s
 - **Crafting frames** (2026-11-06, from Functional crafting): the table's top and side are two frames of one rule (a side build is a top build tipped so the wall is the far side), each view keeping its own grid; a part used in a layer keeps how it stands in the world, in either view. Several materials make a bundle, placed whole into one boxel as one occupant per material.
 - **Generated terrain** (2026-11-05, from Generated terrain): generators are pure per-chunk functions through `api::terrain`, plain data, positions relative to their terrain's center; the engine decides how much to fill (`world` section) and fills it explicitly in `game::load`. Regenerating replaces the terrain (edits lost) and lifts buried bodies out. Beyond the simulation distance creatures and items hold still.
 - **Phase materials and signals** (2026-11-06, from Material behavior): what materials do comes from combinable properties (`trigger`, `conductor`, `phase`, `starts_hidden`), never door code. A signal flips each phase group it reaches, shows before hides, all or nothing; hiding takes everything within reach (1 texel) of the group, as derived kinds that join back exactly, so what's hidden is always what's within reach of a hidden group. Pieces coming back push the player out like a placed block; creatures and solids block the whole signal. Hidden pieces are seen and touched only while holding a phase material. Conducting is a flood fill when the signal is sent, not stored networks.
+- **Saving** (2026-11-07, from Saving): saves keep names, never IDs, and blocks made while playing as recipes; generated terrain is made again from its saved values, so a save stores only the chunks edited since generation plus everything outside the terrain. Any new world state (creatures, fields, sub-grids) needs a place in `sim::save` and a format version bump. A save that can't be read stops the game rather than being saved over.
 - **Signature feature:** not decided yet. Choose it once the block interaction and crafting toys have been played, and record the choice and why in the design doc.
 
 ### Fixes
@@ -230,6 +209,7 @@ Bugs found in already-merged code, each fixed on its own `fix-` branch (see the 
 ### Done toys
 
 Full write-ups (plans, implementation notes, verify rounds, decisions) are in `docs/done-toys.md`. One line each, newest first:
+- **Saving** (2026-11-07, `toy-saving`). Worlds are saved by name to `~/.local/share/boxel/worlds/`: blocks by name and crafted ones as recipes, terrain made again from its saved values with only edited chunks stored; the player, inventory and loose items come back, cows start fresh. Escape opens a world menu (save, reload, save as, open, new world, save and quit); F2 saves, F8 reloads, quitting saves; `--world <name>`.
 - **Material behavior** (2026-11-06, `toy-material-behavior`). Phasite and antiphasite replace the hinge: a signal flips them between shown and hidden, taking what's within a texel of them, so a Minecraft door is two panels that swap; copper conducts; bundles break whole; hidden pieces show as ghosts while holding a phase material; signals are all or nothing and push the player out; up to 8 materials a design, 16 occupants a boxel; a checklist for rules.
 - **Functional crafting** (2026-11-06, `toy-functional-crafting`). Several materials in one crafted shape (a bundle, placed whole, broken piece by piece); building on the table's side; a grid per view and loading a part back into it; a first try at materials that act (a door and lever from brass, iron and copper), to be redone in Material behavior.
 - **WebAssembly behavior seam** (2026-11-06, `seam-wasm-behavior`). The cow brain runs as a sandboxed WebAssembly component (`base_cow`), bit for bit the same as native; movement controllers keep their state in the engine; `--native-brain`.
