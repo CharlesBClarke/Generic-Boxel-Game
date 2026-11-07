@@ -28,3 +28,7 @@ Example from the user: you start inside a hollow cube and have to put stairs in 
 - How a run is judged done: the game checks the target, or the user says so.
 - Where the drill-like game logic lives; the chase drill already sits in the client as API debt.
 - Pairs with Review placement against the checklist and Recheck the crafting rules.
+
+## Saved test worlds (2026-11-07)
+
+The user, on proving crafting and placing: "toys like this might be best validated as little games, and need to be saved and compared". Build a set of things (a door, a trapdoor, a mesh), save the world, then come back to it after the rules change and redo or edit the same builds, feeling how many steps each takes and what got better or worse. This makes saving (engine work, useful either way) part of the crafting proof. Saved worlds would also be a natural source of Speed build challenges: the saved build becomes the target.
