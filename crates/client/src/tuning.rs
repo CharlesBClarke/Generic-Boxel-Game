@@ -1,8 +1,8 @@
 //! The live tuning panel: sliders for every value the server lets a client tune (the player's
 //! movement controller, the interaction, push-out, crowd, health, item drop and inventory
 //! definitions, tools, targets and brains, whichever mod they come from) and the client's own:
-//! sound, the camera feel, the combat feel, the animation, ambient occlusion, the view and the chase
-//! drill. Terrain values take effect when the terrain is generated again. Save
+//! sound, the camera feel, the combat feel, the animation, ambient occlusion, the view, the UI
+//! scale and the chase drill. Terrain values take effect when the terrain is generated again. Save
 //! keeps them in the tuning file (see `tuning_file`), which is applied at startup.
 //!
 //! The server's values are edited as copies and each change is sent back as a command; the
@@ -20,6 +20,7 @@ use crate::feel::CameraFeel;
 use crate::mesher::AoTuning;
 use crate::sound::{Kind, Pick, Picks, SoundPicks, SoundPreview, SoundTuning};
 use crate::tuning_file;
+use crate::ui_scale::UiScaleTuning;
 use crate::shading::ShadingTuning;
 use crate::view::ViewTuning;
 use crate::world::{ClientWorld, Link};
@@ -57,6 +58,7 @@ pub fn tuning_panel(
     mut picks: ResMut<SoundPicks>,
     mut view: ResMut<ViewTuning>,
     mut light: ResMut<ShadingTuning>,
+    mut ui_scale: ResMut<UiScaleTuning>,
 ) -> Result {
     // The saved file is applied once, on the first frame there is a player, open or not.
     if world.player().is_none() {
@@ -93,6 +95,7 @@ pub fn tuning_panel(
     let mut shading = panel.ao_draft.unwrap_or(*ao);
     let mut apply_ao = false;
     let mut seeing = *view;
+    let mut sizing = *ui_scale;
     let mut lighting = *light;
     let mut regenerate = false;
     let mut drill_tuning = drill.tuning.clone();
@@ -127,6 +130,7 @@ pub fn tuning_panel(
             s.push(("camera".to_owned(), &mut camera));
             s.push(("ao".to_owned(), &mut shading));
             s.push(("view".to_owned(), &mut seeing));
+            s.push(("ui".to_owned(), &mut sizing));
             s.push(("shading".to_owned(), &mut lighting));
             s.push(("drill".to_owned(), &mut drill_tuning));
             s.push(("sound".to_owned(), &mut hearing));
@@ -202,6 +206,10 @@ pub fn tuning_panel(
                 ui.separator();
                 ui.heading("View");
                 sliders(ui, "view", &mut seeing);
+                ui.separator();
+                ui.heading("UI scale");
+                ui.label("menus and text grow with the window's height (natural size at reference_height), times size");
+                sliders(ui, "ui", &mut sizing);
                 ui.separator();
                 ui.heading("Shading");
                 ui.label("sun and sky light, the sky, fog, and the lines along creases and ridges");
@@ -297,6 +305,7 @@ pub fn tuning_panel(
                     shading = AoTuning::default();
                     apply_ao = true;
                     seeing = ViewTuning::default();
+                    sizing = UiScaleTuning::default();
                     lighting = ShadingTuning::default();
                     juice = CombatFeel::default();
                     playing = AnimationTuning::default();
@@ -381,6 +390,7 @@ pub fn tuning_panel(
     }
     panel.ao_draft = (shading != *ao).then_some(shading);
     view.set_if_neq(seeing);
+    ui_scale.set_if_neq(sizing);
     light.set_if_neq(lighting);
     if trying != *picks {
         *picks = trying;

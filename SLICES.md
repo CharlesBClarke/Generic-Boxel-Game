@@ -113,7 +113,22 @@ A run of small toy slices. Each one takes a single game-feel feature that doesn'
 
 - Cow pathfinding (low priority, 2026-11-06): the user called the toy "really good" without going through the five course checks one by one; note any that misbehave: cows through the pen's gap and up its terraces, up the mesa's steps, a charge baited off the mesa's cliff (landing hurt), waiting below the pillar (orange route), climbing hills on the generated terrain.
 
-None. Plan the next toy in a new session.
+#### UI scale (mini toy, branch `toy-ui-scale`)
+
+**Stage:** Verify
+
+**Goal:** menus and on-screen text are big enough, sized from the screen ("make it based on the screen", 2026-11-08).
+
+**Plan (approved 2026-11-08; the user said "you choose" on the open questions)**
+- `client::ui_scale`: `UiScaleTuning { reference_height = 1080, size = 1.0 }`; scale = size × window height ÷ reference height, clamped to 0.5–4. Window height, not monitor size, so resizing rescales live.
+- Applied to egui (`EguiContextSettings::scale_factor` on the primary context) and Bevy UI (`UiScale`), only when it changes, and held while the left button is down so dragging the size slider doesn't move it under the pointer.
+- A "UI scale" section (`[ui]`) in the tuning panel, saved like the rest. The 3D scene (held club, outlines) isn't scaled.
+- Tests: the scale sum, the limits, the sliders, a save and load through the tuning file.
+
+**Done when**
+- On the 1440p monitor menus and HUD are noticeably bigger than before, both kinds of UI together.
+- Resizing the window rescales the UI live.
+- The size slider changes it (on release), and the setting survives a restart.
 
 ### Toy backlog
 

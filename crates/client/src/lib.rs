@@ -20,6 +20,7 @@ pub mod solid;
 pub mod sound;
 pub mod tuning;
 pub mod tuning_file;
+pub mod ui_scale;
 pub mod view;
 pub mod volumes;
 pub mod world;
@@ -79,6 +80,7 @@ pub fn run(connection: Box<dyn Connection>) {
         .init_resource::<CameraFeel>()
         .init_resource::<mesher::AoTuning>()
         .init_resource::<view::ViewTuning>()
+        .init_resource::<ui_scale::UiScaleTuning>()
         .init_resource::<view::ViewStats>()
         .init_resource::<FeelState>()
         .init_resource::<TuningPanel>()
@@ -150,7 +152,7 @@ pub fn run(connection: Box<dyn Connection>) {
                 .chain(),
         )
         .add_systems(EguiPrimaryContextPass, (editing::hotbar, tuning::tuning_panel, crafting::crafting_menu, world_menu::world_menu).chain())
-        .add_systems(Update, world_notes)
+        .add_systems(Update, (world_notes, ui_scale::apply_ui_scale))
         .add_systems(Last, (save_on_exit, limit_frame_rate))
         .run();
 }
