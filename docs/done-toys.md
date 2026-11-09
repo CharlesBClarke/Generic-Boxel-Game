@@ -3,6 +3,15 @@
 Moved out of `SLICES.md` on 2026-11-03 so the roadmap stays short. Each toy's full write-up, newest first, as it stood when it closed. `SLICES.md` keeps a one-line summary of each.
 
 
+#### UI scale (`toy-ui-scale`)
+
+**Stage:** Done (2026-11-08). Verified by the user in play: "feel good checked 1,2, 3 work". A mini toy, from the backlog ("most ui elements are too small"); asked for as "UI scale as a mini toy, make it based on the screen". The user left the open questions to me ("you choose").
+- *Plan:* `client::ui_scale`: `UiScaleTuning { reference_height = 1080, size = 1.0 }`; scale = size × window height ÷ reference height, clamped to 0.5–4. Window height rather than monitor size, so resizing rescales live. Applied to egui (`EguiContextSettings::scale_factor` on the primary context) and Bevy UI (`UiScale`), only when it changes. A "UI scale" section (`[ui]`) in the tuning panel, saved like the rest. The 3D scene (held club, outlines) isn't scaled.
+- *Changed while building:* the scale waits while the left button is held, so dragging the size slider doesn't move the slider under the pointer (applies on release).
+- *Done when:* (1) on the 1440p monitor menus and HUD are noticeably bigger, both kinds together; (2) resizing rescales live; (3) the size slider changes it and survives a restart. All met.
+- *Verify round:* the user found the size slider's range "crazy high" (0.5–3.0); narrowed to 0.5–1.5. Defaults kept.
+- *Tests:* the scale sum at 1080 and 1440, the size multiplier, the limits (and a zero reference height), the sliders, a save and load through the tuning file. Workspace tests and clippy clean.
+
 #### Endless materials and a bigger sun (`toy-endless-materials`)
 
 **Stage:** Done (2026-11-07). Verified by the user in play: "its good, they do show inf". A micro toy. Asked for 2026-11-07: "In my save I lost all coper and cant get more, can you please make sure I just have inf of some important materials? and make the sun bigger". Planned and engaged in one session (small, the user's call).

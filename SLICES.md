@@ -117,7 +117,6 @@ None. Plan the next toy in a new session.
 
 ### Toy backlog
 
-- **UI scale.** Added 2026-11-07 at the user's request ("most ui elements are too small", "do it later it donst matter that much"): one slider driving egui's zoom factor and Bevy's `UiScale`, saved with the tuning.
 - **Rename "part" to "gadget" in the code.** Added 2026-11-07, deferred from Blueprint library at the user's request: the Terminology table says gadget, the code still says part.
 - **Hotbar background not quite snug.** Added 2026-11-07 at the user's request, after `fix-hotbar-shrink`: the background now shrinks when slots go, but in play not all the way down to its contents. Minor, maybe not worth fixing. Unchecked guess: the line under the slots (what's held and the placement mode) is wider than the slot row, so it sets the width.
 - **Tectonic-like terrain shape.** Added 2026-11-05 at the user's request, from Generated terrain: the generated mountains are pointy, unlike Tectonic's broad ranges with plateaus, flat tops, terraced tiers and valleys. Reshape `base::terrain` toward it (Tectonic's regions and curves are MIT under `data/tectonic/`; its `data/minecraft/` files are Mojang's and stay out). Tuning `jaggedness`, `range_scale` and `mountain_height` softens the current shape meanwhile.
@@ -213,6 +212,7 @@ Bugs found in already-merged code, each fixed on its own `fix-` branch (see the 
 ### Done toys
 
 Full write-ups (plans, implementation notes, verify rounds, decisions) are in `docs/done-toys.md`. One line each, newest first:
+- **UI scale** (2026-11-08, `toy-ui-scale`, mini). Menus and on-screen text scale with the window's height (natural at 1080), times a size slider (0.5–1.5) in the tuning panel; egui and Bevy UI together.
 - **Endless materials and a bigger sun** (2026-11-07, `toy-endless-materials`, micro). `inventory.toml` can list endless materials, kept topped up and shown as ∞ (base: brass, copper, phasite, antiphasite), which also fixed a save that had lost its copper; a bigger, crisp sun with flat drawn rays, all on sliders.
 - **Blueprint library** (2026-11-07, `toy-blueprint-library`). Blueprints kept per world by name, made without crafting; linked variants (turn, mirror, shift a quarter, center, swap a material); a blueprint can go in a layer, so inner gadgets needn't be carried; a tree in the table menu, carried things as an icon grid, pictures that turn. The menu was judged too heavy: next comes one 3D drafting view.
 - **Saving** (2026-11-07, `toy-saving`). Worlds are saved by name to `~/.local/share/boxel/worlds/`: blocks by name and crafted ones as recipes, terrain made again from its saved values with only edited chunks stored; the player, inventory and loose items come back, cows start fresh. Escape opens a world menu (save, reload, save as, open, new world, save and quit); F2 saves, F8 reloads, quitting saves; `--world <name>`.
