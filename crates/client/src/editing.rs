@@ -1050,36 +1050,33 @@ mod remesh_timing {
         sim.spawn_player().unwrap();
         let report = sim.load(&save).unwrap();
         println!("loaded {name}; left out {:?}", report.skipped);
-        // The boxel whose occupants have the most boxes between them.
+        // The most finely cut boxel with room beside it, in the chunk with the most finely
+        // cut boxels.
         let grid = sim.universe().main();
         let boxes = |pos: api::BoxelPos| -> usize {
             grid.cell(pos).iter().map(|o| sim.blocks().get(o.block).map_or(0, |d| d.shape.len())).sum()
         };
-        let mut finest = None;
-        for (chunk, _) in grid.chunks() {
-            for i in 0..api::CHUNK_VOLUME {
-                let pos = chunk.origin().offset(api::LocalPos::from_index(i).to_ivec());
-                let n = boxes(pos);
-                if n > 64 && finest.is_none_or(|(_, m)| n > m) {
-                    finest = Some((pos, n));
-                }
-            }
-        }
-        let (fine, n) = finest.expect("a finely cut boxel");
+        let full = |p: api::BoxelPos| grid.cell(p).iter().any(|o| sim.blocks().get(o.block).is_some_and(|d| d.is_full()));
+        let empty = |p: api::BoxelPos| grid.cell(p).is_empty();
+        let open_side = |fine: api::BoxelPos| {
+            [I64Vec3::X, I64Vec3::NEG_X, I64Vec3::Y, I64Vec3::NEG_Y].into_iter().find(|&d| {
+                let spot = fine.offset(d);
+                empty(spot) && full(spot.offset(I64Vec3::NEG_Z)) && (1..4).all(|k| empty(fine.offset(d * (k + 1))) && empty(fine.offset(d * (k + 1) + I64Vec3::Z)))
+            })
+        };
+        let fine_in = |chunk: ChunkPos| -> Vec<(api::BoxelPos, usize)> {
+            (0..api::CHUNK_VOLUME).map(|i| chunk.origin().offset(api::LocalPos::from_index(i).to_ivec())).map(|p| (p, boxes(p))).filter(|&(_, n)| n > 64).collect()
+        };
+        let busiest = grid.chunks().map(|(c, _)| c).max_by_key(|&c| fine_in(c).len()).unwrap();
+        println!("busiest chunk {:?}: {} finely cut boxels", busiest.0, fine_in(busiest).len());
+        let finest = fine_in(busiest).into_iter().filter(|&(p, _)| open_side(p).is_some()).max_by_key(|&(_, n)| n);
+        let (fine, n) = finest.expect("a finely cut boxel with room beside it");
         let pieces: Vec<_> = grid.cell(fine).iter().map(|o| sim.blocks().get(o.block).map(|d| (d.name.clone(), d.shape.len()))).collect();
         println!("finest boxel {:?}: {n} boxes, {pieces:?}", fine.0);
         let fine_count = grid.chunks().flat_map(|(c, _)| (0..api::CHUNK_VOLUME).map(move |i| c.origin().offset(api::LocalPos::from_index(i).to_ivec()))).filter(|&p| boxes(p) > 64).count();
         println!("{fine_count} boxels with more than 64 boxes");
         // A side with room to put a brick on solid ground, and to stand three boxels out.
-        let full = |p: api::BoxelPos| grid.cell(p).iter().any(|o| sim.blocks().get(o.block).is_some_and(|d| d.is_full()));
-        let empty = |p: api::BoxelPos| grid.cell(p).is_empty();
-        let side = [I64Vec3::X, I64Vec3::NEG_X, I64Vec3::Y, I64Vec3::NEG_Y]
-            .into_iter()
-            .find(|&d| {
-                let spot = fine.offset(d);
-                empty(spot) && full(spot.offset(I64Vec3::NEG_Z)) && (1..4).all(|k| empty(fine.offset(d * (k + 1))) && empty(fine.offset(d * (k + 1) + I64Vec3::Z)))
-            })
-            .expect("an open side on the ground");
+        let side = open_side(fine).expect("an open side on the ground");
         let spot = fine.offset(side);
         let stand = fine.offset(side * 4);
         sim.teleport_player(WorldPos::new(stand.0, ZVec3::new(0.5, 0.5, 0.0)));

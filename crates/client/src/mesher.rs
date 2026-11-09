@@ -16,7 +16,7 @@
 
 use std::cell::OnceCell;
 
-use api::{BlockBox, CHUNK_SIZE, CHUNK_VOLUME, ChunkPos, I64Vec3, LocalPos, LookDef, Orientation, Tunable, Tunables};
+use api::{BlockBox, CHUNK_SIZE, CHUNK_VOLUME, ChunkPos, I64Vec3, LocalPos, LookDef, Orientation, ShapeGrid, Tunable, Tunables};
 use bevy::prelude::Resource;
 use sim::{BlockRegistry, CellId, Chunk, Grid, Occupant};
 
@@ -169,6 +169,54 @@ fn neighborhood<'a>(at: I64Vec3, occupants_at: impl Fn(I64Vec3) -> &'a [Occupant
     boxes
 }
 
+/// Each occupant's texels as it stands turned, worked out once per meshing: turning a shape
+/// goes through all its texels.
+#[derive(Default)]
+pub struct TurnedShapes(std::cell::RefCell<std::collections::HashMap<Occupant, std::rc::Rc<ShapeGrid>>>);
+
+impl TurnedShapes {
+    fn of(&self, occupant: Occupant, blocks: &BlockRegistry) -> std::rc::Rc<ShapeGrid> {
+        self.0.borrow_mut().entry(occupant).or_insert_with(|| std::rc::Rc::new(blocks.shape(occupant.block).turned(occupant.orientation))).clone()
+    }
+}
+
+/// What fills the 27 boxels around (and including) the boxel at `at`, as [`neighborhood`]
+/// gives it, read through texels if there are more than `dense_at` boxes. Then the texels are
+/// filled straight from each occupant's shape, without listing its boxes.
+fn gather<'a>(
+    at: I64Vec3,
+    occupants_at: impl Fn(I64Vec3) -> &'a [Occupant],
+    blocks: &BlockRegistry,
+    dense_at: usize,
+    shapes: &TurnedShapes,
+) -> Neighborhood {
+    let around = || {
+        (0..27).map(|i| [i % 3 - 1, i / 3 % 3 - 1, i / 9 - 1]).flat_map(|d| {
+            let shown = |o: &&Occupant| !blocks.is_hidden(o.block) && blocks.get(o.block).is_some();
+            occupants_at(at + I64Vec3::new(d[0] as i64, d[1] as i64, d[2] as i64)).iter().filter(shown).map(move |o| (d, *o))
+        })
+    };
+    let count: usize = around().map(|(_, o)| blocks.get(o.block).map_or(0, |def| def.shape.len())).sum();
+    if count <= dense_at {
+        return Neighborhood { boxes: neighborhood(at, occupants_at, blocks), dense: None };
+    }
+    const N: usize = BlockBox::SIZE as usize;
+    let mut rows = vec![0u64; SPAN * SPAN];
+    for (d, occupant) in around() {
+        let shape = shapes.of(occupant, blocks);
+        let [ox, oy, oz] = d.map(|c| ((c + 1) as usize) * N);
+        for z in 0..N {
+            for y in 0..N {
+                let row = shape.rows()[y + N * z];
+                if row != 0 {
+                    rows[(oy + y) + SPAN * (oz + z)] |= (row as u64) << ox;
+                }
+            }
+        }
+    }
+    Neighborhood { boxes: Vec::new(), dense: Some(Dense { rows, sums: OnceCell::new() }) }
+}
+
 /// Texels along each side of the 3×3×3 boxels a [`Neighborhood`] covers.
 const SPAN: usize = 3 * BlockBox::SIZE as usize;
 /// How far a [`Neighborhood`]'s texels are shifted so the lowest one is at 0.
@@ -203,6 +251,21 @@ impl Neighborhood {
 
     pub fn boxes(&self) -> &[TexelBox] {
         &self.boxes
+    }
+
+    /// Whether every texel in the box from `lo` to `hi`, relative to the middle boxel, is filled.
+    fn covers(&self, lo: [i32; 3], hi: [i32; 3]) -> bool {
+        let Some(dense) = &self.dense else {
+            return self.filled(lo, hi) >= (0..3).map(|i| hi[i] - lo[i]).product::<i32>();
+        };
+        let inside = |c: i32| (0..=SPAN as i32).contains(&c);
+        if !lo.iter().chain(&hi).all(|&c| inside(c + OFFSET)) {
+            return false;
+        }
+        let [x0, y0, z0] = lo.map(|c| (c + OFFSET) as usize);
+        let [x1, y1, z1] = hi.map(|c| (c + OFFSET) as usize);
+        let bits = ((1u64 << (x1 - x0)) - 1) << x0;
+        (z0..z1).all(|z| (y0..y1).all(|y| dense.rows[y + SPAN * z] & bits == bits))
     }
 
     /// How many texels are filled in the box from `lo` to `hi`, in texels relative to the
@@ -291,7 +354,7 @@ pub fn alone(occupant: Occupant, blocks: &BlockRegistry) -> Neighborhood {
 /// The boxes of `occupants` sharing one boxel and nothing around them, like [`alone`]: a
 /// bundle's pieces, drawn away from the world, hide each other's faces as they would placed.
 pub fn together(occupants: &[Occupant], blocks: &BlockRegistry) -> Neighborhood {
-    Neighborhood::new(neighborhood(I64Vec3::ZERO, |at| if at == I64Vec3::ZERO { occupants } else { &[] }, blocks), DENSE_AT)
+    gather(I64Vec3::ZERO, |at| if at == I64Vec3::ZERO { occupants } else { &[] }, blocks, DENSE_AT, &TurnedShapes::default())
 }
 
 /// What lies past each edge of a face, texel by texel, as [`MeshData::edges`] holds it. The
@@ -439,6 +502,7 @@ fn mesh_chunk_with(grid: &Grid, pos: ChunkPos, blocks: &BlockRegistry, volumes: 
     }
 
     let near = |local: I64Vec3| occupants_at(grid, chunk, pos, local);
+    let shapes = TurnedShapes::default();
     let full = |local: I64Vec3| {
         near(local).iter().any(|o| !blocks.is_hidden(o.block) && blocks.get(o.block).is_some_and(|def| def.is_full()))
     };
@@ -453,7 +517,7 @@ fn mesh_chunk_with(grid: &Grid, pos: ChunkPos, blocks: &BlockRegistry, volumes: 
         let mut drawn = DrawnFaces::default();
         // Only gathered once a face of this boxel is drawn; most boxels are buried.
         let boxes = OnceCell::new();
-        let around = || boxes.get_or_init(|| Neighborhood::new(neighborhood(at, near, blocks), dense_at));
+        let around = || boxes.get_or_init(|| gather(at, near, blocks, dense_at, &shapes));
         for &occupant in grid.occupants(id).iter().filter(|o| !blocks.is_hidden(o.block)) {
             let hidden = |n: [i32; 3]| full(at + I64Vec3::new(n[0] as i64, n[1] as i64, n[2] as i64));
             mesh_occupant(&mut mesh, occupant, at.as_vec3().to_array(), blocks, volumes, hidden, &around, ao, &mut drawn);
@@ -579,22 +643,27 @@ pub fn mesh_occupant<'b>(
             }
             let (a, c) = ((axis + 1) % 3, (axis + 2) % 3);
             let whole = ([turned.min[a], turned.min[c]], [turned.max[a], turned.max[c]]);
+            drawn.mine.push(DrawnFace { normal, plane, min: whole.0, max: whole.1 });
+            // Whether something fills all the texels just in front of part of the face: another
+            // occupant pressed against it, a neighbor, or another of its own boxes.
+            let front = if normal[axis] > 0 { (plane as i32, plane as i32 + 1) } else { (plane as i32 - 1, plane as i32) };
+            let covered = |(min, max): ([u8; 2], [u8; 2])| {
+                let (mut lo, mut hi) = ([0; 3], [0; 3]);
+                (lo[axis], hi[axis]) = front;
+                (lo[a], hi[a], lo[c], hi[c]) = (min[0] as i32, max[0] as i32, min[1] as i32, max[1] as i32);
+                around().covers(lo, hi)
+            };
+            // Most faces inside a finely cut shape are covered whole; skip cutting those.
+            if covered(whole) {
+                continue;
+            }
             let mut pieces = vec![whole];
             let touches = |cut: &&DrawnFace| (0..2).all(|i| whole.0[i] < cut.max[i] && cut.min[i] < whole.1[i]);
             for cut in drawn.on(normal, plane).iter().filter(touches) {
                 pieces = pieces.iter().flat_map(|&p| subtract(p, cut)).collect();
             }
-            drawn.mine.push(DrawnFace { normal, plane, min: whole.0, max: whole.1 });
-            // The layer of texels just in front of the face's plane.
-            let plane = plane as i32;
-            let front = if normal[axis] > 0 { (plane, plane + 1) } else { (plane - 1, plane) };
             for (min, max) in pieces {
-                // Left out if something fills all the texels just in front of it: another
-                // occupant pressed against it, a neighbor, or another of its own boxes.
-                let (mut lo, mut hi) = ([0; 3], [0; 3]);
-                (lo[axis], hi[axis]) = front;
-                (lo[a], hi[a], lo[c], hi[c]) = (min[0] as i32, max[0] as i32, min[1] as i32, max[1] as i32);
-                if around().filled(lo, hi) >= (hi[a] - lo[a]) * (hi[c] - lo[c]) {
+                if covered((min, max)) {
                     continue;
                 }
                 // The piece as a box, turned back to how the block stands unturned.
@@ -1400,7 +1469,7 @@ mod tests {
                 let occupant = Occupant::turned(id, turn);
                 let mut meshes = [0, usize::MAX].map(|dense_at| {
                     let only = [occupant];
-                    let around = Neighborhood::new(neighborhood(I64Vec3::ZERO, |at| if at == I64Vec3::ZERO { &only[..] } else { &[] }, &blocks), dense_at);
+                    let around = gather(I64Vec3::ZERO, |at| if at == I64Vec3::ZERO { &only[..] } else { &[] }, &blocks, dense_at, &TurnedShapes::default());
                     let mut mesh = MeshData::default();
                     mesh_occupant(&mut mesh, occupant, [0.0; 3], &blocks, &volumes, |_| false, &|| &around, &AoTuning::OFF, &mut DrawnFaces::default());
                     mesh
