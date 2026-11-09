@@ -161,6 +161,7 @@ Ideas that come up while playing get added here.
 - ~~Saving and loading, with block names in the save~~ Done (Saving, 2026-11-07), see Done toys. Creatures aren't saved yet.
 - World generation. *The generator is done (Generated terrain, 2026-11-05); streaming is next, as startup meshing grows with the area.* Staging (generator, then streaming, then saving and LOD) and the creatures-on-terrain checklist. Notes: `docs/notes/world-generation.md`.
 - LOD, once world generation exists
+- Meshing off the main thread, once a remesh can take longer than a frame in ordinary play. Deferred from `fix-mesher-cost` (2026-11-08): costs late meshes and edits racing older work; finely cut gadgets are fast enough without it for now.
 
 ### Seam backlog (added when the game is ready for them)
 
@@ -208,6 +209,7 @@ Bugs found in already-merged code, each fixed on its own `fix-` branch (see the 
 - 2026-11-05, `fix-clear-run-hang`: a cow's clear-run sweep never counted a sub-millimeter last piece as blocked, so with the player a hair away and the cow against something it looped forever and locked up the game (the server runs in the client's tick).
 - 2026-11-06, `fix-crafting-menu-layout`: the crafting window sized itself to its content and stayed centered, so the first crafted part's row (wider, with its buttons) widened it and moved the grid; the carried list was capped shorter than its column. Columns now have fixed widths and the list fills the tallest column.
 - 2026-11-06, `fix-controls-table`: adding a key action meant five edits (field, default, parser arm, HUD format slot, the player's controls file). Now one row in `client::controls`'s `key_actions!` table gives the field, default, config name and HUD hint, and loading warns about actions the controls file doesn't list.
+- 2026-11-08, `fix-mesher-cost`: a two-material texel checker gadget (2,048 boxes per material) made the ghost lag and edits beside it pause: every face scanned every box around it, faces of a boxel's pieces were compared all against all, buried faces between pieces were drawn (24,576 quads where 1,536 show), and the hotbar re-laid out its picture every frame. Now texel grids, faces covered whole are left out, and pictures are kept; a chunk of 20 checkers remeshes in 41 ms instead of 220+. Notes: `docs/notes/mesher-cost.md`.
 
 ### Done toys
 
