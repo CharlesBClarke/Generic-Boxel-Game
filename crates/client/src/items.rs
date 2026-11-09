@@ -180,7 +180,7 @@ fn item_mesh(item: &Item, blocks: &BlockRegistry, chunk_meshes: &ChunkMeshes) ->
     let middle = ((item.bounds.min + item.bounds.max) * -0.5).to_array();
     let occupant = Occupant::new(item.block);
     let boxes = mesher::alone(occupant, blocks);
-    let around = || boxes.as_slice();
+    let around = || &boxes;
     let (volumes, off) = (&chunk_meshes.volumes, &mesher::AoTuning::OFF);
     mesher::mesh_occupant(&mut data, occupant, middle, blocks, volumes, |_| false, &around, off, &mut Vec::new());
     crate::to_bevy_mesh(data)

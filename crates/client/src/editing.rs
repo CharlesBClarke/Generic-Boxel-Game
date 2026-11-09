@@ -209,7 +209,12 @@ pub(crate) fn edit_input(
     palette.slot = (palette.slot as i64 - steps as i64).rem_euclid(count as i64) as usize;
 }
 
+/// Past this many boxes, a shape is outlined by the box around it all rather than box by box:
+/// one cube per texel of a finely cut shape is a thicket of lines, and slow to draw.
+const OUTLINED_BOXES: usize = 64;
+
 /// Outlines the boxes of the occupant that breaking would remove, unless a tool is in hand.
+/// A finely cut shape is outlined as the one box around it.
 pub(crate) fn draw_outline(world: Res<ClientWorld>, look: Res<Look>, palette: Res<Palette>, origin: Res<RenderOrigin>, mut gizmos: Gizmos) {
     if palette.tool(&world).is_some() {
         return;
@@ -220,7 +225,11 @@ pub(crate) fn draw_outline(world: Res<ClientWorld>, look: Res<Look>, palette: Re
     let Some(&occupant) = world.universe().main().cell(hit.pos).get(hit.occupant) else {
         return;
     };
-    for b in occupant_boxes(occupant, world.blocks()) {
+    let mut boxes: Vec<_> = occupant_boxes(occupant, world.blocks()).collect();
+    if boxes.len() > OUTLINED_BOXES {
+        boxes = sim::CellBox::bounds(&boxes).into_iter().collect();
+    }
+    for b in boxes {
         let center = WorldPos::at_boxel(hit.pos).translate((b.min + b.max) * 0.5);
         let size = coords::to_render(Vec3::from_array((b.max - b.min).to_array())).abs();
         // Slightly larger than the box, so the lines aren't hidden by its own faces.
@@ -299,7 +308,13 @@ pub(crate) struct Ghost {
     pub refused: Handle<SolidMaterial>,
     /// The occupant its mesh was built for.
     pub shown: Option<Occupant>,
+    /// Meshes already built, by the occupant they show, so turning a block back and forth
+    /// doesn't rebuild them: a finely cut shape takes a while to mesh.
+    pub built: HashMap<Occupant, Handle<Mesh>>,
 }
+
+/// How many ghost meshes [`Ghost::built`] keeps before starting over.
+const GHOSTS_KEPT: usize = 48;
 
 /// How much smaller than the real block the ghost is drawn, so its faces don't flicker against
 /// neighbors they touch.
@@ -332,15 +347,21 @@ pub(crate) fn update_ghost(
     visibility.set_if_neq(Visibility::Visible);
     // A bundle's first piece brings the rest, so it stands for the whole ghost.
     if ghost.shown != Some(place.occupant) {
-        let mut data = mesher::MeshData::default();
-        let (volumes, off) = (&chunk_meshes.volumes, &mesher::AoTuning::OFF);
-        for occupant in place.occupants() {
-            // Built around the boxel's center, so scaling shrinks it in place.
-            let boxes = mesher::alone(occupant, blocks);
-            let around = || boxes.as_slice();
-            mesher::mesh_occupant(&mut data, occupant, [-0.5; 3], blocks, volumes, |_| false, &around, off, &mut Vec::new());
+        if ghost.built.len() >= GHOSTS_KEPT && !ghost.built.contains_key(&place.occupant) {
+            ghost.built.clear();
         }
-        mesh.0 = meshes.add(crate::to_bevy_mesh(data));
+        let built = ghost.built.entry(place.occupant).or_insert_with(|| {
+            let mut data = mesher::MeshData::default();
+            let (volumes, off) = (&chunk_meshes.volumes, &mesher::AoTuning::OFF);
+            for occupant in place.occupants() {
+                // Built around the boxel's center, so scaling shrinks it in place.
+                let boxes = mesher::alone(occupant, blocks);
+                let around = || &boxes;
+                mesher::mesh_occupant(&mut data, occupant, [-0.5; 3], blocks, volumes, |_| false, &around, off, &mut Vec::new());
+            }
+            meshes.add(crate::to_bevy_mesh(data))
+        });
+        mesh.0 = built.clone();
         ghost.shown = Some(place.occupant);
     }
     let wanted = if place.allowed { &ghost.allowed } else { &ghost.refused };
@@ -399,7 +420,7 @@ pub(crate) fn update_hidden_ghosts(
                     let pos = center.offset(api::I64Vec3::new(x, y, z));
                     for &o in grid.cell(pos).iter().filter(|o| blocks.is_hidden(o.block)) {
                         let boxes = mesher::alone(o, blocks);
-                        let around = || boxes.as_slice();
+                        let around = || &boxes;
                         let at = (pos.0 - anchor.0).as_vec3().to_array();
                         let (volumes, off) = (&chunk_meshes.volumes, &mesher::AoTuning::OFF);
                         mesher::mesh_occupant(&mut data, o, at, blocks, volumes, |_| false, &around, off, &mut Vec::new());
