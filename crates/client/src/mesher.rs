@@ -439,7 +439,7 @@ fn mesh_chunk_with(grid: &Grid, pos: ChunkPos, blocks: &BlockRegistry, volumes: 
             continue;
         }
         let at = local.to_ivec();
-        let mut drawn = Vec::new();
+        let mut drawn = DrawnFaces::default();
         // Only gathered once a face of this boxel is drawn; most boxels are buried.
         let boxes = OnceCell::new();
         let around = || boxes.get_or_init(|| Neighborhood::new(neighborhood(at, near, blocks), dense_at));
@@ -459,6 +459,41 @@ pub struct DrawnFace {
     plane: u8,
     min: [u8; 2],
     max: [u8; 2],
+}
+
+/// The faces drawn so far in one boxel, kept apart by which way they face and on which plane,
+/// so a face only looks through those it could coincide with: a finely cut piece has
+/// thousands, and every face against every other was slow.
+#[derive(Default)]
+pub struct DrawnFaces {
+    /// Faces of older occupants, by [`DrawnFaces::key`], in the order drawn.
+    by_plane: Vec<Vec<DrawnFace>>,
+    /// The current occupant's, which its own faces don't cut.
+    mine: Vec<DrawnFace>,
+}
+
+impl DrawnFaces {
+    const PLANES: usize = BlockBox::SIZE as usize + 1;
+
+    fn key(normal: [i32; 3], plane: u8) -> usize {
+        let axis = normal.iter().position(|&n| n != 0).expect("a unit normal");
+        (axis * 2 + usize::from(normal[axis] < 0)) * Self::PLANES + plane as usize
+    }
+
+    /// Older occupants' faces on `plane`, facing along `normal`.
+    fn on(&self, normal: [i32; 3], plane: u8) -> &[DrawnFace] {
+        self.by_plane.get(Self::key(normal, plane)).map_or(&[], |v| v.as_slice())
+    }
+
+    /// Files the current occupant's faces with the older ones, for the next occupant.
+    fn finish_occupant(&mut self) {
+        if self.by_plane.is_empty() {
+            self.by_plane = vec![Vec::new(); 6 * Self::PLANES];
+        }
+        for face in self.mine.drain(..) {
+            self.by_plane[Self::key(face.normal, face.plane)].push(face);
+        }
+    }
 }
 
 /// What's left of rectangle `r` after cutting out `cut`: up to four rectangles.
@@ -501,7 +536,7 @@ pub fn mesh_occupant<'b>(
     hidden: impl Fn([i32; 3]) -> bool,
     around: &impl Fn() -> &'b Neighborhood,
     ao: &AoTuning,
-    drawn: &mut Vec<DrawnFace>,
+    drawn: &mut DrawnFaces,
 ) {
     let Some(def) = blocks.get(occupant.block) else {
         return;
@@ -521,7 +556,6 @@ pub fn mesh_occupant<'b>(
     // A point in texels, unturned, to texels of the boxel turned about the center.
     let place = |p: [i32; 3]| turn.apply(p.map(|c| c - half)).map(|c| c + half);
 
-    let mine_from = drawn.len();
     for b in &shape {
         let turned = turn.apply_box(*b);
         for face in &FACES {
@@ -535,10 +569,11 @@ pub fn mesh_occupant<'b>(
             let (a, c) = ((axis + 1) % 3, (axis + 2) % 3);
             let whole = ([turned.min[a], turned.min[c]], [turned.max[a], turned.max[c]]);
             let mut pieces = vec![whole];
-            for cut in drawn[..mine_from].iter().filter(|d| d.normal == normal && d.plane == plane) {
+            let touches = |cut: &&DrawnFace| (0..2).all(|i| whole.0[i] < cut.max[i] && cut.min[i] < whole.1[i]);
+            for cut in drawn.on(normal, plane).iter().filter(touches) {
                 pieces = pieces.iter().flat_map(|&p| subtract(p, cut)).collect();
             }
-            drawn.push(DrawnFace { normal, plane, min: whole.0, max: whole.1 });
+            drawn.mine.push(DrawnFace { normal, plane, min: whole.0, max: whole.1 });
             for (min, max) in pieces {
                 // The piece as a box, turned back to how the block stands unturned.
                 let mut piece = turned;
@@ -547,6 +582,7 @@ pub fn mesh_occupant<'b>(
             }
         }
     }
+    drawn.finish_occupant();
 }
 
 /// Adds one face of box `b` (in texels, before turning) as a quad facing `normal` once
@@ -1228,7 +1264,7 @@ mod tests {
             let occupant = Occupant::new(block);
             let boxes = alone(occupant, &blocks);
             let around = || &boxes;
-            mesh_occupant(&mut mesh, occupant, [0.0; 3], &blocks, &flat(&blocks), |_| false, &around, &AoTuning::OFF, &mut Vec::new());
+            mesh_occupant(&mut mesh, occupant, [0.0; 3], &blocks, &flat(&blocks), |_| false, &around, &AoTuning::OFF, &mut DrawnFaces::default());
             assert_eq!(mesh.quad_count(), 6);
             for e in &mesh.edges {
                 for (k, &kinds) in e.iter().enumerate() {
@@ -1343,13 +1379,40 @@ mod tests {
                     let only = [occupant];
                     let around = Neighborhood::new(neighborhood(I64Vec3::ZERO, |at| if at == I64Vec3::ZERO { &only[..] } else { &[] }, &blocks), dense_at);
                     let mut mesh = MeshData::default();
-                    mesh_occupant(&mut mesh, occupant, [0.0; 3], &blocks, &volumes, |_| false, &|| &around, &AoTuning::OFF, &mut Vec::new());
+                    mesh_occupant(&mut mesh, occupant, [0.0; 3], &blocks, &volumes, |_| false, &|| &around, &AoTuning::OFF, &mut DrawnFaces::default());
                     mesh
                 });
                 let [a, b] = &mut meshes;
                 same(a, b);
             }
         }
+    }
+
+    /// A boxel holding a two-material texel checker, one occupant per material, as a bundle
+    /// places it. Run with `--release --ignored --nocapture`.
+    #[test]
+    #[ignore]
+    fn time_a_two_material_checker() {
+        let mut blocks = BlockRegistry::default();
+        let half = |odd: usize| {
+            let mut grid = api::ShapeGrid::EMPTY;
+            for z in 0..16 {
+                for y in 0..16 {
+                    for x in 0..16 {
+                        grid.set(x, y, z, (x + y + z) % 2 == odd);
+                    }
+                }
+            }
+            grid.to_boxes()
+        };
+        let a = blocks.register(BlockDef::new("test:a", true, [200, 0, 0]).with_shape(half(0))).unwrap();
+        let b = blocks.register(BlockDef::new("test:b", true, [0, 0, 200]).with_shape(half(1))).unwrap();
+        let mut grid = Grid::default();
+        grid.set_cell(BoxelPos::new(4, 4, 4), &[Occupant::new(a), Occupant::new(b)]);
+        let volumes = flat(&blocks);
+        let start = std::time::Instant::now();
+        let mesh = super::mesh_chunk(&grid, ChunkPos::new(0, 0, 0), &blocks, &volumes, &AoTuning::default());
+        println!("two-material checker: {} quads in {:?}", mesh.quad_count(), start.elapsed());
     }
 
     /// Run with `cargo test --release -p client -- --ignored meshing_fine_shapes`: debug builds
@@ -1372,7 +1435,7 @@ mod tests {
             let occupant = Occupant::new(checker);
             let around = alone(occupant, &blocks);
             let mut mesh = MeshData::default();
-            mesh_occupant(&mut mesh, occupant, [0.0; 3], &blocks, &volumes, |_| false, &|| &around, &AoTuning::OFF, &mut Vec::new());
+            mesh_occupant(&mut mesh, occupant, [0.0; 3], &blocks, &volumes, |_| false, &|| &around, &AoTuning::OFF, &mut DrawnFaces::default());
             assert_eq!(mesh.quad_count(), 12_288);
         });
         let chunk = time(&|| {

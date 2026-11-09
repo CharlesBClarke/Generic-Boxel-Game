@@ -357,7 +357,7 @@ pub(crate) fn update_ghost(
                 // Built around the boxel's center, so scaling shrinks it in place.
                 let boxes = mesher::alone(occupant, blocks);
                 let around = || &boxes;
-                mesher::mesh_occupant(&mut data, occupant, [-0.5; 3], blocks, volumes, |_| false, &around, off, &mut Vec::new());
+                mesher::mesh_occupant(&mut data, occupant, [-0.5; 3], blocks, volumes, |_| false, &around, off, &mut mesher::DrawnFaces::default());
             }
             meshes.add(crate::to_bevy_mesh(data))
         });
@@ -423,7 +423,7 @@ pub(crate) fn update_hidden_ghosts(
                         let around = || &boxes;
                         let at = (pos.0 - anchor.0).as_vec3().to_array();
                         let (volumes, off) = (&chunk_meshes.volumes, &mesher::AoTuning::OFF);
-                        mesher::mesh_occupant(&mut data, o, at, blocks, volumes, |_| false, &around, off, &mut Vec::new());
+                        mesher::mesh_occupant(&mut data, o, at, blocks, volumes, |_| false, &around, off, &mut mesher::DrawnFaces::default());
                     }
                 }
             }
@@ -954,7 +954,9 @@ mod tests {
 mod remesh_timing {
     use super::*;
     use crate::volumes::Volumes;
-    use crate::world::testing::{base_sim, connect};
+    use crate::world::testing::{base_sim, connect, step};
+    use sim::PlayerInput;
+    use api::I64Vec3;
 
     /// Times meshing every chunk of the base game's test area. Run with `--ignored --nocapture`.
     #[test]
@@ -973,6 +975,64 @@ mod remesh_timing {
             best = best.min(start.elapsed());
         }
         println!("{} chunks, {quads} quads, best of 5: {best:?}", chunks.len());
+    }
+
+    /// Times each step of breaking the floor beside a texel checker (2,048 one-texel boxes),
+    /// from the tick to the Bevy mesh. Run with `--release --ignored --nocapture`.
+    #[test]
+    #[ignore]
+    fn time_an_edit_beside_a_texel_checker() {
+        let mut sim = base_sim();
+        let mut grid = api::ShapeGrid::EMPTY;
+        for z in 0..16 {
+            for y in 0..16 {
+                for x in 0..16 {
+                    grid.set(x, y, z, (x + y + z).is_multiple_of(2));
+                }
+            }
+        }
+        let stone = sim.blocks().material(base::STONE).unwrap();
+        let checker = sim.shaped_block(stone, &grid).unwrap();
+        sim.spawn_player().unwrap();
+        let feet = WorldPos::new(I64Vec3::new(10, 10, 0), ZVec3::new(0.5, 0.5, 0.0));
+        sim.teleport_player(feet);
+        // Drop one at the player's feet to pick up, so there's one to place.
+        let cost = sim.blocks().cost(checker).unwrap();
+        sim.spawn_item(cost.material, cost.amount, feet);
+        for _ in 0..120 {
+            sim.step(&PlayerInput::default());
+        }
+        assert!(sim.inventory().amount(cost.material) >= cost.amount, "picked up");
+        let (mut link, mut world) = connect(sim);
+        let volumes = Volumes::build(world.looks(), world.blocks());
+        let ao = mesher::AoTuning::default();
+        // Aim at the floor two boxels east and put the checker on it.
+        let aim_at = |world: &ClientWorld, x: i64, z: f32| {
+            let eye = world.player().unwrap().eye();
+            let aim = eye.delta_to(WorldPos::new(I64Vec3::new(x, 10, -1), ZVec3::new(0.5, 0.5, z)));
+            (aim.y.atan2(aim.x), aim.z.atan2(aim.truncate().length()))
+        };
+        let (yaw, pitch) = aim_at(&world, 12, 1.0);
+        step(&mut link, &mut world, &PlayerInput { yaw, pitch, alt_pressed: true, alt_held: true, place_block: checker, ..Default::default() });
+        step(&mut link, &mut world, &PlayerInput { yaw, pitch, ..Default::default() });
+        let at = api::BoxelPos::new(12, 10, 0);
+        assert!(world.universe().main().cell(at).iter().any(|o| o.block == checker), "the checker is placed");
+        world.take_changed_chunks();
+
+        // Break the floor beside it, just west.
+        let (yaw, pitch) = aim_at(&world, 11, 1.0);
+        let start = std::time::Instant::now();
+        step(&mut link, &mut world, &PlayerInput { yaw, pitch, use_pressed: true, use_held: true, ..Default::default() });
+        let ticked = start.elapsed();
+        let changed = world.take_changed_chunks();
+        let start = std::time::Instant::now();
+        let meshed = mesher::mesh_chunks(world.universe().main(), &changed, world.blocks(), &volumes, &ao);
+        let meshing = start.elapsed();
+        let quads: Vec<usize> = meshed.iter().map(|m| m.quad_count()).collect();
+        let start = std::time::Instant::now();
+        let bevy: Vec<_> = meshed.into_iter().map(crate::to_bevy_mesh).collect();
+        let converting = start.elapsed();
+        println!("tick {ticked:?}; {} chunks {changed:?}, quads {quads:?}: meshed in {meshing:?}, converted in {converting:?}", bevy.len());
     }
 
     /// Times meshing the base game's whole world with its terrain generated, on every core, as
