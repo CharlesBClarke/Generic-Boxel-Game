@@ -115,7 +115,7 @@ A run of small toy slices. Each one takes a single game-feel feature that doesn'
 
 ### Experimental materials (`toy-experimental-materials`)
 
-**Stage:** Verify (batch A), on hold for `fix-mesher-cost`. **Next session:** do that fix first (notes: `docs/notes/mesher-cost.md`, on `master`), merge `master` back into this branch, then batch B (sensor, delay, trigger scope).
+**Stage:** Verify (batch A). `fix-mesher-cost` is done and merged into this branch (2026-11-08). **Next session:** batch B (sensor, delay, trigger scope).
 
 **Goal:** an experiment kit of small materials, each with a one-sentence rule, to find which set balances trivial use for players who don't care against combining for those who do, and to compare boxel-wide against touching signals. The user (2026-11-08): "the goal here is to disover what set of materials has a good ballence of trival use for Luers, and combantainal complexity for the people who care. we allso need moore systems if we want to figure out if we want triggers to be block global or texel adjasenct, so I just want a verity of little toys to really experiment what works". Names are placeholders ("bs names now").
 
@@ -147,7 +147,7 @@ A run of small toy slices. Each one takes a single game-feel feature that doesn'
 - Lab (`base::LAB_SPOT`, waypoint `lab`): a lumite lamp behind a phasite shutter on a lever; a lever-fired crystal gun that chains through a second green crystal into a brick wall.
 - **Played** (2026-11-08), the user: "its fun. I like the gun, the lamp felt pointless wihtouut lighting, but thats just that." The lamp waits for Stored light. Done-when 1 and 2 not yet checked one by one.
 - **Beam tuning deferred** ("maybe deffer tuneing it"). Today every beam is alike and one fires per lens piece and direction, so several separately placed green pieces in a boxel stack beams (more damage, a longer tunnel) while one green gadget, however layered, fires once: a hidden rule. Candidates: strength and damage from the green volume used up, and the beam's width from the lens's outline down the beam.
-- **Lag found:** a 3D checker gadget made the placement ghost laggy, and interacting next to it hitched. A fault in the mesher from earlier toys, fixed on its own branch: see `docs/notes/mesher-cost.md`.
+- **Lag found:** a 3D checker gadget made the placement ghost laggy, and interacting next to it hitched. A fault in the mesher from earlier toys, fixed on its own branch (`fix-mesher-cost`, 2026-11-08; the user: "ok it works very well"): see `docs/notes/mesher-cost.md`.
 - **Finding from building the gun:** with the grab at 1 texel and the table working in quarters, a player can't make a hidden blue crystal: antiphasite only cuts a quarter-thick blue, and the kept part still touches the green. The lab's trigger is texel-exact, built by the base mod (`shapes::crystal_trigger`). With `grab` at 4 the quarter version works. Worth deciding with the user: how a player sets crystals off from a distance.
 
 ### Toy backlog
