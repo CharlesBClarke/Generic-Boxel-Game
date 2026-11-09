@@ -15,15 +15,19 @@ Shapes are stored as lists of boxes (`BlockDef::shape`, from `ShapeGrid::to_boxe
 - **Edits next to it:** placing, breaking, a signal or a blast remeshes the chunk (`remesh_changed_chunks`, on the main thread); every face of every boxel beside the checker scans its 2,048 boxes too. Debris from it (`items::item_mesh`) and the hidden ghosts (`update_hidden_ghosts`) mesh the same way.
 - **Smaller:** `editing::draw_outline` draws one gizmo cube per box, every frame (2,048 for a checker). The crystal touch test (`sim::blast::touch_directions`, through `BlockRegistry::origin`) rebuilds each piece's mask from its box list every time; fast enough, the same habit.
 
-## The fix
+## The fix (done 2026-11-08)
 
-1. **A failing benchmark first:** mesh a texel checker alone, and a chunk with a few of them beside other blocks; assert a time budget (and that quad counts and output are unchanged against the current mesher on ordinary shapes).
-2. **Mesher on bitmasks:** build the 3×3×3 boxels around a boxel once as texel bits (48³ bits; `api::ShapeGrid` is the per-boxel form) and answer `edges` and `occlusion` from the bits: a fixed cost per face, whatever the box count. Perhaps a summed-volume table for AO. Also cull faces where a shape's own boxes touch each other (and boxes of other occupants in the boxel), since faces are culled only against full neighboring blocks today.
-3. **Ghost cache:** keep built ghost meshes by occupant (block and orientation), so turning back and forth reuses them.
-4. **Outline:** for shapes with many boxes, outline the shape's bounding box, or only the box aimed at.
-5. **Masks cached per block kind** (the registry keeps each kind's `ShapeGrid`, turned per orientation as needed), used by the touch test, the phase grab and anything else that wants texels.
+Planned steps 1–5 were built, then a trace of the user's game (`--features trace`, see `crates/game/Cargo.toml`) and a harness loading their save (`time_edits_in_a_save` in `client::editing`) found more:
 
-Nothing should look different. Check that every mesher test still passes unchanged.
+- **Texel grids:** past 64 boxes, a neighborhood is a 48³ grid of texel rows, filled straight from each occupant's turned shape; edges, coverage and AO (a summed-volume table) read it. Ordinary neighborhoods keep the box list. Equality tests mesh a busy chunk and every block alone both ways. *Debt:* edge and AO rules now live in two places; if that chafes, try the grid path alone after measuring ordinary terrain.
+- **Coinciding faces** (pieces in one boxel) are kept by facing and plane; comparing all against all made a two-material checker 209 ms alone.
+- **Covered faces left out:** a face whose front texel layer is full (a full neighbor, another piece, its own other boxes) isn't drawn: a two-material checker went from 24,576 quads to 1,536. This was first left out of the plan for changing quad counts; the trace showed the GPU copy of huge chunk meshes (50–110 ms) and it went in. Only full coverage culls; partly covered faces stay. See-through materials, if they come, must not cover.
+- **Ghost:** meshes kept by occupant (48); a bundle's pieces are meshed together, as placed.
+- **Outline:** shapes of more than 64 boxes are outlined by their bounding box.
+- **Registry** keeps each block's `ShapeGrid`.
+- **Pictures** (hotbar, crafting) are tessellated once per size, turn and scale and kept in egui memory: about 14 ms a frame in the trace.
+
+Result on the user's save: an edit in a chunk of 20 two-material checkers remeshes in 41 ms (release), was 220+ ms plus the GPU copy. The user: "ok it works very well".
 
 ## What the fix can't change
 

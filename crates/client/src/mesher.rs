@@ -1,5 +1,6 @@
-//! Culled meshing: every face of every occupant's boxes becomes a quad, unless it lies on the
-//! boxel's side against a full block. Hidden pieces (see [`sim::signal`]) aren't there to it. Where faces of two occupants of one boxel lie on the same
+//! Culled meshing: every face of every occupant's boxes becomes a quad, unless something fills
+//! all the texels just in front of it: a full block beside the boxel, another occupant pressed
+//! against it, or another of its own boxes. Hidden pieces (see [`sim::signal`]) aren't there to it. Where faces of two occupants of one boxel lie on the same
 //! plane facing the same way, the part they share is drawn only from the older occupant (the
 //! one placed first), so they never fight over which shows. Output is plain Z-up vertex data in chunk-local space;
 //! turning it into a Bevy mesh happens elsewhere. Every vertex carries where it sits in its
@@ -15,7 +16,7 @@
 
 use std::cell::OnceCell;
 
-use api::{BlockBox, CHUNK_SIZE, CHUNK_VOLUME, ChunkPos, I64Vec3, LocalPos, LookDef, Orientation, Tunable, Tunables};
+use api::{BlockBox, CHUNK_SIZE, CHUNK_VOLUME, ChunkPos, I64Vec3, LocalPos, LookDef, Orientation, ShapeGrid, Tunable, Tunables};
 use bevy::prelude::Resource;
 use sim::{BlockRegistry, CellId, Chunk, Grid, Occupant};
 
@@ -168,17 +169,198 @@ fn neighborhood<'a>(at: I64Vec3, occupants_at: impl Fn(I64Vec3) -> &'a [Occupant
     boxes
 }
 
+/// Each occupant's texels as it stands turned, worked out once per meshing: turning a shape
+/// goes through all its texels.
+#[derive(Default)]
+pub struct TurnedShapes(std::cell::RefCell<std::collections::HashMap<Occupant, std::rc::Rc<ShapeGrid>>>);
+
+impl TurnedShapes {
+    fn of(&self, occupant: Occupant, blocks: &BlockRegistry) -> std::rc::Rc<ShapeGrid> {
+        self.0.borrow_mut().entry(occupant).or_insert_with(|| std::rc::Rc::new(blocks.shape(occupant.block).turned(occupant.orientation))).clone()
+    }
+}
+
+/// What fills the 27 boxels around (and including) the boxel at `at`, as [`neighborhood`]
+/// gives it, read through texels if there are more than `dense_at` boxes. Then the texels are
+/// filled straight from each occupant's shape, without listing its boxes.
+fn gather<'a>(
+    at: I64Vec3,
+    occupants_at: impl Fn(I64Vec3) -> &'a [Occupant],
+    blocks: &BlockRegistry,
+    dense_at: usize,
+    shapes: &TurnedShapes,
+) -> Neighborhood {
+    let around = || {
+        (0..27).map(|i| [i % 3 - 1, i / 3 % 3 - 1, i / 9 - 1]).flat_map(|d| {
+            let shown = |o: &&Occupant| !blocks.is_hidden(o.block) && blocks.get(o.block).is_some();
+            occupants_at(at + I64Vec3::new(d[0] as i64, d[1] as i64, d[2] as i64)).iter().filter(shown).map(move |o| (d, *o))
+        })
+    };
+    let count: usize = around().map(|(_, o)| blocks.get(o.block).map_or(0, |def| def.shape.len())).sum();
+    if count <= dense_at {
+        return Neighborhood { boxes: neighborhood(at, occupants_at, blocks), dense: None };
+    }
+    const N: usize = BlockBox::SIZE as usize;
+    let mut rows = vec![0u64; SPAN * SPAN];
+    for (d, occupant) in around() {
+        let shape = shapes.of(occupant, blocks);
+        let [ox, oy, oz] = d.map(|c| ((c + 1) as usize) * N);
+        for z in 0..N {
+            for y in 0..N {
+                let row = shape.rows()[y + N * z];
+                if row != 0 {
+                    rows[(oy + y) + SPAN * (oz + z)] |= (row as u64) << ox;
+                }
+            }
+        }
+    }
+    Neighborhood { boxes: Vec::new(), dense: Some(Dense { rows, sums: OnceCell::new() }) }
+}
+
+/// Texels along each side of the 3×3×3 boxels a [`Neighborhood`] covers.
+const SPAN: usize = 3 * BlockBox::SIZE as usize;
+/// How far a [`Neighborhood`]'s texels are shifted so the lowest one is at 0.
+const OFFSET: i32 = BlockBox::SIZE as i32;
+/// Past this many boxes, a [`Neighborhood`] answers from a grid of its texels rather than by
+/// going through its boxes: a fixed cost per face, however finely shapes around are cut.
+pub const DENSE_AT: usize = 64;
+
+/// What fills the 27 boxels around a boxel, in texels relative to it, as faces' edges and
+/// corner shading read it. Few boxes are read one by one; many (a shape cut texel by texel)
+/// through a grid of texels, built once for the boxel.
+pub struct Neighborhood {
+    boxes: Vec<TexelBox>,
+    dense: Option<Dense>,
+}
+
+/// The texels of a [`Neighborhood`], shifted by [`OFFSET`]: one row of bits along x for each
+/// `(y, z)`, at `y + SPAN * z`.
+struct Dense {
+    rows: Vec<u64>,
+    /// How many texels are filled below and before each point, for counting a box's worth at
+    /// once; built the first time ambient occlusion wants it.
+    sums: OnceCell<Vec<u32>>,
+}
+
+impl Neighborhood {
+    /// Reads `boxes` through a grid of texels if there are more than `dense_at`.
+    pub fn new(boxes: Vec<TexelBox>, dense_at: usize) -> Self {
+        let dense = (boxes.len() > dense_at).then(|| Dense::build(&boxes));
+        Self { boxes, dense }
+    }
+
+    pub fn boxes(&self) -> &[TexelBox] {
+        &self.boxes
+    }
+
+    /// Whether every texel in the box from `lo` to `hi`, relative to the middle boxel, is filled.
+    fn covers(&self, lo: [i32; 3], hi: [i32; 3]) -> bool {
+        let Some(dense) = &self.dense else {
+            return self.filled(lo, hi) >= (0..3).map(|i| hi[i] - lo[i]).product::<i32>();
+        };
+        let inside = |c: i32| (0..=SPAN as i32).contains(&c);
+        if !lo.iter().chain(&hi).all(|&c| inside(c + OFFSET)) {
+            return false;
+        }
+        let [x0, y0, z0] = lo.map(|c| (c + OFFSET) as usize);
+        let [x1, y1, z1] = hi.map(|c| (c + OFFSET) as usize);
+        let bits = ((1u64 << (x1 - x0)) - 1) << x0;
+        (z0..z1).all(|z| (y0..y1).all(|y| dense.rows[y + SPAN * z] & bits == bits))
+    }
+
+    /// How many texels are filled in the box from `lo` to `hi`, in texels relative to the
+    /// middle boxel. Boxes of one boxel's occupants never overlap, so adding up how much of
+    /// each falls inside counts each texel once.
+    fn filled(&self, lo: [i32; 3], hi: [i32; 3]) -> i32 {
+        if let Some(dense) = &self.dense {
+            return dense.count(lo, hi);
+        }
+        let mut filled = 0;
+        for (min, max) in &self.boxes {
+            let (cut_min, cut_max) = ([0, 1, 2].map(|i| min[i].max(lo[i])), [0, 1, 2].map(|i| max[i].min(hi[i])));
+            if (0..3).any(|i| cut_min[i] >= cut_max[i]) {
+                continue;
+            }
+            filled += (0..3).map(|i| cut_max[i] - cut_min[i]).product::<i32>();
+        }
+        filled
+    }
+}
+
+impl Dense {
+    fn build(boxes: &[TexelBox]) -> Self {
+        let mut rows = vec![0u64; SPAN * SPAN];
+        for (min, max) in boxes {
+            let [x0, y0, z0] = min.map(|c| (c + OFFSET).clamp(0, SPAN as i32) as usize);
+            let [x1, y1, z1] = max.map(|c| (c + OFFSET).clamp(0, SPAN as i32) as usize);
+            if x0 >= x1 {
+                continue;
+            }
+            let bits = ((1u64 << (x1 - x0)) - 1) << x0;
+            for z in z0..z1 {
+                for y in y0..y1 {
+                    rows[y + SPAN * z] |= bits;
+                }
+            }
+        }
+        Self { rows, sums: OnceCell::new() }
+    }
+
+    /// Whether the texel at `p`, relative to the middle boxel, is filled.
+    fn get(&self, p: [i32; 3]) -> bool {
+        let [x, y, z] = p.map(|c| c + OFFSET);
+        let inside = |c: i32| (0..SPAN as i32).contains(&c);
+        inside(x) && inside(y) && inside(z) && self.rows[y as usize + SPAN * z as usize] >> x & 1 == 1
+    }
+
+    /// How many texels are filled in the box from `lo` to `hi`, relative to the middle boxel.
+    fn count(&self, lo: [i32; 3], hi: [i32; 3]) -> i32 {
+        const S: usize = SPAN + 1;
+        let sums = self.sums.get_or_init(|| {
+            let mut sums = vec![0u32; S * S * S];
+            let at = |x: usize, y: usize, z: usize| x + S * (y + S * z);
+            for z in 1..S {
+                for y in 1..S {
+                    let row = self.rows[(y - 1) + SPAN * (z - 1)];
+                    let mut line = 0;
+                    for x in 1..S {
+                        line += (row >> (x - 1) & 1) as u32;
+                        sums[at(x, y, z)] = line + sums[at(x, y - 1, z)] + sums[at(x, y, z - 1)] - sums[at(x, y - 1, z - 1)];
+                    }
+                }
+            }
+            sums
+        });
+        let lo = lo.map(|c| (c + OFFSET).clamp(0, SPAN as i32) as usize);
+        let hi = hi.map(|c| (c + OFFSET).clamp(0, SPAN as i32) as usize);
+        if (0..3).any(|i| lo[i] >= hi[i]) {
+            return 0;
+        }
+        let s = |x: usize, y: usize, z: usize| sums[x + S * (y + S * z)] as i64;
+        let ([x0, y0, z0], [x1, y1, z1]) = (lo, hi);
+        let total = s(x1, y1, z1) - s(x0, y1, z1) - s(x1, y0, z1) - s(x1, y1, z0) + s(x0, y0, z1) + s(x0, y1, z0)
+            + s(x1, y0, z0)
+            - s(x0, y0, z0);
+        total as i32
+    }
+}
+
 /// The boxes of `occupant` alone, as [`mesh_occupant`] wants what's around a block drawn away
 /// from the world (the ghost, items): its edges all show as ridges or creases within itself.
-pub fn alone(occupant: Occupant, blocks: &BlockRegistry) -> Vec<TexelBox> {
-    let only = [occupant];
-    neighborhood(I64Vec3::ZERO, |at| if at == I64Vec3::ZERO { &only[..] } else { &[] }, blocks)
+pub fn alone(occupant: Occupant, blocks: &BlockRegistry) -> Neighborhood {
+    together(&[occupant], blocks)
+}
+
+/// The boxes of `occupants` sharing one boxel and nothing around them, like [`alone`]: a
+/// bundle's pieces, drawn away from the world, hide each other's faces as they would placed.
+pub fn together(occupants: &[Occupant], blocks: &BlockRegistry) -> Neighborhood {
+    gather(I64Vec3::ZERO, |at| if at == I64Vec3::ZERO { occupants } else { &[] }, blocks, DENSE_AT, &TurnedShapes::default())
 }
 
 /// What lies past each edge of a face, texel by texel, as [`MeshData::edges`] holds it. The
-/// face's corners `q` are in texels relative to the same boxel as `boxes`, in order
+/// face's corners `q` are in texels relative to the same boxel as `around`, in order
 /// (counterclockwise from outside), and it faces along `normal`.
-fn edges(boxes: &[TexelBox], q: [[i32; 3]; 4], normal: [i32; 3]) -> [u32; 4] {
+fn edges(around: &Neighborhood, q: [[i32; 3]; 4], normal: [i32; 3]) -> [u32; 4] {
     let axis = normal.iter().position(|&n| n != 0).expect("a unit normal");
     let plane = q[0][axis];
     // One texel in front of the face's plane, and one behind it.
@@ -190,10 +372,20 @@ fn edges(boxes: &[TexelBox], q: [[i32; 3]; 4], normal: [i32; 3]) -> [u32; 4] {
         // The row of texels just past the edge, away from the face.
         let past = if a[out] > opposite[out] { (a[out], a[out] + 1) } else { (a[out] - 1, a[out]) };
         let (lo, hi) = (a[along].min(b[along]), a[along].max(b[along]));
-        // Which texels along the edge, counted from corner `a`, a box fills in a row.
+        // Which texels along the edge, counted from corner `a`, are filled in a row.
         let filled = |across: (i32, i32)| -> u32 {
             let mut bits = 0u32;
-            for (min, max) in boxes {
+            if let Some(dense) = &around.dense {
+                for t in lo..hi {
+                    let mut p = [0; 3];
+                    (p[axis], p[out], p[along]) = (across.0, past.0, t);
+                    if dense.get(p) {
+                        bits |= 1 << if b[along] > a[along] { t - a[along] } else { a[along] - 1 - t };
+                    }
+                }
+                return bits;
+            }
+            for (min, max) in &around.boxes {
                 let overlaps = |i: usize, (l, h): (i32, i32)| min[i] < h && l < max[i];
                 if !overlaps(axis, across) || !overlaps(out, past) || !overlaps(along, (lo, hi)) {
                     continue;
@@ -223,20 +415,13 @@ fn edges(boxes: &[TexelBox], q: [[i32; 3]; 4], normal: [i32; 3]) -> [u32; 4] {
 /// How much of the space in front of a face around its corner `corner` is filled, from 0 to 1.
 /// The space is four cubes `reach` on a side, all in front of the face (the way `normal`
 /// points) and meeting at the corner: over the face, past each of the corner's two edges, and
-/// past the corner. `boxes` and `corner` are in texels relative to the same boxel.
-fn occlusion(boxes: &[TexelBox], corner: [i32; 3], normal: [i32; 3], reach: i32) -> f32 {
+/// past the corner. `around` and `corner` are in texels relative to the same boxel.
+fn occlusion(around: &Neighborhood, corner: [i32; 3], normal: [i32; 3], reach: i32) -> f32 {
     let axis = normal.iter().position(|&n| n != 0).expect("a unit normal");
     // The cubes together: in front along the normal, either side along the other two axes.
     let (mut lo, mut hi) = (corner.map(|c| c - reach), corner.map(|c| c + reach));
     if normal[axis] > 0 { lo[axis] = corner[axis] } else { hi[axis] = corner[axis] }
-    let mut filled = 0;
-    for (min, max) in boxes {
-        let (cut_min, cut_max) = ([0, 1, 2].map(|i| min[i].max(lo[i])), [0, 1, 2].map(|i| max[i].min(hi[i])));
-        if (0..3).any(|i| cut_min[i] >= cut_max[i]) {
-            continue;
-        }
-        filled += (0..3).map(|i| cut_max[i] - cut_min[i]).product::<i32>();
-    }
+    let filled = around.filled(lo, hi);
     // Boxes of one boxel's occupants never overlap, but clamp in case.
     (filled as f32 / (4 * reach * reach * reach) as f32).min(1.0)
 }
@@ -267,8 +452,13 @@ fn buried(grid: &Grid, pos: ChunkPos, blocks: &BlockRegistry) -> bool {
 
 /// Meshes every chunk in `positions`, spread over every core. Comes back in the same order.
 pub fn mesh_chunks(grid: &Grid, positions: &[ChunkPos], blocks: &BlockRegistry, volumes: &Volumes, ao: &AoTuning) -> Vec<MeshData> {
+    mesh_chunks_with(grid, positions, blocks, volumes, ao, DENSE_AT)
+}
+
+/// [`mesh_chunks`], reading neighborhoods of more than `dense_at` boxes through their texels.
+fn mesh_chunks_with(grid: &Grid, positions: &[ChunkPos], blocks: &BlockRegistry, volumes: &Volumes, ao: &AoTuning, dense_at: usize) -> Vec<MeshData> {
     if positions.len() < 8 {
-        return positions.iter().map(|&p| mesh_chunk(grid, p, blocks, volumes, ao)).collect();
+        return positions.iter().map(|&p| mesh_chunk_with(grid, p, blocks, volumes, ao, dense_at)).collect();
     }
     let threads = std::thread::available_parallelism().map_or(1, |n| n.get());
     // Small parts, handed out as threads free up, since chunks differ a lot in cost.
@@ -284,7 +474,7 @@ pub fn mesh_chunks(grid: &Grid, positions: &[ChunkPos], blocks: &BlockRegistry, 
                         let Some(part) = parts.get(i) else {
                             break out;
                         };
-                        out.push((i, part.iter().map(|&p| mesh_chunk(grid, p, blocks, volumes, ao)).collect()));
+                        out.push((i, part.iter().map(|&p| mesh_chunk_with(grid, p, blocks, volumes, ao, dense_at)).collect()));
                     }
                 })
             })
@@ -298,6 +488,11 @@ pub fn mesh_chunks(grid: &Grid, positions: &[ChunkPos], blocks: &BlockRegistry, 
 /// Meshes the chunk at `pos`. Neighbors are read through `grid`, so faces on chunk borders
 /// are culled and occluded against the next chunk. Unloaded neighbors count as empty.
 pub fn mesh_chunk(grid: &Grid, pos: ChunkPos, blocks: &BlockRegistry, volumes: &Volumes, ao: &AoTuning) -> MeshData {
+    mesh_chunk_with(grid, pos, blocks, volumes, ao, DENSE_AT)
+}
+
+/// [`mesh_chunk`], reading neighborhoods of more than `dense_at` boxes through their texels.
+fn mesh_chunk_with(grid: &Grid, pos: ChunkPos, blocks: &BlockRegistry, volumes: &Volumes, ao: &AoTuning, dense_at: usize) -> MeshData {
     let mut mesh = MeshData::default();
     let Some(chunk) = grid.chunk(pos) else {
         return mesh;
@@ -307,6 +502,7 @@ pub fn mesh_chunk(grid: &Grid, pos: ChunkPos, blocks: &BlockRegistry, volumes: &
     }
 
     let near = |local: I64Vec3| occupants_at(grid, chunk, pos, local);
+    let shapes = TurnedShapes::default();
     let full = |local: I64Vec3| {
         near(local).iter().any(|o| !blocks.is_hidden(o.block) && blocks.get(o.block).is_some_and(|def| def.is_full()))
     };
@@ -318,10 +514,10 @@ pub fn mesh_chunk(grid: &Grid, pos: ChunkPos, blocks: &BlockRegistry, volumes: &
             continue;
         }
         let at = local.to_ivec();
-        let mut drawn = Vec::new();
+        let mut drawn = DrawnFaces::default();
         // Only gathered once a face of this boxel is drawn; most boxels are buried.
         let boxes = OnceCell::new();
-        let around = || boxes.get_or_init(|| neighborhood(at, near, blocks)).as_slice();
+        let around = || boxes.get_or_init(|| gather(at, near, blocks, dense_at, &shapes));
         for &occupant in grid.occupants(id).iter().filter(|o| !blocks.is_hidden(o.block)) {
             let hidden = |n: [i32; 3]| full(at + I64Vec3::new(n[0] as i64, n[1] as i64, n[2] as i64));
             mesh_occupant(&mut mesh, occupant, at.as_vec3().to_array(), blocks, volumes, hidden, &around, ao, &mut drawn);
@@ -338,6 +534,41 @@ pub struct DrawnFace {
     plane: u8,
     min: [u8; 2],
     max: [u8; 2],
+}
+
+/// The faces drawn so far in one boxel, kept apart by which way they face and on which plane,
+/// so a face only looks through those it could coincide with: a finely cut piece has
+/// thousands, and every face against every other was slow.
+#[derive(Default)]
+pub struct DrawnFaces {
+    /// Faces of older occupants, by [`DrawnFaces::key`], in the order drawn.
+    by_plane: Vec<Vec<DrawnFace>>,
+    /// The current occupant's, which its own faces don't cut.
+    mine: Vec<DrawnFace>,
+}
+
+impl DrawnFaces {
+    const PLANES: usize = BlockBox::SIZE as usize + 1;
+
+    fn key(normal: [i32; 3], plane: u8) -> usize {
+        let axis = normal.iter().position(|&n| n != 0).expect("a unit normal");
+        (axis * 2 + usize::from(normal[axis] < 0)) * Self::PLANES + plane as usize
+    }
+
+    /// Older occupants' faces on `plane`, facing along `normal`.
+    fn on(&self, normal: [i32; 3], plane: u8) -> &[DrawnFace] {
+        self.by_plane.get(Self::key(normal, plane)).map_or(&[], |v| v.as_slice())
+    }
+
+    /// Files the current occupant's faces with the older ones, for the next occupant.
+    fn finish_occupant(&mut self) {
+        if self.by_plane.is_empty() {
+            self.by_plane = vec![Vec::new(); 6 * Self::PLANES];
+        }
+        for face in self.mine.drain(..) {
+            self.by_plane[Self::key(face.normal, face.plane)].push(face);
+        }
+    }
 }
 
 /// What's left of rectangle `r` after cutting out `cut`: up to four rectangles.
@@ -366,9 +597,9 @@ fn subtract((min, max): ([u8; 2], [u8; 2]), cut: &DrawnFace) -> Vec<([u8; 2], [u
 /// Adds the faces of one occupant whose boxel's minimum corner is at `at`. A face on the
 /// boxel's side facing direction `n` is left out if `hidden(n)`. Parts of faces that lie on
 /// faces in `drawn`, from older occupants of the same boxel, are left out too, and this
-/// occupant's faces are added to `drawn`. `around` gives the boxes near the boxel, in
+/// occupant's faces are added to `drawn`. `around` gives what's near the boxel, in
 /// texels of it as it stands in the world, for each face's edges and its corners'
-/// ambient occlusion; pass [`alone`]'s boxes and [`AoTuning::OFF`] where there are no
+/// ambient occlusion; pass [`alone`] and [`AoTuning::OFF`] where there are no
 /// neighbors.
 #[allow(clippy::too_many_arguments)]
 pub fn mesh_occupant<'b>(
@@ -378,9 +609,9 @@ pub fn mesh_occupant<'b>(
     blocks: &BlockRegistry,
     volumes: &Volumes,
     hidden: impl Fn([i32; 3]) -> bool,
-    around: &impl Fn() -> &'b [TexelBox],
+    around: &impl Fn() -> &'b Neighborhood,
     ao: &AoTuning,
-    drawn: &mut Vec<DrawnFace>,
+    drawn: &mut DrawnFaces,
 ) {
     let Some(def) = blocks.get(occupant.block) else {
         return;
@@ -400,7 +631,6 @@ pub fn mesh_occupant<'b>(
     // A point in texels, unturned, to texels of the boxel turned about the center.
     let place = |p: [i32; 3]| turn.apply(p.map(|c| c - half)).map(|c| c + half);
 
-    let mine_from = drawn.len();
     for b in &shape {
         let turned = turn.apply_box(*b);
         for face in &FACES {
@@ -413,12 +643,29 @@ pub fn mesh_occupant<'b>(
             }
             let (a, c) = ((axis + 1) % 3, (axis + 2) % 3);
             let whole = ([turned.min[a], turned.min[c]], [turned.max[a], turned.max[c]]);
+            drawn.mine.push(DrawnFace { normal, plane, min: whole.0, max: whole.1 });
+            // Whether something fills all the texels just in front of part of the face: another
+            // occupant pressed against it, a neighbor, or another of its own boxes.
+            let front = if normal[axis] > 0 { (plane as i32, plane as i32 + 1) } else { (plane as i32 - 1, plane as i32) };
+            let covered = |(min, max): ([u8; 2], [u8; 2])| {
+                let (mut lo, mut hi) = ([0; 3], [0; 3]);
+                (lo[axis], hi[axis]) = front;
+                (lo[a], hi[a], lo[c], hi[c]) = (min[0] as i32, max[0] as i32, min[1] as i32, max[1] as i32);
+                around().covers(lo, hi)
+            };
+            // Most faces inside a finely cut shape are covered whole; skip cutting those.
+            if covered(whole) {
+                continue;
+            }
             let mut pieces = vec![whole];
-            for cut in drawn[..mine_from].iter().filter(|d| d.normal == normal && d.plane == plane) {
+            let touches = |cut: &&DrawnFace| (0..2).all(|i| whole.0[i] < cut.max[i] && cut.min[i] < whole.1[i]);
+            for cut in drawn.on(normal, plane).iter().filter(touches) {
                 pieces = pieces.iter().flat_map(|&p| subtract(p, cut)).collect();
             }
-            drawn.push(DrawnFace { normal, plane, min: whole.0, max: whole.1 });
             for (min, max) in pieces {
+                if covered((min, max)) {
+                    continue;
+                }
                 // The piece as a box, turned back to how the block stands unturned.
                 let mut piece = turned;
                 (piece.min[a], piece.min[c], piece.max[a], piece.max[c]) = (min[0], min[1], max[0], max[1]);
@@ -426,6 +673,7 @@ pub fn mesh_occupant<'b>(
             }
         }
     }
+    drawn.finish_occupant();
 }
 
 /// Adds one face of box `b` (in texels, before turning) as a quad facing `normal` once
@@ -440,7 +688,7 @@ fn quad<'b>(
     base: [f32; 3],
     volume: u32,
     place: &impl Fn([i32; 3]) -> [i32; 3],
-    around: &impl Fn() -> &'b [TexelBox],
+    around: &impl Fn() -> &'b Neighborhood,
     ao: &AoTuning,
 ) {
     let first = mesh.positions.len() as u32;
@@ -448,8 +696,8 @@ fn quad<'b>(
     // The corners of this box, in texels, before turning, then as they stand in the world.
     let p = face.corners.map(|c| [0, 1, 2].map(|i| if c[i] == 0 { b.min[i] as i32 } else { b.max[i] as i32 }));
     let q = p.map(place);
-    let boxes = around();
-    let edges = edges(boxes, q, normal);
+    let around = around();
+    let edges = edges(around, q, normal);
     let length = |a: [i32; 3], b: [i32; 3]| (0..3).map(|i| (a[i] - b[i]).abs()).sum::<i32>() as f32;
     let (width, height) = (length(q[0], q[1]), length(q[0], q[3]));
     let unit = |texels: f32| (texels / FACE_SCALE * u16::MAX as f32).round() as u16;
@@ -458,7 +706,7 @@ fn quad<'b>(
     for k in 0..4 {
         // In the look, half a texel back from the face, into the block.
         let [x, y, z] = [0, 1, 2].map(|i| p[k][i] as f32 * texels - face.normal[i] as f32 * 0.5);
-        lit[k] = if ao.strength > 0.0 { 1.0 - ao.darkness(occlusion(boxes, q[k], normal, reach)) } else { 1.0 };
+        lit[k] = if ao.strength > 0.0 { 1.0 - ao.darkness(occlusion(around, q[k], normal, reach)) } else { 1.0 };
         let l = lit[k];
         let (u, v) = [(0.0, 0.0), (width, 0.0), (width, height), (0.0, height)][k];
         mesh.positions.push([0, 1, 2].map(|i| at[i] + q[k][i] as f32 / BlockBox::SIZE as f32));
@@ -675,13 +923,14 @@ mod tests {
         let top = mesh.positions.iter().map(|p| p[2]).fold(f32::MIN, f32::max);
         assert_eq!(top, 5.5);
 
-        // On stone, the slab's bottom is hidden but the stone's top isn't: the slab doesn't
-        // cover all of it from every side.
+        // On stone, the slab's bottom is hidden, and so is the stone's top: the slab fills
+        // every texel just above it.
         grid.set_block(BoxelPos::new(5, 5, 4), stone);
-        assert_eq!(mesh_chunk(&grid, ChunkPos::new(0, 0, 0), &blocks).quad_count(), 5 + 6);
-        // A full block beside it hides the slab's side, and keeps its own.
+        assert_eq!(mesh_chunk(&grid, ChunkPos::new(0, 0, 0), &blocks).quad_count(), 5 + 5);
+        // A full block beside it hides the slab's side, and keeps its own: the slab covers
+        // only half of it.
         grid.set_block(BoxelPos::new(6, 5, 5), stone);
-        assert_eq!(mesh_chunk(&grid, ChunkPos::new(0, 0, 0), &blocks).quad_count(), 4 + 6 + 6);
+        assert_eq!(mesh_chunk(&grid, ChunkPos::new(0, 0, 0), &blocks).quad_count(), 4 + 5 + 6);
     }
 
     #[test]
@@ -1106,8 +1355,8 @@ mod tests {
             let mut mesh = MeshData::default();
             let occupant = Occupant::new(block);
             let boxes = alone(occupant, &blocks);
-            let around = || boxes.as_slice();
-            mesh_occupant(&mut mesh, occupant, [0.0; 3], &blocks, &flat(&blocks), |_| false, &around, &AoTuning::OFF, &mut Vec::new());
+            let around = || &boxes;
+            mesh_occupant(&mut mesh, occupant, [0.0; 3], &blocks, &flat(&blocks), |_| false, &around, &AoTuning::OFF, &mut DrawnFaces::default());
             assert_eq!(mesh.quad_count(), 6);
             for e in &mesh.edges {
                 for (k, &kinds) in e.iter().enumerate() {
@@ -1121,5 +1370,213 @@ mod tests {
             let face: Vec<[f32; 4]> = mesh.face[top * 4..top * 4 + 4].iter().map(|f| f.map(texels)).collect();
             assert_eq!(face, [[0.0, 0.0, 16.0, 16.0], [16.0, 0.0, 16.0, 16.0], [16.0, 16.0, 16.0, 16.0], [0.0, 16.0, 16.0, 16.0]]);
         }
+    }
+
+    /// A shape cut like a 3D checkerboard in cubes `cell` texels on a side; one texel makes
+    /// 2,048 boxes, none merging.
+    fn checker(cell: usize) -> Vec<BlockBox> {
+        let mut grid = api::ShapeGrid::EMPTY;
+        for z in 0..16 {
+            for y in 0..16 {
+                for x in 0..16 {
+                    grid.set(x, y, z, (x / cell + y / cell + z / cell).is_multiple_of(2));
+                }
+            }
+        }
+        grid.to_boxes()
+    }
+
+    /// A shape with about half its texels filled at random, the same every run.
+    fn speckled(seed: u64) -> Vec<BlockBox> {
+        let mut state = seed.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+        let mut grid = api::ShapeGrid::EMPTY;
+        for z in 0..16 {
+            for y in 0..16 {
+                for x in 0..16 {
+                    state = state.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+                    // Clumped a little, so boxes come in many sizes.
+                    grid.set(x, y, z, !(state >> 33).is_multiple_of(3) || (x < 8 && z < 4));
+                }
+            }
+        }
+        grid.to_boxes()
+    }
+
+    fn same(a: &MeshData, b: &MeshData) {
+        assert_eq!(a.positions, b.positions);
+        assert_eq!(a.normals, b.normals);
+        assert_eq!(a.colors, b.colors);
+        assert_eq!(a.solid, b.solid);
+        assert_eq!(a.edges, b.edges);
+        assert_eq!(a.face, b.face);
+        assert_eq!(a.indices, b.indices);
+    }
+
+    /// A chunk with slabs, stairs, turned pieces, texel checkers and speckled shapes packed
+    /// among plain blocks, some across a chunk border: `size` boxels along x and y, 3 high. The
+    /// checkers' cubes are `cell` texels on a side.
+    fn a_busy_chunk(size: i64, cell: usize) -> (Grid, BlockRegistry, Volumes) {
+        let mut blocks = BlockRegistry::default();
+        let stone = blocks.register(BlockDef::new("test:stone", true, [128, 128, 128])).unwrap();
+        let slab = blocks.register(BlockDef::new("test:slab", true, [200, 0, 0]).with_shape(vec![SLAB])).unwrap();
+        let stair_boxes = vec![SLAB, BlockBox::new([0, 0, 8], [8, 16, 16])];
+        let stair = blocks.register(BlockDef::new("test:stair", true, [0, 200, 0]).with_look("test:a").with_shape(stair_boxes)).unwrap();
+        let checker = blocks.register(BlockDef::new("test:checker", true, [0, 0, 200]).with_shape(checker(cell))).unwrap();
+        let shapes: Vec<BlockId> = (0..4)
+            .map(|i| blocks.register(BlockDef::new(format!("test:speckled{i}"), true, [9, 9, 9]).with_look("test:a").with_shape(speckled(i))).unwrap())
+            .collect();
+        let volumes = Volumes::build(&looks(&["test:a"]), &blocks);
+        let mut grid = Grid::default();
+        let turns = Orientation::all();
+        let mut n = 0usize;
+        for z in 0..3 {
+            for y in 0..size {
+                for x in 32 - size / 2..32 + size / 2 {
+                    n += 1;
+                    let block = match n % 7 {
+                        0 | 1 => stone,
+                        2 => slab,
+                        3 => stair,
+                        4 => checker,
+                        k => shapes[(n + k) % shapes.len()],
+                    };
+                    grid.set_cell(BoxelPos::new(x, y, z), &[Occupant::turned(block, turns[n % turns.len()])]);
+                }
+            }
+        }
+        (grid, blocks, volumes)
+    }
+
+    #[test]
+    fn reading_neighbors_through_texels_meshes_the_same_as_through_boxes() {
+        let (grid, blocks, volumes) = a_busy_chunk(4, 2);
+        let short_reach = AoTuning { reach: 5.0, ..AoTuning::default() };
+        for ao in [AoTuning::default(), short_reach] {
+            for chunk in [ChunkPos::new(0, 0, 0), ChunkPos::new(1, 0, 0)] {
+                let boxes = mesh_chunk_with(&grid, chunk, &blocks, &volumes, &ao, usize::MAX);
+                let texels = mesh_chunk_with(&grid, chunk, &blocks, &volumes, &ao, 0);
+                assert!(boxes.quad_count() > 1000, "{}", boxes.quad_count());
+                same(&boxes, &texels);
+            }
+        }
+    }
+
+    #[test]
+    fn a_block_alone_meshes_the_same_through_texels() {
+        let (_, blocks, volumes) = a_busy_chunk(0, 1);
+        for (id, _) in blocks.iter() {
+            for turn in Orientation::all() {
+                let occupant = Occupant::turned(id, turn);
+                let mut meshes = [0, usize::MAX].map(|dense_at| {
+                    let only = [occupant];
+                    let around = gather(I64Vec3::ZERO, |at| if at == I64Vec3::ZERO { &only[..] } else { &[] }, &blocks, dense_at, &TurnedShapes::default());
+                    let mut mesh = MeshData::default();
+                    mesh_occupant(&mut mesh, occupant, [0.0; 3], &blocks, &volumes, |_| false, &|| &around, &AoTuning::OFF, &mut DrawnFaces::default());
+                    mesh
+                });
+                let [a, b] = &mut meshes;
+                same(a, b);
+            }
+        }
+    }
+
+    /// The two halves of a texel checker, each as boxes: even texels and odd ones.
+    fn checker_halves() -> [Vec<BlockBox>; 2] {
+        [0, 1].map(|odd| {
+            let mut grid = api::ShapeGrid::EMPTY;
+            for z in 0..16 {
+                for y in 0..16 {
+                    for x in 0..16 {
+                        grid.set(x, y, z, (x + y + z) % 2 == odd);
+                    }
+                }
+            }
+            grid.to_boxes()
+        })
+    }
+
+    #[test]
+    fn faces_pressed_against_another_occupant_are_left_out() {
+        let (mut grid, mut blocks, _) = setup();
+        let slab = blocks.register(BlockDef::new("test:slab", true, [9; 3]).with_shape(vec![SLAB])).unwrap();
+        let up = Orientation::quarter_turns(0, 2);
+        grid.set_cell(BoxelPos::new(5, 5, 5), &[Occupant::new(slab), Occupant::turned(slab, up)]);
+        let mesh = mesh_chunk(&grid, ChunkPos::new(0, 0, 0), &blocks);
+        // Where they meet, neither shows a face: five each.
+        assert_eq!(mesh.quad_count(), 10);
+        assert!(quads(&mesh).iter().all(|(n, min, _)| n[2] == 0.0 || min[2] != 5.5), "nothing at the middle");
+    }
+
+    #[test]
+    fn a_two_material_checker_shows_only_its_outside() {
+        let (mut grid, mut blocks, stone) = setup();
+        let [even, odd] = checker_halves();
+        let a = blocks.register(BlockDef::new("test:a", true, [200, 0, 0]).with_shape(even)).unwrap();
+        let b = blocks.register(BlockDef::new("test:b", true, [0, 0, 200]).with_shape(odd)).unwrap();
+        grid.set_cell(BoxelPos::new(4, 4, 4), &[Occupant::new(a), Occupant::new(b)]);
+        let outside = |mesh: &MeshData| {
+            quads(mesh).iter().all(|(n, min, max)| {
+                let axis = n.iter().position(|&c| c != 0.0).unwrap();
+                let plane = if n[axis] > 0.0 { max[axis] } else { min[axis] };
+                plane == if n[axis] > 0.0 { 5.0 } else { 4.0 }
+            })
+        };
+        for ao in [AoTuning::OFF, AoTuning::default()] {
+            let mesh = super::mesh_chunk(&grid, ChunkPos::new(0, 0, 0), &blocks, &flat(&blocks), &ao);
+            assert_eq!(mesh.quad_count(), 6 * 256, "one texel face for each texel of the outside");
+            assert!(outside(&mesh));
+        }
+        // Against a full block, that side goes too, and the block's side facing it.
+        grid.set_block(BoxelPos::new(5, 4, 4), stone);
+        let mesh = mesh_chunk(&grid, ChunkPos::new(0, 0, 0), &blocks);
+        assert_eq!(mesh.quad_count(), 5 * 256 + 5);
+    }
+
+    /// A boxel holding a two-material texel checker, one occupant per material, as a bundle
+    /// places it. Run with `--release --ignored --nocapture`.
+    #[test]
+    #[ignore]
+    fn time_a_two_material_checker() {
+        let mut blocks = BlockRegistry::default();
+        let [even, odd] = checker_halves();
+        let a = blocks.register(BlockDef::new("test:a", true, [200, 0, 0]).with_shape(even)).unwrap();
+        let b = blocks.register(BlockDef::new("test:b", true, [0, 0, 200]).with_shape(odd)).unwrap();
+        let mut grid = Grid::default();
+        grid.set_cell(BoxelPos::new(4, 4, 4), &[Occupant::new(a), Occupant::new(b)]);
+        let volumes = flat(&blocks);
+        let start = std::time::Instant::now();
+        let mesh = super::mesh_chunk(&grid, ChunkPos::new(0, 0, 0), &blocks, &volumes, &AoTuning::default());
+        println!("two-material checker: {} quads in {:?}", mesh.quad_count(), start.elapsed());
+    }
+
+    /// Run with `cargo test --release -p client -- --ignored meshing_fine_shapes`: debug builds
+    /// are too slow to say anything. Reading every neighborhood box by box, as before
+    /// `fix-mesher-cost`, took 110 ms for the checker alone and 56 s for the chunk; through
+    /// texels, 4 ms and 220 ms.
+    #[test]
+    #[ignore]
+    fn meshing_fine_shapes_is_quick() {
+        let (grid, blocks, volumes) = a_busy_chunk(8, 1);
+        let checker = blocks.id("test:checker").unwrap();
+        let time = |f: &dyn Fn()| {
+            let start = std::time::Instant::now();
+            for _ in 0..5 {
+                f();
+            }
+            start.elapsed() / 5
+        };
+        let ghost = time(&|| {
+            let occupant = Occupant::new(checker);
+            let around = alone(occupant, &blocks);
+            let mut mesh = MeshData::default();
+            mesh_occupant(&mut mesh, occupant, [0.0; 3], &blocks, &volumes, |_| false, &|| &around, &AoTuning::OFF, &mut DrawnFaces::default());
+            assert_eq!(mesh.quad_count(), 12_288);
+        });
+        let chunk = time(&|| {
+            super::mesh_chunk(&grid, ChunkPos::new(0, 0, 0), &blocks, &volumes, &AoTuning::default());
+        });
+        println!("a texel checker alone: {ghost:?}; a busy chunk with AO: {chunk:?}");
+        assert!(ghost.as_millis() < 20, "a texel checker alone took {ghost:?}");
+        assert!(chunk.as_millis() < 300, "a busy chunk took {chunk:?}");
     }
 }

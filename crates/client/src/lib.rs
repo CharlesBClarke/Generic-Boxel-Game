@@ -305,6 +305,7 @@ fn spawn_chunk_meshes(
         allowed: materials.add(ghost_material(Color::srgba(1.0, 1.0, 1.0, 0.5))),
         refused: materials.add(ghost_material(Color::srgba(1.0, 0.2, 0.2, 0.6))),
         shown: None,
+        built: std::collections::HashMap::new(),
     };
     commands.insert_resource(ghost);
     let hidden = HiddenGhosts {

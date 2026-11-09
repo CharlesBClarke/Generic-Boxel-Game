@@ -63,6 +63,9 @@ impl BlockId {
 #[derive(Clone, Default)]
 pub struct BlockRegistry {
     defs: Vec<BlockDef>,
+    /// The texels each block fills, unturned, by its index less one: worked out from its
+    /// boxes once, as a finely cut shape has thousands.
+    shapes: Vec<ShapeGrid>,
     by_name: HashMap<String, BlockId>,
     /// What each block drops, by its index less one.
     drops: Vec<Option<Drop>>,
@@ -116,6 +119,7 @@ impl BlockRegistry {
             None => None,
         };
         self.by_name.insert(def.name.clone(), id);
+        self.shapes.push(ShapeGrid::from_boxes(&def.shape));
         self.defs.push(def);
         self.drops.push(drop);
         Ok(id)
@@ -316,7 +320,7 @@ impl BlockRegistry {
 
     /// The texels a block fills, unturned.
     pub fn shape(&self, id: BlockId) -> ShapeGrid {
-        self.get(id).map_or(ShapeGrid::EMPTY, |def| ShapeGrid::from_boxes(&def.shape))
+        (id.0 as usize).checked_sub(1).and_then(|i| self.shapes.get(i)).cloned().unwrap_or(ShapeGrid::EMPTY)
     }
 
     /// For a part, the material it's made of; `None` for a material.

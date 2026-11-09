@@ -20,6 +20,12 @@ base_cow.workspace = true
 wasm_host.workspace = true
 data_mods.workspace = true
 
+[features]
+# Records how long every system takes to a Chrome trace (open it in ui.perfetto.dev), for
+# chasing hitches: `TRACE_CHROME=<file>.json cargo run --release --features trace`. Written when
+# the game quits normally.
+trace = ["client/trace"]
+
 [build-dependencies]
 wit-component.workspace = true
 
