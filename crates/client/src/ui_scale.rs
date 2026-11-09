@@ -39,7 +39,7 @@ impl UiScaleTuning {
 impl Tunables for UiScaleTuning {
     fn tunables(&self) -> Vec<Tunable> {
         vec![
-            Tunable::new("size", self.size, 0.5, 3.0),
+            Tunable::new("size", self.size, 0.5, 1.5),
             Tunable::new("reference_height", self.reference_height, 480.0, 2160.0),
         ]
     }
