@@ -1266,7 +1266,59 @@ pub(crate) fn paint_pieces(painter: &egui::Painter, rect: egui::Rect, pieces: &[
 
 /// [`paint_pieces`], the view turned `yaw` radians about the up axis. The scale stays the same
 /// at every turn, so a turning picture doesn't grow and shrink.
+///
+/// A finely cut piece is hundreds of little faces, too many to lay out again every frame, so
+/// each picture is laid out once, at its size and turn, and kept (see [`IconMeshes`]).
 fn paint_pieces_turned(painter: &egui::Painter, rect: egui::Rect, pieces: &[(ShapeGrid, [u8; 3])], yaw: f32) {
+    let ctx = painter.ctx();
+    let pixels_per_point = ctx.pixels_per_point();
+    let key = {
+        use std::hash::{Hash, Hasher};
+        let mut h = std::collections::hash_map::DefaultHasher::new();
+        for (shape, color) in pieces {
+            (shape.hash64(), color).hash(&mut h);
+        }
+        (yaw.to_bits(), rect.width().to_bits(), rect.height().to_bits(), pixels_per_point.to_bits()).hash(&mut h);
+        h.finish()
+    };
+    let cache = ctx.data_mut(|d| d.get_temp_mut_or_default::<IconMeshes>(egui::Id::new("icon meshes")).clone());
+    let mesh = {
+        let mut meshes = cache.0.lock().expect("the icon cache isn't poisoned");
+        if meshes.len() >= IconMeshes::KEPT && !meshes.contains_key(&key) {
+            meshes.clear();
+        }
+        meshes
+            .entry(key)
+            .or_insert_with(|| {
+                let at_origin = egui::Rect::from_min_size(egui::Pos2::ZERO, rect.size());
+                let options = ctx.options(|o| o.tessellation_options);
+                let atlas = ctx.fonts(|f| f.font_image_size());
+                let mut tessellator = egui::epaint::Tessellator::new(pixels_per_point, options, atlas, Vec::new());
+                let mut mesh = egui::Mesh::default();
+                for shape in picture_shapes(at_origin, pieces, yaw) {
+                    tessellator.tessellate_shape(shape, &mut mesh);
+                }
+                std::sync::Arc::new(mesh)
+            })
+            .clone()
+    };
+    let mut placed = (*mesh).clone();
+    placed.translate(rect.min.to_vec2());
+    painter.add(egui::Shape::mesh(placed));
+}
+
+/// Pictures of pieces already laid out as triangles, by what's drawn and how; kept in egui's
+/// memory.
+#[derive(Clone, Default)]
+struct IconMeshes(std::sync::Arc<std::sync::Mutex<HashMap<u64, std::sync::Arc<egui::Mesh>>>>);
+
+impl IconMeshes {
+    /// How many are kept before starting over; a turning picture adds one each frame.
+    const KEPT: usize = 256;
+}
+
+/// The faces of a picture of `pieces` in `rect`, turned `yaw` (see [`paint_pieces_turned`]).
+fn picture_shapes(rect: egui::Rect, pieces: &[(ShapeGrid, [u8; 3])], yaw: f32) -> Vec<egui::Shape> {
     let axes = |yaw: f32| {
         let forward = view_at(yaw);
         let right = forward.cross(ZVec3::Z).normalize();
@@ -1288,6 +1340,7 @@ fn paint_pieces_turned(painter: &egui::Painter, rect: egui::Rect, pieces: &[(Sha
     let scale = (rect.width() / (2.0 * extent.x)).min(rect.height() / (2.0 * extent.y));
     let center = rect.center();
     let at = axes(yaw);
+    let mut shapes = Vec::new();
     for quad in quads_of(pieces, yaw) {
         let color = quad.color;
         let shade = |c: u8| (c as f32 * quad.shade) as u8;
@@ -1295,8 +1348,9 @@ fn paint_pieces_turned(painter: &egui::Painter, rect: egui::Rect, pieces: &[(Sha
         let points = quad.corners.iter().map(|&p| center + flat(at, p) * scale).collect();
         // A hairline of the same color closes the seams between neighboring faces.
         let hairline: f32 = if quad.facing > STEEP { 0.6 } else { 0.0 };
-        painter.add(egui::Shape::convex_polygon(points, fill, egui::Stroke::new(hairline, fill)));
+        shapes.push(egui::Shape::convex_polygon(points, fill, egui::Stroke::new(hairline, fill)));
     }
+    shapes
 }
 
 #[cfg(test)]
@@ -1304,6 +1358,53 @@ mod tests {
     use super::*;
     use crate::world::Link;
     use api::BlockBox;
+
+    #[test]
+    fn a_kept_picture_is_the_same_triangles_as_one_laid_out_fresh() {
+        let mut checker = ShapeGrid::EMPTY;
+        for z in 0..16 {
+            for y in 0..16 {
+                for x in 0..16 {
+                    checker.set(x, y, z, (x + y + z) % 3 == 0);
+                }
+            }
+        }
+        let rest = ShapeGrid::FULL.minus(&checker);
+        let pieces = [(checker, [200, 40, 40]), (rest, [40, 40, 200])];
+        let ctx = egui::Context::default();
+        let (rect, moved) = (egui::Rect::from_min_size(egui::pos2(10.25, 20.5), egui::vec2(48.0, 48.0)), egui::vec2(300.0, 7.0));
+        let mut drawn = Vec::new();
+        let mut fresh = egui::Mesh::default();
+        for frame in 0..2 {
+            let output = ctx.run(egui::RawInput::default(), |ctx| {
+                let painter = ctx.layer_painter(egui::LayerId::background());
+                // Twice, the second somewhere else, from what the first kept.
+                paint_pieces_turned(&painter, rect, &pieces, 0.3);
+                paint_pieces_turned(&painter, rect.translate(moved), &pieces, 0.3);
+                if frame == 0 {
+                    let options = ctx.options(|o| o.tessellation_options);
+                    let atlas = ctx.fonts(|f| f.font_image_size());
+                    let mut tessellator = egui::epaint::Tessellator::new(ctx.pixels_per_point(), options, atlas, Vec::new());
+                    for shape in picture_shapes(rect, &pieces, 0.3) {
+                        tessellator.tessellate_shape(shape, &mut fresh);
+                    }
+                }
+            });
+            drawn = output.shapes.into_iter().filter_map(|c| match c.shape {
+                egui::Shape::Mesh(m) => Some(m),
+                _ => None,
+            }).collect();
+        }
+        assert_eq!(drawn.len(), 2);
+        let close = |a: &egui::Mesh, b: &egui::Mesh, by: egui::Vec2| {
+            a.indices == b.indices
+                && a.vertices.len() == b.vertices.len()
+                && a.vertices.iter().zip(&b.vertices).all(|(u, v)| (u.pos - (v.pos + by)).length() < 1e-3 && u.color == v.color)
+        };
+        assert!(fresh.vertices.len() > 1000, "a finely cut picture");
+        assert!(close(&drawn[0], &fresh, egui::Vec2::ZERO));
+        assert!(close(&drawn[1], &fresh, moved));
+    }
 
     #[test]
     fn pictures_draw_only_the_faces_that_show() {
