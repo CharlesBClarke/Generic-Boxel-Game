@@ -353,11 +353,14 @@ pub(crate) fn update_ghost(
         let built = ghost.built.entry(place.occupant).or_insert_with(|| {
             let mut data = mesher::MeshData::default();
             let (volumes, off) = (&chunk_meshes.volumes, &mesher::AoTuning::OFF);
-            for occupant in place.occupants() {
+            // A bundle's pieces together, as they'll be placed.
+            let occupants: Vec<Occupant> = place.occupants().collect();
+            let boxes = mesher::together(&occupants, blocks);
+            let around = || &boxes;
+            let mut drawn = mesher::DrawnFaces::default();
+            for &occupant in &occupants {
                 // Built around the boxel's center, so scaling shrinks it in place.
-                let boxes = mesher::alone(occupant, blocks);
-                let around = || &boxes;
-                mesher::mesh_occupant(&mut data, occupant, [-0.5; 3], blocks, volumes, |_| false, &around, off, &mut mesher::DrawnFaces::default());
+                mesher::mesh_occupant(&mut data, occupant, [-0.5; 3], blocks, volumes, |_| false, &around, off, &mut drawn);
             }
             meshes.add(crate::to_bevy_mesh(data))
         });
@@ -1033,6 +1036,86 @@ mod remesh_timing {
         let bevy: Vec<_> = meshed.into_iter().map(crate::to_bevy_mesh).collect();
         let converting = start.elapsed();
         println!("tick {ticked:?}; {} chunks {changed:?}, quads {quads:?}: meshed in {meshing:?}, converted in {converting:?}", bevy.len());
+    }
+
+    /// Loads the saved world named in `BOXEL_WORLD`, finds its most finely cut boxel, and times
+    /// placing a brick beside it and breaking it again, step by step. Run with
+    /// `BOXEL_WORLD=<name> cargo test --release -p client -- --ignored --nocapture time_edits_in_a_save`.
+    #[test]
+    #[ignore]
+    fn time_edits_in_a_save() {
+        let name = std::env::var("BOXEL_WORLD").expect("BOXEL_WORLD names the world");
+        let save = server::WorldFile::named(&name).unwrap().read().unwrap().expect("the world is saved");
+        let mut sim = base_sim();
+        sim.spawn_player().unwrap();
+        let report = sim.load(&save).unwrap();
+        println!("loaded {name}; left out {:?}", report.skipped);
+        // The boxel whose occupants have the most boxes between them.
+        let grid = sim.universe().main();
+        let boxes = |pos: api::BoxelPos| -> usize {
+            grid.cell(pos).iter().map(|o| sim.blocks().get(o.block).map_or(0, |d| d.shape.len())).sum()
+        };
+        let mut finest = None;
+        for (chunk, _) in grid.chunks() {
+            for i in 0..api::CHUNK_VOLUME {
+                let pos = chunk.origin().offset(api::LocalPos::from_index(i).to_ivec());
+                let n = boxes(pos);
+                if n > 64 && finest.is_none_or(|(_, m)| n > m) {
+                    finest = Some((pos, n));
+                }
+            }
+        }
+        let (fine, n) = finest.expect("a finely cut boxel");
+        let pieces: Vec<_> = grid.cell(fine).iter().map(|o| sim.blocks().get(o.block).map(|d| (d.name.clone(), d.shape.len()))).collect();
+        println!("finest boxel {:?}: {n} boxes, {pieces:?}", fine.0);
+        let fine_count = grid.chunks().flat_map(|(c, _)| (0..api::CHUNK_VOLUME).map(move |i| c.origin().offset(api::LocalPos::from_index(i).to_ivec()))).filter(|&p| boxes(p) > 64).count();
+        println!("{fine_count} boxels with more than 64 boxes");
+        // A side with room to put a brick on solid ground, and to stand three boxels out.
+        let full = |p: api::BoxelPos| grid.cell(p).iter().any(|o| sim.blocks().get(o.block).is_some_and(|d| d.is_full()));
+        let empty = |p: api::BoxelPos| grid.cell(p).is_empty();
+        let side = [I64Vec3::X, I64Vec3::NEG_X, I64Vec3::Y, I64Vec3::NEG_Y]
+            .into_iter()
+            .find(|&d| {
+                let spot = fine.offset(d);
+                empty(spot) && full(spot.offset(I64Vec3::NEG_Z)) && (1..4).all(|k| empty(fine.offset(d * (k + 1))) && empty(fine.offset(d * (k + 1) + I64Vec3::Z)))
+            })
+            .expect("an open side on the ground");
+        let spot = fine.offset(side);
+        let stand = fine.offset(side * 4);
+        sim.teleport_player(WorldPos::new(stand.0, ZVec3::new(0.5, 0.5, 0.0)));
+        let brick = sim.blocks().material_block(sim.blocks().material(base::BRICK).unwrap());
+        let (mut link, mut world) = connect(sim);
+        step(&mut link, &mut world, &PlayerInput::default());
+        let volumes = Volumes::build(world.looks(), world.blocks());
+        let ao = mesher::AoTuning::default();
+        let aim = |world: &ClientWorld, at: WorldPos| {
+            let d = world.player().unwrap().eye().delta_to(at);
+            (d.y.atan2(d.x), d.z.atan2(d.truncate().length()))
+        };
+        let mut time_edit = |what: &str, input: PlayerInput, world: &mut ClientWorld| {
+            world.take_changed_chunks();
+            let start = std::time::Instant::now();
+            step(&mut link, world, &input);
+            let ticked = start.elapsed();
+            let changed = world.take_changed_chunks();
+            let start = std::time::Instant::now();
+            let meshed = mesher::mesh_chunks(world.universe().main(), &changed, world.blocks(), &volumes, &ao);
+            let meshing = start.elapsed();
+            let quads: Vec<usize> = meshed.iter().map(|m| m.quad_count()).collect();
+            let start = std::time::Instant::now();
+            let bevy: Vec<_> = meshed.into_iter().map(crate::to_bevy_mesh).collect();
+            let converting = start.elapsed();
+            println!("{what}: tick {ticked:?}; {} chunks, quads {quads:?}: meshed {meshing:?}, converted {converting:?}", bevy.len());
+            // A quiet tick after, to see what the tick costs with nothing happening.
+            let start = std::time::Instant::now();
+            step(&mut link, world, &PlayerInput { yaw: input.yaw, pitch: input.pitch, ..Default::default() });
+            println!("  quiet tick after: {:?}", start.elapsed());
+        };
+        let (yaw, pitch) = aim(&world, WorldPos::new(spot.0 - I64Vec3::Z, ZVec3::new(0.5, 0.5, 1.0)));
+        time_edit("place", PlayerInput { yaw, pitch, alt_pressed: true, alt_held: true, place_block: brick, ..Default::default() }, &mut world);
+        assert!(world.universe().main().cell(spot).iter().any(|o| o.block == brick), "the brick is placed");
+        let (yaw, pitch) = aim(&world, WorldPos::new(spot.0, ZVec3::new(0.5, 0.5, 0.5)));
+        time_edit("break", PlayerInput { yaw, pitch, use_pressed: true, use_held: true, ..Default::default() }, &mut world);
     }
 
     /// Times meshing the base game's whole world with its terrain generated, on every core, as

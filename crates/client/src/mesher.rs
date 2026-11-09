@@ -1,5 +1,6 @@
-//! Culled meshing: every face of every occupant's boxes becomes a quad, unless it lies on the
-//! boxel's side against a full block. Hidden pieces (see [`sim::signal`]) aren't there to it. Where faces of two occupants of one boxel lie on the same
+//! Culled meshing: every face of every occupant's boxes becomes a quad, unless something fills
+//! all the texels just in front of it: a full block beside the boxel, another occupant pressed
+//! against it, or another of its own boxes. Hidden pieces (see [`sim::signal`]) aren't there to it. Where faces of two occupants of one boxel lie on the same
 //! plane facing the same way, the part they share is drawn only from the older occupant (the
 //! one placed first), so they never fight over which shows. Output is plain Z-up vertex data in chunk-local space;
 //! turning it into a Bevy mesh happens elsewhere. Every vertex carries where it sits in its
@@ -203,6 +204,24 @@ impl Neighborhood {
     pub fn boxes(&self) -> &[TexelBox] {
         &self.boxes
     }
+
+    /// How many texels are filled in the box from `lo` to `hi`, in texels relative to the
+    /// middle boxel. Boxes of one boxel's occupants never overlap, so adding up how much of
+    /// each falls inside counts each texel once.
+    fn filled(&self, lo: [i32; 3], hi: [i32; 3]) -> i32 {
+        if let Some(dense) = &self.dense {
+            return dense.count(lo, hi);
+        }
+        let mut filled = 0;
+        for (min, max) in &self.boxes {
+            let (cut_min, cut_max) = ([0, 1, 2].map(|i| min[i].max(lo[i])), [0, 1, 2].map(|i| max[i].min(hi[i])));
+            if (0..3).any(|i| cut_min[i] >= cut_max[i]) {
+                continue;
+            }
+            filled += (0..3).map(|i| cut_max[i] - cut_min[i]).product::<i32>();
+        }
+        filled
+    }
 }
 
 impl Dense {
@@ -266,8 +285,13 @@ impl Dense {
 /// The boxes of `occupant` alone, as [`mesh_occupant`] wants what's around a block drawn away
 /// from the world (the ghost, items): its edges all show as ridges or creases within itself.
 pub fn alone(occupant: Occupant, blocks: &BlockRegistry) -> Neighborhood {
-    let only = [occupant];
-    Neighborhood::new(neighborhood(I64Vec3::ZERO, |at| if at == I64Vec3::ZERO { &only[..] } else { &[] }, blocks), DENSE_AT)
+    together(&[occupant], blocks)
+}
+
+/// The boxes of `occupants` sharing one boxel and nothing around them, like [`alone`]: a
+/// bundle's pieces, drawn away from the world, hide each other's faces as they would placed.
+pub fn together(occupants: &[Occupant], blocks: &BlockRegistry) -> Neighborhood {
+    Neighborhood::new(neighborhood(I64Vec3::ZERO, |at| if at == I64Vec3::ZERO { occupants } else { &[] }, blocks), DENSE_AT)
 }
 
 /// What lies past each edge of a face, texel by texel, as [`MeshData::edges`] holds it. The
@@ -334,20 +358,7 @@ fn occlusion(around: &Neighborhood, corner: [i32; 3], normal: [i32; 3], reach: i
     // The cubes together: in front along the normal, either side along the other two axes.
     let (mut lo, mut hi) = (corner.map(|c| c - reach), corner.map(|c| c + reach));
     if normal[axis] > 0 { lo[axis] = corner[axis] } else { hi[axis] = corner[axis] }
-    let filled = match &around.dense {
-        Some(dense) => dense.count(lo, hi),
-        None => {
-            let mut filled = 0;
-            for (min, max) in &around.boxes {
-                let (cut_min, cut_max) = ([0, 1, 2].map(|i| min[i].max(lo[i])), [0, 1, 2].map(|i| max[i].min(hi[i])));
-                if (0..3).any(|i| cut_min[i] >= cut_max[i]) {
-                    continue;
-                }
-                filled += (0..3).map(|i| cut_max[i] - cut_min[i]).product::<i32>();
-            }
-            filled
-        }
-    };
+    let filled = around.filled(lo, hi);
     // Boxes of one boxel's occupants never overlap, but clamp in case.
     (filled as f32 / (4 * reach * reach * reach) as f32).min(1.0)
 }
@@ -574,7 +585,18 @@ pub fn mesh_occupant<'b>(
                 pieces = pieces.iter().flat_map(|&p| subtract(p, cut)).collect();
             }
             drawn.mine.push(DrawnFace { normal, plane, min: whole.0, max: whole.1 });
+            // The layer of texels just in front of the face's plane.
+            let plane = plane as i32;
+            let front = if normal[axis] > 0 { (plane, plane + 1) } else { (plane - 1, plane) };
             for (min, max) in pieces {
+                // Left out if something fills all the texels just in front of it: another
+                // occupant pressed against it, a neighbor, or another of its own boxes.
+                let (mut lo, mut hi) = ([0; 3], [0; 3]);
+                (lo[axis], hi[axis]) = front;
+                (lo[a], hi[a], lo[c], hi[c]) = (min[0] as i32, max[0] as i32, min[1] as i32, max[1] as i32);
+                if around().filled(lo, hi) >= (hi[a] - lo[a]) * (hi[c] - lo[c]) {
+                    continue;
+                }
                 // The piece as a box, turned back to how the block stands unturned.
                 let mut piece = turned;
                 (piece.min[a], piece.min[c], piece.max[a], piece.max[c]) = (min[0], min[1], max[0], max[1]);
@@ -832,13 +854,14 @@ mod tests {
         let top = mesh.positions.iter().map(|p| p[2]).fold(f32::MIN, f32::max);
         assert_eq!(top, 5.5);
 
-        // On stone, the slab's bottom is hidden but the stone's top isn't: the slab doesn't
-        // cover all of it from every side.
+        // On stone, the slab's bottom is hidden, and so is the stone's top: the slab fills
+        // every texel just above it.
         grid.set_block(BoxelPos::new(5, 5, 4), stone);
-        assert_eq!(mesh_chunk(&grid, ChunkPos::new(0, 0, 0), &blocks).quad_count(), 5 + 6);
-        // A full block beside it hides the slab's side, and keeps its own.
+        assert_eq!(mesh_chunk(&grid, ChunkPos::new(0, 0, 0), &blocks).quad_count(), 5 + 5);
+        // A full block beside it hides the slab's side, and keeps its own: the slab covers
+        // only half of it.
         grid.set_block(BoxelPos::new(6, 5, 5), stone);
-        assert_eq!(mesh_chunk(&grid, ChunkPos::new(0, 0, 0), &blocks).quad_count(), 4 + 6 + 6);
+        assert_eq!(mesh_chunk(&grid, ChunkPos::new(0, 0, 0), &blocks).quad_count(), 4 + 5 + 6);
     }
 
     #[test]
@@ -1388,13 +1411,9 @@ mod tests {
         }
     }
 
-    /// A boxel holding a two-material texel checker, one occupant per material, as a bundle
-    /// places it. Run with `--release --ignored --nocapture`.
-    #[test]
-    #[ignore]
-    fn time_a_two_material_checker() {
-        let mut blocks = BlockRegistry::default();
-        let half = |odd: usize| {
+    /// The two halves of a texel checker, each as boxes: even texels and odd ones.
+    fn checker_halves() -> [Vec<BlockBox>; 2] {
+        [0, 1].map(|odd| {
             let mut grid = api::ShapeGrid::EMPTY;
             for z in 0..16 {
                 for y in 0..16 {
@@ -1404,9 +1423,55 @@ mod tests {
                 }
             }
             grid.to_boxes()
+        })
+    }
+
+    #[test]
+    fn faces_pressed_against_another_occupant_are_left_out() {
+        let (mut grid, mut blocks, _) = setup();
+        let slab = blocks.register(BlockDef::new("test:slab", true, [9; 3]).with_shape(vec![SLAB])).unwrap();
+        let up = Orientation::quarter_turns(0, 2);
+        grid.set_cell(BoxelPos::new(5, 5, 5), &[Occupant::new(slab), Occupant::turned(slab, up)]);
+        let mesh = mesh_chunk(&grid, ChunkPos::new(0, 0, 0), &blocks);
+        // Where they meet, neither shows a face: five each.
+        assert_eq!(mesh.quad_count(), 10);
+        assert!(quads(&mesh).iter().all(|(n, min, _)| n[2] == 0.0 || min[2] != 5.5), "nothing at the middle");
+    }
+
+    #[test]
+    fn a_two_material_checker_shows_only_its_outside() {
+        let (mut grid, mut blocks, stone) = setup();
+        let [even, odd] = checker_halves();
+        let a = blocks.register(BlockDef::new("test:a", true, [200, 0, 0]).with_shape(even)).unwrap();
+        let b = blocks.register(BlockDef::new("test:b", true, [0, 0, 200]).with_shape(odd)).unwrap();
+        grid.set_cell(BoxelPos::new(4, 4, 4), &[Occupant::new(a), Occupant::new(b)]);
+        let outside = |mesh: &MeshData| {
+            quads(mesh).iter().all(|(n, min, max)| {
+                let axis = n.iter().position(|&c| c != 0.0).unwrap();
+                let plane = if n[axis] > 0.0 { max[axis] } else { min[axis] };
+                plane == if n[axis] > 0.0 { 5.0 } else { 4.0 }
+            })
         };
-        let a = blocks.register(BlockDef::new("test:a", true, [200, 0, 0]).with_shape(half(0))).unwrap();
-        let b = blocks.register(BlockDef::new("test:b", true, [0, 0, 200]).with_shape(half(1))).unwrap();
+        for ao in [AoTuning::OFF, AoTuning::default()] {
+            let mesh = super::mesh_chunk(&grid, ChunkPos::new(0, 0, 0), &blocks, &flat(&blocks), &ao);
+            assert_eq!(mesh.quad_count(), 6 * 256, "one texel face for each texel of the outside");
+            assert!(outside(&mesh));
+        }
+        // Against a full block, that side goes too, and the block's side facing it.
+        grid.set_block(BoxelPos::new(5, 4, 4), stone);
+        let mesh = mesh_chunk(&grid, ChunkPos::new(0, 0, 0), &blocks);
+        assert_eq!(mesh.quad_count(), 5 * 256 + 5);
+    }
+
+    /// A boxel holding a two-material texel checker, one occupant per material, as a bundle
+    /// places it. Run with `--release --ignored --nocapture`.
+    #[test]
+    #[ignore]
+    fn time_a_two_material_checker() {
+        let mut blocks = BlockRegistry::default();
+        let [even, odd] = checker_halves();
+        let a = blocks.register(BlockDef::new("test:a", true, [200, 0, 0]).with_shape(even)).unwrap();
+        let b = blocks.register(BlockDef::new("test:b", true, [0, 0, 200]).with_shape(odd)).unwrap();
         let mut grid = Grid::default();
         grid.set_cell(BoxelPos::new(4, 4, 4), &[Occupant::new(a), Occupant::new(b)]);
         let volumes = flat(&blocks);
