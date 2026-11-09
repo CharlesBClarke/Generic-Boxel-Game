@@ -39,13 +39,15 @@ impl Repeater {
 }
 
 /// Chunks whose blocks changed, plus neighbors whose border faces the change affects; and,
-/// kept separately for saving, the chunks edited since they were last made from scratch.
+/// kept separately for saving, the chunks edited since they were last made from scratch; and,
+/// for what reacts to changes nearby, the boxels changed.
 #[derive(Debug, Default)]
-pub struct ChangedChunks(HashSet<ChunkPos>, HashSet<ChunkPos>);
+pub struct ChangedChunks(HashSet<ChunkPos>, HashSet<ChunkPos>, Vec<BoxelPos>);
 
 impl ChangedChunks {
     /// Records a change to the boxel at `pos`. Its chunk counts as edited.
     pub fn mark(&mut self, pos: BoxelPos) {
+        self.2.push(pos);
         let (chunk, local) = pos.split();
         self.0.insert(chunk);
         self.1.insert(chunk);
@@ -67,6 +69,11 @@ impl ChangedChunks {
     /// marked: a box of chunks generated together marks all of its own.
     pub fn mark_chunk(&mut self, pos: ChunkPos) {
         self.0.insert(pos);
+    }
+
+    /// Every boxel marked since the last call, in the order marked, perhaps more than once.
+    pub fn take_boxels(&mut self) -> Vec<BoxelPos> {
+        std::mem::take(&mut self.2)
     }
 
     /// Every chunk changed since the last call, in no particular order.

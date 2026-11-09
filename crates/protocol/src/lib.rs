@@ -10,7 +10,7 @@ use api::{
     SoundDef, TargetDef, ToolDef, Tunable, WorldPos,
 };
 use sim::{
-    BlockEdit, BlueprintId, BlueprintRefusal, Body, BlockRegistry, ChunkData, Library, CraftRefusal, GenerationStats, Inventory, Item, LookRegistry, MaterialId, PlayerHurt,
+    Blast, BlockEdit, BlueprintId, BlueprintRefusal, Body, BlockRegistry, ChunkData, Library, CraftRefusal, GenerationStats, Inventory, Item, LookRegistry, MaterialId, PlayerHurt,
     PlayerInput, Slam, Strike, Swing, Target,
 };
 
@@ -180,6 +180,8 @@ pub enum Event {
     PlayerHurt(PlayerHurt),
     /// A block the player broke or placed.
     BlockEdit(BlockEdit),
+    /// A crystal blast's beam.
+    Blast(Blast),
     /// A craft the input asked for: the part made and how many, or why nothing was.
     Craft(Result<(MaterialId, u32), CraftRefusal>),
     /// An edit to the blueprints the input asked for: the blueprint made or changed, or why

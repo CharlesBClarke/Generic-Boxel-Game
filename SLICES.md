@@ -113,7 +113,39 @@ A run of small toy slices. Each one takes a single game-feel feature that doesn'
 
 - Cow pathfinding (low priority, 2026-11-06): the user called the toy "really good" without going through the five course checks one by one; note any that misbehave: cows through the pen's gap and up its terraces, up the mesa's steps, a charge baited off the mesa's cliff (landing hurt), waiting below the pillar (orange route), climbing hills on the generated terrain.
 
-None. Plan the next toy in a new session.
+### Experimental materials (`toy-experimental-materials`)
+
+**Stage:** Implement (batch A)
+
+**Goal:** an experiment kit of small materials, each with a one-sentence rule, to find which set balances trivial use for players who don't care against combining for those who do, and to compare boxel-wide against touching signals. The user (2026-11-08): "the goal here is to disover what set of materials has a good ballence of trival use for Luers, and combantainal complexity for the people who care. we allso need moore systems if we want to figure out if we want triggers to be block global or texel adjasenct, so I just want a verity of little toys to really experiment what works". Names are placeholders ("bs names now").
+
+**Plan** (approved and engaged 2026-11-08). Built in three batches, with a play check after each:
+- **A. Light and crystals.**
+  - *Glow:* a look field `glow = { strength }` beside `sheen`; a glowing material is drawn self-lit (no sun, shade or AO) and lights nothing else (that's Stored light). No on/off of its own: hide it with phasite or cover it with a phasite shutter. *Lumite*, a plain lamp. Optional bloom behind a slider.
+  - *Crystals:* properties `fuse` (a blue crystal) and `lens` (a green crystal). When a fuse piece and a lens piece touch face to face at texel level, both are used up and a blast fires from blue toward green, along the face they touch on; touching on faces in several directions fires one beam per direction. Checked on boxels that just changed (placed, shown by a phase flip, broken next to). A beam runs up to `range` boxels, breaks blocks in its path (they drop as usual) until its `strength` runs out, hurts and knocks back cows and the player (a rocket jump). A beam reaching a lens sets it off, firing onward in the beam's direction at full strength; one reaching a fuse just breaks it. Client: beam flash, a pickable sound, shake. All on sliders (`BlastDef`). Both crystals glow a little.
+- **B. Signals.**
+  - *Sensor:* a body (player or cow) touching a piece of it signals it, once per touch.
+  - *Delay:* passes a signal it gets on after `delay` seconds (slider). Signals still waiting are dropped on save.
+  - *Trigger scope switch* (a tuning toggle): boxel-wide (today: a signal reaches a boxel and every piece in it answers; copper carries boxel to boxel) or touching (a signal reaches only the pieces touching the piece that sends it; copper carries only through copper pieces that touch). Crystals always use texel touching.
+- **C. Feel.**
+  - *Bounce:* landing on it springs you up (jump pads); the movement API sees it like friction.
+  - *Falls:* unsupported pieces drop, like sand. (Climb was left out.)
+- **Throughout:** the crosshair hint lists the aimed material's properties; a demo spot in the test area per batch; every new material is endless.
+
+**Done when**
+1. A lumite lamp glows in the dark-shaded side of a build, and a phasite shutter toggles it.
+2. Placing a blue crystal against a green one fires a beam from blue to green that breaks blocks and knocks back cows and the player; a lever wired to a hidden blue crystal fires it; a line of green crystals chains.
+3. A sensor fires a trap when a cow or the player steps on it; a loop of delays makes a clock.
+4. The trigger scope switch changes what the knob example does (a knob not touching a phasite strip in its boxel flips it boxel-wide, not touching).
+5. A bounce pad springs the player; a falls material drops when what holds it up is broken or hidden.
+6. Tests for each rule; `cargo test` and clippy clean.
+
+**Batch A notes** (2026-11-08)
+- Glow: `LookDef::glow`, packed beside the sheen in the shader's per-look texel; drawn as `lit × (1 − min(glow, 1)) + own colors × glow`, ignoring AO. Bloom left out for now: it needs Bevy's HDR path, which changes the tone mapping of everything; offer after the user has seen the glow.
+- Crystals: `sim::blast` (`reactions`, `beam`), run once a tick after edits and signals on the boxels changed (`ChangedChunks` now keeps them). Blast values live in `SignalDef.blast` (`BlastDef`), tuned in the `signals` section. Used-up crystals drop nothing; what a beam breaks drops as usual. At most 256 beams a tick. Events: `Event::Blast`, drawn by `client::blast` (an additive bar that fades and thins, shake by distance in `CombatFeel`). Sound: a new `Kind::Blast` pick list (`blast_` sounds: laser, crunch, boom from Kenney Sci-fi); its own sound is the green crystal's breaking sound, so breaking one by hand zaps too.
+- The crosshair hint lists any aimed material's properties in a few words (`crafting::property_words`).
+- Lab (`base::LAB_SPOT`, waypoint `lab`): a lumite lamp behind a phasite shutter on a lever; a lever-fired crystal gun that chains through a second green crystal into a brick wall.
+- **Finding from building the gun:** with the grab at 1 texel and the table working in quarters, a player can't make a hidden blue crystal: antiphasite only cuts a quarter-thick blue, and the kept part still touches the green. The lab's trigger is texel-exact, built by the base mod (`shapes::crystal_trigger`). With `grab` at 4 the quarter version works. Worth deciding with the user: how a player sets crystals off from a distance.
 
 ### Toy backlog
 

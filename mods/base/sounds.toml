@@ -193,3 +193,20 @@ looping = true
 [sounds.wind]
 files = ["sounds/wind.wav"]
 looping = true
+
+# Crystal blasts (2026-11-08): the green crystal's own is blast_laser; the tuning panel's
+# Combat sounds list offers every blast_ sound.
+[sounds.blast_laser]
+files = ["sounds/scifi_laserLarge_000.ogg"]
+volume = 0.8
+pitch_spread = 0.05
+
+[sounds.blast_crunch]
+files = ["sounds/scifi_explosionCrunch_000.ogg"]
+volume = 0.8
+pitch_spread = 0.05
+
+[sounds.blast_boom]
+files = ["sounds/scifi_lowFrequency_explosion_000.ogg"]
+volume = 0.9
+pitch_spread = 0.05

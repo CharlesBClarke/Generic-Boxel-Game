@@ -282,7 +282,8 @@ pub fn load(dir: &Path) -> Result<DataMod, LoadError> {
             let error = |e: String| file.error_at(recipe, format!("look {short:?}: {e}"));
             let rgba = recipe.get_ref().generate().map_err(error)?;
             let sheen = recipe.get_ref().sheen().map_err(error)?;
-            looks.push(LookDef { name, turns: recipe.get_ref().turns, rgba, sheen });
+            let glow = recipe.get_ref().glow().map_err(error)?;
+            looks.push(LookDef { name, turns: recipe.get_ref().turns, rgba, sheen, glow });
         }
         let blocks = entries
             .block

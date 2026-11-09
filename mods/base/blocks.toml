@@ -17,11 +17,17 @@
 #   material   what breaking it drops: its volume of this material, so a slab drops half.
 #              Defaults to the block's own name; blocks of one material share it.
 #   properties what a material does wherever a piece of it is, in any shape made of it; none
-#              by default. A boxel's pieces act as one block.
-#              "trigger": interact (E) on it signals its boxel and touching listeners
-#              "hinge": a signaled boxel swings a quarter turn about this piece's long
-#                       axis, with the boxels along the same hinge line, and back next time
-#              "listener": takes signals from triggers in touching boxels
+#              by default.
+#              "trigger": interact (E) on it signals its boxel
+#              "conductor": a signal reaching a boxel with a piece of it goes on into every
+#                           face-touching boxel with a piece of it, like a wire
+#              "phase": a signal flips the piece's group (touching pieces of the material)
+#                       between shown and hidden, taking what's within a texel along
+#              "starts_hidden": placed hidden, as if just signaled to hide
+#              "fuse": touching a lens piece face to face sets both off
+#              "lens": when a fuse piece touches it, both are used up and a blast fires from
+#                      the fuse through the lens (see SignalDef's blast in the base mod).
+#                      A blast reaching a lens sets it off too, firing on the same way.
 #
 # Every block here is a full block: shapes aren't listed, they're crafted. A crafting table
 # (see crafting.toml) turns a pattern of a material into a part of any shape, and the test
@@ -68,6 +74,9 @@
 #           per ring repeating outward, inside a shell of bark (bark_depth texels, default 1).
 #   top     { colors, depth, ragged, scale, seed }: a cover over the top, depth texels deep
 #           and up to ragged texels deeper in places, like grass on dirt.
+# A look may also have a sheen ({ strength, sharpness }: a highlight from the sun, like ice) and
+# a glow (0 to 4): it lights itself, ignoring the sun and shade, at its own colors times this.
+# A glow lights nothing around it.
 
 [looks.stone]
 noise = { colors = [[104, 104, 104], [117, 117, 117], [128, 128, 128], [141, 141, 141]], scale = 2, seed = 1 }
@@ -117,6 +126,22 @@ noise = { colors = [[150, 120, 196], [162, 132, 208], [174, 146, 218]], scale = 
 [looks.antiphasite]
 sheen = { strength = 0.45, sharpness = 32 }
 noise = { colors = [[96, 176, 150], [108, 188, 162], [120, 200, 174]], scale = 5, seed = 15 }
+
+# Make-believe, for trying out what materials could do (2026-11-08): a lamp that lights itself,
+# and two unstable crystals, a blue one and a green one, that blast when they touch.
+[looks.lumite]
+glow = 1.1
+noise = { colors = [[246, 222, 150], [252, 232, 170], [255, 242, 196]], scale = 3, seed = 16 }
+
+[looks.blue_crystal]
+sheen = { strength = 0.6, sharpness = 48 }
+glow = 0.35
+noise = { colors = [[52, 96, 210], [70, 120, 232], [96, 150, 246]], scale = 2, seed = 17 }
+
+[looks.green_crystal]
+sheen = { strength = 0.6, sharpness = 48 }
+glow = 0.35
+noise = { colors = [[60, 190, 80], [84, 214, 100], [120, 236, 130]], scale = 2, seed = 18 }
 
 # Dark boards under a light top, so the table reads as a work surface.
 [looks.crafting_table]
@@ -214,3 +239,23 @@ name = "antiphasite"
 sounds = { step = "step_concrete", broken = "break_stone", placed = "place" }
 look = "antiphasite"
 properties = ["phase", "starts_hidden"]
+
+# Make-believe, for trying out what materials could do (2026-11-08; names are placeholders).
+# Lumite glows. A blue crystal touching a green one sets both off: a blast fires from the blue
+# through the green. A green crystal's breaking sound is its blast.
+[[block]]
+name = "lumite"
+sounds = { step = "step_concrete", broken = "break_ice", placed = "place_ice" }
+look = "lumite"
+
+[[block]]
+name = "blue_crystal"
+sounds = { step = "step_concrete", broken = "break_ice", placed = "place_ice" }
+look = "blue_crystal"
+properties = ["fuse"]
+
+[[block]]
+name = "green_crystal"
+sounds = { step = "step_concrete", broken = "blast_laser", placed = "place_ice" }
+look = "green_crystal"
+properties = ["lens"]

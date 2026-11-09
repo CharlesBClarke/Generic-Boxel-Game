@@ -35,7 +35,7 @@ pub struct SolidMaterial {
     /// Kept up to date by `crate::shading`.
     #[uniform(2)]
     pub atmosphere: Atmosphere,
-    /// Each volume's sheen: see [`sheen_image`].
+    /// Each volume's sheen and glow: see [`sheen_image`].
     #[texture(3, sample_type = "float", filterable = false)]
     pub sheens: Handle<Image>,
     pub alpha_mode: AlphaMode,
@@ -103,9 +103,9 @@ pub fn volume_image(volumes: &Volumes) -> Image {
     image
 }
 
-/// Each volume's sheen as one texel: strength, then sharpness.
+/// Each volume's sheen and glow as one texel: strength, sharpness, glow.
 pub fn sheen_image(volumes: &Volumes) -> Image {
-    let data: Vec<u8> = volumes.sheens.iter().flat_map(|&[s, k]| [s, k, 0.0, 0.0]).flat_map(f32::to_le_bytes).collect();
+    let data: Vec<u8> = volumes.sheens.iter().flat_map(|&[s, k, g]| [s, k, g, 0.0]).flat_map(f32::to_le_bytes).collect();
     let mut image = Image::new(
         Extent3d { width: volumes.sheens.len() as u32, height: 1, depth_or_array_layers: 1 },
         TextureDimension::D2,

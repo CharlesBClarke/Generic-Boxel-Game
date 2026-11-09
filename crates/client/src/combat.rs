@@ -103,6 +103,12 @@ pub struct CombatFeel {
     pub hurt_shake: f32,
     pub hurt_flash: f32,
     pub hurt_flash_alpha: f32,
+    /// A crystal blast: how far the view shakes right beside it, meters, fading to nothing
+    /// `blast_reach` meters away; how long its beam shows, seconds; and how wide, meters.
+    pub blast_shake: f32,
+    pub blast_reach: f32,
+    pub blast_time: f32,
+    pub blast_width: f32,
 }
 
 impl Default for CombatFeel {
@@ -131,6 +137,10 @@ impl Default for CombatFeel {
             crit_pitch: 1.35,
             slam_hitstop: 0.07,
             slam_shake: 0.06,
+            blast_shake: 0.18,
+            blast_reach: 32.0,
+            blast_time: 0.4,
+            blast_width: 0.45,
             dust_speed: 5.0,
             dust: 8.0,
             landing_squash: 0.03,
@@ -185,6 +195,10 @@ tunable_fields! {
     crit_pitch: 0.5, 2.0;
     slam_hitstop: 0.0, 0.3;
     slam_shake: 0.0, 0.3;
+    blast_shake: 0.0, 0.5;
+    blast_reach: 1.0, 100.0;
+    blast_time: 0.05, 2.0;
+    blast_width: 0.05, 1.5;
     dust_speed: 0.0, 20.0;
     dust: 0.0, 40.0;
     landing_squash: 0.0, 0.1;

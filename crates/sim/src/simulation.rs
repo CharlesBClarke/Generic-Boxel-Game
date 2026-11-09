@@ -152,6 +152,8 @@ pub struct Simulation {
     strikes: Vec<Strike>,
     /// Blocks broken and placed since the last [`Simulation::take_block_edits`].
     block_edits: Vec<BlockEdit>,
+    /// Crystal blasts since the last [`Simulation::take_blasts`].
+    blasts: Vec<crate::blast::Blast>,
     /// Where the player looked in the last input, as yaw and pitch, for saving.
     look: (f32, f32),
     tick: u64,
@@ -395,6 +397,7 @@ impl Simulation {
         }
         self.edit_blocks(input);
         self.interact(input);
+        self.react();
         self.use_tool(input);
         self.throw(input);
         let capacity = self.capacity();
@@ -570,6 +573,105 @@ impl Simulation {
             }
             Err(()) => undo.undo(self.universe.main_mut()),
         }
+    }
+
+    /// Sets off crystals touching in or beside the boxels changed since last time, and fires
+    /// their beams, chains included (see [`crate::blast`]). Crystals used up go without a
+    /// trace; what a beam breaks drops as if broken by hand. Needs a signal definition.
+    fn react(&mut self) {
+        use crate::blast::{self, Blast, MAX_BEAMS};
+        let Some(def) = self.signal_def.as_ref().map(|d| d.blast) else {
+            self.changed.take_boxels();
+            return;
+        };
+        let mut beams = 0;
+        // Breaking can bring crystals together only through what it changes, so a few rounds do.
+        for _ in 0..4 {
+            let near = self.changed.take_boxels();
+            if near.is_empty() {
+                return;
+            }
+            let reaction = blast::reactions(self.universe.main(), &self.blocks, &near);
+            for piece in &reaction.used {
+                self.remove_piece(*piece);
+            }
+            let mut queue: std::collections::VecDeque<blast::Firing> = reaction.firings.into();
+            while let Some(firing) = queue.pop_front() {
+                if beams >= MAX_BEAMS {
+                    break;
+                }
+                beams += 1;
+                let beam = blast::beam(self.universe.main(), &self.blocks, firing, &def);
+                let mut broke = 0;
+                for piece in &beam.broken {
+                    if let Some(i) = self.universe.main().cell(piece.pos).iter().position(|&o| o == piece.occupant) {
+                        self.break_occupant(piece.pos, i);
+                        broke += 1;
+                    }
+                }
+                if let Some(lens) = beam.chained {
+                    self.remove_piece(lens);
+                    queue.push_back(blast::Firing { lens: lens.pos, dir: firing.dir, block: lens.occupant.block });
+                }
+                let (from, dir) = firing.start();
+                let length = beam.length as f32;
+                self.targets.blast(&self.target_defs, from, dir, length, &def);
+                self.blast_player(from, dir, length, &def);
+                self.blasts.push(Blast { tick: self.tick, from, dir, length, broke, lens: firing.block });
+            }
+        }
+        self.changed.take_boxels();
+    }
+
+    /// Takes a piece out of its boxel, dropping nothing.
+    fn remove_piece(&mut self, piece: crate::signal::Piece) {
+        let grid = self.universe.main_mut();
+        let mut cell = grid.cell(piece.pos).to_vec();
+        if let Some(i) = cell.iter().position(|&o| o == piece.occupant) {
+            cell.remove(i);
+            grid.set_cell(piece.pos, &cell);
+            self.changed.mark(piece.pos);
+        }
+    }
+
+    /// Hurts and throws the player if they're in a beam from `from` along `dir`.
+    fn blast_player(&mut self, from: WorldPos, dir: Vec3, length: f32, def: &api::BlastDef) {
+        let Some(player) = &mut self.player else {
+            return;
+        };
+        let shape = player.shape();
+        let feet = from.delta_to(player.pos());
+        if crate::combat::beam_distance(feet, player.height(), dir, length) > def.radius + shape.width * 0.5 {
+            return;
+        }
+        let push = dir * def.push;
+        player.apply_impulse(push);
+        self.hurt_player_by(def.player_damage, -dir, push);
+    }
+
+    /// Takes `damage` off the player's health, from no creature, coming from `from` (a level
+    /// unit direction, or zero); out of health, they go back to the spawn point.
+    fn hurt_player_by(&mut self, damage: f32, from: Vec3, push: Vec3) {
+        let (Some(def), Some(player)) = (&self.health_def, &mut self.player) else {
+            return;
+        };
+        self.health = (self.health - damage).max(0.0);
+        self.since_hurt = 0.0;
+        let died = self.health <= 0.0 && !self.unkillable;
+        if died {
+            self.health = def.health;
+            player.teleport(self.spawn);
+            if def.knock_out_resets {
+                self.targets.respawn_all(&self.target_defs);
+            }
+        }
+        let from = Vec3::new(from.x, from.y, 0.0).normalize_or_zero();
+        self.player_hurts.push(PlayerHurt { tick: self.tick, attacker: None, from, damage, push, guarded: false, died });
+    }
+
+    /// Crystal blasts since the last call.
+    pub fn take_blasts(&mut self) -> Vec<crate::blast::Blast> {
+        std::mem::take(&mut self.blasts)
     }
 
     /// How the player gets out of what's solid in `boxels`, as out of a block placed on them:

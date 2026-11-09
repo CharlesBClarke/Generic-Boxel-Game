@@ -13,8 +13,8 @@
 throw_speed = 6
 pickup_delay = 1.5
 # The world can't give these back, so they never run out (2026-11-07, at the user's request).
-# Iron is left out: it does nothing yet.
-endless = ["brass", "copper", "phasite", "antiphasite"]
+# Iron is left out: it does nothing yet. The experimental materials (2026-11-08) too.
+endless = ["brass", "copper", "phasite", "antiphasite", "lumite", "blue_crystal", "green_crystal"]
 
 # The test area has brick to break but no wood, so start with some of both.
 [start]

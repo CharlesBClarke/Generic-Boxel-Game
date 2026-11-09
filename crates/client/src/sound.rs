@@ -506,14 +506,15 @@ pub enum Kind {
     KnockedOut,
     HardLand,
     Pickup,
+    Blast,
 }
 
 impl Kind {
-    pub const ALL: [Kind; 7] =
-        [Kind::Swing, Kind::HitCreature, Kind::KillCreature, Kind::Hurt, Kind::KnockedOut, Kind::HardLand, Kind::Pickup];
+    pub const ALL: [Kind; 8] =
+        [Kind::Swing, Kind::HitCreature, Kind::KillCreature, Kind::Hurt, Kind::KnockedOut, Kind::HardLand, Kind::Pickup, Kind::Blast];
     /// The body's own, listed apart from combat in the panel.
     pub const BODY: [Kind; 2] = [Kind::HardLand, Kind::Pickup];
-    pub const COMBAT: [Kind; 5] = [Kind::Swing, Kind::HitCreature, Kind::KillCreature, Kind::Hurt, Kind::KnockedOut];
+    pub const COMBAT: [Kind; 6] = [Kind::Swing, Kind::HitCreature, Kind::KillCreature, Kind::Hurt, Kind::KnockedOut, Kind::Blast];
 
     /// Its name in the tuning file.
     pub fn key(self) -> &'static str {
@@ -525,6 +526,7 @@ impl Kind {
             Kind::KnockedOut => "knocked_out",
             Kind::HardLand => "hard_land",
             Kind::Pickup => "pickup",
+            Kind::Blast => "blast",
         }
     }
 
@@ -538,6 +540,7 @@ impl Kind {
             Kind::KnockedOut => "knockout_",
             Kind::HardLand => "hardland_",
             Kind::Pickup => "pickup_",
+            Kind::Blast => "blast_",
         }
     }
 
@@ -550,6 +553,7 @@ impl Kind {
             Kind::KnockedOut => "knock out",
             Kind::HardLand => "hard land",
             Kind::Pickup => "pick up",
+            Kind::Blast => "crystal blast",
         }
     }
 
@@ -567,6 +571,8 @@ impl Kind {
             Kind::KnockedOut => me.and_then(|s| s.knocked_out.clone()),
             Kind::HardLand => me.and_then(|s| s.hard_land.clone()),
             Kind::Pickup => me.and_then(|s| s.pickup.clone()),
+            // The lens's own breaking sound, which differs by lens.
+            Kind::Blast => None,
         }
     }
 }
@@ -704,6 +710,10 @@ fn event_cues(event: &Event, tuning: &SoundTuning, frame: &Frame, me: &PlayerSou
                 let middle = WorldPos::at_boxel(edit.pos).translate(ZVec3::splat(0.5));
                 cues.push(Cue::new(sound, Some(middle), Group::Blocks));
             }
+        }
+        Event::Blast(blast) => {
+            let own = frame.blocks.get(blast.lens).and_then(|d| d.sounds.broken.as_ref());
+            cues.extend(picks.combat(Kind::Blast, own, Some(blast.from), Group::Combat));
         }
         Event::Craft(result) => {
             let sound = if result.is_ok() { &me.craft } else { &me.craft_refused };

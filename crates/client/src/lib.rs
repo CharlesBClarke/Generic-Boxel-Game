@@ -3,6 +3,7 @@
 //! ticks. It never touches the simulation itself.
 
 pub mod animation;
+pub mod blast;
 pub mod combat;
 pub mod controls;
 pub mod coords;
@@ -135,7 +136,8 @@ pub fn run(connection: Box<dyn Connection>) {
                 drill::drill_keys,
                 editing::remesh_changed_chunks,
                 // Strikes first: a broken target bursts from where its view was drawn.
-                (combat::play_strikes, combat::play_slams, hurt::play_player_hurts, combat::update_hit_stop).chain(),
+                (combat::play_strikes, combat::play_slams, blast::play_blasts, hurt::play_player_hurts, combat::update_hit_stop).chain(),
+                blast::update_beams,
                 (update_camera, sync_chunk_transforms, view::apply_render_distance, sound::play_sounds).chain(),
                 editing::draw_outline,
                 editing::update_ghost,

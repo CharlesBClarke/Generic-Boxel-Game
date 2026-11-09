@@ -21,7 +21,7 @@ const FACE_SCALE: f32 = 16.0;
 // Every look stacked along Z, one SIZE-deep volume after another.
 @group(#{MATERIAL_BIND_GROUP}) @binding(1) var volumes: texture_3d<f32>;
 @group(#{MATERIAL_BIND_GROUP}) @binding(2) var<uniform> atmosphere: Atmosphere;
-// Each volume's sheen, one texel per volume: strength, sharpness.
+// Each volume's sheen and glow, one texel per volume: strength, sharpness, glow.
 @group(#{MATERIAL_BIND_GROUP}) @binding(3) var sheens: texture_2d<f32>;
 
 struct Vertex {
@@ -66,7 +66,9 @@ fn vertex(vertex: Vertex) -> VertexOutput {
 fn fragment(in: VertexOutput) -> @location(0) vec4<f32> {
     let texel = clamp(vec3<i32>(floor(in.solid.xyz)), vec3<i32>(0), vec3<i32>(SIZE - 1));
     let volume = i32(round(in.solid.w));
-    let base = textureLoad(volumes, texel + vec3<i32>(0, 0, volume * SIZE), 0) * in.color * tint;
+    let own = textureLoad(volumes, texel + vec3<i32>(0, 0, volume * SIZE), 0) * tint;
+    let base = own * in.color;
+    let shine = textureLoad(sheens, vec2<i32>(volume, 0), 0);
     let normal = normalize(in.world_normal);
     let to_eye_far = view.world_position - in.world_position;
     let distance = length(to_eye_far);
@@ -81,8 +83,10 @@ fn fragment(in: VertexOutput) -> @location(0) vec4<f32> {
     if parts.x > 0.5 {
         rgb *= edge_shade(atmosphere, in.edges, in.face);
     }
+    // A glowing look lights itself, without shade: its own colors, times its glow.
+    let glow = shine.z;
+    rgb = rgb * (1.0 - min(glow, 1.0)) + own.rgb * glow;
     if parts.z > 0.5 {
-        let shine = textureLoad(sheens, vec2<i32>(volume, 0), 0);
         rgb += sheen(atmosphere, normal, to_eye, shine.x, shine.y) * tint.rgb;
     }
     if parts.y > 0.5 {

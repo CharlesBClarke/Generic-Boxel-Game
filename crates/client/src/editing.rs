@@ -740,9 +740,13 @@ mod tests {
         let blocks = sim.blocks();
         let material = |name| Entry::Material(blocks.material(name).unwrap(), blocks.id(name).unwrap());
         let (brick, brick_block) = (blocks.material(base::BRICK).unwrap(), blocks.id(base::BRICK).unwrap());
-        // The base game starts with brick, wood, the metals and the phase materials; nothing
-        // else is carried, so nothing else is on offer, not even the test area's crafted shapes.
-        let carried = [base::BRICK, base::WOOD, base::BRASS, base::IRON, base::COPPER, base::PHASITE, base::ANTIPHASITE];
+        // The base game starts with brick, wood, the metals, the phase materials and the
+        // experimental ones; nothing else is carried, so nothing else is on offer, not even the
+        // test area's crafted shapes.
+        let carried = [
+            base::BRICK, base::WOOD, base::BRASS, base::IRON, base::COPPER, base::PHASITE, base::ANTIPHASITE, base::LUMITE,
+            base::BLUE_CRYSTAL, base::GREEN_CRYSTAL,
+        ];
         let start = carried.map(material);
         assert_eq!(entries(&sim), [&[Entry::Tool(club)][..], &start].concat());
 
@@ -766,11 +770,11 @@ mod tests {
         assert_eq!(entries(&sim), slots);
         let mut palette = at(0);
         palette.select_part(&sim, part);
-        assert_eq!((palette.slot, palette.selected(&sim), palette.material(&sim)), (9, slab, Some(part)));
+        assert_eq!((palette.slot, palette.selected(&sim), palette.material(&sim)), (carried.len() + 2, slab, Some(part)));
 
         // Throwing the part away takes it off the palette.
         step(&mut link, &mut sim, &PlayerInput { discard: Some(part), ..Default::default() });
-        assert_eq!(entries(&sim).len(), 9);
+        assert_eq!(entries(&sim).len(), carried.len() + 2);
     }
 
     #[test]

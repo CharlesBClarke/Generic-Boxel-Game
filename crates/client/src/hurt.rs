@@ -111,7 +111,7 @@ pub(crate) fn play_player_hurts(
         kick.kick(feel.hurt_kick * share);
         kick.shake(feel.hurt_shake * share, feel.shake_time * 2.0);
         flash.flash(feel.hurt_flash, feel.hurt_flash_alpha * share);
-        readout.show(hurt_words(hurt.damage, hurt.guarded, hurt.attacker.is_none(), hurt.died));
+        readout.show(hurt_words(hurt.damage, hurt.guarded, hurt.attacker.is_none() && hurt.push == api::Vec3::ZERO, hurt.died));
     }
 }
 

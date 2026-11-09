@@ -45,6 +45,6 @@ pub use orientation::Orientation;
 pub use movement::{Ground, MoveContext, MoveInput, MoveOutput, MovementController};
 pub use player::PlayerDef;
 pub use shape::ShapeGrid;
-pub use signal::SignalDef;
+pub use signal::{BlastDef, SignalDef};
 pub use terrain::{ChunkFill, Generator, TerrainDef};
 pub use tuning::{Tunable, Tunables};
