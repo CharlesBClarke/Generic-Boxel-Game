@@ -183,9 +183,9 @@ struct Pass<'a> {
     positions: &'a [ChunkPos],
     slots: &'a HashMap<ChunkPos, usize>,
     info: &'a [CellLight],
-    /// Each chunk written to, with which of its faces the boxels written lie on, so chunks
-    /// whose border faces read them hear of it.
-    touched: Option<HashSet<(u32, u8)>>,
+    /// Every boxel written to, with its light before the first write, so only those that end
+    /// up different count as changed.
+    touched: Option<HashMap<Node, Light>>,
 }
 
 impl Pass<'_> {
@@ -223,12 +223,10 @@ impl Pass<'_> {
     }
 
     fn set_level(&mut self, n: Node, c: usize, v: u8) {
-        let light = self.get(n).with_channel(c, v);
-        self.chunks[n.slot as usize].light.set_at(n.at as usize, light);
+        let old = self.get(n);
+        self.chunks[n.slot as usize].light.set_at(n.at as usize, old.with_channel(c, v));
         if let Some(touched) = &mut self.touched {
-            let [x, y, z] = coords(n.at as usize);
-            let edge = |v: usize, bit: u8| if v == SIZE - 1 { bit } else if v == 0 { bit << 1 } else { 0 };
-            touched.insert((n.slot, edge(x, 1) | edge(y, 4) | edge(z, 16)));
+            touched.entry(n).or_insert(old);
         }
     }
 
@@ -388,7 +386,7 @@ impl Grid {
             positions: &self.positions,
             slots: &self.slots,
             info: &self.light_info,
-            touched: track.then(HashSet::new),
+            touched: track.then(HashMap::new),
         }
     }
 
@@ -495,8 +493,18 @@ impl Grid {
             pass.relight(&nodes, c);
         }
         let touched = pass.touched.take().unwrap_or_default();
+        // Each chunk whose light ended up different, with which of its faces the boxels that
+        // changed lie on, so chunks whose border faces read them hear of it.
+        let mut edged: HashSet<(u32, u8)> = HashSet::new();
+        for (n, before) in touched {
+            if pass.get(n) != before {
+                let [x, y, z] = coords(n.at as usize);
+                let edge = |v: usize, bit: u8| if v == SIZE - 1 { bit } else if v == 0 { bit << 1 } else { 0 };
+                edged.insert((n.slot, edge(x, 1) | edge(y, 4) | edge(z, 16)));
+            }
+        }
         let mut out = HashSet::new();
-        for (slot, edges) in touched {
+        for (slot, edges) in edged {
             let pos = self.positions[slot as usize];
             let options = |bit: u8| {
                 let mut o = vec![0i64];

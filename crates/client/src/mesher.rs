@@ -464,12 +464,13 @@ pub fn mesh_chunks(grid: &Grid, positions: &[ChunkPos], blocks: &BlockRegistry, 
 
 /// [`mesh_chunks`], reading neighborhoods of more than `dense_at` boxes through their texels.
 fn mesh_chunks_with(grid: &Grid, positions: &[ChunkPos], blocks: &BlockRegistry, volumes: &Volumes, ao: &AoTuning, dense_at: usize) -> Vec<MeshData> {
-    if positions.len() < 8 {
+    if positions.len() < 2 {
         return positions.iter().map(|&p| mesh_chunk_with(grid, p, blocks, volumes, ao, dense_at)).collect();
     }
     let threads = std::thread::available_parallelism().map_or(1, |n| n.get());
-    // Small parts, handed out as threads free up, since chunks differ a lot in cost.
-    let parts: Vec<&[ChunkPos]> = positions.chunks(16).collect();
+    // Small parts, handed out as threads free up, since chunks differ a lot in cost; one chunk
+    // each for a few, as after an edit, so they mesh side by side.
+    let parts: Vec<&[ChunkPos]> = positions.chunks((positions.len() / threads).clamp(1, 16)).collect();
     let next = std::sync::atomic::AtomicUsize::new(0);
     let mut done: Vec<(usize, Vec<MeshData>)> = std::thread::scope(|scope| {
         let handles: Vec<_> = (0..threads.min(parts.len()))

@@ -114,8 +114,11 @@ fn lighting_cost() {
         stats.chunks, stats.seconds, stats.light_seconds
     );
     stand(&mut sim, 1, 2);
+    sim.take_changed_chunks();
     open_shutter(&mut sim);
-    println!("opening the shutter relit in {:.2} ms", sim.relight_seconds() * 1000.0);
+    let changed = sim.take_changed_chunks().len();
+    println!("opening the shutter relit in {:.2} ms, {changed} chunks changed", sim.relight_seconds() * 1000.0);
     open_shutter(&mut sim);
-    println!("closing it relit in {:.2} ms", sim.relight_seconds() * 1000.0);
+    let changed = sim.take_changed_chunks().len();
+    println!("closing it relit in {:.2} ms, {changed} chunks changed", sim.relight_seconds() * 1000.0);
 }
