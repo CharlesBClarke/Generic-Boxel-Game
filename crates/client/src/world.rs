@@ -12,7 +12,7 @@ use api::{ChunkPos, HealthDef, InteractionDef, InventoryDef, ItemDropDef, ModelD
 use bevy::prelude::*;
 use protocol::{ClientMsg, Command, Connection, Defs, Event, ServerMsg, Snapshot, Welcome, WorldNote};
 use sim::{
-    Body, BlockRegistry, BlueprintId, BlueprintRefusal, Craft, Library, CraftPlan, CraftRefusal, Hit, Inventory, Item, LookRegistry, MaterialId, PlaceTarget,
+    Blast, Body, BlockRegistry, BlueprintId, BlueprintRefusal, Craft, Library, CraftPlan, CraftRefusal, Hit, Inventory, Item, LookRegistry, MaterialId, PlaceTarget,
     PlayerHurt, Slam, Strike, Swing, Target, TargetKind, ToolId, Universe, View,
 };
 
@@ -36,6 +36,7 @@ pub struct ClientWorld {
     changed: Vec<ChunkPos>,
     strikes: Vec<Strike>,
     slams: Vec<Slam>,
+    blasts: Vec<Blast>,
     hurts: Vec<PlayerHurt>,
     craft: Option<Result<(MaterialId, u32), CraftRefusal>>,
     /// Every event since the last [`ClientWorld::take_heard`], for sound.
@@ -76,6 +77,7 @@ impl ClientWorld {
             changed: Vec::new(),
             strikes: Vec::new(),
             slams: Vec::new(),
+            blasts: Vec::new(),
             hurts: Vec::new(),
             craft: None,
             heard: Vec::new(),
@@ -134,6 +136,7 @@ impl ClientWorld {
                 Event::PlayerHurt(h) => self.hurts.push(h),
                 Event::Craft(c) => self.craft = Some(c),
                 Event::Blueprint(b) => self.blueprint_note = Some(b),
+                Event::Blast(b) => self.blasts.push(b),
                 Event::BlockEdit(_) => {}
             }
         }
@@ -300,6 +303,11 @@ impl ClientWorld {
     /// Creatures slammed into walls since the last call, oldest first.
     pub fn take_slams(&mut self) -> Vec<Slam> {
         std::mem::take(&mut self.slams)
+    }
+
+    /// Crystal blasts since the last call, oldest first.
+    pub fn take_blasts(&mut self) -> Vec<Blast> {
+        std::mem::take(&mut self.blasts)
     }
 
     /// Blows and falls that hurt the player since the last call, oldest first.

@@ -23,6 +23,9 @@ pub struct Recipe {
     pub turns: bool,
     /// A shine toward the sun, like ice's.
     sheen: Option<SheenRecipe>,
+    /// How brightly it lights itself: see [`api::LookDef::glow`].
+    #[serde(default)]
+    glow: f32,
     noise: Option<Noise>,
     bricks: Option<Bricks>,
     planks: Option<Planks>,
@@ -206,6 +209,14 @@ impl Recipe {
             return Err(format!("sheen sharpness must be from 1 to 1024, not {}", s.sharpness));
         }
         Ok(Some(api::Sheen { strength: s.strength, sharpness: s.sharpness }))
+    }
+
+    /// The look's glow, or says what's wrong with it.
+    pub fn glow(&self) -> Result<f32, String> {
+        if !(0.0..=4.0).contains(&self.glow) {
+            return Err(format!("glow must be from 0 to 4, not {}", self.glow));
+        }
+        Ok(self.glow)
     }
 
     /// Makes the volume, or says what's wrong with the recipe.

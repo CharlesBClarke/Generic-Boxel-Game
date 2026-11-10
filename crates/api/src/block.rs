@@ -53,6 +53,12 @@ pub enum Property {
     Phase,
     /// Placed hidden, grabbing what touches it, as if it had just been signaled to hide.
     StartsHidden,
+    /// Blue crystal: touching a lens piece face to face sets both off (see [`Property::Lens`]).
+    Fuse,
+    /// Green crystal: when a fuse piece touches it face to face, both are used up and a blast
+    /// fires from the fuse through the lens, along the face they touch on (one beam per
+    /// direction they touch in). A blast reaching a lens sets it off too, firing on the same way.
+    Lens,
 }
 
 impl Property {
@@ -63,11 +69,14 @@ impl Property {
             Property::Conductor => "conductor",
             Property::Phase => "phase",
             Property::StartsHidden => "starts_hidden",
+            Property::Fuse => "fuse",
+            Property::Lens => "lens",
         }
     }
 
     /// Every property, for listing them.
-    pub const ALL: [Property; 4] = [Property::Trigger, Property::Conductor, Property::Phase, Property::StartsHidden];
+    pub const ALL: [Property; 6] =
+        [Property::Trigger, Property::Conductor, Property::Phase, Property::StartsHidden, Property::Fuse, Property::Lens];
 
     /// The property named `name` in data files.
     pub fn from_name(name: &str) -> Option<Property> {
@@ -215,6 +224,9 @@ pub struct LookDef {
     pub rgba: Vec<u8>,
     /// A shine where the sun reflects off it toward the eye, like ice; `None` for matte looks.
     pub sheen: Option<Sheen>,
+    /// How brightly it lights itself, ignoring the sun, the sky and shade: 0 for none, 1 shows
+    /// its own colors at full strength in the dark, above 1 brighter still. Lights nothing else.
+    pub glow: f32,
 }
 
 /// How a look shines (Blinn-Phong): how bright the highlight gets, and how tight it is.

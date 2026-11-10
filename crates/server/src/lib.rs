@@ -125,6 +125,7 @@ impl Server {
         events.extend(self.sim.take_slams().into_iter().map(Event::Slam));
         events.extend(self.sim.take_player_hurts().into_iter().map(Event::PlayerHurt));
         events.extend(self.sim.take_block_edits().into_iter().map(Event::BlockEdit));
+        events.extend(self.sim.take_blasts().into_iter().map(Event::Blast));
         if input.craft.is_some()
             && let Some(result) = self.sim.last_craft()
         {

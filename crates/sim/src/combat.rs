@@ -331,7 +331,7 @@ impl Swing {
     }
 }
 
-#[derive(Debug, Default)]
+#[derive(Clone, Debug, Default)]
 pub struct Targets {
     list: Vec<Target>,
     spots: Vec<Spot>,
@@ -838,6 +838,46 @@ impl Targets {
         }
         Some(hit)
     }
+
+    /// A blast's beam from `from` along `dir` (a unit vector), `length` meters long: every
+    /// target whose body comes within the blast's radius of its middle line loses its damage and
+    /// is thrown along it at its push, softened by its weight. Returns how many were hit.
+    pub fn blast(&mut self, defs: &[TargetDef], from: WorldPos, dir: Vec3, length: f32, blast: &api::BlastDef) -> usize {
+        let api::BlastDef { radius, damage, push, .. } = *blast;
+        let mut hit = 0;
+        for i in (0..self.list.len()).rev() {
+            let target = &mut self.list[i];
+            let def = &defs[target.kind.index()];
+            let feet = from.delta_to(target.pos);
+            if beam_distance(feet, def.height, dir, length) > radius + def.width * 0.5 {
+                continue;
+            }
+            hit += 1;
+            let throw = dir * push / def.weight;
+            target.velocity += throw;
+            target.on_ground = false;
+            target.hopping = false;
+            target.health -= damage;
+            hurt(target, -dir, damage);
+            if target.health <= 0.0 {
+                self.break_target(i, defs);
+            }
+        }
+        hit
+    }
+}
+
+/// How close a beam from the origin along `dir` (a unit vector), `length` long, comes to an
+/// upright body `height` tall whose feet are at `feet`: from the beam's middle line to the
+/// body's, ignoring its width.
+pub fn beam_distance(feet: Vec3, height: f32, dir: Vec3, length: f32) -> f32 {
+    let steps = (length / 0.05).ceil().max(1.0) as u32;
+    (0..=steps)
+        .map(|s| {
+            let p = dir * (length * s as f32 / steps as f32) - feet;
+            Vec3::new(p.x, p.y, p.z - p.z.clamp(0.0, height)).length()
+        })
+        .fold(f32::INFINITY, f32::min)
 }
 
 /// A creature's attack hitting the player.

@@ -2,7 +2,7 @@
 //! and their looks are a data mod in `mods/base`, loaded by the engine alongside it.
 
 use api::{
-    ApiError, BoxelPos, CrowdDef, HealthDef, I64Vec3, InteractionDef, ItemDropDef, Mod, Orientation, PlayerDef, PlayerSounds, PushOutDef, Registrar, SignalDef,
+    ApiError, BoxelPos, CrowdDef, HealthDef, I64Vec3, InteractionDef, ItemDropDef, Mod, Orientation, PlayerDef, PlayerSounds, PushOutDef, Registrar, SignalDef, BlastDef,
     TerrainDef, ToolDef, ToolSounds, Vec3, WorldEdit, WorldPos,
 };
 
@@ -35,6 +35,12 @@ pub const PHASITE: &str = "base:phasite";
 pub const ANTIPHASITE: &str = "base:antiphasite";
 
 /// The cow, defined in `mods/base/targets.toml`, with its brain in the `base_cow` crate.
+/// Make-believe materials for trying out what materials could do (2026-11-08): a lamp, and
+/// two crystals that blast when they touch.
+pub const LUMITE: &str = "base:lumite";
+pub const BLUE_CRYSTAL: &str = "base:blue_crystal";
+pub const GREEN_CRYSTAL: &str = "base:green_crystal";
+
 pub const COW: &str = "base:cow";
 /// The melee tool.
 pub const CLUB: &str = "base:club";
@@ -75,6 +81,10 @@ pub const TABLE_SPOT: (i64, i64, i64) = (-2, 3, 0);
 /// Where the door stands, relative to the test area's origin: in a brick wall north of spawn,
 /// its knob and the lever beside it facing south toward spawn.
 pub const DOOR_SPOT: (i64, i64, i64) = (2, 10, 0);
+
+/// Where the materials lab starts, relative to the test area's origin: where the feet stand,
+/// looking north at it.
+pub const LAB_SPOT: (i64, i64, i64) = (6, -42, 0);
 
 /// Where the far copy of the test area sits, for checking that play is the same in the millions.
 pub const FAR_ORIGIN: BoxelPos = BoxelPos::new(3_000_000, -2_000_000, 1_000);
@@ -143,7 +153,10 @@ impl Mod for BaseMod {
         // Block-jumping: placing a block at your feet lifts you onto it and launches you.
         r.register_push_out(PushOutDef { strength: 6.0, upward_bias: 1.0 })?;
         // Hiding grabs what touches a phase group, a texel deep; a wire carries far.
-        r.register_signals(SignalDef { grab: 1.0, conduct_limit: 4096 })?;
+        // A blast breaks a short tunnel and throws whatever stands in it: enough to hurt a cow
+        // badly, or launch the player who fires one beside themselves.
+        let blast = BlastDef { range: 16.0, strength: 6.0, radius: 0.5, damage: 50.0, player_damage: 3.0, push: 18.0 };
+        r.register_signals(SignalDef { grab: 1.0, conduct_limit: 4096, blast })?;
         // Creatures see each other across a herd, and bodies push apart firmly enough that you
         // can't walk through a cow; the player is a little lighter than one (2.5).
         r.register_crowd(CrowdDef { sight: 12.0, push: 25.0, max_push: 8.0, player_weight: 1.5 })?;
@@ -208,6 +221,8 @@ impl Mod for BaseMod {
         w.add_waypoint("shapes", WorldPos::new(origin.0 + I64Vec3::new(x, y, z), Vec3::new(0.5, 0.5, 0.0)));
         let (x, y, z) = DOOR_SPOT;
         w.add_waypoint("door", WorldPos::new(origin.0 + I64Vec3::new(x, y - 2, z), Vec3::new(0.5, 0.5, 0.0)));
+        let (x, y, z) = LAB_SPOT;
+        w.add_waypoint("lab", WorldPos::new(origin.0 + I64Vec3::new(x, y, z), Vec3::new(0.5, 0.5, 0.0)));
         let (x, y, z) = COW_PEN_SPOT;
         w.add_waypoint("cow pen", WorldPos::new(origin.0 + I64Vec3::new(x, y, z), Vec3::new(0.5, 0.5, 0.0)));
         let (x, y, z) = PASTURE_SPOT;
@@ -377,6 +392,7 @@ fn build_shapes_corner(w: &mut dyn WorldEdit, o: BoxelPos) -> Result<(), ApiErro
     w.fill(at(-7, 3, 0), at(-7, 3, 1), LOG)?;
 
     build_door(w, o)?;
+    build_lab(w, o)?;
 
     // The crafting table, unturned: its front faces south.
     let (x, y, z) = TABLE_SPOT;
@@ -408,6 +424,43 @@ fn build_door(w: &mut dyn WorldEdit, o: BoxelPos) -> Result<(), ApiError> {
     // The door last, so its open panel, starting hidden, takes its reach of all the rest.
     w.add_bundle(at(0, 0, 0), &shapes::door_lower(), south)?;
     w.add_bundle(at(0, 0, 1), &shapes::door_upper(), south)?;
+    Ok(())
+}
+
+/// The materials lab: the experimental materials set up to try, in front of a brick wall,
+/// all worked by levers facing south. West, a lumite lamp in a niche behind a phasite shutter
+/// (the lever beside it shows the lamp). East, a crystal gun: a lever by a boxel holding a
+/// hidden blue crystal, against a green one; the lever brings the blue back, the two touch, and
+/// a blast fires east, through two stone blocks into a second green crystal, which fires on
+/// into a brick wall. Lumite on the wall lights the way.
+fn build_lab(w: &mut dyn WorldEdit, o: BoxelPos) -> Result<(), ApiError> {
+    let (x, y, z) = LAB_SPOT;
+    let at = |dx: i64, dy: i64, dz: i64| o.offset(I64Vec3::new(x + dx, y + dy, z + dz));
+    let south = Orientation::IDENTITY;
+    w.fill(at(-2, 4, 0), at(10, 5, 2), BRICK)?;
+    for dx in [-2, 4, 10] {
+        w.add_block(at(dx, 5, 3), LUMITE, south)?;
+    }
+
+    // The lamp, at the back of a niche two deep, and the shutter at its mouth.
+    w.clear(at(0, 4, 1), at(0, 4, 1));
+    w.clear(at(0, 5, 1), at(0, 5, 1));
+    w.add_block(at(0, 5, 1), LUMITE, south)?;
+    w.add_bundle(at(0, 4, 1), &shapes::shutter(), south)?;
+    w.clear(at(1, 4, 1), at(1, 4, 1));
+    for (m, shape) in shapes::lever(BRICK) {
+        w.add_shaped(at(1, 4, 1), m, &shape, south)?;
+    }
+
+    // The gun, firing east along the row in front of the wall.
+    w.add_bundle(at(4, 1, 0), &shapes::crystal_trigger(), south)?;
+    w.add_block(at(5, 1, 0), GREEN_CRYSTAL, south)?;
+    for (m, shape) in shapes::lever(BRICK) {
+        w.add_shaped(at(4, 0, 0), m, &shape, south)?;
+    }
+    w.fill(at(8, 1, 0), at(9, 1, 0), STONE)?;
+    w.add_block(at(11, 1, 0), GREEN_CRYSTAL, south)?;
+    w.fill(at(15, 0, 0), at(16, 2, 2), BRICK)?;
     Ok(())
 }
 

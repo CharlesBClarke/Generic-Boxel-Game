@@ -292,15 +292,32 @@ fn aimed_table(world: &ClientWorld, look: &Look) -> Option<BoxelPos> {
 }
 
 /// The material of the trigger piece the player looks at, if it's one.
-fn aimed_trigger(world: &ClientWorld, look: &Look) -> Option<String> {
+/// The material aimed at, if it has any properties, and what they do in a few words each,
+/// `key` being the interact key.
+fn aimed_properties(world: &ClientWorld, look: &Look, key: &str) -> Option<String> {
     let hit = world.target(look.yaw, look.pitch)?;
     let blocks = world.blocks();
     let occupant = *world.universe().main().cell(hit.pos).get(hit.occupant)?;
-    blocks.get(occupant.block).filter(|def| def.has(api::Property::Trigger))?;
-    Some(blocks.made_of(occupant.block).map_or("trigger", |m| short(blocks.material_name(m))).to_owned())
+    let def = blocks.get(occupant.block).filter(|def| !def.properties.is_empty())?;
+    let material = blocks.made_of(occupant.block).map_or(def.name.as_str(), |m| blocks.material_name(m));
+    let words: Vec<String> = def.properties.iter().map(|&p| property_words(p, key)).collect();
+    Some(format!("{}: {}", short(material), words.join("; ")))
 }
 
-/// A hint by the crosshair when it's on a table or a trigger.
+/// What a property does, in a few words for the crosshair hint.
+pub fn property_words(property: api::Property, key: &str) -> String {
+    use api::Property::*;
+    match property {
+        Trigger => format!("{key} to work it"),
+        Conductor => "carries signals".into(),
+        Phase => "a signal shows or hides it".into(),
+        StartsHidden => "starts hidden".into(),
+        Fuse => "blasts through a lens it touches".into(),
+        Lens => "blasts when a fuse touches it".into(),
+    }
+}
+
+/// A hint by the crosshair when it's on a table or a material with properties.
 pub(crate) fn update_table_hint(
     world: Res<ClientWorld>,
     look: Res<Look>,
@@ -309,10 +326,10 @@ pub(crate) fn update_table_hint(
     mut text: Single<&mut Text, With<TableHint>>,
 ) {
     let key = label(controls.interact);
-    let line = match (aimed_table(&world, &look), aimed_trigger(&world, &look)) {
+    let line = match (aimed_table(&world, &look), aimed_properties(&world, &look, &key)) {
         _ if menu.open.is_some() => String::new(),
         (Some(_), _) => format!("crafting table: {key} to craft"),
-        (_, Some(material)) => format!("{material}: {key} to work it"),
+        (_, Some(words)) => words,
         _ => String::new(),
     };
     if text.0 != line {

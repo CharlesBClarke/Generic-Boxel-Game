@@ -618,7 +618,7 @@ mod tests {
     }
 
     fn look(name: &str) -> LookDef {
-        LookDef { name: name.into(), turns: false, rgba: vec![255; LookDef::VOLUME * 4], sheen: None }
+        LookDef { name: name.into(), turns: false, rgba: vec![255; LookDef::VOLUME * 4], sheen: None, glow: 0.0 }
     }
 
     #[test]

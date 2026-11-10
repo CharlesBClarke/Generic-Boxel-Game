@@ -59,6 +59,9 @@ fn base_blocks_come_from_its_data_files() {
         base::COPPER,
         base::PHASITE,
         base::ANTIPHASITE,
+        base::LUMITE,
+        base::BLUE_CRYSTAL,
+        base::GREEN_CRYSTAL,
     ];
     assert_eq!(names[..listed.len()], listed);
     let mut crafted = vec![
@@ -70,6 +73,8 @@ fn base_blocks_come_from_its_data_files() {
     crafted.extend(base::shapes::lever(base::BRICK));
     crafted.push((base::COPPER, base::shapes::wire()));
     crafted.extend(base::shapes::door_lower());
+    crafted.extend(base::shapes::shutter());
+    crafted.extend(base::shapes::crystal_trigger());
     let made = |id| blocks.bundle_of(id).is_some() || blocks.derived(id).is_some();
     let shapes: Vec<_> = blocks.iter().skip(listed.len()).filter(|(id, _)| !made(*id)).collect();
     assert_eq!(shapes.len(), crafted.len(), "no other shapes: {names:?}");
@@ -107,6 +112,7 @@ fn base_blocks_come_from_its_data_files() {
         looks,
         [
             "base:antiphasite",
+            "base:blue_crystal",
             "base:brass",
             "base:brick",
             "base:copper",
@@ -114,9 +120,11 @@ fn base_blocks_come_from_its_data_files() {
             "base:dirt",
             "base:grass",
             "base:gravel",
+            "base:green_crystal",
             "base:ice",
             "base:iron",
             "base:log",
+            "base:lumite",
             "base:phasite",
             "base:stone",
             "base:wood"
@@ -128,6 +136,12 @@ fn base_blocks_come_from_its_data_files() {
     assert_eq!(def(base::COPPER).properties, [Property::Conductor]);
     assert_eq!(def(base::PHASITE).properties, [Property::Phase]);
     assert_eq!(def(base::ANTIPHASITE).properties, [Property::Phase, Property::StartsHidden]);
+    assert_eq!(def(base::BLUE_CRYSTAL).properties, [Property::Fuse]);
+    assert_eq!(def(base::GREEN_CRYSTAL).properties, [Property::Lens]);
+    assert!(def(base::LUMITE).properties.is_empty());
+    let glow = |look: &str| sim.looks().get(look).unwrap().glow;
+    assert!(glow("base:lumite") >= 1.0, "lumite lights itself");
+    assert!(glow("base:blue_crystal") > 0.0 && glow("base:stone") == 0.0);
     assert!(def(base::WOOD).properties.is_empty());
     for look in sim.looks().iter() {
         assert!(look.rgba.as_chunks::<4>().0.iter().all(|px| px[3] == 255), "{} should be opaque", look.name);

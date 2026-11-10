@@ -4,7 +4,7 @@
 use api::crafting::heights;
 use api::{BlockBox, Layer, Orientation, ShapeGrid, Stacks, craft_shape};
 
-use crate::{ANTIPHASITE, BRASS, COPPER, PHASITE};
+use crate::{ANTIPHASITE, BLUE_CRYSTAL, BRASS, COPPER, PHASITE};
 
 fn craft(stacks: &Stacks) -> ShapeGrid {
     craft_shape(stacks, false).expect("the base game's stacks make shapes")
@@ -64,6 +64,29 @@ pub fn door_upper() -> Vec<(&'static str, ShapeGrid)> {
 pub fn lever(material: &'static str) -> Vec<(&'static str, ShapeGrid)> {
     let handles = cube([6, 0, 6], [10, 4, 10]).union(&cube([6, 12, 6], [10, 16, 10]));
     vec![(material, cube([0, 4, 0], [16, 12, 16])), (BRASS, handles)]
+}
+
+/// A shutter at the mouth of a niche, facing -Y: a phasite panel a quarter thick across the
+/// near side, and a copper block a quarter across in the far corner of the floor, clear of the
+/// panel's grab, so a lever beside it reaches it. A signal hides the panel and shows what's
+/// behind it.
+pub fn shutter() -> Vec<(&'static str, ShapeGrid)> {
+    vec![(PHASITE, cube([0, 0, 0], [16, 4, 16])), (COPPER, cube([12, 12, 0], [16, 16, 4]))]
+}
+
+/// A crystal gun's trigger, firing +X: a blue crystal one texel thick against the +X side,
+/// hidden by an antiphasite slab against it (which starts hidden and takes what's within a
+/// texel along), and a copper block a quarter across in the far corner for a lever's signal.
+/// The signal shows the slab and brings the blue back, touching a green crystal east of it.
+///
+/// Not a shape the table can make: the table works in quarters, and a blue crystal a quarter
+/// thick is only cut by a texel's grab, its kept part still touching the green.
+pub fn crystal_trigger() -> Vec<(&'static str, ShapeGrid)> {
+    vec![
+        (COPPER, cube([0, 0, 0], [4, 4, 4])),
+        (ANTIPHASITE, cube([12, 0, 0], [15, 16, 16])),
+        (BLUE_CRYSTAL, cube([15, 0, 0], [16, 16, 16])),
+    ]
 }
 
 /// A copper wire a quarter across, lying on the floor along X against the +Y side.
