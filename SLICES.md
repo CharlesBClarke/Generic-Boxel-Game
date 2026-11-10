@@ -113,46 +113,10 @@ A run of small toy slices. Each one takes a single game-feel feature that doesn'
 
 - Cow pathfinding (low priority, 2026-11-06): the user called the toy "really good" without going through the five course checks one by one; note any that misbehave: cows through the pen's gap and up its terraces, up the mesa's steps, a charge baited off the mesa's cliff (landing hurt), waiting below the pillar (orange route), climbing hills on the generated terrain.
 
-### Experimental materials (`toy-experimental-materials`)
-
-**Stage:** Verify (batch A). `fix-mesher-cost` is done and merged into this branch (2026-11-08). **Next session:** batch B (sensor, delay, trigger scope).
-
-**Goal:** an experiment kit of small materials, each with a one-sentence rule, to find which set balances trivial use for players who don't care against combining for those who do, and to compare boxel-wide against touching signals. The user (2026-11-08): "the goal here is to disover what set of materials has a good ballence of trival use for Luers, and combantainal complexity for the people who care. we allso need moore systems if we want to figure out if we want triggers to be block global or texel adjasenct, so I just want a verity of little toys to really experiment what works". Names are placeholders ("bs names now").
-
-**Plan** (approved and engaged 2026-11-08). Built in three batches, with a play check after each:
-- **A. Light and crystals.**
-  - *Glow:* a look field `glow = { strength }` beside `sheen`; a glowing material is drawn self-lit (no sun, shade or AO) and lights nothing else (that's Stored light). No on/off of its own: hide it with phasite or cover it with a phasite shutter. *Lumite*, a plain lamp. Optional bloom behind a slider.
-  - *Crystals:* properties `fuse` (a blue crystal) and `lens` (a green crystal). When a fuse piece and a lens piece touch face to face at texel level, both are used up and a blast fires from blue toward green, along the face they touch on; touching on faces in several directions fires one beam per direction. Checked on boxels that just changed (placed, shown by a phase flip, broken next to). A beam runs up to `range` boxels, breaks blocks in its path (they drop as usual) until its `strength` runs out, hurts and knocks back cows and the player (a rocket jump). A beam reaching a lens sets it off, firing onward in the beam's direction at full strength; one reaching a fuse just breaks it. Client: beam flash, a pickable sound, shake. All on sliders (`BlastDef`). Both crystals glow a little.
-- **B. Signals.**
-  - *Sensor:* a body (player or cow) touching a piece of it signals it, once per touch.
-  - *Delay:* passes a signal it gets on after `delay` seconds (slider). Signals still waiting are dropped on save.
-  - *Trigger scope switch* (a tuning toggle): boxel-wide (today: a signal reaches a boxel and every piece in it answers; copper carries boxel to boxel) or touching (a signal reaches only the pieces touching the piece that sends it; copper carries only through copper pieces that touch). Crystals always use texel touching.
-- **C. Feel.**
-  - *Bounce:* landing on it springs you up (jump pads); the movement API sees it like friction.
-  - *Falls:* unsupported pieces drop, like sand. (Climb was left out.)
-- **Throughout:** the crosshair hint lists the aimed material's properties; a demo spot in the test area per batch; every new material is endless.
-
-**Done when**
-1. A lumite lamp glows in the dark-shaded side of a build, and a phasite shutter toggles it.
-2. Placing a blue crystal against a green one fires a beam from blue to green that breaks blocks and knocks back cows and the player; a lever wired to a hidden blue crystal fires it; a line of green crystals chains.
-3. A sensor fires a trap when a cow or the player steps on it; a loop of delays makes a clock.
-4. The trigger scope switch changes what the knob example does (a knob not touching a phasite strip in its boxel flips it boxel-wide, not touching).
-5. A bounce pad springs the player; a falls material drops when what holds it up is broken or hidden.
-6. Tests for each rule; `cargo test` and clippy clean.
-
-**Batch A notes** (2026-11-08)
-- Glow: `LookDef::glow`, packed beside the sheen in the shader's per-look texel; drawn as `lit × (1 − min(glow, 1)) + own colors × glow`, ignoring AO. Bloom left out for now: it needs Bevy's HDR path, which changes the tone mapping of everything; offer after the user has seen the glow.
-- Crystals: `sim::blast` (`reactions`, `beam`), run once a tick after edits and signals on the boxels changed (`ChangedChunks` now keeps them). Blast values live in `SignalDef.blast` (`BlastDef`), tuned in the `signals` section. Used-up crystals drop nothing; what a beam breaks drops as usual. At most 256 beams a tick. Events: `Event::Blast`, drawn by `client::blast` (an additive bar that fades and thins, shake by distance in `CombatFeel`). Sound: a new `Kind::Blast` pick list (`blast_` sounds: laser, crunch, boom from Kenney Sci-fi); its own sound is the green crystal's breaking sound, so breaking one by hand zaps too.
-- The crosshair hint lists any aimed material's properties in a few words (`crafting::property_words`).
-- Lab (`base::LAB_SPOT`, waypoint `lab`): a lumite lamp behind a phasite shutter on a lever; a lever-fired crystal gun that chains through a second green crystal into a brick wall.
-- **Played** (2026-11-08), the user: "its fun. I like the gun, the lamp felt pointless wihtouut lighting, but thats just that." The lamp waits for Stored light. Done-when 1 and 2 not yet checked one by one.
-- **Beam tuning deferred** ("maybe deffer tuneing it"). Today every beam is alike and one fires per lens piece and direction, so several separately placed green pieces in a boxel stack beams (more damage, a longer tunnel) while one green gadget, however layered, fires once: a hidden rule. Candidates: strength and damage from the green volume used up, and the beam's width from the lens's outline down the beam.
-- **Lag found:** a 3D checker gadget made the placement ghost laggy, and interacting next to it hitched. A fault in the mesher from earlier toys, fixed on its own branch (`fix-mesher-cost`, 2026-11-08; the user: "ok it works very well"): see `docs/notes/mesher-cost.md`.
-- **Finding from building the gun:** with the grab at 1 texel and the table working in quarters, a player can't make a hidden blue crystal: antiphasite only cuts a quarter-thick blue, and the kept part still touches the green. The lab's trigger is texel-exact, built by the base mod (`shapes::crystal_trigger`). With `grab` at 4 the quarter version works. Worth deciding with the user: how a player sets crystals off from a distance.
-- **Glitch reported** (2026-11-09, not yet looked into or sorted as slice bug / earlier-code fix / design change). The user: "the losse block maybe we need vocab for that, only displays one material": the thing lying on the ground after a break seems to show only one of its materials. No Terminology word for it yet; agree one with a concrete example, then add it to the table.
-
 ### Toy backlog
 
+- **More materials.** Added 2026-11-09, batches B and C of Experimental materials, deferred as one entry: sensor, delay, the trigger scope switch (boxel-wide or touching signals), bounce pads and falling material, plus beam tuning and setting crystals off from a distance. Notes: `docs/notes/more-materials.md`.
+- **Bundle loose item look.** Added 2026-11-09, a bug in Material behavior's code, deferred by the user ("its still playable nothign will be built on it"): breaking a whole bundle drops one loose item drawn as its first piece only, so it shows one material. Fix as `fix-bundle-item-look`: mesh all the pieces together (as the ghost does) and take its resting turns from the whole shape. Also agree a word: the user said "losse block", the code says loose item.
 - **Rename "part" to "gadget" in the code.** Added 2026-11-07, deferred from Blueprint library at the user's request: the Terminology table says gadget, the code still says part.
 - **Hotbar background not quite snug.** Added 2026-11-07 at the user's request, after `fix-hotbar-shrink`: the background now shrinks when slots go, but in play not all the way down to its contents. Minor, maybe not worth fixing. Unchecked guess: the line under the slots (what's held and the placement mode) is wider than the slot row, so it sets the width.
 - **Tectonic-like terrain shape.** Added 2026-11-05 at the user's request, from Generated terrain: the generated mountains are pointy, unlike Tectonic's broad ranges with plateaus, flat tops, terraced tiers and valleys. Reshape `base::terrain` toward it (Tectonic's regions and curves are MIT under `data/tectonic/`; its `data/minecraft/` files are Mojang's and stay out). Tuning `jaggedness`, `range_scale` and `mountain_height` softens the current shape meanwhile.
@@ -250,6 +214,7 @@ Bugs found in already-merged code, each fixed on its own `fix-` branch (see the 
 ### Done toys
 
 Full write-ups (plans, implementation notes, verify rounds, decisions) are in `docs/done-toys.md`. One line each, newest first:
+- **Experimental materials** (2026-11-09, `toy-experimental-materials`, batch A only). Glow (lumite, a lamp behind a phasite shutter), unstable crystals (blue against green fires a beam that breaks blocks, chains through green and knocks bodies back), material properties in the crosshair hint, a lab at waypoint `lab`. Batches B and C deferred as More materials.
 - **UI scale** (2026-11-08, `toy-ui-scale`, mini). Menus and on-screen text scale with the window's height (natural at 1080), times a size slider (0.5–1.5) in the tuning panel; egui and Bevy UI together.
 - **Endless materials and a bigger sun** (2026-11-07, `toy-endless-materials`, micro). `inventory.toml` can list endless materials, kept topped up and shown as ∞ (base: brass, copper, phasite, antiphasite), which also fixed a save that had lost its copper; a bigger, crisp sun with flat drawn rays, all on sliders.
 - **Blueprint library** (2026-11-07, `toy-blueprint-library`). Blueprints kept per world by name, made without crafting; linked variants (turn, mirror, shift a quarter, center, swap a material); a blueprint can go in a layer, so inner gadgets needn't be carried; a tree in the table menu, carried things as an icon grid, pictures that turn. The menu was judged too heavy: next comes one 3D drafting view.
