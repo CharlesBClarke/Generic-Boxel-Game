@@ -6,7 +6,7 @@ use std::collections::HashMap;
 use api::{BoxelPos, CHUNK_VOLUME, ChunkPos};
 
 use crate::cell::{CellId, CellTable, Occupant};
-use crate::{BlockId, Layer};
+use crate::{BlockId, Layer, Light};
 
 /// Identifies a grid. The main world is one grid among many; sub-grids and pocket
 /// dimensions will be others.
@@ -22,11 +22,15 @@ impl GridId {
 pub struct Chunk {
     /// What fills each boxel, as an ID into the grid's [`CellTable`].
     pub cells: Layer<CellId>,
+    /// How much light reaches each boxel (see [`crate::light`]). Worked out from the cells, so
+    /// never saved.
+    pub light: Layer<Light>,
 }
 
 impl Chunk {
+    /// Nothing in it, lit by the open sky like a missing chunk.
     pub fn empty() -> Self {
-        Self { cells: Layer::Uniform(CellId::EMPTY) }
+        Self { cells: Layer::Uniform(CellId::EMPTY), light: Layer::Uniform(Light::SKY) }
     }
 }
 
@@ -39,22 +43,32 @@ pub struct ChunkData {
     pub lists: Vec<Vec<Occupant>>,
     /// Each boxel's list, as an index into `lists`.
     pub cells: Layer<u16>,
+    /// Each boxel's light. A grid that works its light out itself, as a simulation does, makes
+    /// it again; a client keeps what it's sent.
+    pub light: Layer<Light>,
 }
 
-/// A volume of boxels made of chunks. Missing chunks read as empty.
+/// A volume of boxels made of chunks. Missing chunks read as empty, under the open sky.
 #[derive(Default)]
 pub struct Grid {
-    chunks: HashMap<ChunkPos, Chunk>,
-    cells: CellTable,
+    /// Every chunk, in no particular order; `slots` says which is where. Kept in a list so
+    /// work that walks from chunk to chunk, like spreading light, can hold on to them by slot.
+    pub(crate) chunks: Vec<Chunk>,
+    /// Each chunk's position, by slot.
+    pub(crate) positions: Vec<ChunkPos>,
+    pub(crate) slots: HashMap<ChunkPos, usize>,
+    pub(crate) cells: CellTable,
+    /// What each occupant list does to light, by cell ID, filled in as lists are first lit.
+    pub(crate) light_info: Vec<crate::light::CellLight>,
 }
 
 impl Grid {
     pub fn chunk(&self, pos: ChunkPos) -> Option<&Chunk> {
-        self.chunks.get(&pos)
+        self.slots.get(&pos).map(|&i| &self.chunks[i])
     }
 
     pub fn chunks(&self) -> impl Iterator<Item = (ChunkPos, &Chunk)> {
-        self.chunks.iter().map(|(pos, chunk)| (*pos, chunk))
+        self.positions.iter().copied().zip(self.chunks.iter())
     }
 
     /// The occupant list a chunk's cell ID points at.
@@ -65,19 +79,39 @@ impl Grid {
     /// Everything in the boxel at `pos`, in the order it was placed, oldest first.
     pub fn cell(&self, pos: BoxelPos) -> &[Occupant] {
         let (chunk, local) = pos.split();
-        let id = self.chunks.get(&chunk).map_or(CellId::EMPTY, |c| c.cells.get(local));
+        let id = self.chunk(chunk).map_or(CellId::EMPTY, |c| c.cells.get(local));
         self.cells.get(id)
     }
 
-    /// Replaces everything in the boxel at `pos`. Doesn't check whether the occupants may share.
+    /// The light in the boxel at `pos`. A missing chunk is open sky.
+    pub fn light(&self, pos: BoxelPos) -> Light {
+        let (chunk, local) = pos.split();
+        self.chunk(chunk).map_or(Light::SKY, |c| c.light.get(local))
+    }
+
+    /// The chunk at `pos`, made empty if it's missing.
+    fn chunk_or_empty(&mut self, pos: ChunkPos) -> &mut Chunk {
+        let slot = match self.slots.get(&pos) {
+            Some(&i) => i,
+            None => {
+                self.chunks.push(Chunk::empty());
+                self.positions.push(pos);
+                self.slots.insert(pos, self.chunks.len() - 1);
+                self.chunks.len() - 1
+            }
+        };
+        &mut self.chunks[slot]
+    }
+
+    /// Replaces everything in the boxel at `pos`. Doesn't check whether the occupants may share,
+    /// and leaves the light as it was (see [`crate::light`]).
     pub fn set_cell(&mut self, pos: BoxelPos, occupants: &[Occupant]) {
         let id = self.cells.intern(occupants);
         let (chunk, local) = pos.split();
-        match self.chunks.get_mut(&chunk) {
-            Some(c) => c.cells.set(local, id),
-            None if id.is_empty() => {}
-            None => self.chunks.entry(chunk).or_insert_with(Chunk::empty).cells.set(local, id),
+        if id.is_empty() && !self.slots.contains_key(&chunk) {
+            return;
         }
+        self.chunk_or_empty(chunk).cells.set(local, id);
     }
 
     /// The block in the boxel at `pos`: its first occupant's, or empty. Most boxels hold one.
@@ -96,15 +130,17 @@ impl Grid {
                 (lists.len() - 1) as u16
             })
         };
-        let cells = match self.chunks.get(&pos).map(|c| &c.cells) {
+        let chunk = self.chunk(pos);
+        let cells = match chunk.map(|c| &c.cells) {
             None => Layer::Uniform(local(CellId::EMPTY)),
             Some(Layer::Uniform(id)) => Layer::Uniform(local(*id)),
             Some(Layer::Dense(ids)) => Layer::Dense(ids.iter().map(|&id| local(id)).collect()),
         };
-        ChunkData { pos, lists, cells }
+        let light = chunk.map_or(Layer::Uniform(Light::SKY), |c| c.light.clone());
+        ChunkData { pos, lists, cells, light }
     }
 
-    /// Replaces the chunk at `data.pos` with `data`.
+    /// Replaces the chunk at `data.pos` with `data`, its light included.
     pub fn import_chunk(&mut self, data: &ChunkData) {
         let ids: Vec<CellId> = data.lists.iter().map(|list| self.cells.intern(list)).collect();
         let cells = match &data.cells {
@@ -114,12 +150,19 @@ impl Grid {
                 Layer::Dense(values.iter().map(|&i| ids[i as usize]).collect())
             }
         };
-        self.chunks.insert(data.pos, Chunk { cells });
+        *self.chunk_or_empty(data.pos) = Chunk { cells, light: data.light.clone() };
     }
 
     /// Drops the chunk at `pos`, leaving it empty.
     pub fn remove_chunk(&mut self, pos: ChunkPos) {
-        self.chunks.remove(&pos);
+        let Some(slot) = self.slots.remove(&pos) else {
+            return;
+        };
+        self.chunks.swap_remove(slot);
+        self.positions.swap_remove(slot);
+        if let Some(&moved) = self.positions.get(slot) {
+            self.slots.insert(moved, slot);
+        }
     }
 
     /// Fills the boxel at `pos` with just `id`, unturned, or empties it.
@@ -242,6 +285,25 @@ mod tests {
         copy.set_block(BoxelPos::new(0, 0, 40), stone);
         copy.import_chunk(&grid.export_chunk(ChunkPos::new(0, 0, 1)));
         assert!(copy.cell(BoxelPos::new(0, 0, 40)).is_empty());
+    }
+
+    #[test]
+    fn removing_a_chunk_keeps_the_others() {
+        let stone = some_block();
+        let mut grid = Grid::default();
+        let spots = [BoxelPos::new(0, 0, 0), BoxelPos::new(40, 0, 0), BoxelPos::new(80, 0, 0)];
+        for p in spots {
+            grid.set_block(p, stone);
+        }
+        grid.remove_chunk(ChunkPos::new(0, 0, 0));
+        grid.remove_chunk(ChunkPos::new(9, 9, 9));
+        assert_eq!(grid.block(spots[0]), BlockId::EMPTY);
+        assert_eq!(grid.block(spots[1]), stone);
+        assert_eq!(grid.block(spots[2]), stone);
+        assert_eq!(grid.chunks().count(), 2);
+        for (pos, chunk) in grid.chunks() {
+            assert!(std::ptr::eq(grid.chunk(pos).unwrap(), chunk));
+        }
     }
 
     #[test]

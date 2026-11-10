@@ -97,7 +97,10 @@ pub fn load_world(data: &Path, code: Code, save: Option<&SaveData>) -> Result<(S
         }
     }
     if let Some(stats) = sim.generation() {
-        eprintln!("terrain: {} chunks ({} of one block all through) in {:.2} s", stats.chunks, stats.uniform, stats.seconds);
+        eprintln!(
+            "terrain: {} chunks ({} of one block all through) in {:.2} s, lit in {:.2} s",
+            stats.chunks, stats.uniform, stats.seconds, stats.light_seconds
+        );
     }
     Ok((sim, fresh))
 }

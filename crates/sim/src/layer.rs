@@ -12,21 +12,42 @@ pub enum Layer<T> {
 
 impl<T: Copy + PartialEq> Layer<T> {
     pub fn get(&self, pos: LocalPos) -> T {
-        match self {
-            Layer::Uniform(value) => *value,
-            Layer::Dense(values) => values[pos.index()],
-        }
+        self.at(pos.index())
     }
 
     pub fn set(&mut self, pos: LocalPos, value: T) {
+        self.set_at(pos.index(), value);
+    }
+
+    /// The value at `index` (see [`LocalPos::index`]).
+    #[inline]
+    pub fn at(&self, index: usize) -> T {
+        match self {
+            Layer::Uniform(value) => *value,
+            Layer::Dense(values) => values[index],
+        }
+    }
+
+    /// Sets the value at `index` (see [`LocalPos::index`]).
+    #[inline]
+    pub fn set_at(&mut self, index: usize, value: T) {
         match self {
             Layer::Uniform(current) if *current == value => {}
             Layer::Uniform(current) => {
                 let mut values = vec![*current; CHUNK_VOLUME].into_boxed_slice();
-                values[pos.index()] = value;
+                values[index] = value;
                 *self = Layer::Dense(values);
             }
-            Layer::Dense(values) => values[pos.index()] = value,
+            Layer::Dense(values) => values[index] = value,
+        }
+    }
+
+    /// Stores it as one value again if every boxel has come to hold the same.
+    pub fn compact(&mut self) {
+        if let Layer::Dense(values) = self
+            && values.iter().all(|v| *v == values[0])
+        {
+            *self = Layer::Uniform(values[0]);
         }
     }
 

@@ -25,6 +25,11 @@ struct Atmosphere {
     // How much the rays' lengths vary, how much they fade toward their tips, how fast they turn
     // (turns a minute), and the disc's radius in radians.
     ray_shape: vec4<f32>,
+    // Stored light: block light's strength, sky light's falloff power, block light's, and the
+    // least light.
+    stored: vec4<f32>,
+    // Stored light on (1) or off (0).
+    stored_on: vec4<f32>,
 };
 
 // The sun's color at full brightness, whatever its strength.
@@ -95,6 +100,24 @@ fn fog_amount(a: Atmosphere, distance: f32) -> f32 {
 
 // Light falling on a surface facing `normal` (unit): the sky's above, the ground's below,
 // and the sun.
+// How much of the sun and sky reach a face, from its stored sky light (0 to 1): 1 in the open,
+// less where they come in only sideways, through an opening.
+fn sky_reach(a: Atmosphere, stored_sky: f32) -> f32 {
+    if a.stored_on.x < 0.5 {
+        return 1.0;
+    }
+    return pow(stored_sky, a.stored.y);
+}
+
+// Light from blocks that give light, from the face's stored red, green and blue (0 to 1), plus
+// the least light any face gets.
+fn block_light(a: Atmosphere, stored_rgb: vec3<f32>) -> vec3<f32> {
+    if a.stored_on.x < 0.5 {
+        return vec3<f32>(0.0);
+    }
+    return pow(stored_rgb, vec3<f32>(a.stored.z)) * a.stored.x + vec3<f32>(a.stored.w);
+}
+
 fn surface_light(a: Atmosphere, normal: vec3<f32>) -> vec3<f32> {
     let ambient = mix(a.ground_light.rgb, a.sky_light.rgb, normal.y * 0.5 + 0.5);
     return ambient + a.sun_color.rgb * max(dot(normal, a.sun_direction.xyz), 0.0);

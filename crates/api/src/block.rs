@@ -35,6 +35,11 @@ pub struct BlockDef {
     pub sounds: BlockSounds,
     /// What it does, brought by its material into every shape made of it (see [`Property`]).
     pub properties: Vec<Property>,
+    /// The light it gives off, red, green and blue, from 0 to [`BlockDef::MAX_LIGHT`], its
+    /// color and brightness: it dims by a share each boxel, every channel alike, so its color
+    /// holds as it fades, and full light reaches about 14 boxels. Every shape made of it gives
+    /// the same. Separate from how it looks: a glowing look lights only itself.
+    pub light: [u8; 3],
 }
 
 /// Something a material does wherever a piece of it is, written by hand and given to materials
@@ -99,8 +104,12 @@ impl BlockDef {
             material: None,
             sounds: BlockSounds::default(),
             properties: Vec::new(),
+            light: [0; 3],
         }
     }
+
+    /// The brightest light a block can give, and the most stored in a boxel.
+    pub const MAX_LIGHT: u8 = u8::MAX;
 
     pub fn with_look(mut self, look: impl Into<String>) -> Self {
         self.look = Some(look.into());
@@ -139,6 +148,11 @@ impl BlockDef {
 
     pub fn with_properties(mut self, properties: Vec<Property>) -> Self {
         self.properties = properties;
+        self
+    }
+
+    pub fn with_light(mut self, light: [u8; 3]) -> Self {
+        self.light = light;
         self
     }
 

@@ -53,6 +53,8 @@ pub struct GenerationStats {
     /// Chunks that came out a single block (or empty) all through, stored as one value.
     pub uniform: usize,
     pub seconds: f32,
+    /// Seconds lighting the whole world took afterwards.
+    pub light_seconds: f32,
 }
 
 /// Every chunk of a terrain placed at `center`, `width` chunks across and `height` high,
@@ -118,7 +120,7 @@ pub fn generate(
     let chunks = terrain_chunks(def.center, settings.terrain_width, settings.terrain_height);
     let data = fill_chunks(generator, def, &chunks, blocks)?;
     let uniform = data.iter().filter(|c| matches!(c.cells, Layer::Uniform(_))).count();
-    let stats = GenerationStats { chunks: data.len(), uniform, seconds: start.elapsed().as_secs_f32() };
+    let stats = GenerationStats { chunks: data.len(), uniform, seconds: start.elapsed().as_secs_f32(), light_seconds: 0.0 };
     Ok((data, stats))
 }
 
@@ -139,7 +141,8 @@ pub fn to_chunk(pos: ChunkPos, fill: &ChunkFill, blocks: &BlockRegistry) -> Resu
     } else {
         Layer::Dense(fill.cells.clone().into_boxed_slice())
     };
-    Ok(ChunkData { pos, lists, cells })
+    // Light is worked out once the whole terrain is in (see `crate::light`).
+    Ok(ChunkData { pos, lists, cells, light: Layer::Uniform(crate::Light::SKY) })
 }
 
 #[cfg(test)]

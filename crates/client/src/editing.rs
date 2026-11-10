@@ -1117,6 +1117,9 @@ mod remesh_timing {
         assert!(world.universe().main().cell(spot).iter().any(|o| o.block == brick), "the brick is placed");
         let (yaw, pitch) = aim(&world, WorldPos::new(spot.0, ZVec3::new(0.5, 0.5, 0.5)));
         time_edit("break", PlayerInput { yaw, pitch, use_pressed: true, use_held: true, ..Default::default() }, &mut world);
+        let lumite = world.blocks().material_block(world.blocks().material(base::LUMITE).unwrap());
+        let (yaw, pitch) = aim(&world, WorldPos::new(spot.0 - I64Vec3::Z, ZVec3::new(0.5, 0.5, 1.0)));
+        time_edit("place lumite", PlayerInput { yaw, pitch, alt_pressed: true, alt_held: true, place_block: lumite, ..Default::default() }, &mut world);
     }
 
     /// Times meshing the base game's whole world with its terrain generated, on every core, as

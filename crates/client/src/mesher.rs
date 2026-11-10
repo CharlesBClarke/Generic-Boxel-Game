@@ -40,8 +40,15 @@ pub struct MeshData {
     /// 3 backwards), then the quad's size along those, all divided by [`FACE_SCALE`] to fit
     /// a normalized 16-bit number.
     pub face: Vec<[u16; 4]>,
+    /// The stored light at each vertex, red, green, blue and sky, 0 to 255 for none to full
+    /// (see [`sim::light`]). Empty for meshes drawn outside the world, which are lit as if under
+    /// the open sky.
+    pub light: Vec<[u8; 4]>,
     pub indices: Vec<u32>,
 }
+
+/// A vertex's light under the open sky, with no block light.
+pub const OPEN_SKY: [u8; 4] = [0, 0, 0, 255];
 
 /// The surface carries straight on past an edge.
 pub const FLAT: u32 = 0;
@@ -457,12 +464,13 @@ pub fn mesh_chunks(grid: &Grid, positions: &[ChunkPos], blocks: &BlockRegistry, 
 
 /// [`mesh_chunks`], reading neighborhoods of more than `dense_at` boxes through their texels.
 fn mesh_chunks_with(grid: &Grid, positions: &[ChunkPos], blocks: &BlockRegistry, volumes: &Volumes, ao: &AoTuning, dense_at: usize) -> Vec<MeshData> {
-    if positions.len() < 8 {
+    if positions.len() < 2 {
         return positions.iter().map(|&p| mesh_chunk_with(grid, p, blocks, volumes, ao, dense_at)).collect();
     }
     let threads = std::thread::available_parallelism().map_or(1, |n| n.get());
-    // Small parts, handed out as threads free up, since chunks differ a lot in cost.
-    let parts: Vec<&[ChunkPos]> = positions.chunks(16).collect();
+    // Small parts, handed out as threads free up, since chunks differ a lot in cost; one chunk
+    // each for a few, as after an edit, so they mesh side by side.
+    let parts: Vec<&[ChunkPos]> = positions.chunks((positions.len() / threads).clamp(1, 16)).collect();
     let next = std::sync::atomic::AtomicUsize::new(0);
     let mut done: Vec<(usize, Vec<MeshData>)> = std::thread::scope(|scope| {
         let handles: Vec<_> = (0..threads.min(parts.len()))
@@ -523,7 +531,108 @@ fn mesh_chunk_with(grid: &Grid, pos: ChunkPos, blocks: &BlockRegistry, volumes: 
             mesh_occupant(&mut mesh, occupant, at.as_vec3().to_array(), blocks, volumes, hidden, &around, ao, &mut drawn);
         }
     }
+    let light = |local: I64Vec3| {
+        let inside = local.cmpge(I64Vec3::ZERO).all() && local.cmplt(I64Vec3::splat(CHUNK_SIZE)).all();
+        if inside {
+            chunk.light.get(LocalPos::new(local.x as u8, local.y as u8, local.z as u8))
+        } else {
+            grid.light(pos.origin().offset(local))
+        }
+    };
+    let covered = std::cell::RefCell::new(std::collections::HashMap::new());
+    let faces = |local: I64Vec3| *covered.borrow_mut().entry(local).or_insert_with(|| sim::light::covered_faces_of(near(local), blocks));
+    bake_light(&mut mesh, light, faces);
     mesh
+}
+
+/// Gives every vertex of a chunk's mesh the stored light around it: the average of the boxels
+/// just in front of its corner (up to four, those on either side of each edge meeting there)
+/// that light could get from to the boxel the face looks into, by the stored light's rule:
+/// through faces neither boxel covers (see [`sim::light`]). So a boxel beside it counts if the
+/// face between them is open, and one diagonally across the corner if light could get round by
+/// either of the two beside it; blocks meeting at an edge seal it like a wall, whatever their
+/// shape. Closed boxels (full blocks) never count, as a wall beside a floor would only darken
+/// it twice over (corner AO does that). `light` and `faces` (covered faces, as
+/// [`sim::light::covered_faces_of`] gives them) take boxels relative to the chunk. Then splits
+/// each quad along the diagonal whose ends are lit most alike, light and AO together.
+fn bake_light(mesh: &mut MeshData, light: impl Fn(I64Vec3) -> sim::Light, faces: impl Fn(I64Vec3) -> u8) {
+    // Whether light gets from `from` into its neighbor `to` through the face between them.
+    let passes = |from: I64Vec3, to: I64Vec3| {
+        let k = (0..3).find(|&k| from[k] != to[k]).expect("neighbors");
+        let d = 2 * k + usize::from(to[k] < from[k]);
+        faces(from) & (1 << d) == 0 && faces(to) & (1 << (d ^ 1)) == 0
+    };
+    let size = BlockBox::SIZE as i64;
+    mesh.light = vec![[0; 4]; mesh.positions.len()];
+    for q in 0..mesh.quad_count() {
+        let first = 4 * q;
+        let normal = mesh.normals[first].map(|c| c as i64);
+        // The boxel the quad faces into: from its middle, half a texel in front.
+        let middle: [f32; 3] = std::array::from_fn(|k| (0..4).map(|v| mesh.positions[first + v][k]).sum::<f32>() / 4.0);
+        let front = I64Vec3::from_array(std::array::from_fn(|k| {
+            let texel = (middle[k] * size as f32 * 2.0).round() as i64 + normal[k];
+            texel.div_euclid(2 * size)
+        }));
+        for i in first..first + 4 {
+            let texel = mesh.positions[i].map(|c| (c * size as f32).round() as i64);
+            // On each axis, the boxels in front of the corner: across the normal, the one in
+            // front; along the face, both sides of a boxel edge, or the one it's inside.
+            let options: [Vec<i64>; 3] = std::array::from_fn(|k| {
+                if normal[k] != 0 {
+                    vec![front[k]]
+                } else if texel[k].rem_euclid(size) == 0 {
+                    vec![texel[k] / size - 1, texel[k] / size]
+                } else {
+                    vec![texel[k].div_euclid(size)]
+                }
+            });
+            let reachable = |at: I64Vec3| {
+                let off: Vec<usize> = (0..3).filter(|&k| at[k] != front[k]).collect();
+                match off[..] {
+                    [] => true,
+                    [_] => passes(at, front),
+                    [a, b] => [a, b].iter().any(|&k| {
+                        let mut beside = front;
+                        beside[k] = at[k];
+                        passes(at, beside) && passes(beside, front)
+                    }),
+                    _ => false,
+                }
+            };
+            let (mut sum, mut count) = ([0u32; 4], 0);
+            for &x in &options[0] {
+                for &y in &options[1] {
+                    for &z in &options[2] {
+                        let at = I64Vec3::new(x, y, z);
+                        if faces(at) == sim::light::ALL_FACES || !reachable(at) {
+                            continue;
+                        }
+                        let l = light(at);
+                        for (c, s) in sum.iter_mut().enumerate() {
+                            *s += l.channel(c) as u32;
+                        }
+                        count += 1;
+                    }
+                }
+            }
+            let max = sim::Light::MAX as u32;
+            mesh.light[i] = sum.map(|s| if count == 0 { 0 } else { ((s * 255 + count * max / 2) / (count * max)) as u8 });
+        }
+    }
+    for q in 0..mesh.quad_count() {
+        let first = 4 * q;
+        let lit = |k: usize| {
+            let l = mesh.light[first + k];
+            mesh.colors[first + k][0] * (1.0 + l.iter().map(|&c| c as f32 / 255.0).sum::<f32>())
+        };
+        let i = 6 * q;
+        let first = first as u32;
+        mesh.indices[i..i + 6].copy_from_slice(&if (lit(0) - lit(2)).abs() <= (lit(1) - lit(3)).abs() {
+            [first, first + 1, first + 2, first, first + 2, first + 3]
+        } else {
+            [first, first + 1, first + 3, first + 1, first + 2, first + 3]
+        });
+    }
 }
 
 /// A face already drawn in a boxel, in texels: which way it faces, where its plane is along
@@ -765,7 +874,7 @@ mod tests {
     /// Fills the chunk at `c` with `id` all through, stored as one value as generated terrain is.
     fn fill_chunk(grid: &mut Grid, c: I64Vec3, id: BlockId) {
         let lists = vec![Vec::new(), vec![Occupant::new(id)]];
-        grid.import_chunk(&sim::ChunkData { pos: ChunkPos(c), lists, cells: sim::Layer::Uniform(1) });
+        grid.import_chunk(&sim::ChunkData { pos: ChunkPos(c), lists, cells: sim::Layer::Uniform(1), light: sim::Layer::Uniform(sim::Light::DARK) });
     }
 
     #[test]
@@ -810,6 +919,104 @@ mod tests {
         grid.set_block(BoxelPos::new(6, 5, 5), hidden);
         let mesh = mesh_chunk(&grid, ChunkPos::new(0, 0, 0), &blocks);
         assert_eq!(mesh.quad_count(), 6, "the stone's east face shows through");
+    }
+
+    /// One quad: the top of the boxel at the chunk's corner, as the mesher lays it out.
+    fn top_quad() -> MeshData {
+        let mut mesh = MeshData {
+            positions: vec![[0.0, 0.0, 1.0], [1.0, 0.0, 1.0], [1.0, 1.0, 1.0], [0.0, 1.0, 1.0]],
+            normals: vec![[0.0, 0.0, 1.0]; 4],
+            colors: vec![[1.0; 4]; 4],
+            indices: vec![0, 1, 2, 0, 2, 3],
+            ..Default::default()
+        };
+        mesh.solid = vec![[0.0; 4]; 4];
+        mesh
+    }
+
+    #[test]
+    fn a_corner_averages_the_light_of_the_boxels_in_front_but_not_full_ones() {
+        let mut mesh = top_quad();
+        // Full sky over everything but x = 1 and up, which has full red and no sky.
+        let light = |at: I64Vec3| if at.x >= 1 { sim::Light::new([255, 0, 0], 0) } else { sim::Light::SKY };
+        // A full block west of the quad, above the floor.
+        let faces = |at: I64Vec3| if at == I64Vec3::new(-1, 0, 1) { sim::light::ALL_FACES } else { 0 };
+        bake_light(&mut mesh, light, faces);
+        // Corner (0, 0): in front are (-1,-1), (0,-1) and (0,0), all open sky; (-1,0) is full.
+        assert_eq!(mesh.light[0], [0, 0, 0, 255]);
+        // Corner (1, 0): half its boxels are red, half sky.
+        assert_eq!(mesh.light[1], [128, 0, 0, 128]);
+        assert_eq!(mesh.light[2], [128, 0, 0, 128]);
+    }
+
+    #[test]
+    fn light_doesnt_slip_diagonally_between_two_full_blocks_meeting_at_an_edge() {
+        // A lit pocket at (-1, -1, 1), sealed from the boxel over the quad by full blocks at
+        // (-1, 0, 1) and (0, -1, 1), which meet at an edge over the quad's corner 0.
+        let mut mesh = top_quad();
+        let light = |at: I64Vec3| if at == I64Vec3::new(-1, -1, 1) { sim::Light::new([255, 0, 0], 0) } else { sim::Light::DARK };
+        let full = |at: I64Vec3| at == I64Vec3::new(-1, 0, 1) || at == I64Vec3::new(0, -1, 1);
+        bake_light(&mut mesh, light, |at| if full(at) { sim::light::ALL_FACES } else { 0 });
+        assert_eq!(mesh.light[0], [0; 4], "sealed: the pocket's light stays in it");
+        // With one of the two gone, light gets round, so it counts.
+        let mut mesh = top_quad();
+        bake_light(&mut mesh, light, |at: I64Vec3| if at == I64Vec3::new(-1, 0, 1) { sim::light::ALL_FACES } else { 0 });
+        assert_eq!(mesh.light[0], [85, 0, 0, 0], "open: the pocket, the open boxel beside it and the one over the quad");
+    }
+
+    #[test]
+    fn a_partial_block_covering_the_face_to_a_lit_pocket_seals_the_seam_too() {
+        // As in the "leak" save: a lit pocket at (-1, -1, 1), a full wall block at (-1, 0, 1),
+        // and at (0, -1, 1) a stair whose flat back covers its west face, toward the pocket.
+        let mut mesh = top_quad();
+        let light = |at: I64Vec3| if at == I64Vec3::new(-1, -1, 1) { sim::Light::new([255, 0, 0], 0) } else { sim::Light::DARK };
+        let west = 1 << 1;
+        let faces = |at: I64Vec3| match at.to_array() {
+            [-1, 0, 1] => sim::light::ALL_FACES,
+            [0, -1, 1] => west,
+            _ => 0,
+        };
+        bake_light(&mut mesh, light, faces);
+        assert_eq!(mesh.light[0], [0; 4], "the stair's back seals the pocket off");
+        // Turned so its back faces away, the pocket's light gets round through it.
+        let mut mesh = top_quad();
+        bake_light(&mut mesh, light, |at: I64Vec3| if at == I64Vec3::new(-1, 0, 1) { sim::light::ALL_FACES } else { 0 });
+        assert_eq!(mesh.light[0], [85, 0, 0, 0]);
+    }
+
+    #[test]
+    fn a_boxel_beside_a_corner_counts_only_through_an_open_face() {
+        // Light at (-1, 0, 1), beside the boxel over the quad, but behind a panel covering the
+        // face between them.
+        let mut mesh = top_quad();
+        let light = |at: I64Vec3| if at.x < 0 { sim::Light::new([255, 0, 0], 0) } else { sim::Light::DARK };
+        let east = 1 << 0;
+        bake_light(&mut mesh, light, |at: I64Vec3| if at.x == -1 { east } else { 0 });
+        assert_eq!(mesh.light[0][0], 0, "nothing gets past the panel");
+    }
+
+    #[test]
+    fn a_face_inside_a_boxel_reads_its_own_boxels_light() {
+        // A slab's top, half way up the boxel at the origin.
+        let mut mesh = top_quad();
+        for p in &mut mesh.positions {
+            p[2] = 0.5;
+        }
+        let light = |at: I64Vec3| if at.z == 0 { sim::Light::new([0, 255, 0], 0) } else { sim::Light::DARK };
+        bake_light(&mut mesh, light, |_| 0);
+        // Inside the boxel along z, on its edges along x and y: four boxels at z = 0, all green.
+        assert!(mesh.light.iter().all(|l| *l == [0, 255, 0, 0]), "{:?}", mesh.light);
+    }
+
+    #[test]
+    fn a_quad_splits_along_the_diagonal_lit_most_alike() {
+        let mut mesh = top_quad();
+        // Only corner 1's side is lit, so the split keeps 0 and 2 together, which are alike.
+        bake_light(&mut mesh, |at: I64Vec3| if at.x >= 1 && at.y < 0 { sim::Light::SKY } else { sim::Light::DARK }, |_| 0);
+        assert_eq!(mesh.indices, [0, 1, 2, 0, 2, 3]);
+        let mut mesh = top_quad();
+        bake_light(&mut mesh, |at: I64Vec3| if at.x < 0 && at.y < 0 { sim::Light::SKY } else { sim::Light::DARK }, |_| 0);
+        assert_eq!(mesh.indices, [0, 1, 3, 1, 2, 3], "corner 0 lit alone");
     }
 
     #[test]

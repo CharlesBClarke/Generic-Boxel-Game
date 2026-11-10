@@ -7,7 +7,7 @@
 #import bevy_pbr::mesh_functions::{get_world_from_local, mesh_position_local_to_world, mesh_normal_local_to_world}
 #import bevy_pbr::mesh_view_bindings::view
 #import bevy_pbr::view_transformations::position_world_to_clip
-#import boxel::atmosphere::{Atmosphere, sky, fog_amount, surface_light, sheen, edge_shade}
+#import boxel::atmosphere::{Atmosphere, sky, fog_amount, surface_light, sheen, edge_shade, sky_reach, block_light}
 #ifdef TONEMAP_IN_SHADER
 #import bevy_core_pipeline::tonemapping::tone_mapping
 #endif
@@ -35,6 +35,8 @@ struct Vertex {
     @location(4) edges: vec4<u32>,
     // Where on the quad, and its size, over FACE_SCALE.
     @location(5) face: vec4<f32>,
+    // Stored light: red, green, blue and sky, 0 to 1.
+    @location(6) light: vec4<f32>,
 };
 
 struct VertexOutput {
@@ -45,6 +47,7 @@ struct VertexOutput {
     @location(3) world_normal: vec3<f32>,
     @location(4) @interpolate(flat) edges: vec4<u32>,
     @location(5) face: vec4<f32>,
+    @location(6) light: vec4<f32>,
 };
 
 @vertex
@@ -59,6 +62,7 @@ fn vertex(vertex: Vertex) -> VertexOutput {
     out.solid = vertex.solid;
     out.edges = vertex.edges;
     out.face = vertex.face * FACE_SCALE;
+    out.light = vertex.light;
     return out;
 }
 
@@ -77,8 +81,11 @@ fn fragment(in: VertexOutput) -> @location(0) vec4<f32> {
     // Each part can be switched off, to measure what it costs.
     let parts = atmosphere.parts;
     var rgb = base.rgb;
+    // The sun and sky reach a face only as far as stored sky light does: none in a cave, until
+    // there are real shadows.
+    let reach = sky_reach(atmosphere, in.light.a);
     if parts.w > 0.5 {
-        rgb *= surface_light(atmosphere, normal);
+        rgb *= surface_light(atmosphere, normal) * reach + block_light(atmosphere, in.light.rgb);
     }
     if parts.x > 0.5 {
         rgb *= edge_shade(atmosphere, in.edges, in.face);
@@ -87,7 +94,7 @@ fn fragment(in: VertexOutput) -> @location(0) vec4<f32> {
     let glow = shine.z;
     rgb = rgb * (1.0 - min(glow, 1.0)) + own.rgb * glow;
     if parts.z > 0.5 {
-        rgb += sheen(atmosphere, normal, to_eye, shine.x, shine.y) * tint.rgb;
+        rgb += sheen(atmosphere, normal, to_eye, shine.x, shine.y) * tint.rgb * reach;
     }
     if parts.y > 0.5 {
         rgb = mix(rgb, sky(atmosphere, -to_eye), fog_amount(atmosphere, distance));

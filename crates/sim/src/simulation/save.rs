@@ -7,7 +7,7 @@ use api::{ApiError, ChunkPos, I64Vec3, Tunables};
 
 use super::Simulation;
 use crate::save::{Made, SaveData, SavedBlueprint, SavedChange, SavedChunk, SavedDesign, SavedItem, SavedPlayer, SavedThing};
-use crate::{Blueprint, BlockRegistry, Cells, Change, ChunkData, Design, Drop, Inventory, Library, Occupant, Piece, Recipe, Thing};
+use crate::{Blueprint, BlockRegistry, Cells, Change, ChunkData, Design, Drop, Inventory, Layer, Library, Light, Occupant, Piece, Recipe, Thing};
 
 /// What a load couldn't bring back. Nothing here stops a load: a block from a mod that's gone
 /// is left out of its boxel, a material that's gone out of the inventory.
@@ -134,7 +134,7 @@ impl Simulation {
             }
         }
 
-        self.generate_terrain()?;
+        self.fill_terrain()?;
         // Nothing counts as edited but what the save brings back.
         self.changed.forget_all_edits();
         let grid = self.universe.main_mut();
@@ -159,7 +159,7 @@ impl Simulation {
                         .collect()
                 })
                 .collect();
-            grid.import_chunk(&ChunkData { pos: chunk.pos, lists, cells: chunk.cells.clone() });
+            grid.import_chunk(&ChunkData { pos: chunk.pos, lists, cells: chunk.cells.clone(), light: Layer::Uniform(Light::SKY) });
             // Its neighbors' border faces may have changed too.
             for side in [I64Vec3::ZERO, I64Vec3::X, I64Vec3::NEG_X, I64Vec3::Y, I64Vec3::NEG_Y, I64Vec3::Z, I64Vec3::NEG_Z] {
                 self.changed.mark_chunk(ChunkPos(chunk.pos.0 + side));
@@ -203,6 +203,7 @@ impl Simulation {
         self.set_blueprints(library);
         self.respawn_targets();
         self.lift_out_of_ground();
+        self.settle_light();
         Ok(report)
     }
 

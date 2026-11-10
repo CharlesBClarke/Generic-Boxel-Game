@@ -10,6 +10,7 @@ pub mod edit;
 pub mod inventory;
 pub mod items;
 pub mod layer;
+pub mod light;
 pub mod path;
 pub mod player;
 pub mod raycast;
@@ -29,6 +30,7 @@ pub use crafting::{Cells, Craft, CraftPlan, CraftRefusal, Piece, Recipe, Source,
 pub use inventory::Inventory;
 pub use items::{Collector, Item, Items};
 pub use layer::Layer;
+pub use light::Light;
 pub use player::{Body, Player, PlayerInput, PushOut, Shape, StepReport, Terrain};
 pub use raycast::{Hit, raycast};
 pub use registry::{BlockId, BlockRegistry, Derived, Drop, FULL_VOLUME, LookRegistry, MaterialId, volume};
