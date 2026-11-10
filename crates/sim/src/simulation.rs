@@ -157,6 +157,12 @@ pub struct Simulation {
     /// Where the player looked in the last input, as yaw and pitch, for saving.
     look: (f32, f32),
     tick: u64,
+    /// The light has been worked out for the whole world as it stands, and since then only
+    /// boxels marked changed need relighting. False until the first time, and after the world
+    /// is made again or loaded.
+    light_settled: bool,
+    /// Seconds the last relight took, for the developer readout.
+    relight_seconds: f32,
 }
 
 impl Simulation {
@@ -288,8 +294,15 @@ impl Simulation {
     /// Fills every terrain the mods placed, at the size the world settings give, replacing what
     /// was generated before (edits in it are lost) and dropping chunks it no longer reaches.
     /// Then anything left inside the ground (the player, creatures and their spots) is lifted
-    /// out. Every chunk touched is marked changed.
+    /// out, and the whole world is lit. Every chunk touched is marked changed.
     pub fn generate_terrain(&mut self) -> Result<GenerationStats, ApiError> {
+        self.fill_terrain()?;
+        self.settle_light();
+        Ok(self.generation.unwrap_or_default())
+    }
+
+    /// [`Simulation::generate_terrain`] without the light, which is left to settle later.
+    fn fill_terrain(&mut self) -> Result<GenerationStats, ApiError> {
         let mut total = GenerationStats::default();
         let mut now = HashSet::new();
         for def in &self.terrains {
@@ -315,8 +328,37 @@ impl Simulation {
         }
         self.generated = now;
         self.generation = Some(total);
+        self.light_settled = false;
         self.lift_out_of_ground();
         Ok(total)
+    }
+
+    /// Brings the light up to date with the blocks (see [`crate::light`]): the whole world if it
+    /// was just built, made again or loaded, otherwise around the boxels changed since last
+    /// time. Chunks whose light changed around changed boxels are marked changed; making or
+    /// loading the world marks its chunks itself.
+    pub fn settle_light(&mut self) {
+        let start = std::time::Instant::now();
+        let grid = self.universe.main_mut();
+        let unlit = self.changed.take_unlit();
+        if !self.light_settled {
+            grid.relight_all(&self.blocks);
+            self.light_settled = true;
+            self.relight_seconds = start.elapsed().as_secs_f32();
+            if let Some(stats) = &mut self.generation {
+                stats.light_seconds = self.relight_seconds;
+            }
+        } else if !unlit.is_empty() {
+            for pos in grid.relight(&self.blocks, &unlit) {
+                self.changed.mark_chunk(pos);
+            }
+            self.relight_seconds = start.elapsed().as_secs_f32();
+        }
+    }
+
+    /// Seconds the last relight took: the whole world's, or the boxels' changed in a tick.
+    pub fn relight_seconds(&self) -> f32 {
+        self.relight_seconds
     }
 
     /// Moves the player, every creature and every creature's spot straight up until the boxels
@@ -437,6 +479,7 @@ impl Simulation {
         }
         self.hurt_player(input.yaw);
         self.refill_endless();
+        self.settle_light();
         self.tick += 1;
     }
 
@@ -483,6 +526,7 @@ impl Simulation {
     /// Chunks whose blocks changed since the last call, including neighbors whose border faces
     /// changed. World building at load time isn't included.
     pub fn take_changed_chunks(&mut self) -> Vec<ChunkPos> {
+        self.settle_light();
         self.changed.take()
     }
 

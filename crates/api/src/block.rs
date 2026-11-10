@@ -35,6 +35,11 @@ pub struct BlockDef {
     pub sounds: BlockSounds,
     /// What it does, brought by its material into every shape made of it (see [`Property`]).
     pub properties: Vec<Property>,
+    /// The light it gives off, red, green and blue, from 0 to [`BlockDef::MAX_LIGHT`]: each
+    /// level lights one boxel further, so 14 reaches 14 boxels away, dimming as it goes. Every
+    /// shape made of it gives the same. Separate from how it looks: a glowing look lights only
+    /// itself.
+    pub light: [u8; 3],
 }
 
 /// Something a material does wherever a piece of it is, written by hand and given to materials
@@ -99,8 +104,12 @@ impl BlockDef {
             material: None,
             sounds: BlockSounds::default(),
             properties: Vec::new(),
+            light: [0; 3],
         }
     }
+
+    /// The brightest light a block can give, and the most stored in a boxel.
+    pub const MAX_LIGHT: u8 = 15;
 
     pub fn with_look(mut self, look: impl Into<String>) -> Self {
         self.look = Some(look.into());
@@ -142,6 +151,11 @@ impl BlockDef {
         self
     }
 
+    pub fn with_light(mut self, light: [u8; 3]) -> Self {
+        self.light = light;
+        self
+    }
+
     pub fn has(&self, property: Property) -> bool {
         self.properties.contains(&property)
     }
@@ -151,13 +165,16 @@ impl BlockDef {
         self.shape == [BlockBox::FULL]
     }
 
-    /// Checks the shape (at least one box, each inside the boxel and not flat) and the
-    /// material's name.
+    /// Checks the shape (at least one box, each inside the boxel and not flat), the light
+    /// and the material's name.
     pub fn validate(&self) -> Result<(), String> {
         if let Some(material) = &self.material
             && !is_valid_name(material)
         {
             return Err(format!("block {:?} has material {material:?}, expected namespace:path", self.name));
+        }
+        if self.light.iter().any(|&l| l > Self::MAX_LIGHT) {
+            return Err(format!("block {:?} gives light {:?}, above {}", self.name, self.light, Self::MAX_LIGHT));
         }
         if self.shape.is_empty() {
             return Err(format!("block {:?} has no shape boxes", self.name));

@@ -221,6 +221,7 @@ pub fn tuning_panel(
                     ui.checkbox(&mut parts.sheen, "sheen");
                     ui.checkbox(&mut parts.fog, "fog");
                     ui.checkbox(&mut parts.sky, "sky");
+                    ui.checkbox(&mut parts.stored, "stored light");
                 });
                 sliders(ui, "shading", &mut lighting);
                 ui.separator();

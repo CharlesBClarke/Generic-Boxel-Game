@@ -44,6 +44,15 @@ impl CellId {
     pub fn is_empty(self) -> bool {
         self == Self::EMPTY
     }
+
+    /// Its place in the grid's [`CellTable`], counting from 0 for empty.
+    pub fn index(self) -> usize {
+        self.0 as usize
+    }
+
+    pub(crate) fn from_index(index: usize) -> Self {
+        Self(index as u32)
+    }
 }
 
 /// An occupant list stored in place: how many, then the occupants in order, padded with empties.

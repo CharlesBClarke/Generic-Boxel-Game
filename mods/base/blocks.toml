@@ -247,11 +247,13 @@ properties = ["phase", "starts_hidden"]
 name = "lumite"
 sounds = { step = "step_concrete", broken = "break_ice", placed = "place_ice" }
 look = "lumite"
+light = [14, 12, 8]
 
 [[block]]
 name = "blue_crystal"
 sounds = { step = "step_concrete", broken = "break_ice", placed = "place_ice" }
 look = "blue_crystal"
+light = [2, 3, 6]
 properties = ["fuse"]
 
 [[block]]

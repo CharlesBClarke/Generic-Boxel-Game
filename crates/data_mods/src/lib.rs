@@ -182,6 +182,8 @@ struct BlockEntry {
     #[serde(default)]
     sounds: sounds::BlockSoundsEntry,
     properties: Option<Spanned<Vec<String>>>,
+    /// The light it gives off, red, green and blue, 0 to 15.
+    light: Option<Spanned<[u8; 3]>>,
 }
 
 /// A shape: the name of one in `[shapes]`, or boxes given in place.
@@ -404,8 +406,18 @@ fn block_def(
         }
     }
 
+    let light = match &entry.light {
+        None => [0; 3],
+        Some(spanned) if spanned.get_ref().iter().all(|&l| l <= BlockDef::MAX_LIGHT) => *spanned.get_ref(),
+        Some(spanned) => {
+            let message = format!("block {short:?} gives light {:?}: each must be 0 to {}", spanned.get_ref(), BlockDef::MAX_LIGHT);
+            return Err(file.error_at(spanned, message));
+        }
+    };
+
     let mut def = BlockDef::new(name, entry.solid, color)
         .with_properties(properties)
+        .with_light(light)
         .with_friction(friction)
         .with_placeable(entry.placeable)
         .with_shape(shape)
@@ -585,6 +597,22 @@ mod tests {
 
         let err = blocks_error("bad_material", "[[block]]\nname = \"a\"\ncolor = [1, 2, 3]\nmaterial = \"Stone\"\n", 4);
         assert!(err.contains("material"), "{err}");
+    }
+
+    #[test]
+    fn reads_light() {
+        let folder = Folder::new("light");
+        folder.write("mod.toml", MANIFEST).write(
+            "blocks.toml",
+            "[[block]]\nname = \"lamp\"\ncolor = [1, 2, 3]\nlight = [14, 12, 8]\n\n\
+             [[block]]\nname = \"plain\"\ncolor = [1, 2, 3]\n",
+        );
+        let m = folder.load().unwrap();
+        let [lamp, plain] = m.blocks() else { panic!("two blocks") };
+        assert_eq!(lamp.light, [14, 12, 8]);
+        assert_eq!(plain.light, [0; 3]);
+        let err = blocks_error("bad_light", "[[block]]\nname = \"a\"\ncolor = [1, 2, 3]\nlight = [16, 0, 0]\n", 4);
+        assert!(err.contains("light"), "{err}");
     }
 
     #[test]

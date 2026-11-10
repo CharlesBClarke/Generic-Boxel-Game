@@ -62,6 +62,14 @@ pub struct ShadingTuning {
     pub ridge: f32,
     /// How many texels wide the crease and ridge lines are, fading off across them.
     pub edge_width: f32,
+    /// How brightly light from blocks that give light (stored light's red, green and blue)
+    /// lights a face, at full level.
+    pub block_light: f32,
+    /// How light fades with its stored level: brightness is the level's share of full to this
+    /// power, so above 1 dims faster away from a lamp or an opening.
+    pub light_falloff: f32,
+    /// Light every face gets however dark it is, so caves stay faintly readable.
+    pub min_light: f32,
     /// Which parts are drawn, to measure what each costs. Not saved.
     pub parts: Parts,
 }
@@ -76,18 +84,27 @@ pub struct Parts {
     /// Sun and sky light; off, faces show their plain colors.
     pub light: bool,
     pub sky: bool,
+    /// Stored light: off, sun and sky light every face as if under the open sky.
+    pub stored: bool,
 }
 
 impl Default for Parts {
     fn default() -> Self {
-        Self { edges: true, fog: true, sheen: true, light: true, sky: true }
+        Self { edges: true, fog: true, sheen: true, light: true, sky: true, stored: true }
     }
 }
 
 impl Parts {
     /// The parts switched off, for a perf recording: `-` with all on.
     pub fn off(&self) -> String {
-        let all = [("edges", self.edges), ("fog", self.fog), ("sheen", self.sheen), ("light", self.light), ("sky", self.sky)];
+        let all = [
+            ("edges", self.edges),
+            ("fog", self.fog),
+            ("sheen", self.sheen),
+            ("light", self.light),
+            ("sky", self.sky),
+            ("stored light", self.stored),
+        ];
         let off: Vec<&str> = all.iter().filter(|(_, on)| !on).map(|(name, _)| *name).collect();
         if off.is_empty() { "shading all on".into() } else { format!("shading off: {}", off.join(", ")) }
     }
@@ -120,6 +137,9 @@ impl Default for ShadingTuning {
             crease: 0.3,
             ridge: 0.12,
             edge_width: 2.0,
+            block_light: 1.0,
+            light_falloff: 1.4,
+            min_light: 0.03,
             parts: Parts::default(),
         }
     }
@@ -153,6 +173,7 @@ impl ShadingTuning {
             parts: Vec4::new(on(self.parts.edges), on(self.parts.fog), on(self.parts.sheen), on(self.parts.light)),
             rays: Vec4::new(self.rays, self.ray_length, self.ray_width, self.ray_strength),
             ray_shape: Vec4::new(self.ray_variation, self.ray_fade, self.ray_spin, self.sun_size.to_radians()),
+            stored: Vec4::new(self.block_light, self.light_falloff, self.min_light, on(self.parts.stored)),
         }
     }
 }
@@ -193,6 +214,9 @@ impl Tunables for ShadingTuning {
             Tunable::new("crease", self.crease, 0.0, 1.0),
             Tunable::new("ridge", self.ridge, 0.0, 1.0),
             Tunable::new("edge_width", self.edge_width, 0.0, 8.0),
+            Tunable::new("block_light", self.block_light, 0.0, 3.0),
+            Tunable::new("light_falloff", self.light_falloff, 0.5, 4.0),
+            Tunable::new("min_light", self.min_light, 0.0, 0.3),
         ]);
         t
     }
@@ -235,6 +259,9 @@ impl Tunables for ShadingTuning {
             "crease" => self.crease = value,
             "ridge" => self.ridge = value,
             "edge_width" => self.edge_width = value,
+            "block_light" => self.block_light = value,
+            "light_falloff" => self.light_falloff = value,
+            "min_light" => self.min_light = value,
             _ => return false,
         }
         true
@@ -265,6 +292,9 @@ pub struct Atmosphere {
     pub rays: Vec4,
     /// How much ray lengths vary, how much rays fade, turns a minute; the disc's radius in radians.
     pub ray_shape: Vec4,
+    /// Stored light: block light's strength, the falloff power, the least light, and 1 or 0
+    /// for on or off.
+    pub stored: Vec4,
 }
 
 /// The sky: drawn over the whole screen at the far plane, so only where nothing else is.

@@ -43,7 +43,7 @@ use crate::controls::{Controls, DoubleTapSprint, SprintToggle, label};
 use crate::editing::{ChunkMeshes, Ghost, HiddenGhosts, Palette, PartNames};
 use crate::feel::{CameraFeel, FeelState, Motion};
 use crate::mesher::MeshData;
-use crate::solid::{ATTRIBUTE_EDGES, ATTRIBUTE_FACE, ATTRIBUTE_SOLID, SolidMaterial, SolidPlugin};
+use crate::solid::{ATTRIBUTE_EDGES, ATTRIBUTE_FACE, ATTRIBUTE_LIGHT, ATTRIBUTE_SOLID, SolidMaterial, SolidPlugin};
 use crate::tuning::TuningPanel;
 use crate::volumes::Volumes;
 use crate::world::{ClientWorld, Link};
@@ -353,6 +353,12 @@ pub(crate) fn spawn_chunk(
 }
 
 pub(crate) fn to_bevy_mesh(data: MeshData) -> Mesh {
+    // Meshes drawn outside the world, like loose items, are lit as if under the open sky.
+    let light = if data.light.len() == data.positions.len() {
+        data.light
+    } else {
+        vec![mesher::OPEN_SKY; data.positions.len()]
+    };
     let convert = |v: Vec<[f32; 3]>| -> Vec<[f32; 3]> {
         v.into_iter().map(|p| coords::to_render(Vec3::from_array(p)).to_array()).collect()
     };
@@ -363,6 +369,7 @@ pub(crate) fn to_bevy_mesh(data: MeshData) -> Mesh {
         .with_inserted_attribute(ATTRIBUTE_SOLID, data.solid)
         .with_inserted_attribute(ATTRIBUTE_EDGES, VertexAttributeValues::Uint32x4(data.edges))
         .with_inserted_attribute(ATTRIBUTE_FACE, VertexAttributeValues::Unorm16x4(data.face))
+        .with_inserted_attribute(ATTRIBUTE_LIGHT, VertexAttributeValues::Unorm8x4(light))
         .with_inserted_indices(Indices::U32(data.indices))
 }
 
@@ -667,7 +674,7 @@ fn update_hud(
 /// drawn, triangles, memory, and the render and simulation distances.
 fn world_cost(world: &ClientWorld, meshes: Option<&ChunkMeshes>, view: &view::ViewTuning, drawn: &view::ViewStats) -> String {
     let generation = match &world.defs().generation {
-        Some(Ok(g)) => format!("terrain {} chunks in {:.2} s", g.chunks, g.seconds),
+        Some(Ok(g)) => format!("terrain {} chunks in {:.2} s, lit in {:.2} s", g.chunks, g.seconds, g.light_seconds),
         Some(Err(e)) => format!("terrain failed: {e}"),
         None => "no terrain".into(),
     };
