@@ -546,31 +546,55 @@ fn mesh_chunk_with(grid: &Grid, pos: ChunkPos, blocks: &BlockRegistry, volumes: 
 /// Gives every vertex of a chunk's mesh the stored light around it: the average of the boxels
 /// just in front of its corner (up to four, those on either side of each edge meeting there),
 /// leaving out full blocks, as a wall beside a floor would only darken it twice over (corner AO
-/// does that). `light` and `full` take boxels relative to the chunk. Then splits each quad
-/// along the diagonal whose ends are lit most alike, light and AO together.
+/// does that). The boxel diagonally across the corner counts only if light could get round to
+/// it, past one of the two beside it, so two full blocks meeting at an edge seal it like a
+/// wall. `light` and `full` take boxels relative to the chunk. Then splits each quad along the
+/// diagonal whose ends are lit most alike, light and AO together.
 fn bake_light(mesh: &mut MeshData, light: impl Fn(I64Vec3) -> sim::Light, full: impl Fn(I64Vec3) -> bool) {
     let size = BlockBox::SIZE as i64;
-    mesh.light = (0..mesh.positions.len())
-        .map(|i| {
+    mesh.light = vec![[0; 4]; mesh.positions.len()];
+    for q in 0..mesh.quad_count() {
+        let first = 4 * q;
+        let normal = mesh.normals[first].map(|c| c as i64);
+        // The boxel the quad faces into: from its middle, half a texel in front.
+        let middle: [f32; 3] = std::array::from_fn(|k| (0..4).map(|v| mesh.positions[first + v][k]).sum::<f32>() / 4.0);
+        let front = I64Vec3::from_array(std::array::from_fn(|k| {
+            let texel = (middle[k] * size as f32 * 2.0).round() as i64 + normal[k];
+            texel.div_euclid(2 * size)
+        }));
+        for i in first..first + 4 {
             let texel = mesh.positions[i].map(|c| (c * size as f32).round() as i64);
-            let normal = mesh.normals[i].map(|c| c as i64);
-            // On each axis, the boxels in front of the corner: across the normal, half a texel
-            // in front; along the face, both sides of a boxel edge, or the one it's inside.
+            // On each axis, the boxels in front of the corner: across the normal, the one in
+            // front; along the face, both sides of a boxel edge, or the one it's inside.
             let options: [Vec<i64>; 3] = std::array::from_fn(|k| {
                 if normal[k] != 0 {
-                    vec![(2 * texel[k] + normal[k]).div_euclid(2 * size)]
+                    vec![front[k]]
                 } else if texel[k].rem_euclid(size) == 0 {
                     vec![texel[k] / size - 1, texel[k] / size]
                 } else {
                     vec![texel[k].div_euclid(size)]
                 }
             });
+            let reachable = |at: I64Vec3| {
+                let off: Vec<usize> = (0..3).filter(|&k| at[k] != front[k]).collect();
+                match off[..] {
+                    [a, b] => {
+                        let beside = |k: usize| {
+                            let mut p = front;
+                            p[k] = at[k];
+                            p
+                        };
+                        !full(beside(a)) || !full(beside(b))
+                    }
+                    _ => true,
+                }
+            };
             let (mut sum, mut count) = ([0u32; 4], 0);
             for &x in &options[0] {
                 for &y in &options[1] {
                     for &z in &options[2] {
                         let at = I64Vec3::new(x, y, z);
-                        if full(at) {
+                        if full(at) || !reachable(at) {
                             continue;
                         }
                         let l = light(at);
@@ -582,9 +606,9 @@ fn bake_light(mesh: &mut MeshData, light: impl Fn(I64Vec3) -> sim::Light, full: 
                 }
             }
             let max = sim::Light::MAX as u32;
-            sum.map(|s| if count == 0 { 0 } else { ((s * 255 + count * max / 2) / (count * max)) as u8 })
-        })
-        .collect();
+            mesh.light[i] = sum.map(|s| if count == 0 { 0 } else { ((s * 255 + count * max / 2) / (count * max)) as u8 });
+        }
+    }
     for q in 0..mesh.quad_count() {
         let first = 4 * q;
         let lit = |k: usize| {
@@ -913,6 +937,21 @@ mod tests {
         // Corner (1, 0): half its boxels are red, half sky.
         assert_eq!(mesh.light[1], [128, 0, 0, 128]);
         assert_eq!(mesh.light[2], [128, 0, 0, 128]);
+    }
+
+    #[test]
+    fn light_doesnt_slip_diagonally_between_two_full_blocks_meeting_at_an_edge() {
+        // A lit pocket at (-1, -1, 1), sealed from the boxel over the quad by full blocks at
+        // (-1, 0, 1) and (0, -1, 1), which meet at an edge over the quad's corner 0.
+        let mut mesh = top_quad();
+        let light = |at: I64Vec3| if at == I64Vec3::new(-1, -1, 1) { sim::Light::new([255, 0, 0], 0) } else { sim::Light::DARK };
+        let full = |at: I64Vec3| at == I64Vec3::new(-1, 0, 1) || at == I64Vec3::new(0, -1, 1);
+        bake_light(&mut mesh, light, full);
+        assert_eq!(mesh.light[0], [0; 4], "sealed: the pocket's light stays in it");
+        // With one of the two gone, light gets round, so it counts.
+        let mut mesh = top_quad();
+        bake_light(&mut mesh, light, |at: I64Vec3| at == I64Vec3::new(-1, 0, 1));
+        assert_eq!(mesh.light[0], [85, 0, 0, 0], "open: the pocket, the open boxel beside it and the one over the quad");
     }
 
     #[test]
