@@ -795,6 +795,30 @@ mod tests {
         assert_eq!(grid.light(at(16, 22, 16)), Light::DARK, "shut: none gets past it");
     }
 
+    #[test]
+    fn a_stair_at_a_niches_mouth_shuts_the_lamp_in_when_it_covers_the_mouth() {
+        let mut b = blocks();
+        let stair = b.reg.register(BlockDef::new("test:stair", true, [0; 3]).with_shape(vec![
+            BlockBox::new([0, 0, 0], [16, 16, 8]),
+            BlockBox::new([0, 8, 8], [16, 16, 16]),
+        ]));
+        let stair = stair.unwrap();
+        for o in Orientation::all() {
+            // A lamp two deep in the cave's north wall, an empty gap in front of it, and the
+            // stair at the mouth.
+            let mut grid = cave(&b);
+            grid.set_block(at(16, 26, 16), b.lamp);
+            grid.set_block(at(16, 25, 16), BlockId::EMPTY);
+            grid.set_cell(at(16, 24, 16), &[Occupant::turned(stair, o)]);
+            grid.relight_all(&b.reg);
+            let covered = CellLight::of(&[Occupant::turned(stair, o)], &b.reg).covered;
+            // Covering either face along the niche, toward the gap or the cave, shuts it.
+            let shuts = covered & (1 << 2 | 1 << 3) != 0;
+            let room = grid.light(at(16, 22, 16));
+            assert_eq!(room == Light::DARK, shuts, "orientation {o:?} covers {covered:06b}");
+        }
+    }
+
     /// A small random number source, so the test needs nothing else.
     struct Rng(u64);
 
