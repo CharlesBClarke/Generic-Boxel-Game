@@ -84,7 +84,14 @@ pub(crate) struct CellLight {
     pub emits: Light,
 }
 
-const ALL_FACES: u8 = 0b11_1111;
+/// Every face covered: a boxel no light gets into.
+pub const ALL_FACES: u8 = 0b11_1111;
+
+/// Which faces of a boxel holding `occupants` its shown pieces cover completely, stopping light
+/// there: bit `d` for the face toward east, west, north, south, up and down, in that order.
+pub fn covered_faces_of(occupants: &[Occupant], blocks: &BlockRegistry) -> u8 {
+    CellLight::of(occupants, blocks).covered
+}
 
 impl CellLight {
     fn of(occupants: &[Occupant], blocks: &BlockRegistry) -> CellLight {

@@ -539,18 +539,29 @@ fn mesh_chunk_with(grid: &Grid, pos: ChunkPos, blocks: &BlockRegistry, volumes: 
             grid.light(pos.origin().offset(local))
         }
     };
-    bake_light(&mut mesh, light, full);
+    let covered = std::cell::RefCell::new(std::collections::HashMap::new());
+    let faces = |local: I64Vec3| *covered.borrow_mut().entry(local).or_insert_with(|| sim::light::covered_faces_of(near(local), blocks));
+    bake_light(&mut mesh, light, faces);
     mesh
 }
 
 /// Gives every vertex of a chunk's mesh the stored light around it: the average of the boxels
-/// just in front of its corner (up to four, those on either side of each edge meeting there),
-/// leaving out full blocks, as a wall beside a floor would only darken it twice over (corner AO
-/// does that). The boxel diagonally across the corner counts only if light could get round to
-/// it, past one of the two beside it, so two full blocks meeting at an edge seal it like a
-/// wall. `light` and `full` take boxels relative to the chunk. Then splits each quad along the
-/// diagonal whose ends are lit most alike, light and AO together.
-fn bake_light(mesh: &mut MeshData, light: impl Fn(I64Vec3) -> sim::Light, full: impl Fn(I64Vec3) -> bool) {
+/// just in front of its corner (up to four, those on either side of each edge meeting there)
+/// that light could get from to the boxel the face looks into, by the stored light's rule:
+/// through faces neither boxel covers (see [`sim::light`]). So a boxel beside it counts if the
+/// face between them is open, and one diagonally across the corner if light could get round by
+/// either of the two beside it; blocks meeting at an edge seal it like a wall, whatever their
+/// shape. Closed boxels (full blocks) never count, as a wall beside a floor would only darken
+/// it twice over (corner AO does that). `light` and `faces` (covered faces, as
+/// [`sim::light::covered_faces_of`] gives them) take boxels relative to the chunk. Then splits
+/// each quad along the diagonal whose ends are lit most alike, light and AO together.
+fn bake_light(mesh: &mut MeshData, light: impl Fn(I64Vec3) -> sim::Light, faces: impl Fn(I64Vec3) -> u8) {
+    // Whether light gets from `from` into its neighbor `to` through the face between them.
+    let passes = |from: I64Vec3, to: I64Vec3| {
+        let k = (0..3).find(|&k| from[k] != to[k]).expect("neighbors");
+        let d = 2 * k + usize::from(to[k] < from[k]);
+        faces(from) & (1 << d) == 0 && faces(to) & (1 << (d ^ 1)) == 0
+    };
     let size = BlockBox::SIZE as i64;
     mesh.light = vec![[0; 4]; mesh.positions.len()];
     for q in 0..mesh.quad_count() {
@@ -578,15 +589,14 @@ fn bake_light(mesh: &mut MeshData, light: impl Fn(I64Vec3) -> sim::Light, full: 
             let reachable = |at: I64Vec3| {
                 let off: Vec<usize> = (0..3).filter(|&k| at[k] != front[k]).collect();
                 match off[..] {
-                    [a, b] => {
-                        let beside = |k: usize| {
-                            let mut p = front;
-                            p[k] = at[k];
-                            p
-                        };
-                        !full(beside(a)) || !full(beside(b))
-                    }
-                    _ => true,
+                    [] => true,
+                    [_] => passes(at, front),
+                    [a, b] => [a, b].iter().any(|&k| {
+                        let mut beside = front;
+                        beside[k] = at[k];
+                        passes(at, beside) && passes(beside, front)
+                    }),
+                    _ => false,
                 }
             };
             let (mut sum, mut count) = ([0u32; 4], 0);
@@ -594,7 +604,7 @@ fn bake_light(mesh: &mut MeshData, light: impl Fn(I64Vec3) -> sim::Light, full: 
                 for &y in &options[1] {
                     for &z in &options[2] {
                         let at = I64Vec3::new(x, y, z);
-                        if full(at) || !reachable(at) {
+                        if faces(at) == sim::light::ALL_FACES || !reachable(at) {
                             continue;
                         }
                         let l = light(at);
@@ -930,8 +940,8 @@ mod tests {
         // Full sky over everything but x = 1 and up, which has full red and no sky.
         let light = |at: I64Vec3| if at.x >= 1 { sim::Light::new([255, 0, 0], 0) } else { sim::Light::SKY };
         // A full block west of the quad, above the floor.
-        let full = |at: I64Vec3| at == I64Vec3::new(-1, 0, 1);
-        bake_light(&mut mesh, light, full);
+        let faces = |at: I64Vec3| if at == I64Vec3::new(-1, 0, 1) { sim::light::ALL_FACES } else { 0 };
+        bake_light(&mut mesh, light, faces);
         // Corner (0, 0): in front are (-1,-1), (0,-1) and (0,0), all open sky; (-1,0) is full.
         assert_eq!(mesh.light[0], [0, 0, 0, 255]);
         // Corner (1, 0): half its boxels are red, half sky.
@@ -946,12 +956,43 @@ mod tests {
         let mut mesh = top_quad();
         let light = |at: I64Vec3| if at == I64Vec3::new(-1, -1, 1) { sim::Light::new([255, 0, 0], 0) } else { sim::Light::DARK };
         let full = |at: I64Vec3| at == I64Vec3::new(-1, 0, 1) || at == I64Vec3::new(0, -1, 1);
-        bake_light(&mut mesh, light, full);
+        bake_light(&mut mesh, light, |at| if full(at) { sim::light::ALL_FACES } else { 0 });
         assert_eq!(mesh.light[0], [0; 4], "sealed: the pocket's light stays in it");
         // With one of the two gone, light gets round, so it counts.
         let mut mesh = top_quad();
-        bake_light(&mut mesh, light, |at: I64Vec3| at == I64Vec3::new(-1, 0, 1));
+        bake_light(&mut mesh, light, |at: I64Vec3| if at == I64Vec3::new(-1, 0, 1) { sim::light::ALL_FACES } else { 0 });
         assert_eq!(mesh.light[0], [85, 0, 0, 0], "open: the pocket, the open boxel beside it and the one over the quad");
+    }
+
+    #[test]
+    fn a_partial_block_covering_the_face_to_a_lit_pocket_seals_the_seam_too() {
+        // As in the "leak" save: a lit pocket at (-1, -1, 1), a full wall block at (-1, 0, 1),
+        // and at (0, -1, 1) a stair whose flat back covers its west face, toward the pocket.
+        let mut mesh = top_quad();
+        let light = |at: I64Vec3| if at == I64Vec3::new(-1, -1, 1) { sim::Light::new([255, 0, 0], 0) } else { sim::Light::DARK };
+        let west = 1 << 1;
+        let faces = |at: I64Vec3| match at.to_array() {
+            [-1, 0, 1] => sim::light::ALL_FACES,
+            [0, -1, 1] => west,
+            _ => 0,
+        };
+        bake_light(&mut mesh, light, faces);
+        assert_eq!(mesh.light[0], [0; 4], "the stair's back seals the pocket off");
+        // Turned so its back faces away, the pocket's light gets round through it.
+        let mut mesh = top_quad();
+        bake_light(&mut mesh, light, |at: I64Vec3| if at == I64Vec3::new(-1, 0, 1) { sim::light::ALL_FACES } else { 0 });
+        assert_eq!(mesh.light[0], [85, 0, 0, 0]);
+    }
+
+    #[test]
+    fn a_boxel_beside_a_corner_counts_only_through_an_open_face() {
+        // Light at (-1, 0, 1), beside the boxel over the quad, but behind a panel covering the
+        // face between them.
+        let mut mesh = top_quad();
+        let light = |at: I64Vec3| if at.x < 0 { sim::Light::new([255, 0, 0], 0) } else { sim::Light::DARK };
+        let east = 1 << 0;
+        bake_light(&mut mesh, light, |at: I64Vec3| if at.x == -1 { east } else { 0 });
+        assert_eq!(mesh.light[0][0], 0, "nothing gets past the panel");
     }
 
     #[test]
@@ -962,7 +1003,7 @@ mod tests {
             p[2] = 0.5;
         }
         let light = |at: I64Vec3| if at.z == 0 { sim::Light::new([0, 255, 0], 0) } else { sim::Light::DARK };
-        bake_light(&mut mesh, light, |_| false);
+        bake_light(&mut mesh, light, |_| 0);
         // Inside the boxel along z, on its edges along x and y: four boxels at z = 0, all green.
         assert!(mesh.light.iter().all(|l| *l == [0, 255, 0, 0]), "{:?}", mesh.light);
     }
@@ -971,10 +1012,10 @@ mod tests {
     fn a_quad_splits_along_the_diagonal_lit_most_alike() {
         let mut mesh = top_quad();
         // Only corner 1's side is lit, so the split keeps 0 and 2 together, which are alike.
-        bake_light(&mut mesh, |at: I64Vec3| if at.x >= 1 && at.y < 0 { sim::Light::SKY } else { sim::Light::DARK }, |_| false);
+        bake_light(&mut mesh, |at: I64Vec3| if at.x >= 1 && at.y < 0 { sim::Light::SKY } else { sim::Light::DARK }, |_| 0);
         assert_eq!(mesh.indices, [0, 1, 2, 0, 2, 3]);
         let mut mesh = top_quad();
-        bake_light(&mut mesh, |at: I64Vec3| if at.x < 0 && at.y < 0 { sim::Light::SKY } else { sim::Light::DARK }, |_| false);
+        bake_light(&mut mesh, |at: I64Vec3| if at.x < 0 && at.y < 0 { sim::Light::SKY } else { sim::Light::DARK }, |_| 0);
         assert_eq!(mesh.indices, [0, 1, 3, 1, 2, 3], "corner 0 lit alone");
     }
 
