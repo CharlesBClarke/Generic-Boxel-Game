@@ -42,6 +42,11 @@ fn interact(sim: &mut Simulation, cell: BoxelPos, point: [f32; 3]) {
     sim.step(&PlayerInput { yaw, pitch, interact_pressed: true, ..Default::default() });
 }
 
+/// Block light at `level`, `steps` boxels on.
+fn away(level: u8, steps: usize) -> u8 {
+    (0..steps).fold(level, |l, _| Light::passed_on(0, l))
+}
+
 fn light(sim: &Simulation, pos: BoxelPos) -> Light {
     sim.universe().main().light(pos)
 }
@@ -59,10 +64,10 @@ fn the_lab_lamp_lights_the_floor_in_front_only_with_its_shutter_open() {
     let shut = light(&sim, front).channel(0);
     // The lamp at the back of its niche, two boxels from here.
     open_shutter(&mut sim);
-    assert_eq!(light(&sim, front).rgb(), [14 - 2, 12 - 2, 8 - 2], "the lamp's own warm light");
+    assert_eq!(light(&sim, front).rgb(), [255, 200, 130].map(|l| away(l, 2)), "the lamp's own warm light");
     // Shut, some still gets out sideways through the lever's boxel beside the shutter, a hole
     // in the wall: four steps instead of two.
-    assert_eq!(shut, 14 - 4, "shut, only what gets round");
+    assert_eq!(shut, away(255, 4), "shut, only what gets round");
     open_shutter(&mut sim);
     assert_eq!(light(&sim, front).channel(0), shut, "and shut again");
 }
@@ -74,7 +79,7 @@ fn the_open_ground_has_the_sky_and_the_lamps_light_the_lab() {
     // High above the test area nothing is in the way.
     assert_eq!(light(&sim, BoxelPos::new(x, y, 60)), Light::SKY);
     // The lumite on top of the lab's wall lights the boxel beside it.
-    assert_eq!(light(&sim, lab(-2, 4, 3)).channel(0), 14 - 1);
+    assert_eq!(light(&sim, lab(-2, 4, 3)).channel(0), away(255, 1));
 }
 
 #[test]
@@ -95,7 +100,7 @@ fn light_comes_back_the_same_after_a_reload() {
         chunks += 1;
     }
     assert!(chunks > 0);
-    assert_eq!(light(&other, lab(0, 3, 1)).channel(0), 14 - 2, "the shutter stayed open, lit");
+    assert_eq!(light(&other, lab(0, 3, 1)).channel(0), away(255, 2), "the shutter stayed open, lit");
 }
 
 /// What lighting the default world costs: run with `--ignored --nocapture` to see.

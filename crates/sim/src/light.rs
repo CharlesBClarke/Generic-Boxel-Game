@@ -2,7 +2,11 @@
 //! boxel, in four channels (red, green, blue and sky), each from 0 to [`Light::MAX`].
 //!
 //! The rule, channel by channel: a boxel's light is the brighter of what it gives off itself
-//! and its brightest neighbor's less one. Sky light also falls straight down through open space
+//! and what its brightest neighbor's passes on. Block light keeps a share of itself each boxel
+//! ([`Light::KEEP`]), as real light dims by a share with distance, so every channel of a lamp
+//! fades together and its color holds all the way out. Sky light, one channel with no color to
+//! keep, loses a fixed step ([`Light::SKY_STEP`]) instead, so shade deepens evenly under a roof.
+//! Sky light also falls straight down through open space
 //! without dimming, so open ground is lit fully and light coming in sideways fades. Light goes
 //! from a boxel to the next through the face between them only if neither boxel's shown pieces
 //! cover that face completely, texel by texel: a shutter against a face closes it, a slab is lit
@@ -21,9 +25,9 @@ use api::{BlockDef, BoxelPos, CHUNK_VOLUME, ChunkPos, I64Vec3, ShapeGrid};
 
 use crate::{BlockRegistry, CellId, Chunk, Grid, Layer, Occupant};
 
-/// Light in one boxel: red, green, blue and sky, four bits each.
+/// Light in one boxel: red, green, blue and sky, a byte each.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
-pub struct Light(u16);
+pub struct Light(u32);
 
 impl Light {
     /// The brightest a channel gets.
@@ -32,22 +36,33 @@ impl Light {
     pub const SKY_CHANNEL: usize = 3;
     pub const DARK: Light = Light(0);
     /// Open sky: full sky light, no block light.
-    pub const SKY: Light = Light((Self::MAX as u16) << 12);
+    pub const SKY: Light = Light((Self::MAX as u32) << 24);
+    /// How much block light one boxel passes to the next, out of 256: about 70%, so full light
+    /// reaches about 14 boxels before it's gone.
+    pub const KEEP: u32 = 179;
+    /// How much sky light drops each boxel it goes other than straight down: full sky is gone
+    /// after 15.
+    pub const SKY_STEP: u8 = 17;
 
     pub fn new(rgb: [u8; 3], sky: u8) -> Light {
-        let c = |v: u8| v.min(Self::MAX) as u16;
-        Light(c(rgb[0]) | c(rgb[1]) << 4 | c(rgb[2]) << 8 | c(sky) << 12)
+        Light(rgb[0] as u32 | (rgb[1] as u32) << 8 | (rgb[2] as u32) << 16 | (sky as u32) << 24)
     }
 
     /// Channel `c`: 0 red, 1 green, 2 blue, 3 sky.
     #[inline]
     pub fn channel(self, c: usize) -> u8 {
-        ((self.0 >> (4 * c)) & 15) as u8
+        (self.0 >> (8 * c)) as u8
     }
 
     #[inline]
     fn with_channel(self, c: usize, v: u8) -> Light {
-        Light(self.0 & !(15 << (4 * c)) | (v as u16) << (4 * c))
+        Light(self.0 & !(0xff << (8 * c)) | (v as u32) << (8 * c))
+    }
+
+    /// What `level` in channel `c` is one boxel on, not straight down.
+    #[inline]
+    pub fn passed_on(c: usize, level: u8) -> u8 {
+        if c == Self::SKY_CHANNEL { level.saturating_sub(Self::SKY_STEP) } else { ((level as u32 * Self::KEEP) >> 8) as u8 }
     }
 
     pub fn rgb(self) -> [u8; 3] {
@@ -124,12 +139,12 @@ fn carried(from: CellLight, to: CellLight, d: usize, level: u8, c: usize) -> u8 
     }
     if from.covers(d) {
         // Only its own light leaves through a covered face.
-        return from.emits.channel(c).saturating_sub(1);
+        return Light::passed_on(c, from.emits.channel(c));
     }
     if c == Light::SKY_CHANNEL && d == DOWN && level == Light::MAX {
         return level;
     }
-    level.saturating_sub(1)
+    Light::passed_on(c, level)
 }
 
 const SIZE: usize = api::CHUNK_SIZE as usize;
@@ -228,7 +243,7 @@ impl Pass<'_> {
             if !info.covers(d)
                 && let Step::Missing = self.step(n, d)
             {
-                best = best.max(if d == UP { Light::MAX } else { Light::MAX - 1 });
+                best = best.max(if d == UP { Light::MAX } else { Light::passed_on(c, Light::MAX) });
             }
         }
         best
@@ -238,14 +253,14 @@ impl Pass<'_> {
     fn spread(&mut self, mut queue: VecDeque<Node>, c: usize) {
         while let Some(n) = queue.pop_front() {
             let l = self.level(n, c);
-            if l <= 1 {
+            if l == 0 {
                 continue;
             }
             let from = self.info(n);
             for d in 0..6 {
                 let Step::In(m) = self.step(n, d) else { continue };
                 let want = carried(from, self.info(m), d, l, c);
-                if self.level(m, c) >= want {
+                if want == 0 || self.level(m, c) >= want {
                     continue;
                 }
                 self.set_level(m, c, want);
@@ -438,8 +453,9 @@ impl Grid {
                 if !pass.slots.contains_key(&ChunkPos(pos.0 + I64Vec3::from_array(DIRS[d]))) {
                     for at in face(d) {
                         let n = node(at);
-                        if pass.level(n, Light::SKY_CHANNEL) < Light::MAX - 1 && !pass.info(n).covers(d) {
-                            pass.set_level(n, Light::SKY_CHANNEL, Light::MAX - 1);
+                        let side = Light::passed_on(Light::SKY_CHANNEL, Light::MAX);
+                        if pass.level(n, Light::SKY_CHANNEL) < side && !pass.info(n).covers(d) {
+                            pass.set_level(n, Light::SKY_CHANNEL, side);
                             sky.push_back(n);
                         }
                     }
@@ -524,10 +540,10 @@ mod tests {
         let mut reg = BlockRegistry::default();
         let bottom = vec![BlockBox::new([0, 0, 0], [16, 16, 8])];
         let stone = reg.register(BlockDef::new("test:stone", true, [0; 3]).with_material("test:stone")).unwrap();
-        let lamp = reg.register(BlockDef::new("test:lamp", true, [0; 3]).with_light([14, 12, 8])).unwrap();
+        let lamp = reg.register(BlockDef::new("test:lamp", true, [0; 3]).with_light([255, 200, 130])).unwrap();
         let slab = reg.register(BlockDef::new("test:slab", true, [0; 3]).with_shape(bottom.clone())).unwrap();
         let lamp_slab =
-            reg.register(BlockDef::new("test:lamp_slab", true, [0; 3]).with_shape(bottom).with_light([0, 0, 9])).unwrap();
+            reg.register(BlockDef::new("test:lamp_slab", true, [0; 3]).with_shape(bottom).with_light([0, 0, 150])).unwrap();
         Blocks { reg, stone, lamp, slab, lamp_slab }
     }
 
@@ -553,13 +569,21 @@ mod tests {
         BoxelPos::new(x, y, z)
     }
 
+    const RED: usize = 0;
+    const SKY: usize = Light::SKY_CHANNEL;
+
+    /// `level` in channel `c`, `steps` boxels on.
+    fn away(c: usize, level: u8, steps: usize) -> u8 {
+        (0..steps).fold(level, |l, _| Light::passed_on(c, l))
+    }
+
     #[test]
     fn packs_four_channels() {
         let l = Light::new([1, 2, 3], 15);
         assert_eq!((l.rgb(), l.sky()), ([1, 2, 3], 15));
         assert_eq!(l.with_channel(1, 9).rgb(), [1, 9, 3]);
         assert_eq!(Light::SKY.sky(), Light::MAX);
-        assert_eq!(Light::new([99, 0, 0], 0).channel(0), Light::MAX, "clamped");
+        assert_eq!(Light::new([255, 0, 0], 255), Light::new([255, 0, 0], 0).with_channel(SKY, 255));
     }
 
     #[test]
@@ -568,15 +592,30 @@ mod tests {
         let mut grid = cave(&b);
         grid.set_block(at(16, 16, 16), b.lamp);
         grid.relight_all(&b.reg);
-        assert_eq!(grid.light(at(16, 16, 16)), Light::new([14, 12, 8], 0));
+        assert_eq!(grid.light(at(16, 16, 16)), Light::new([255, 200, 130], 0));
         for d in 1..=7 {
-            let l = grid.light(at(16 + d, 16, 16));
-            assert_eq!(l.rgb(), [14 - d as u8, 12 - d as u8, 8u8.saturating_sub(d as u8)], "{d} away");
+            let l = grid.light(at(16 + d as i64, 16, 16));
+            assert_eq!(l.rgb(), [away(0, 255, d), away(1, 200, d), away(2, 130, d)], "{d} away");
             assert_eq!(l.sky(), 0, "no sky in a sealed cave");
         }
         // Around a corner counts by steps, not straight-line distance.
-        assert_eq!(grid.light(at(19, 20, 16)).channel(0), 14 - 7);
+        assert_eq!(grid.light(at(19, 20, 16)).channel(RED), away(RED, 255, 7));
         assert_eq!(grid.light(at(16, 16, 25)), Light::DARK, "inside the rock");
+    }
+
+    #[test]
+    fn a_lamps_color_holds_as_it_fades() {
+        let b = blocks();
+        let mut grid = cave(&b);
+        grid.set_block(at(16, 16, 16), b.lamp);
+        grid.relight_all(&b.reg);
+        let hue = |l: Light| [l.channel(1) as f32 / l.channel(0) as f32, l.channel(2) as f32 / l.channel(0) as f32];
+        let near = hue(grid.light(at(16, 16, 16)));
+        let far = hue(grid.light(at(22, 16, 16)));
+        for (n, f) in near.iter().zip(far) {
+            assert!((n - f).abs() < 0.06, "the same warm color six boxels off: {near:?} against {far:?}");
+        }
+        assert!(away(RED, 255, 14) == 0 && away(RED, 255, 12) > 0, "full light reaches about 14 boxels");
     }
 
     #[test]
@@ -598,8 +637,8 @@ mod tests {
         assert_eq!(grid.light(at(-5, -5, 1)).sky(), Light::MAX, "open ground");
         assert_eq!(grid.light(at(0, 5, 0)).sky(), 0, "the floor itself");
         // Under the roof's middle, five steps in from its edge.
-        assert_eq!(grid.light(at(5, 5, 2)).sky(), Light::MAX - 6);
-        assert_eq!(grid.light(at(0, 5, 2)).sky(), Light::MAX - 1, "just under the edge");
+        assert_eq!(grid.light(at(5, 5, 2)).sky(), away(SKY, Light::MAX, 6));
+        assert_eq!(grid.light(at(0, 5, 2)).sky(), away(SKY, Light::MAX, 1), "just under the edge");
         assert_eq!(grid.light(at(5, 5, 5)).sky(), Light::MAX, "on top of the roof");
     }
 
@@ -633,7 +672,7 @@ mod tests {
         assert_eq!(cell(&[slab(upside_down)]).covered, 1 << UP);
         assert!(cell(&[slab(Orientation::IDENTITY), slab(upside_down)]).closed(), "two halves fill it");
         assert_eq!(cell(&[]).covered, 0);
-        assert_eq!(cell(&[Occupant::new(b.lamp_slab), slab(upside_down)]).emits, Light::new([0, 0, 9], 0));
+        assert_eq!(cell(&[Occupant::new(b.lamp_slab), slab(upside_down)]).emits, Light::new([0, 0, 150], 0));
         // A panel against the south face, 4 texels thick, like a shutter.
         let mut panel = ShapeGrid::EMPTY;
         for z in 0..16 {
@@ -667,8 +706,8 @@ mod tests {
         grid.set_block(at(20, 16, 16), b.lamp);
         grid.set_block(at(25, 16, 16), b.slab);
         grid.relight_all(&b.reg);
-        assert_eq!(grid.light(at(26, 16, 16)).channel(0), 14 - 6, "through the slab");
-        assert_eq!(grid.light(at(32, 16, 16)).channel(0), 14 - 12, "over the border");
+        assert_eq!(grid.light(at(26, 16, 16)).channel(RED), away(RED, 255, 6), "through the slab");
+        assert_eq!(grid.light(at(32, 16, 16)).channel(RED), away(RED, 255, 12), "over the border");
         // A stone in the tunnel stops it.
         grid.set_block(at(25, 16, 16), b.stone);
         let touched = grid.relight(&b.reg, &[at(25, 16, 16)]);
@@ -685,12 +724,12 @@ mod tests {
         grid.set_block(at(10, 16, 16), b.lamp);
         grid.set_block(at(20, 16, 16), b.lamp);
         grid.relight_all(&b.reg);
-        assert_eq!(grid.light(at(15, 16, 16)).channel(0), 14 - 5);
+        assert_eq!(grid.light(at(15, 16, 16)).channel(RED), away(RED, 255, 5));
         grid.set_block(at(10, 16, 16), BlockId::EMPTY);
         grid.relight(&b.reg, &[at(10, 16, 16)]);
-        assert_eq!(grid.light(at(15, 16, 16)).channel(0), 14 - 5, "the other lamp still reaches");
-        assert_eq!(grid.light(at(10, 16, 16)).channel(0), 14 - 10);
-        assert_eq!(grid.light(at(8, 16, 16)).channel(0), 14 - 12);
+        assert_eq!(grid.light(at(15, 16, 16)).channel(RED), away(RED, 255, 5), "the other lamp still reaches");
+        assert_eq!(grid.light(at(10, 16, 16)).channel(RED), away(RED, 255, 10));
+        assert_eq!(grid.light(at(8, 16, 16)).channel(RED), away(RED, 255, 12));
     }
 
     #[test]
@@ -701,14 +740,14 @@ mod tests {
         fill(&mut grid, [0, 0, 4], [11, 11, 5], b.slab);
         grid.relight_all(&b.reg);
         assert_eq!(grid.light(at(5, 5, 4)).sky(), Light::MAX, "the slab's own boxel, open above");
-        assert_eq!(grid.light(at(5, 5, 2)).sky(), Light::MAX - 6, "shaded like a full roof");
+        assert_eq!(grid.light(at(5, 5, 2)).sky(), away(SKY, Light::MAX, 6), "shaded like a full roof");
         // Breaking one lets the sky straight down; putting it back shades again.
         grid.set_block(at(5, 5, 4), BlockId::EMPTY);
         grid.relight(&b.reg, &[at(5, 5, 4)]);
         assert_eq!(grid.light(at(5, 5, 1)).sky(), Light::MAX);
         grid.set_block(at(5, 5, 4), b.slab);
         grid.relight(&b.reg, &[at(5, 5, 4)]);
-        assert_eq!(grid.light(at(5, 5, 2)).sky(), Light::MAX - 6);
+        assert_eq!(grid.light(at(5, 5, 2)).sky(), away(SKY, Light::MAX, 6));
     }
 
     #[test]
@@ -718,8 +757,8 @@ mod tests {
         // A lamp slab lies on its bottom face; the boxel under it still gets its light.
         grid.set_block(at(16, 16, 16), b.lamp_slab);
         grid.relight_all(&b.reg);
-        assert_eq!(grid.light(at(16, 16, 15)).channel(2), 8);
-        assert_eq!(grid.light(at(16, 16, 17)).channel(2), 8);
+        assert_eq!(grid.light(at(16, 16, 15)).channel(2), away(2, 150, 1));
+        assert_eq!(grid.light(at(16, 16, 17)).channel(2), away(2, 150, 1));
     }
 
     #[test]
@@ -741,10 +780,10 @@ mod tests {
         grid.set_block(at(16, 25, 16), b.lamp);
         grid.set_block(at(16, 24, 16), BlockId::EMPTY);
         grid.relight_all(&b.reg);
-        assert_eq!(grid.light(at(16, 22, 16)).channel(0), 14 - 3, "open: the lamp lights the cave");
+        assert_eq!(grid.light(at(16, 22, 16)).channel(RED), away(RED, 255, 3), "open: the lamp lights the cave");
         grid.set_block(at(16, 24, 16), shutter);
         grid.relight(&b.reg, &[at(16, 24, 16)]);
-        assert_eq!(grid.light(at(16, 24, 16)).channel(0), 14 - 1, "light gets into the shutter's boxel");
+        assert_eq!(grid.light(at(16, 24, 16)).channel(RED), away(RED, 255, 1), "light gets into the shutter's boxel");
         assert_eq!(grid.light(at(16, 22, 16)), Light::DARK, "shut: none gets past it");
     }
 

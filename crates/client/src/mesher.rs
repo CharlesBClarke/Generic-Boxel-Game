@@ -902,8 +902,8 @@ mod tests {
     #[test]
     fn a_corner_averages_the_light_of_the_boxels_in_front_but_not_full_ones() {
         let mut mesh = top_quad();
-        // Sky 15 over everything but x = 1 and up, which has red 15 and no sky.
-        let light = |at: I64Vec3| if at.x >= 1 { sim::Light::new([15, 0, 0], 0) } else { sim::Light::SKY };
+        // Full sky over everything but x = 1 and up, which has full red and no sky.
+        let light = |at: I64Vec3| if at.x >= 1 { sim::Light::new([255, 0, 0], 0) } else { sim::Light::SKY };
         // A full block west of the quad, above the floor.
         let full = |at: I64Vec3| at == I64Vec3::new(-1, 0, 1);
         bake_light(&mut mesh, light, full);
@@ -921,7 +921,7 @@ mod tests {
         for p in &mut mesh.positions {
             p[2] = 0.5;
         }
-        let light = |at: I64Vec3| if at.z == 0 { sim::Light::new([0, 15, 0], 0) } else { sim::Light::DARK };
+        let light = |at: I64Vec3| if at.z == 0 { sim::Light::new([0, 255, 0], 0) } else { sim::Light::DARK };
         bake_light(&mut mesh, light, |_| false);
         // Inside the boxel along z, on its edges along x and y: four boxels at z = 0, all green.
         assert!(mesh.light.iter().all(|l| *l == [0, 255, 0, 0]), "{:?}", mesh.light);

@@ -35,10 +35,10 @@ pub struct BlockDef {
     pub sounds: BlockSounds,
     /// What it does, brought by its material into every shape made of it (see [`Property`]).
     pub properties: Vec<Property>,
-    /// The light it gives off, red, green and blue, from 0 to [`BlockDef::MAX_LIGHT`]: each
-    /// level lights one boxel further, so 14 reaches 14 boxels away, dimming as it goes. Every
-    /// shape made of it gives the same. Separate from how it looks: a glowing look lights only
-    /// itself.
+    /// The light it gives off, red, green and blue, from 0 to [`BlockDef::MAX_LIGHT`], its
+    /// color and brightness: it dims by a share each boxel, every channel alike, so its color
+    /// holds as it fades, and full light reaches about 14 boxels. Every shape made of it gives
+    /// the same. Separate from how it looks: a glowing look lights only itself.
     pub light: [u8; 3],
 }
 
@@ -109,7 +109,7 @@ impl BlockDef {
     }
 
     /// The brightest light a block can give, and the most stored in a boxel.
-    pub const MAX_LIGHT: u8 = 15;
+    pub const MAX_LIGHT: u8 = u8::MAX;
 
     pub fn with_look(mut self, look: impl Into<String>) -> Self {
         self.look = Some(look.into());
@@ -165,16 +165,13 @@ impl BlockDef {
         self.shape == [BlockBox::FULL]
     }
 
-    /// Checks the shape (at least one box, each inside the boxel and not flat), the light
-    /// and the material's name.
+    /// Checks the shape (at least one box, each inside the boxel and not flat) and the
+    /// material's name.
     pub fn validate(&self) -> Result<(), String> {
         if let Some(material) = &self.material
             && !is_valid_name(material)
         {
             return Err(format!("block {:?} has material {material:?}, expected namespace:path", self.name));
-        }
-        if self.light.iter().any(|&l| l > Self::MAX_LIGHT) {
-            return Err(format!("block {:?} gives light {:?}, above {}", self.name, self.light, Self::MAX_LIGHT));
         }
         if self.shape.is_empty() {
             return Err(format!("block {:?} has no shape boxes", self.name));
