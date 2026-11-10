@@ -454,10 +454,12 @@ pub(crate) fn remesh_changed_chunks(
     mut handles: Query<&mut Mesh3d, With<ChunkMesh>>,
     ao: Res<mesher::AoTuning>,
     mut hidden: ResMut<HiddenGhosts>,
+    mut heights: ResMut<crate::heights::Heights>,
 ) {
     // Crafting registers blocks while playing; their looks must be known before they're drawn.
     chunk_meshes.volumes.sync(world.blocks());
     let mut changed = world.take_changed_chunks();
+    heights.changed(&changed);
     let grid = world.universe().main();
     if ao.is_changed() && !ao.is_added() {
         changed = grid.chunks().map(|(pos, _)| pos).collect();

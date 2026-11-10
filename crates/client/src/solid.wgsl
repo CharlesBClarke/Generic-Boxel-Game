@@ -2,12 +2,15 @@
 // mesher has already moved every face's sample position half a texel inside the block, so a
 // face shows the outermost layer it cuts through. Then light and air (see `client::shading`):
 // the lines along the quad's creases and ridges, the sun and sky, a sheen if the look has one,
-// and fog toward the sky.
+// and fog toward the sky. The sun is shadowed by Bevy's shadow maps near the camera, and past
+// them by a coarse shadow stepped across a height map of the terrain (see `client::shadows`).
 
 #import bevy_pbr::mesh_functions::{get_world_from_local, mesh_position_local_to_world, mesh_normal_local_to_world}
-#import bevy_pbr::mesh_view_bindings::view
+#import bevy_pbr::mesh_view_bindings::{view, lights}
+#import bevy_pbr::mesh_view_types::DIRECTIONAL_LIGHT_FLAGS_SHADOWS_ENABLED_BIT
+#import bevy_pbr::shadows::{fetch_directional_shadow, cascade_debug_visualization}
 #import bevy_pbr::view_transformations::position_world_to_clip
-#import boxel::atmosphere::{Atmosphere, sky, fog_amount, surface_light, sheen, edge_shade, sky_reach, block_light}
+#import boxel::atmosphere::{Atmosphere, sky, fog_amount, ambient_light, sun_light, sheen, edge_shade, sky_reach, block_light}
 #ifdef TONEMAP_IN_SHADER
 #import bevy_core_pipeline::tonemapping::tone_mapping
 #endif
@@ -23,6 +26,9 @@ const FACE_SCALE: f32 = 16.0;
 @group(#{MATERIAL_BIND_GROUP}) @binding(2) var<uniform> atmosphere: Atmosphere;
 // Each volume's sheen and glow, one texel per volume: strength, sharpness, glow.
 @group(#{MATERIAL_BIND_GROUP}) @binding(3) var sheens: texture_2d<f32>;
+// The top of each column of boxels around the camera (see `client::heights`), from the height
+// in `atmosphere.heights.z`.
+@group(#{MATERIAL_BIND_GROUP}) @binding(4) var heights: texture_2d<f32>;
 
 struct Vertex {
     @builtin(instance_index) instance_index: u32,
@@ -66,6 +72,76 @@ fn vertex(vertex: Vertex) -> VertexOutput {
     return out;
 }
 
+// How much of the sun reaches `position` past the shadow maps: a ray toward the sun, in steps
+// that spread out with distance, across the height map. Soft at the edges, more so farther
+// from what casts the shadow.
+fn far_shadow(position: vec3<f32>, normal: vec3<f32>) -> f32 {
+    let to_sun = atmosphere.sun_direction.xyz;
+    // The height map's terms: east, north, up.
+    let dir = vec3<f32>(to_sun.x, -to_sun.z, to_sun.y);
+    if dir.z <= 0.0 {
+        return 1.0;
+    }
+    let h = atmosphere.heights;
+    let scale = h.w;
+    let size = vec2<i32>(textureDimensions(heights));
+    let start = vec3<f32>(position.x, -position.z, position.y) + vec3<f32>(normal.x, -normal.z, normal.y) * 0.05;
+    // Start past the point's own column, so its own top doesn't shade it.
+    let flat = length(dir.xy);
+    let reach = atmosphere.far.y;
+    if flat < 1e-4 || 1.5 * scale / flat >= reach {
+        return 1.0;
+    }
+    let t0 = 1.5 * scale / flat;
+    let steps = max(i32(atmosphere.far.x), 1);
+    let soft = atmosphere.far.z * 0.01;
+    let bias = atmosphere.far.w;
+    var lit = 1.0;
+    for (var i = 0; i < steps; i++) {
+        let s = f32(i) / f32(max(steps - 1, 1));
+        let t = t0 + (reach - t0) * s * s;
+        let q = start + dir * t;
+        let texel = vec2<i32>(floor((q.xy - h.xy) / scale));
+        if any(texel < vec2<i32>(0)) || any(texel >= size) {
+            break;
+        }
+        let top = textureLoad(heights, texel, 0).r + h.z;
+        let above = q.z + bias - top;
+        lit = min(lit, clamp(0.5 + above / (t * soft + 0.001), 0.0, 1.0));
+        if lit <= 0.0 {
+            break;
+        }
+    }
+    return lit;
+}
+
+// How far along the view `position` is from the camera, in meters (Bevy's view Z, negated).
+fn view_depth(position: vec3<f32>) -> f32 {
+    return -dot(vec4<f32>(view.view_from_world[0].z, view.view_from_world[1].z, view.view_from_world[2].z, view.view_from_world[3].z), vec4<f32>(position, 1.0));
+}
+
+// Whether the sun's shadow maps are being drawn.
+fn has_maps() -> bool {
+    return lights.n_directional_lights > 0u && (lights.directional_lights[0].flags & DIRECTIONAL_LIGHT_FLAGS_SHADOWS_ENABLED_BIT) != 0u;
+}
+
+// How much of the sun reaches `position`: the shadow maps near the camera, fading into the far
+// shadow, which also needs stored sky light (`reach`) since it can't see caves.
+fn sun_shadow(position: vec3<f32>, normal: vec3<f32>, reach: f32) -> f32 {
+    let depth = view_depth(position);
+    let maps = has_maps();
+    let fade = select(1.0, smoothstep(atmosphere.shadow.y, atmosphere.shadow.x, depth), maps);
+    var near = 1.0;
+    if maps && fade < 1.0 {
+        near = fetch_directional_shadow(0u, vec4<f32>(position, 1.0), normal, -depth);
+    }
+    var far = reach;
+    if fade > 0.0 && atmosphere.shadow.z > 0.5 {
+        far *= far_shadow(position, normal);
+    }
+    return mix(near, far, fade);
+}
+
 @fragment
 fn fragment(in: VertexOutput) -> @location(0) vec4<f32> {
     let texel = clamp(vec3<i32>(floor(in.solid.xyz)), vec3<i32>(0), vec3<i32>(SIZE - 1));
@@ -81,11 +157,15 @@ fn fragment(in: VertexOutput) -> @location(0) vec4<f32> {
     // Each part can be switched off, to measure what it costs.
     let parts = atmosphere.parts;
     var rgb = base.rgb;
-    // The sun and sky reach a face only as far as stored sky light does: none in a cave, until
-    // there are real shadows.
+    // The sky's light reaches a face only as far as stored sky light does: none in a cave. The
+    // sun's only as far as its shadows let it.
     let reach = sky_reach(atmosphere, in.light.a);
+    var sun = 0.0;
+    if parts.w > 0.5 || parts.z > 0.5 {
+        sun = sun_shadow(in.world_position, normal, reach);
+    }
     if parts.w > 0.5 {
-        rgb *= surface_light(atmosphere, normal) * reach + block_light(atmosphere, in.light.rgb);
+        rgb *= ambient_light(atmosphere, normal) * reach + sun_light(atmosphere, normal) * sun + block_light(atmosphere, in.light.rgb);
     }
     if parts.x > 0.5 {
         rgb *= edge_shade(atmosphere, in.edges, in.face);
@@ -94,7 +174,10 @@ fn fragment(in: VertexOutput) -> @location(0) vec4<f32> {
     let glow = shine.z;
     rgb = rgb * (1.0 - min(glow, 1.0)) + own.rgb * glow;
     if parts.z > 0.5 {
-        rgb += sheen(atmosphere, normal, to_eye, shine.x, shine.y) * tint.rgb * reach;
+        rgb += sheen(atmosphere, normal, to_eye, shine.x, shine.y) * tint.rgb * sun;
+    }
+    if atmosphere.shadow.w > 0.5 && has_maps() {
+        rgb = cascade_debug_visualization(rgb, 0u, -view_depth(in.world_position));
     }
     if parts.y > 0.5 {
         rgb = mix(rgb, sky(atmosphere, -to_eye), fog_amount(atmosphere, distance));

@@ -30,6 +30,15 @@ struct Atmosphere {
     stored: vec4<f32>,
     // Stored light on (1) or off (0).
     stored_on: vec4<f32>,
+    // Shadows: how far the maps reach, where they start fading into the far shadow (along the
+    // view), the far shadow on (1) or off (0), maps tinted by cascade (1) or not.
+    shadow: vec4<f32>,
+    // The far shadow: steps toward the sun, how far it looks, how soft, how far a column must
+    // rise above a ray to shade it.
+    far: vec4<f32>,
+    // The height map, relative to the render origin: X and north of texel (0, 0)'s corner, the
+    // height its texels are measured from, columns per texel.
+    heights: vec4<f32>,
 };
 
 // The sun's color at full brightness, whatever its strength.
@@ -98,8 +107,6 @@ fn fog_amount(a: Atmosphere, distance: f32) -> f32 {
     return a.fog.z * t * t * (3.0 - 2.0 * t);
 }
 
-// Light falling on a surface facing `normal` (unit): the sky's above, the ground's below,
-// and the sun.
 // How much of the sun and sky reach a face, from its stored sky light (0 to 1): 1 in the open,
 // less where they come in only sideways, through an opening.
 fn sky_reach(a: Atmosphere, stored_sky: f32) -> f32 {
@@ -118,9 +125,15 @@ fn block_light(a: Atmosphere, stored_rgb: vec3<f32>) -> vec3<f32> {
     return pow(stored_rgb, vec3<f32>(a.stored.z)) * a.stored.x + vec3<f32>(a.stored.w);
 }
 
-fn surface_light(a: Atmosphere, normal: vec3<f32>) -> vec3<f32> {
-    let ambient = mix(a.ground_light.rgb, a.sky_light.rgb, normal.y * 0.5 + 0.5);
-    return ambient + a.sun_color.rgb * max(dot(normal, a.sun_direction.xyz), 0.0);
+// Light from the sky and ground on a surface facing `normal` (unit): the sky's above, the
+// ground's below, blended between.
+fn ambient_light(a: Atmosphere, normal: vec3<f32>) -> vec3<f32> {
+    return mix(a.ground_light.rgb, a.sky_light.rgb, normal.y * 0.5 + 0.5);
+}
+
+// The sun's light on a surface facing `normal` (unit), before any shadow.
+fn sun_light(a: Atmosphere, normal: vec3<f32>) -> vec3<f32> {
+    return a.sun_color.rgb * max(dot(normal, a.sun_direction.xyz), 0.0);
 }
 
 // The sun's reflection toward the eye (Blinn-Phong), for a look with a sheen.

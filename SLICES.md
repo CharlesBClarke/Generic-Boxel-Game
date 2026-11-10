@@ -113,6 +113,32 @@ A run of small toy slices. Each one takes a single game-feel feature that doesn'
 
 - Cow pathfinding (low priority, 2026-11-06): the user called the toy "really good" without going through the five course checks one by one; note any that misbehave: cows through the pen's gap and up its terraces, up the mesa's steps, a charge baited off the mesa's cliff (landing hurt), waiting below the pillar (orange route), climbing hills on the generated terrain.
 
+#### Sun shadows
+
+**Stage:** Verify (branch `toy-sun-shadows`, plan approved 2026-11-10; built and unit-tested, waiting for the user to play it)
+
+**Deviation from the agreed order** (2026-11-10, the user chose it): the backlog had the GPU boxel grid first and Bevy's shadow maps only if the grid was too slow, with Generated detail before both. Shadow maps come first instead; the risk is that sun shadows get built twice if the grid later takes them over.
+
+**Goal:** blocks cast sun shadows onto each other, sharp to the texel near the player, with cheap coarse shadows on distant terrain so nothing pops in.
+
+**Plan**
+1. *A shadow on screen first* (the risky step): a Bevy `DirectionalLight` with shadows, pointed from `sun_azimuth`/`sun_elevation` (Z-up to Y-up only there); its brightness unused, only its shadow maps. A prepass (shadow pass) shader for `SolidMaterial`, since its vertex layout is custom.
+2. *Cascaded shadow maps* to 128 m, 3 cascades, sampled in `solid.wgsl`: shadow gates the sun's direct light and the sheen; sky light and block light unchanged.
+3. *Height-map shadows past them*: a 2D texture of each column's top height within render distance, stepped toward the sun in the shader; coarse (per column, no overhangs) but cheap and fine with a moving sun. Shadow maps fade into it, so nothing pops in at 128 m. Edits update their column.
+4. *Casters*: chunks, cows, items and the held tool cast; the ghost and the sky don't.
+5. *Moving sun, for testing*: a "sun moves" switch and speed slider (client only), stepped finely so shadows don't shimmer.
+6. *Tuning* in the Shading section, live: shadow distance, cascades, map size, depth and normal bias, a filtering pick list (crisp 2×2, Gaussian, temporal), a shadows on/off switch for F9.
+7. *Tests*: sun direction across the Y-up boundary, tuning to cascade setup, building and updating the height map. The rest by eye and F9.
+8. *Backlog at close*: Day and night (time owned by `sim`, saved, night itself); cows, items and held tool receive shadows (moving them onto the one `SolidMaterial` like blocks, the planner's reading of the user's "we will fix the one matrial thing there too"); the GPU grid entry becomes "true AO, maybe shadows later".
+
+**Done when**
+1. Shadows are sharp to the texel near the player: a slab overhang, a panel, a carved shape, onto the ground and each other.
+2. Shadows follow the sun sliders live, with no remesh.
+3. A face in shadow gets no direct sun and no sheen; sky light and lamps still light it.
+4. No pop-in at 128 m; mountains shade valleys out to render distance.
+5. A moving sun shows no visible shimmer.
+6. The user judges the frame rate on the Iris Xe acceptable, shadows on vs off (F9).
+
 ### Toy backlog
 
 - **Colored lamps.** Added 2026-11-10, offered in Stored light, not built: red, green and blue lumite (`light = [255, 0, 0]` and so on) with a dark test room by the lab, to see colors mix. Data only (`blocks.toml`, `inventory.toml`) plus a little world building in `base`.

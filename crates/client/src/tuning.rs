@@ -1,9 +1,10 @@
 //! The live tuning panel: sliders for every value the server lets a client tune (the player's
 //! movement controller, the interaction, push-out, crowd, health, item drop and inventory
 //! definitions, tools, targets and brains, whichever mod they come from) and the client's own:
-//! sound, the camera feel, the combat feel, the animation, ambient occlusion, the view, the UI
-//! scale and the chase drill. Terrain values take effect when the terrain is generated again. Save
-//! keeps them in the tuning file (see `tuning_file`), which is applied at startup.
+//! sound, the camera feel, the combat feel, the animation, ambient occlusion, shading and
+//! shadows, the view, the UI scale and the chase drill. Terrain values take effect when the
+//! terrain is generated again. Save keeps them in the tuning file (see `tuning_file`), which is
+//! applied at startup.
 //!
 //! The server's values are edited as copies and each change is sent back as a command; the
 //! server answers with its definitions as changed.
@@ -22,6 +23,7 @@ use crate::sound::{Kind, Pick, Picks, SoundPicks, SoundPreview, SoundTuning};
 use crate::tuning_file;
 use crate::ui_scale::UiScaleTuning;
 use crate::shading::ShadingTuning;
+use crate::shadows::{Filter, ShadowTuning};
 use crate::view::ViewTuning;
 use crate::world::{ClientWorld, Link};
 
@@ -57,7 +59,7 @@ pub fn tuning_panel(
     mut preview_sound: ResMut<SoundPreview>,
     mut picks: ResMut<SoundPicks>,
     mut view: ResMut<ViewTuning>,
-    mut light: ResMut<ShadingTuning>,
+    (mut light, mut shadow): (ResMut<ShadingTuning>, ResMut<ShadowTuning>),
     mut ui_scale: ResMut<UiScaleTuning>,
 ) -> Result {
     // The saved file is applied once, on the first frame there is a player, open or not.
@@ -97,6 +99,7 @@ pub fn tuning_panel(
     let mut seeing = *view;
     let mut sizing = *ui_scale;
     let mut lighting = *light;
+    let mut shadows = *shadow;
     let mut regenerate = false;
     let mut drill_tuning = drill.tuning.clone();
     let mut hearing = sound.clone();
@@ -132,6 +135,7 @@ pub fn tuning_panel(
             s.push(("view".to_owned(), &mut seeing));
             s.push(("ui".to_owned(), &mut sizing));
             s.push(("shading".to_owned(), &mut lighting));
+            s.push(("shadows".to_owned(), &mut shadows));
             s.push(("drill".to_owned(), &mut drill_tuning));
             s.push(("sound".to_owned(), &mut hearing));
             s
@@ -225,6 +229,24 @@ pub fn tuning_panel(
                 });
                 sliders(ui, "shading", &mut lighting);
                 ui.separator();
+                ui.heading("Shadows");
+                ui.label("sun shadows: sharp maps near the camera, fading into a coarse height-map shadow farther out");
+                ui.horizontal(|ui| {
+                    let switches = &mut shadows.switches;
+                    ui.checkbox(&mut switches.maps, "shadow maps");
+                    ui.checkbox(&mut switches.far, "far shadow");
+                    ui.checkbox(&mut switches.show_cascades, "tint each map");
+                    ui.checkbox(&mut switches.sun_moves, "sun moves");
+                });
+                egui::ComboBox::from_label("edges")
+                    .selected_text(shadows.filter.label())
+                    .show_ui(ui, |ui| {
+                        for f in Filter::ALL {
+                            ui.selectable_value(&mut shadows.filter, f, f.label());
+                        }
+                    });
+                sliders_except(ui, "shadows", &mut shadows, &["filter"]);
+                ui.separator();
                 ui.heading("Sound");
                 sliders(ui, "sound", &mut hearing);
                 ui.collapsing("Footsteps", |ui| {
@@ -308,6 +330,7 @@ pub fn tuning_panel(
                     seeing = ViewTuning::default();
                     sizing = UiScaleTuning::default();
                     lighting = ShadingTuning::default();
+                    shadows = ShadowTuning::default();
                     juice = CombatFeel::default();
                     playing = AnimationTuning::default();
                     preview.clip = None;
@@ -393,6 +416,7 @@ pub fn tuning_panel(
     view.set_if_neq(seeing);
     ui_scale.set_if_neq(sizing);
     light.set_if_neq(lighting);
+    shadow.set_if_neq(shadows);
     if trying != *picks {
         *picks = trying;
     }
@@ -519,8 +543,13 @@ impl Tunables for Values {
 }
 
 fn sliders<T: Tunables + ?Sized>(ui: &mut egui::Ui, id: &str, target: &mut T) {
+    sliders_except(ui, id, target, &[]);
+}
+
+/// [`sliders`], leaving out the values named in `skip`, which have controls of their own.
+fn sliders_except<T: Tunables + ?Sized>(ui: &mut egui::Ui, id: &str, target: &mut T, skip: &[&str]) {
     egui::Grid::new(id).num_columns(2).show(ui, |ui| {
-        for t in target.tunables() {
+        for t in target.tunables().into_iter().filter(|t| !skip.contains(&t.name.as_str())) {
             let mut value = t.value;
             ui.label(&t.name);
             if ui.add(egui::Slider::new(&mut value, t.min..=t.max)).changed() {

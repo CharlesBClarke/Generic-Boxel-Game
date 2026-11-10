@@ -6,6 +6,7 @@
 //! Landmarks are waypoints whose names start with `landmark:`, supplied by the mod.
 
 use api::{Tunable, Tunables, Vec3 as ZVec3, WorldPos};
+use bevy::light::NotShadowCaster;
 use bevy::prelude::*;
 
 use crate::controls::Controls;
@@ -304,6 +305,7 @@ pub(crate) fn setup_drill(
         Transform::default(),
         Visibility::Hidden,
         GhostMarker(ghost),
+        NotShadowCaster,
     ));
 
     let glow = materials.add(StandardMaterial { base_color: Color::srgb(0.3, 1.0, 0.4), unlit: true, ..default() });
@@ -316,10 +318,11 @@ pub(crate) fn setup_drill(
     // A beam above the objective so it can be found from anywhere.
     let beam_height = 60.0;
     commands
-        .spawn((Mesh3d(meshes.add(Cuboid::from_length(0.5))), MeshMaterial3d(glow), Transform::default(), Visibility::Hidden, ObjectiveMarker))
+        .spawn((Mesh3d(meshes.add(Cuboid::from_length(0.5))), MeshMaterial3d(glow), Transform::default(), Visibility::Hidden, ObjectiveMarker, NotShadowCaster))
         .with_child((
             Mesh3d(meshes.add(Cuboid::new(0.12, 0.12, beam_height))),
             MeshMaterial3d(beam),
+            NotShadowCaster,
             Transform::from_translation(coords::to_render(ZVec3::Z * beam_height * 0.5))
                 .with_rotation(Quat::from_rotation_arc(Vec3::Z, coords::to_render(ZVec3::Z))),
         ));
