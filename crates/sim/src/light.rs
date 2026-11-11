@@ -500,11 +500,85 @@ impl Grid {
             pass.relight(&nodes, c);
         }
         let touched = pass.touched.take().unwrap_or_default();
+        self.touched_chunks(touched, &HashSet::new())
+    }
+
+    /// Settles the light where chunks lit apart meet the rest of the world. Each of `new` was
+    /// lit with its column, as if nothing stood beside the column (see
+    /// [`Grid::relight_all`]); the rest was lit as if they were missing, so open sky. Light
+    /// crosses every seam between them both ways, and light that only came from the sky that
+    /// isn't open any more is taken away. Returns every chunk other than `new` whose light
+    /// changed, and every chunk beside one whose border boxels did, in no particular order.
+    pub fn light_seams(&mut self, blocks: &BlockRegistry, new: &[ChunkPos]) -> Vec<ChunkPos> {
+        self.update_light_info(blocks);
+        let fresh: HashSet<ChunkPos> = new.iter().copied().collect();
+        let column = |p: ChunkPos| (p.0.x, p.0.y);
+        let mut pass = self.pass(true);
+        // Boxels lit by sky that came in through a seam's face, which isn't open any more.
+        let mut darken: Vec<Node> = Vec::new();
+        // Boxels whose light reaches further across a seam than what's there.
+        let mut brighten: [VecDeque<Node>; 4] = Default::default();
+        for &pos in new {
+            let Some(&slot) = pass.slots.get(&pos) else { continue };
+            for (d, dir) in DIRS.iter().enumerate() {
+                let other = ChunkPos(pos.0 + I64Vec3::from_array(*dir));
+                let Some(&far) = pass.slots.get(&other) else { continue };
+                if fresh.contains(&other) && (column(other) == column(pos) || other.0.to_array() < pos.0.to_array()) {
+                    // Lit together, or a seam handled from the other side.
+                    continue;
+                }
+                let axis = d / 2;
+                for at in face(d) {
+                    let mut across = coords(at);
+                    across[axis] = if d.is_multiple_of(2) { 0 } else { SIZE - 1 };
+                    let n = Node { slot: slot as u32, at: at as u16 };
+                    let m = Node { slot: far as u32, at: index(across) as u16 };
+                    for (a, b, dir) in [(n, m, d), (m, n, d ^ 1)] {
+                        let (ia, ib) = (pass.info(a), pass.info(b));
+                        let sky = pass.level(a, Light::SKY_CHANNEL);
+                        // Missing chunks beside only ever gave sky: full from above, a step
+                        // less from the sides and below.
+                        if !ia.covers(dir) && sky > 0 && (sky < Light::MAX || dir == UP) {
+                            darken.push(a);
+                        }
+                        for (c, queue) in brighten.iter_mut().enumerate() {
+                            let want = carried(ia, ib, dir, pass.level(a, c), c);
+                            if want > pass.level(b, c) {
+                                queue.push_back(a);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        darken.sort_unstable_by_key(|n| (n.slot, n.at));
+        darken.dedup();
+        if !darken.is_empty() {
+            pass.relight(&darken, Light::SKY_CHANNEL);
+        }
+        for (c, queue) in brighten.into_iter().enumerate() {
+            pass.spread(queue, c);
+        }
+        let touched = pass.touched.take().unwrap_or_default();
+        let mut out = self.touched_chunks(touched, &fresh);
+        out.retain(|pos| !fresh.contains(pos));
+        for pos in new {
+            if let Some(&slot) = self.slots.get(pos) {
+                self.chunks[slot].light.compact();
+            }
+        }
+        out
+    }
+
+    /// Every chunk but `skip` holding a boxel of `touched` whose light ended up different from
+    /// what it was, and every chunk beside one whose border boxels did (as a face there reads
+    /// them). Compacts the chunks whose light changed.
+    fn touched_chunks(&mut self, touched: HashMap<Node, Light>, skip: &HashSet<ChunkPos>) -> Vec<ChunkPos> {
         // Each chunk whose light ended up different, with which of its faces the boxels that
         // changed lie on, so chunks whose border faces read them hear of it.
         let mut edged: HashSet<(u32, u8)> = HashSet::new();
         for (n, before) in touched {
-            if pass.get(n) != before {
+            if self.chunks[n.slot as usize].light.at(n.at as usize) != before && !skip.contains(&self.positions[n.slot as usize]) {
                 let [x, y, z] = coords(n.at as usize);
                 let edge = |v: usize, bit: u8| if v == SIZE - 1 { bit } else if v == 0 { bit << 1 } else { 0 };
                 edged.insert((n.slot, edge(x, 1) | edge(y, 4) | edge(z, 16)));
@@ -882,5 +956,106 @@ mod tests {
                 }
             }
         }
+    }
+
+    /// A world of 3×2 columns of 2 chunks each, rough ground with caves, overhangs, slabs and
+    /// lamps across the seams.
+    fn rough_world(b: &Blocks, seed: u64) -> Grid {
+        let mut rng = Rng(seed);
+        let kinds = [BlockId::EMPTY, b.stone, b.stone, b.slab, b.lamp, b.lamp_slab];
+        let mut grid = Grid::default();
+        for y in 0..64 {
+            for x in 0..96 {
+                let top = 20 + rng.below(16) as i64;
+                fill(&mut grid, [x, y, 0], [x + 1, y + 1, top], b.stone);
+            }
+        }
+        // Tunnels along X and Y through the rock, and roofs over open ground.
+        fill(&mut grid, [0, 20, 8], [96, 23, 11], BlockId::EMPTY);
+        fill(&mut grid, [40, 0, 12], [43, 64, 15], BlockId::EMPTY);
+        fill(&mut grid, [20, 10, 44], [70, 40, 45], b.stone);
+        for _ in 0..400 {
+            let p = at(rng.below(96) as i64, rng.below(64) as i64, rng.below(64) as i64);
+            grid.set_block(p, kinds[rng.below(kinds.len() as u64) as usize]);
+        }
+        for x in 0..3 {
+            for y in 0..2 {
+                for z in 0..2 {
+                    let p = at(x * 32 + 1, y * 32 + 1, z * 32 + 1);
+                    let keep = grid.block(p);
+                    grid.set_block(p, b.stone);
+                    grid.set_block(p, keep);
+                }
+            }
+        }
+        grid
+    }
+
+    #[test]
+    fn columns_lit_apart_and_joined_match_lighting_together() {
+        let b = blocks();
+        for seed in 1..6 {
+            let world = rough_world(&b, seed);
+            let mut whole = Grid::default();
+            for (pos, _) in world.chunks() {
+                whole.import_chunk(&world.export_chunk(pos));
+            }
+            whole.relight_all(&b.reg);
+            // Bring the columns in batches, in a shuffled order, as streaming does.
+            let mut rng = Rng(seed * 31);
+            let mut columns: Vec<(i64, i64)> = (0..3).flat_map(|x| (0..2).map(move |y| (x, y))).collect();
+            for i in (1..columns.len()).rev() {
+                columns.swap(i, rng.below(i as u64 + 1) as usize);
+            }
+            let mut joined = Grid::default();
+            let mut rest = columns.as_slice();
+            while !rest.is_empty() {
+                let take = 1 + rng.below(rest.len().min(3) as u64) as usize;
+                let (batch, later) = rest.split_at(take);
+                rest = later;
+                let mut new = Vec::new();
+                for &(x, y) in batch {
+                    let mut alone = Grid::default();
+                    let chunks = [ChunkPos::new(x, y, 1), ChunkPos::new(x, y, 0)];
+                    for pos in chunks {
+                        alone.import_chunk(&world.export_chunk(pos));
+                    }
+                    alone.relight_all(&b.reg);
+                    for pos in chunks {
+                        joined.import_chunk(&alone.export_chunk(pos));
+                        new.push(pos);
+                    }
+                }
+                joined.light_seams(&b.reg, &new);
+            }
+            for (pos, chunk) in whole.chunks() {
+                let got = &joined.chunk(pos).unwrap().light;
+                for i in 0..CHUNK_VOLUME {
+                    assert_eq!(got.at(i), chunk.light.at(i), "seed {seed}, chunk {pos:?}, boxel {:?}", coords(i));
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn joining_columns_reports_the_old_chunks_whose_light_changed() {
+        let b = blocks();
+        let mut grid = Grid::default();
+        // A tunnel from column 0 into column 1: column 0 alone lights the tunnel's end from the
+        // open sky where column 1 is missing.
+        fill(&mut grid, [0, 0, 0], [64, 32, 32], b.stone);
+        fill(&mut grid, [10, 10, 10], [64, 13, 13], BlockId::EMPTY);
+        let mut left = Grid::default();
+        left.import_chunk(&grid.export_chunk(ChunkPos::new(0, 0, 0)));
+        left.relight_all(&b.reg);
+        assert!(left.light(at(31, 11, 11)).sky() > 0, "lit from the missing side");
+        let mut right = Grid::default();
+        right.import_chunk(&grid.export_chunk(ChunkPos::new(1, 0, 0)));
+        right.relight_all(&b.reg);
+        left.import_chunk(&right.export_chunk(ChunkPos::new(1, 0, 0)));
+        let changed = left.light_seams(&b.reg, &[ChunkPos::new(1, 0, 0)]);
+        assert!(changed.contains(&ChunkPos::new(0, 0, 0)));
+        assert!(!changed.contains(&ChunkPos::new(1, 0, 0)), "new chunks aren't listed");
+        assert_eq!(left.light(at(31, 11, 11)).sky(), 0, "a sealed tunnel is dark");
     }
 }

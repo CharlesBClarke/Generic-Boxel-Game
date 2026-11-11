@@ -5,7 +5,7 @@
 
 use std::collections::HashMap;
 
-use api::{ChunkPos, Vec3 as ZVec3, WorldPos};
+use api::{ChunkPos, I64Vec3, Vec3 as ZVec3, WorldPos};
 use bevy::input::mouse::{AccumulatedMouseScroll, MouseScrollUnit};
 use bevy::prelude::*;
 use bevy::window::{CursorGrabMode, CursorOptions, PrimaryWindow};
@@ -15,6 +15,7 @@ use crate::controls::Controls;
 use crate::solid::SolidMaterial;
 use crate::volumes::Volumes;
 use crate::world::ClientWorld;
+use crate::mesher::MeshData;
 use crate::{ChunkMesh, Look, PendingToggles, RenderOrigin, coords, mesher};
 
 /// Scroll distance, in pixels, that moves the palette one slot on touchpads and other
@@ -153,6 +154,63 @@ pub(crate) struct ChunkMeshes {
     pub last_meshing: Option<(usize, f32)>,
     /// Whether the meshes have their faces merged (see [`crate::greedy`]).
     pub merged: bool,
+    /// Goes up for a chunk each time it's remeshed on the main thread or dropped, so a
+    /// background mesh asked for before is known to be out of date (see [`crate::meshing`]).
+    pub versions: HashMap<ChunkPos, u64>,
+}
+
+impl ChunkMeshes {
+    /// The chunk's version (see [`ChunkMeshes::versions`]).
+    pub fn version(&self, pos: ChunkPos) -> u64 {
+        self.versions.get(&pos).copied().unwrap_or(0)
+    }
+
+    fn bump(&mut self, pos: ChunkPos) {
+        *self.versions.entry(pos).or_insert(0) += 1;
+    }
+
+    /// Puts in a new mesh for the chunk at `pos`: replaces its old one, or drops it if the new
+    /// one is empty.
+    pub fn put(
+        &mut self,
+        commands: &mut Commands,
+        meshes: &mut Assets<Mesh>,
+        handles: &mut Query<&mut Mesh3d, With<ChunkMesh>>,
+        pos: ChunkPos,
+        data: MeshData,
+        origin: I64Vec3,
+    ) {
+        if data.is_empty() {
+            self.quads.remove(&pos);
+        } else {
+            self.quads.insert(pos, data.quad_count());
+        }
+        match self.entities.get(&pos).copied() {
+            Some(entity) if data.is_empty() => {
+                commands.entity(entity).despawn();
+                self.entities.remove(&pos);
+            }
+            Some(entity) => {
+                if let Ok(mut mesh) = handles.get_mut(entity) {
+                    mesh.0 = meshes.add(crate::to_bevy_mesh(data));
+                }
+            }
+            None if data.is_empty() => {}
+            None => {
+                let entity = crate::spawn_chunk(commands, meshes, self.material.clone(), pos, data, origin);
+                self.entities.insert(pos, entity);
+            }
+        }
+    }
+
+    /// Drops the chunk at `pos`'s mesh, as when the chunk is dropped.
+    pub fn forget(&mut self, commands: &mut Commands, pos: ChunkPos) {
+        self.bump(pos);
+        self.quads.remove(&pos);
+        if let Some(entity) = self.entities.remove(&pos) {
+            commands.entity(entity).despawn();
+        }
+    }
 }
 
 /// Whether the mouse is captured for playing. Clicks only edit while it is, so the click
@@ -475,28 +533,8 @@ pub(crate) fn remesh_changed_chunks(
         chunk_meshes.last_meshing = Some((changed.len(), start.elapsed().as_secs_f32()));
     }
     for (pos, data) in changed.into_iter().zip(meshed) {
-        if data.is_empty() {
-            chunk_meshes.quads.remove(&pos);
-        } else {
-            chunk_meshes.quads.insert(pos, data.quad_count());
-        }
-        match chunk_meshes.entities.get(&pos).copied() {
-            Some(entity) if data.is_empty() => {
-                commands.entity(entity).despawn();
-                chunk_meshes.entities.remove(&pos);
-            }
-            Some(entity) => {
-                if let Ok(mut mesh) = handles.get_mut(entity) {
-                    mesh.0 = meshes.add(crate::to_bevy_mesh(data));
-                }
-            }
-            None if data.is_empty() => {}
-            None => {
-                let material = chunk_meshes.material.clone();
-                let entity = crate::spawn_chunk(&mut commands, &mut meshes, material, pos, data, origin.cell);
-                chunk_meshes.entities.insert(pos, entity);
-            }
-        }
+        chunk_meshes.bump(pos);
+        chunk_meshes.put(&mut commands, &mut meshes, &mut handles, pos, data, origin.cell);
     }
 }
 
@@ -1139,13 +1177,17 @@ mod remesh_timing {
     fn time_meshing_the_terrain() {
         let mut sim = base_sim();
         sim.spawn_player().unwrap();
-        let generated = sim.generate_terrain().unwrap();
+        sim.teleport_player(api::WorldPos::at_boxel(base::TERRAIN_CENTER.offset(api::I64Vec3::new(0, 0, 100))));
+        sim.set_view_distance(224.0);
+        sim.generate_terrain().unwrap();
+        sim.stream_all();
+        let generated = sim.stream_stats();
         let (_, world) = connect(sim);
         let volumes = Volumes::build(world.looks(), world.blocks());
         let ao = mesher::AoTuning::default();
         let grid = world.universe().main();
         let chunks: Vec<_> = grid.chunks().map(|(pos, _)| pos).collect();
-        println!("generated {} chunks in {:.2} s", generated.chunks, generated.seconds);
+        println!("streamed {} columns, {:.2} s on the workers", generated.columns, generated.seconds);
         for merge in [false, true] {
             let start = std::time::Instant::now();
             let meshes = mesher::mesh_chunks(grid, &chunks, world.blocks(), &volumes, &ao, merge);

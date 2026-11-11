@@ -1,18 +1,15 @@
-//! Generated terrain on the engine side: how much of it to fill, filling chunks on every core,
-//! and turning what a generator wrote into chunks.
-
-use std::time::Instant;
+//! Generated terrain on the engine side: how tall it is, filling chunks on every core, and
+//! turning what a generator wrote into chunks. Which chunks are filled when is streaming's
+//! business (see [`crate::stream`]): the terrain goes on forever sideways.
 
 use api::{ApiError, BoxelPos, ChunkFill, ChunkPos, Generator, I64Vec3, TerrainDef, Tunable, Tunables};
 
 use crate::{BlockRegistry, ChunkData, Layer, Occupant};
 
-/// The engine's own world settings: how much terrain to generate, and how far from the player
-/// things are simulated.
+/// The engine's own world settings: how tall terrain is, and how far from the player things are
+/// simulated.
 #[derive(Clone, Debug, PartialEq)]
 pub struct WorldSettings {
-    /// How many chunks each terrain spans east to west and north to south.
-    pub terrain_width: u32,
     /// How many chunks each terrain spans bottom to top.
     pub terrain_height: u32,
     /// Creatures and loose items farther than this from the player, in meters, hold still.
@@ -21,14 +18,13 @@ pub struct WorldSettings {
 
 impl Default for WorldSettings {
     fn default() -> Self {
-        Self { terrain_width: 16, terrain_height: 16, sim_distance: 256.0 }
+        Self { terrain_height: 16, sim_distance: 256.0 }
     }
 }
 
 impl Tunables for WorldSettings {
     fn tunables(&self) -> Vec<Tunable> {
         vec![
-            Tunable::new("terrain_width", self.terrain_width as f32, 1.0, 64.0),
             Tunable::new("terrain_height", self.terrain_height as f32, 1.0, 32.0),
             Tunable::new("sim_distance", self.sim_distance, 16.0, 4096.0),
         ]
@@ -36,25 +32,15 @@ impl Tunables for WorldSettings {
 
     fn set_tunable(&mut self, name: &str, value: f32) -> bool {
         match name {
-            "terrain_width" => self.terrain_width = value.round().clamp(1.0, 64.0) as u32,
+            // The terrain had a width before it went on forever (save version 3 and older). Its
+            // value is taken and ignored, so older saves and tuning files load quietly.
+            "terrain_width" => {}
             "terrain_height" => self.terrain_height = value.round().clamp(1.0, 32.0) as u32,
             "sim_distance" => self.sim_distance = value.max(0.0),
             _ => return false,
         }
         true
     }
-}
-
-/// How the last generation went, for the client's readout.
-#[derive(Clone, Copy, Debug, Default, PartialEq)]
-pub struct GenerationStats {
-    /// Chunks filled.
-    pub chunks: usize,
-    /// Chunks that came out a single block (or empty) all through, stored as one value.
-    pub uniform: usize,
-    pub seconds: f32,
-    /// Seconds lighting the whole world took afterwards.
-    pub light_seconds: f32,
 }
 
 /// Every chunk of a terrain placed at `center`, `width` chunks across and `height` high,
@@ -107,21 +93,6 @@ pub fn fill_chunks(
         out.extend(part?);
     }
     Ok(out)
-}
-
-/// Fills every chunk of one terrain, timing it.
-pub fn generate(
-    generator: &dyn Generator,
-    def: &TerrainDef,
-    settings: &WorldSettings,
-    blocks: &BlockRegistry,
-) -> Result<(Vec<ChunkData>, GenerationStats), ApiError> {
-    let start = Instant::now();
-    let chunks = terrain_chunks(def.center, settings.terrain_width, settings.terrain_height);
-    let data = fill_chunks(generator, def, &chunks, blocks)?;
-    let uniform = data.iter().filter(|c| matches!(c.cells, Layer::Uniform(_))).count();
-    let stats = GenerationStats { chunks: data.len(), uniform, seconds: start.elapsed().as_secs_f32(), light_seconds: 0.0 };
-    Ok((data, stats))
 }
 
 /// A generator's chunk as engine chunk data. A chunk of one block all through is stored as that
@@ -215,7 +186,7 @@ mod tests {
     fn solid_and_empty_chunks_are_stored_as_one_value() {
         let blocks = blocks();
         let def = TerrainDef { generator: "t:layered".into(), center: BoxelPos::new(0, 0, 0) };
-        let (data, stats) = generate(&Layered, &def, &WorldSettings { terrain_width: 2, terrain_height: 6, sim_distance: 1.0 }, &blocks).unwrap();
+        let data = fill_chunks(&Layered, &def, &terrain_chunks(def.center, 2, 6), &blocks).unwrap();
         let at = |z: i64| data.iter().find(|c| c.pos.0.z == z).unwrap();
         // Below the center: all stone. Above 64: all empty. Between: markers up to z 40.
         assert_eq!(at(-2).cells, Layer::Uniform(1));
@@ -223,7 +194,8 @@ mod tests {
         assert!(matches!(at(0).cells, Layer::Dense(_)));
         assert!(matches!(at(1).cells, Layer::Dense(_)));
         // Rows -3 to -1 and 2 are uniform, 4 chunks each.
-        assert_eq!((stats.chunks, stats.uniform), (24, 16));
+        let uniform = data.iter().filter(|c| matches!(c.cells, Layer::Uniform(_))).count();
+        assert_eq!((data.len(), uniform), (24, 16));
     }
 
     #[test]
@@ -251,8 +223,10 @@ mod tests {
     #[test]
     fn world_settings_round_chunk_counts() {
         let mut s = WorldSettings::default();
-        assert!(s.set_tunable("terrain_width", 7.6));
-        assert_eq!(s.terrain_width, 8);
+        assert!(s.set_tunable("terrain_height", 7.6));
+        assert_eq!(s.terrain_height, 8);
+        assert!(s.set_tunable("terrain_width", 11.0), "the old width is taken and ignored");
+        assert!(!s.tunables().iter().any(|t| t.name == "terrain_width"));
         assert!(!s.set_tunable("nope", 1.0));
     }
 }

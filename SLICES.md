@@ -104,7 +104,7 @@ A run of small toy slices. Each one takes a single game-feel feature that doesn'
 
 ### Current toy
 
-None in progress: Day and night closed 2026-11-11. Suggested next: Shadow speed (backlog; notes in `docs/notes/shadow-speed.md`), now measured against nights that draw no shadows.
+None in progress: Terrain streaming closed 2026-11-11. Suggested next: `fix-greedy-sparkles` (backlog, a small fix), then AO in the shader or Shadow speed, as the full view now costs 19–32 ms a frame.
 
 **Waiting for a play check** (remind the user at the start of every session, and at good moments during one, until they confirm; then delete the line):
 
@@ -117,6 +117,7 @@ None in progress: Day and night closed 2026-11-11. Suggested next: Shadow speed 
 
 ### Toy backlog
 
+- **Greedy meshing sparkles** (a fix: `fix-greedy-sparkles`). Added 2026-11-11, found by the user after Terrain streaming: "I now notice the sparkals caused by the greedy mesher". Pixel speckles along the edges where a merged quad meets smaller ones (T-junctions: a vertex of one quad sits partway along the other's edge, and rasterizing leaves hairline gaps), predicted in `docs/notes/greedy-meshing.md`; far more visible now the terrain reaches the fog. The usual fixes: split the long edge at the T-junction vertices, or merge only into quads whose edges line up; a test can check that no quad corner lies inside another quad's edge.
 - **AO in the shader.** Added 2026-11-10, from Greedy meshing: AO is the only thing still stopping merges on open terrain; looked up by the shader instead of baked per corner, the bench terrain would go from 0.29M triangles to ~0.15M. Notes: `docs/notes/greedy-meshing.md`.
 - **Render scale.** Split from Benchmark and render scale (2026-11-10, the bench became its own toy): a render scale slider that draws the world at 50–100% of the window and stretches it up, the HUD sharp.
 - **Shadow speed.** Added 2026-11-10, from Sun shadows, after the bench: shadows add ~11 ms a frame on the Iris Xe at the bench's spots (6–7 ms without, release build). *Bench findings (2026-11-10):* it's all GPU time and follows the triangle count, not pixels, cascades or map size; one more pass over ~1M triangles costs 2.5–4.5 ms, so start by measuring fewer triangles (greedy meshing). *After Greedy meshing (2026-11-10):* the shipped frame is now 12.1 / 15.3 / 10.6 ms at recorded / overlook / lake, at 0.29M triangles. Notes: `docs/notes/shadow-speed.md`. The first idea, kept: Store the far shadow (how lit each column's top is, worked out only when the sun steps or a block changes) so a pixel makes one read instead of a walk; make the far shadow run only past the maps' range even when they're off, so each switch shows its own cost; tune cascades and map size on the bench.
@@ -165,9 +166,9 @@ Ideas that come up while playing get added here.
 ### Infrastructure (added when a toy needs it)
 
 - ~~Saving and loading, with block names in the save~~ Done (Saving, 2026-11-07), see Done toys. Creatures aren't saved yet.
-- World generation. *The generator is done (Generated terrain, 2026-11-05); streaming is next, as startup meshing grows with the area.* Staging (generator, then streaming, then saving and LOD) and the creatures-on-terrain checklist. Notes: `docs/notes/world-generation.md`.
+- World generation. *The generator is done (Generated terrain, 2026-11-05); streaming is done (Terrain streaming, 2026-11-11). Next: saving unloaded edits to disk and LOD, as they start to hurt.* Staging and the creatures-on-terrain checklist. Notes: `docs/notes/world-generation.md`.
 - LOD, once world generation exists
-- Meshing off the main thread, once a remesh can take longer than a frame in ordinary play. Deferred from `fix-mesher-cost` (2026-11-08): costs late meshes and edits racing older work; finely cut gadgets are fast enough without it for now. Stored light (2026-11-10) adds remeshes of the few chunks whose light an edit changed; an edit beside a finely cut chunk still takes ~55 ms in the dev build.
+- ~~Meshing off the main thread~~ Done for streamed terrain (Terrain streaming, 2026-11-11): arriving columns are meshed in the background. Edits still remesh on the main thread, at once; an edit beside a finely cut chunk still takes ~55 ms in the dev build.
 
 ### Seam backlog (added when the game is ready for them)
 
@@ -207,6 +208,7 @@ Shortcuts taken around the API, each with the toy that needed it. Paid down in s
 - **Sun shadows** (2026-11-10, from Sun shadows): Bevy's cascaded shadow maps near the camera, depth only, sampled in `solid.wgsl` and gating the sun's direct light and sheen; past them a height-map shadow from a fine (a texel a column) and a coarse map, each with a pyramid of maximums walked toward the sun. The player camera uses a custom projection so shadow maps are sized for the widest FOV. Frame rate not yet acceptable: perf work waits for a bench.
 - **Greedy meshing** (2026-11-10, from Greedy meshing): chunk meshes merge alike faces after meshing (`client::greedy`); a merged quad's look and edge pattern repeat every boxel in the shader, so per-quad data that can't repeat per boxel must stop merges where it differs.
 - **Bench** (2026-11-10, from Bench): frame rate is compared with `tools/bench.sh`, never from memory or across days: release builds, a 1080×1080 window, the user's terrain (seed 120) at fixed flying spots, one launch per settings set, results in `~/.local/share/boxel/bench/results.txt` with a screenshot of each spot. Every toy's Verify runs `--quick master work`. Differences under about 10% at the `recorded` spot (5% at the others) are noise; a row whose GPU clocks differ is marked, as the Iris Xe is held back when the CPU is busy. The client's `bench` module stays within what `f9fbc16` had, so `tools/bench/backport.sh` can copy it into old commits; only `bench/switches.rs` may use newer code. New on/off settings worth measuring get a line there.
+- **Terrain streaming** (2026-11-11, from Terrain streaming): generated terrain is endless and loaded by the server in whole columns around each player out to that player's render distance (plus 32 m, dropped 32 m past it); the client asks for its distance and is told what loads and unloads. Columns are generated and lit apart on workers and joined at their seams, which must equal lighting everything together. Edited chunks of dropped columns stay in memory and are saved; nothing simulates over ground still loading. No terrain is made within 1 km of chunks the mods built. New world state that lives in terrain columns must say what happens when its column unloads.
 - **Signature feature:** not decided yet. Choose it once the block interaction and crafting toys have been played, and record the choice and why in the design doc.
 
 ### Fixes
@@ -225,6 +227,7 @@ Bugs found in already-merged code, each fixed on its own `fix-` branch (see the 
 ### Done toys
 
 Full write-ups (plans, implementation notes, verify rounds, decisions) are in `docs/done-toys.md`. One line each, newest first:
+- **Terrain streaming** (2026-11-11, `toy-terrain-streaming`, infrastructure). The generated terrain is endless, loaded in columns around the player out to the render distance and dropped past it, generated, lit and meshed in the background; edits wait in memory when their column unloads and are saved; startup is quick and flying keeps up. No terrain within 1 km of the mods' built area. The full 512 m view costs 19–32 ms a frame.
 - **Day and night** (2026-11-11, `toy-day-and-night`). A time of day owned by the sim and saved, with Eanpa Sky's palette: dawn, day, dusk and a near-black night with stars and a glowing moon, the light on blocks taking the sky's colors. Moonlight casts no shadows, so nights draw none (half the frame time). ACES tone mapping, dithering, and the Shading sliders in groups.
 - **Greedy meshing** (2026-11-10, `toy-greedy-meshing`). Neighboring terrain faces that look alike are drawn as one bigger quad, the shader repeating looks and edge lines every boxel: 70% fewer triangles, frames 22–36% faster at the bench's spots. A merge faces checkbox in the View section.
 - **Bench** (2026-11-10, `toy-bench`). One command measures any commit's frame rate unattended, at the same spots on the same terrain, under named sets of settings, and compares builds; old commits get the bench copied in. Every toy now runs it at Verify. Its first study found the shadows' cost follows the triangle count. Also MSAA and depth prepass switches, and F9 lines that say the window size and settings.

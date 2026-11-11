@@ -2,6 +2,7 @@
 //! Single-player runs one in the same process (see [`LocalConnection`]), so there is one code
 //! path whether or not the server is far away.
 
+use std::collections::HashSet;
 use std::sync::mpsc::{Receiver, Sender, channel};
 use std::thread::JoinHandle;
 
@@ -32,12 +33,25 @@ pub struct Server {
     loaded: bool,
     /// The world as the game built it, before any save: what a fresh world starts from.
     fresh: Option<SaveData>,
+    /// Every chunk the client has, so it hears of changes only to those, and of every chunk
+    /// streaming brings in or drops.
+    has: HashSet<api::ChunkPos>,
 }
 
 impl Server {
     /// A server running `sim`, which must already have its mods loaded and its player spawned.
     pub fn new(sim: Simulation) -> Self {
-        Self { sim, blocks_sent: 0, blueprints_sent: 0, sound_source: None, generation_error: None, world: None, loaded: false, fresh: None }
+        Self {
+            sim,
+            blocks_sent: 0,
+            blueprints_sent: 0,
+            sound_source: None,
+            generation_error: None,
+            world: None,
+            loaded: false,
+            fresh: None,
+            has: HashSet::new(),
+        }
     }
 
     /// Saves and loads the world at `file`. `loaded` says `sim` was loaded from it already.
@@ -61,11 +75,14 @@ impl Server {
 
     /// Everything a client needs to start.
     pub fn welcome(&mut self) -> Welcome {
-        // Changes so far are in the chunks sent now.
+        // Changes, loads and drops so far are in the chunks sent now.
         self.sim.take_changed_chunks();
+        self.sim.take_loaded_chunks();
+        self.sim.take_unloaded_chunks();
         self.blocks_sent = self.sim.blocks().len();
         self.blueprints_sent = self.sim.blueprints_revision();
         let grid = self.sim.universe().main();
+        self.has = grid.chunks().map(|(pos, _)| pos).collect();
         let chunks = grid.chunks().map(|(pos, _)| grid.export_chunk(pos)).collect();
         let snapshot = self.snapshot(Vec::new());
         Welcome {
@@ -117,9 +134,7 @@ impl Server {
             self.blueprints_sent = self.sim.blueprints_revision();
             out.push(ServerMsg::Blueprints(Box::new(self.sim.blueprints().clone())));
         }
-        let changed = self.sim.take_changed_chunks();
-        let grid = self.sim.universe().main();
-        out.extend(changed.into_iter().map(|pos| ServerMsg::Chunk(grid.export_chunk(pos))));
+        out.extend(self.chunk_news());
         let mut events: Vec<Event> = Vec::new();
         events.extend(self.sim.take_strikes().into_iter().map(Event::Strike));
         events.extend(self.sim.take_slams().into_iter().map(Event::Slam));
@@ -140,6 +155,43 @@ impl Server {
         out
     }
 
+    /// What changed in the chunks since last time, for the client: chunks dropped, then chunks
+    /// brought in, then changed chunks the client has, or that are new to the world.
+    fn chunk_news(&mut self) -> Vec<ServerMsg> {
+        let unloaded = self.sim.take_unloaded_chunks();
+        let loaded = self.sim.take_loaded_chunks();
+        let changed = self.sim.take_changed_chunks();
+        let grid = self.sim.universe().main();
+        let mut out = Vec::new();
+        let gone: Vec<api::ChunkPos> = unloaded.into_iter().filter(|pos| grid.chunk(*pos).is_none() && self.has.remove(pos)).collect();
+        if !gone.is_empty() {
+            out.push(ServerMsg::ChunksUnloaded(gone));
+        }
+        let mut fresh = HashSet::new();
+        let arrived: Vec<sim::ChunkData> = loaded
+            .into_iter()
+            .filter(|pos| grid.chunk(*pos).is_some() && fresh.insert(*pos))
+            .map(|pos| grid.export_chunk(pos))
+            .collect();
+        if !arrived.is_empty() {
+            self.has.extend(fresh.iter().copied());
+            out.push(ServerMsg::ChunksLoaded(arrived));
+        }
+        for pos in changed {
+            if fresh.contains(&pos) {
+                continue;
+            }
+            let there = grid.chunk(pos).is_some();
+            if there || self.has.contains(&pos) {
+                if there {
+                    self.has.insert(pos);
+                }
+                out.push(ServerMsg::Chunk(grid.export_chunk(pos)));
+            }
+        }
+        out
+    }
+
     fn snapshot(&self, events: Vec<Event>) -> Snapshot {
         let sim = &self.sim;
         Snapshot {
@@ -152,6 +204,7 @@ impl Server {
             inventory: sim.inventory().clone(),
             swing: sim.swing().copied(),
             guarding: sim.guarding(),
+            terrain: sim.stream_stats(),
             events,
         }
     }
@@ -251,6 +304,7 @@ impl Server {
             Command::PauseTime(paused) => sim.clock_mut().paused = paused,
             Command::TeleportPlayer(pos) => sim.teleport_player(pos),
             Command::RespawnTargets => sim.respawn_targets(),
+            Command::ViewDistance(meters) => sim.set_view_distance(meters),
             Command::RegenerateTerrain => {
                 self.generation_error = sim.generate_terrain().err().map(|e| e.to_string());
                 if let Some(e) = &self.generation_error {
@@ -283,10 +337,7 @@ impl Server {
             tuning,
             brains_on: sim.brains_on(),
             unkillable: sim.unkillable(),
-            generation: match &self.generation_error {
-                Some(e) => Some(Err(e.clone())),
-                None => sim.generation().map(Ok),
-            },
+            terrain_error: self.generation_error.clone().or_else(|| sim.terrain_error().map(|e| e.to_string())),
         }
     }
 
@@ -341,8 +392,7 @@ fn sections(sim: &mut Simulation) -> Vec<TuningSection> {
     add("time".into(), sim.clock().tunables());
     let names: Vec<String> = sim.generator_names().map(String::from).collect();
     for (i, name) in names.into_iter().enumerate() {
-        let values = sim.generator_mut(i).map_or_else(Vec::new, |g| g.tunables());
-        add(format!("terrain {name}"), values);
+        add(format!("terrain {name}"), sim.generator_tunables(i));
     }
     out
 }
@@ -375,7 +425,7 @@ fn tune(sim: &mut Simulation, section: &str, name: &str, value: f32) -> bool {
                 set(index.and_then(|i| sim.brain_mut(i)).map(|b| b as &mut dyn Tunables), name, value)
             } else if let Some(generator) = section.strip_prefix("terrain ") {
                 let index = sim.generator_names().position(|n| n == generator);
-                set(index.and_then(|i| sim.generator_mut(i)).map(|g| g as &mut dyn Tunables), name, value)
+                index.is_some_and(|i| sim.tune_generator(i, name, value))
             } else {
                 false
             }

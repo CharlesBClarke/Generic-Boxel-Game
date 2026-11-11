@@ -1,17 +1,18 @@
 //! Messages between the client and the server. The client sends its input every tick and
-//! commands now and then; the server sends the world once, then what changes: chunks, blocks
-//! crafting added, definitions tuning changed, and a snapshot of every tick with its events.
+//! commands now and then; the server sends the world as it stands once, then what changes:
+//! chunks of terrain loaded and dropped around the player, chunks changed, blocks crafting
+//! added, definitions tuning changed, and a snapshot of every tick with its events.
 //!
 //! Every message is owned plain data with no references into the simulation, so the server can
 //! run anywhere: on the client's thread, on another thread, and later on another machine.
 
 use api::{
-    CraftingDef, CrowdDef, HealthDef, InteractionDef, InventoryDef, ItemDropDef, ModelDef, PlayerDef, PushOutDef,
+    ChunkPos, CraftingDef, CrowdDef, HealthDef, InteractionDef, InventoryDef, ItemDropDef, ModelDef, PlayerDef, PushOutDef,
     SoundDef, TargetDef, ToolDef, Tunable, WorldPos,
 };
 use sim::{
-    Blast, BlockEdit, Clock, BlueprintId, BlueprintRefusal, Body, BlockRegistry, ChunkData, Library, CraftRefusal, GenerationStats, Inventory, Item, LookRegistry, MaterialId, PlayerHurt,
-    PlayerInput, Slam, Strike, Swing, Target,
+    Blast, BlockEdit, Clock, BlueprintId, BlueprintRefusal, Body, BlockRegistry, ChunkData, Library, CraftRefusal, Inventory, Item, LookRegistry, MaterialId, PlayerHurt,
+    PlayerInput, Slam, Strike, Swing, StreamStats, Target,
 };
 
 /// Ticks per second.
@@ -46,8 +47,11 @@ pub enum Command {
     /// Puts every creature back at its spot, whole.
     RespawnTargets,
     /// Generates the terrain again with the current tuning (the `world` section and each
-    /// generator's). The new chunks come with the next tick.
+    /// generator's). The old chunks are dropped and the new ones come with the next ticks.
     RegenerateTerrain,
+    /// How far the client draws, in meters, so the server keeps that much terrain loaded around
+    /// the player.
+    ViewDistance(f32),
     /// Reads the sounds again, for trying sound files without a restart. The server answers
     /// with [`ServerMsg::Sounds`].
     ReloadSounds,
@@ -74,6 +78,12 @@ pub enum ServerMsg {
     Tick(Box<Snapshot>),
     /// A chunk changed, or a neighbor's border did. Comes before the tick it changed in.
     Chunk(ChunkData),
+    /// Chunks of terrain brought in around the player, new to the client. Comes before the
+    /// tick they came in.
+    ChunksLoaded(Vec<ChunkData>),
+    /// Chunks of terrain dropped far from the player, for the client to forget. Comes before
+    /// the tick they went.
+    ChunksUnloaded(Vec<ChunkPos>),
     /// Blocks were added, by crafting a new shape. Comes before the tick they were added in.
     Blocks(Box<BlockRegistry>),
     /// The player's blueprints changed, by an edit or a load. Comes before the tick they
@@ -147,8 +157,8 @@ pub struct Defs {
     pub tuning: Vec<TuningSection>,
     pub brains_on: bool,
     pub unkillable: bool,
-    /// How the last terrain generation went, or why it failed.
-    pub generation: Option<Result<GenerationStats, String>>,
+    /// Why generating the terrain last failed, if it did.
+    pub terrain_error: Option<String>,
 }
 
 /// One tuning section: the movement controller, a definition, a tool, a target or a brain.
@@ -174,6 +184,8 @@ pub struct Snapshot {
     pub inventory: Inventory,
     pub swing: Option<Swing>,
     pub guarding: bool,
+    /// How streaming the terrain is going.
+    pub terrain: StreamStats,
     /// What happened during the tick, in order.
     pub events: Vec<Event>,
 }

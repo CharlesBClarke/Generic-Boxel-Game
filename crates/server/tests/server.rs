@@ -45,6 +45,16 @@ impl Copy {
                 self.blocks = w.blocks.len();
             }
             ServerMsg::Chunk(chunk) => self.universe.main_mut().import_chunk(chunk),
+            ServerMsg::ChunksLoaded(chunks) => {
+                for chunk in chunks {
+                    self.universe.main_mut().import_chunk(chunk);
+                }
+            }
+            ServerMsg::ChunksUnloaded(gone) => {
+                for pos in gone {
+                    self.universe.main_mut().remove_chunk(*pos);
+                }
+            }
             ServerMsg::Blocks(blocks) => self.blocks = blocks.len(),
             ServerMsg::Tick(_)
             | ServerMsg::Blueprints(_)
@@ -168,13 +178,66 @@ fn blueprint_edits_send_the_library_before_the_tick_and_refusals_in_its_events()
     assert!(snapshot(&msgs).events.contains(&Event::Blueprint(Err(BlueprintRefusal::NoChanges))));
 }
 
-/// The base game with a small terrain generated, so saving and loading stay quick.
+/// The base game keeping little terrain loaded, generated, so saving and loading stay quick.
 fn small_world() -> Simulation {
     let mut sim = base_sim();
-    sim.world_settings_mut().terrain_width = 2;
+    sim.set_view_distance(32.0);
     sim.world_settings_mut().terrain_height = 16;
     sim.generate_terrain().unwrap();
     sim
+}
+
+#[test]
+fn the_copy_follows_terrain_streaming_in_and_out_as_the_player_moves() {
+    let mut sim = base_sim();
+    sim.set_view_distance(32.0);
+    sim.world_settings_mut().terrain_height = 8;
+    let over = |x: i64| WorldPos::at_boxel(base::TERRAIN_CENTER.offset(I64Vec3::new(x, 5, 150)));
+    sim.teleport_player(over(0));
+    sim.generate_terrain().unwrap();
+    let mut server = Server::new(sim);
+    let mut copy = Copy { universe: Universe::default(), blocks: 0 };
+    copy.apply(&ServerMsg::Welcome(Box::new(server.welcome())));
+    let fly = PlayerInput { toggle_fly: true, ..Default::default() };
+    let mut news = (0, 0);
+    let mut step = |server: &mut Server, copy: &mut Copy, what: PlayerInput| {
+        for m in server.handle(input(what)) {
+            match &m {
+                ServerMsg::ChunksLoaded(c) => news.0 += c.len(),
+                ServerMsg::ChunksUnloaded(c) => news.1 += c.len(),
+                _ => {}
+            }
+            copy.apply(&m);
+        }
+    };
+    step(&mut server, &mut copy, fly);
+    // Hops east across many chunk borders, a few ticks apart, then waits for the terrain.
+    for hop in 1..=8 {
+        server.handle(ClientMsg::Command(Command::TeleportPlayer(over(hop * 37))));
+        for _ in 0..3 {
+            step(&mut server, &mut copy, PlayerInput::default());
+        }
+    }
+    for _ in 0..4000 {
+        step(&mut server, &mut copy, PlayerInput::default());
+        if server.simulation().stream_stats().waiting == 0 {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(1));
+    }
+    assert_eq!(server.simulation().stream_stats().waiting, 0, "the terrain caught up");
+    assert!(news.0 > 0 && news.1 > 0, "chunks came and went: {news:?}");
+    let (ours, theirs) = (copy.universe.main(), server.simulation().universe().main());
+    let chunks = |g: &Grid| {
+        let mut v: Vec<_> = g.chunks().map(|(p, _)| p.0.to_array()).collect();
+        v.sort();
+        v
+    };
+    assert_eq!(chunks(ours), chunks(theirs), "the copy holds what the server holds");
+    assert!(same_world(ours, theirs));
+    for (pos, chunk) in theirs.chunks() {
+        assert_eq!(ours.chunk(pos).unwrap().light, chunk.light, "light in {pos:?}");
+    }
 }
 
 /// Whether two games' worlds hold the same blocks everywhere, by name: separate games may
@@ -279,7 +342,7 @@ fn worlds_are_saved_as_opened_and_started_fresh() {
     let _ = std::fs::remove_dir_all(&dir);
     let file = WorldFile::in_folder(&dir, "first").unwrap();
     let mut sim = base_sim();
-    sim.world_settings_mut().terrain_width = 2;
+    sim.set_view_distance(32.0);
     sim.world_settings_mut().terrain_height = 16;
     let fresh = sim.save();
     sim.generate_terrain().unwrap();

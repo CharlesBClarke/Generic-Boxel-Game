@@ -46,6 +46,9 @@ pub struct Heights {
     pending: HashSet<(i64, i64)>,
     /// Whether every chunk has been read once.
     started: bool,
+    /// Columns changed since the texture was last built, and when it was.
+    stale: bool,
+    built_at: Option<std::time::Instant>,
     /// Where the maps are, once built.
     pub placed: Option<Maps>,
     /// The texture, replaced by a new one each time it changes so materials pick it up.
@@ -182,7 +185,14 @@ impl Heights {
         }
         let mut any = false;
         for column in std::mem::take(&mut self.pending) {
-            let tops = column_tops(grid, blocks, column, self.stacks.get(&column).map_or(&[], Vec::as_slice));
+            let stack = self.stacks.get(&column).map_or(&[][..], Vec::as_slice);
+            if stack.iter().all(|&z| grid.chunk(ChunkPos(I64Vec3::new(column.0, column.1, z))).is_none()) {
+                // Dropped by streaming, or never there.
+                self.stacks.remove(&column);
+                any |= self.tops.remove(&column).is_some();
+                continue;
+            }
+            let tops = column_tops(grid, blocks, column, stack);
             if self.tops.get(&column) != Some(&tops) {
                 self.tops.insert(column, tops);
                 any = true;
@@ -256,6 +266,9 @@ pub fn height_image(texels: &[f32], width: usize, height: usize) -> Image {
     image
 }
 
+/// The least time between building the texture again for changed columns, in seconds.
+const REBUILD_SECONDS: f32 = 0.25;
+
 /// Works out changed columns and rebuilds the texture when they or the camera's place call for it.
 pub(crate) fn update_heights(
     world: Res<ClientWorld>,
@@ -267,11 +280,17 @@ pub(crate) fn update_heights(
 ) {
     let grid = world.universe().main();
     let changed = heights.refresh(grid, world.blocks());
+    heights.stale |= changed;
     let eye = origin.cell + crate::coords::from_render(camera.translation).floor().as_i64vec3();
     let moved = !heights.placed.is_some_and(|p| p.covers(eye, view.render_distance));
-    if !(changed || moved) {
+    // While terrain streams in, columns change nearly every frame: the texture is built again
+    // at most a few times a second for that.
+    let due = heights.built_at.is_none_or(|t| t.elapsed().as_secs_f32() >= REBUILD_SECONDS);
+    if !(moved || heights.stale && due) {
         return;
     }
+    heights.stale = false;
+    heights.built_at = Some(std::time::Instant::now());
     let placed = match heights.placed {
         Some(p) if !moved => p,
         _ => Maps::around(eye, view.render_distance, eye.z),

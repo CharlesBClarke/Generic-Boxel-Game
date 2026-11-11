@@ -15,7 +15,7 @@ fn base_sim() -> Simulation {
 /// The base game with a small terrain, generated.
 fn small_world() -> Simulation {
     let mut sim = base_sim();
-    sim.world_settings_mut().terrain_width = 2;
+    sim.set_view_distance(32.0);
     sim.generate_terrain().unwrap();
     sim
 }
@@ -108,11 +108,21 @@ fn light_comes_back_the_same_after_a_reload() {
 #[ignore]
 fn lighting_cost() {
     let mut sim = base_sim();
-    let stats = sim.generate_terrain().unwrap();
+    let at = WorldPos::at_boxel(base::TERRAIN_CENTER.offset(api::I64Vec3::new(0, 0, 100)));
+    sim.teleport_player(at);
+    let start = std::time::Instant::now();
+    sim.generate_terrain().unwrap();
+    sim.stream_all();
+    let stats = sim.stream_stats();
     println!(
-        "terrain: {} chunks in {:.2} s, lit in {:.2} s",
-        stats.chunks, stats.seconds, stats.light_seconds
+        "terrain: {} columns in {:.2} s, {:.2} s on the workers (lit there), seams {:.2} s",
+        stats.columns,
+        start.elapsed().as_secs_f32(),
+        stats.seconds,
+        stats.join_seconds
     );
+    sim.teleport_player(sim.spawn());
+    sim.stream_all();
     stand(&mut sim, 1, 2);
     sim.take_changed_chunks();
     open_shutter(&mut sim);

@@ -457,6 +457,152 @@ fn occupants_at<'a>(grid: &'a Grid, chunk: &'a Chunk, pos: ChunkPos, local: I64V
     }
 }
 
+/// What one kind of cell adds to a neighborhood: the boxes its shown occupants fill, in texels
+/// of its boxel, and how many boxes their shapes have.
+type CellAdds = std::rc::Rc<(Vec<TexelBox>, usize)>;
+
+/// What each kind of cell around a chunk adds to a neighborhood (see [`neighborhood`]), worked
+/// out once per cell ID while meshing the chunk: terrain has few kinds, and working each
+/// boxel's 27 neighbors out from their blocks was most of meshing it.
+struct CellBoxes<'a> {
+    grid: &'a Grid,
+    blocks: &'a BlockRegistry,
+    /// The chunk and the 26 around it, `x + 3y + 9z` from the lowest corner.
+    chunks: [Option<&'a Chunk>; 27],
+    /// By cell ID: the boxes its shown occupants fill, in texels of its boxel, and how many
+    /// boxes their shapes have (what [`gather`] counts against `dense_at`).
+    known: std::cell::RefCell<Vec<Option<CellAdds>>>,
+}
+
+impl<'a> CellBoxes<'a> {
+    fn new(grid: &'a Grid, pos: ChunkPos, blocks: &'a BlockRegistry) -> Self {
+        let chunks = std::array::from_fn(|i| {
+            let i = i as i64;
+            grid.chunk(ChunkPos(pos.0 + I64Vec3::new(i % 3 - 1, i / 3 % 3 - 1, i / 9 - 1)))
+        });
+        Self { grid, blocks, chunks, known: std::cell::RefCell::new(Vec::new()) }
+    }
+
+    /// The cell ID at `local`, relative to the chunk, from -1 to 32 on each axis.
+    fn id(&self, local: I64Vec3) -> CellId {
+        let n = CHUNK_SIZE;
+        let split = |v: i64| if v < 0 { (0, v + n) } else if v >= n { (2, v - n) } else { (1, v) };
+        let ((cx, lx), (cy, ly), (cz, lz)) = (split(local.x), split(local.y), split(local.z));
+        self.chunks[(cx + 3 * cy + 9 * cz) as usize].map_or(CellId::EMPTY, |c| c.cells.get(LocalPos::new(lx as u8, ly as u8, lz as u8)))
+    }
+
+    fn of(&self, id: CellId, shapes: &TurnedShapes) -> CellAdds {
+        let i = id.index();
+        if let Some(Some(known)) = self.known.borrow().get(i) {
+            return known.clone();
+        }
+        let blocks = self.blocks;
+        let shown: Vec<Occupant> =
+            self.grid.occupants(id).iter().copied().filter(|o| !blocks.is_hidden(o.block) && blocks.get(o.block).is_some()).collect();
+        let count = shown.iter().map(|o| blocks.get(o.block).map_or(0, |def| def.shape.len())).sum();
+        let boxes = if let [one] = shown[..] {
+            let def = blocks.get(one.block).expect("shown blocks are registered");
+            def.shape.iter().map(|&b| one.orientation.apply_box(b)).map(|b| (b.min.map(i32::from), b.max.map(i32::from))).collect()
+        } else if !shown.is_empty() {
+            let all = shown.iter().fold(ShapeGrid::EMPTY, |all, &o| all.union(&shapes.of(o, blocks)));
+            all.to_boxes().into_iter().map(|b| (b.min.map(i32::from), b.max.map(i32::from))).collect()
+        } else {
+            Vec::new()
+        };
+        let known = std::rc::Rc::new((boxes, count));
+        let mut cache = self.known.borrow_mut();
+        if cache.len() <= i {
+            cache.resize(i + 1, None);
+        }
+        cache[i] = Some(known.clone());
+        known
+    }
+
+    /// What [`gather`] gives for the boxel at `at`, built from what each cell around adds.
+    fn gather(&self, at: I64Vec3, near: impl Fn(I64Vec3) -> &'a [Occupant], dense_at: usize, shapes: &TurnedShapes) -> Neighborhood {
+        let size = BlockBox::SIZE as i32;
+        let around: [CellAdds; 27] = std::array::from_fn(|i| {
+            let i = i as i64;
+            self.of(self.id(at + I64Vec3::new(i % 3 - 1, i / 3 % 3 - 1, i / 9 - 1)), shapes)
+        });
+        if around.iter().map(|c| c.1).sum::<usize>() > dense_at {
+            return gather(at, near, self.blocks, dense_at, shapes);
+        }
+        let mut boxes = Vec::new();
+        for (i, cell) in around.iter().enumerate() {
+            let i = i as i32;
+            let d = [i % 3 - 1, i / 3 % 3 - 1, i / 9 - 1];
+            boxes.extend(cell.0.iter().map(|(min, max)| {
+                ([0, 1, 2].map(|k| min[k] + d[k] * size), [0, 1, 2].map(|k| max[k] + d[k] * size))
+            }));
+        }
+        Neighborhood { boxes, dense: None }
+    }
+}
+
+/// Which boxels of a chunk and the layer around it hold a full block that's shown, worked out
+/// once per chunk: asking the grid boxel by boxel was most of meshing terrain.
+struct FullBoxels(Vec<bool>);
+
+impl FullBoxels {
+    const SIDE: i64 = CHUNK_SIZE + 2;
+
+    fn around(grid: &Grid, pos: ChunkPos, blocks: &BlockRegistry) -> Self {
+        let chunks: Vec<Option<&Chunk>> = (0..27)
+            .map(|i| grid.chunk(ChunkPos(pos.0 + I64Vec3::new(i % 3 - 1, i / 3 % 3 - 1, i / 9 - 1))))
+            .collect();
+        let mut known: std::collections::HashMap<CellId, bool> = std::collections::HashMap::new();
+        let mut last: Option<(CellId, bool)> = None;
+        let mut out = vec![false; (Self::SIDE * Self::SIDE * Self::SIDE) as usize];
+        let n = CHUNK_SIZE;
+        // Which chunk along one axis (0, 1 or 2) and where in it, for a position from -1 to n.
+        let split = |v: i64| if v < 0 { (0, n - 1) } else if v >= n { (2, 0) } else { (1, v) };
+        for z in -1..=n {
+            let (cz, lz) = split(z);
+            for y in -1..=n {
+                let (cy, ly) = split(y);
+                for x in -1..=n {
+                    let (cx, lx) = split(x);
+                    let Some(chunk) = chunks[(cx + 3 * cy + 9 * cz) as usize] else { continue };
+                    let id = chunk.cells.get(LocalPos::new(lx as u8, ly as u8, lz as u8));
+                    if id.is_empty() {
+                        continue;
+                    }
+                    // Runs of one cell are the rule, so the last answer is kept at hand.
+                    let full = match last {
+                        Some((seen, full)) if seen == id => full,
+                        _ => {
+                            let full = *known.entry(id).or_insert_with(|| {
+                                grid.occupants(id).iter().any(|o| !blocks.is_hidden(o.block) && blocks.get(o.block).is_some_and(|d| d.is_full()))
+                            });
+                            last = Some((id, full));
+                            full
+                        }
+                    };
+                    out[Self::index(I64Vec3::new(x, y, z))] = full;
+                }
+            }
+        }
+        Self(out)
+    }
+
+    fn index(local: I64Vec3) -> usize {
+        ((local.x + 1) + Self::SIDE * ((local.y + 1) + Self::SIDE * (local.z + 1))) as usize
+    }
+
+    /// Whether the boxel at `local` (relative to the chunk, -1 to 32 on each axis) holds a full
+    /// block that's shown; `None` past the layer around the chunk.
+    fn at(&self, local: I64Vec3) -> Option<bool> {
+        let inside = local.cmpge(I64Vec3::splat(-1)).all() && local.cmple(I64Vec3::splat(CHUNK_SIZE)).all();
+        inside.then(|| self.0[Self::index(local)])
+    }
+
+    /// Whether every boxel beside the one at `local` (inside the chunk) holds a full block.
+    fn walled_in(&self, local: I64Vec3) -> bool {
+        [I64Vec3::X, I64Vec3::NEG_X, I64Vec3::Y, I64Vec3::NEG_Y, I64Vec3::Z, I64Vec3::NEG_Z].iter().all(|&d| self.0[Self::index(local + d)])
+    }
+}
+
 /// Whether the chunk at `pos` and its six neighbors are each one full block all through, so
 /// none of its faces can show. Most of a generated terrain's underground is.
 fn buried(grid: &Grid, pos: ChunkPos, blocks: &BlockRegistry) -> bool {
@@ -472,12 +618,29 @@ fn buried(grid: &Grid, pos: ChunkPos, blocks: &BlockRegistry) -> bool {
 
 /// Meshes every chunk in `positions`, spread over every core. Comes back in the same order.
 pub fn mesh_chunks(grid: &Grid, positions: &[ChunkPos], blocks: &BlockRegistry, volumes: &Volumes, ao: &AoTuning, merge: bool) -> Vec<MeshData> {
-    mesh_chunks_with(grid, positions, blocks, volumes, ao, DENSE_AT, merge)
+    let threads = std::thread::available_parallelism().map_or(1, |n| n.get());
+    mesh_chunks_with(grid, positions, blocks, volumes, ao, DENSE_AT, merge, threads)
+}
+
+/// [`mesh_chunks`] on at most `threads` threads.
+#[allow(clippy::too_many_arguments)]
+pub fn mesh_chunks_on(grid: &Grid, positions: &[ChunkPos], blocks: &BlockRegistry, volumes: &Volumes, ao: &AoTuning, merge: bool, threads: usize) -> Vec<MeshData> {
+    mesh_chunks_with(grid, positions, blocks, volumes, ao, DENSE_AT, merge, threads.max(1))
 }
 
 /// [`mesh_chunks`], reading neighborhoods of more than `dense_at` boxes through their texels.
 /// Merges faces (see [`crate::greedy`]) if `merge`.
-fn mesh_chunks_with(grid: &Grid, positions: &[ChunkPos], blocks: &BlockRegistry, volumes: &Volumes, ao: &AoTuning, dense_at: usize, merge: bool) -> Vec<MeshData> {
+#[allow(clippy::too_many_arguments)]
+fn mesh_chunks_with(
+    grid: &Grid,
+    positions: &[ChunkPos],
+    blocks: &BlockRegistry,
+    volumes: &Volumes,
+    ao: &AoTuning,
+    dense_at: usize,
+    merge: bool,
+    threads: usize,
+) -> Vec<MeshData> {
     let one = |p: ChunkPos| {
         let mesh = mesh_chunk_with(grid, p, blocks, volumes, ao, dense_at);
         if merge { crate::greedy::merge(&mesh) } else { mesh }
@@ -485,7 +648,6 @@ fn mesh_chunks_with(grid: &Grid, positions: &[ChunkPos], blocks: &BlockRegistry,
     if positions.len() < 2 {
         return positions.iter().map(|&p| one(p)).collect();
     }
-    let threads = std::thread::available_parallelism().map_or(1, |n| n.get());
     // Small parts, handed out as threads free up, since chunks differ a lot in cost; one chunk
     // each for a few, as after an edit, so they mesh side by side.
     let parts: Vec<&[ChunkPos]> = positions.chunks((positions.len() / threads).clamp(1, 16)).collect();
@@ -530,8 +692,12 @@ fn mesh_chunk_with(grid: &Grid, pos: ChunkPos, blocks: &BlockRegistry, volumes: 
 
     let near = |local: I64Vec3| occupants_at(grid, chunk, pos, local);
     let shapes = TurnedShapes::default();
+    let solid = FullBoxels::around(grid, pos, blocks);
+    let cells = CellBoxes::new(grid, pos, blocks);
     let full = |local: I64Vec3| {
-        near(local).iter().any(|o| !blocks.is_hidden(o.block) && blocks.get(o.block).is_some_and(|def| def.is_full()))
+        solid.at(local).unwrap_or_else(|| {
+            near(local).iter().any(|o| !blocks.is_hidden(o.block) && blocks.get(o.block).is_some_and(|def| def.is_full()))
+        })
     };
 
     for index in 0..CHUNK_VOLUME {
@@ -541,10 +707,14 @@ fn mesh_chunk_with(grid: &Grid, pos: ChunkPos, blocks: &BlockRegistry, volumes: 
             continue;
         }
         let at = local.to_ivec();
+        if solid.walled_in(at) {
+            // Full blocks on all six sides: nothing of it can show.
+            continue;
+        }
         let mut drawn = DrawnFaces::default();
         // Only gathered once a face of this boxel is drawn; most boxels are buried.
         let boxes = OnceCell::new();
-        let around = || boxes.get_or_init(|| gather(at, near, blocks, dense_at, &shapes));
+        let around = || boxes.get_or_init(|| cells.gather(at, near, dense_at, &shapes));
         for &occupant in grid.occupants(id).iter().filter(|o| !blocks.is_hidden(o.block)) {
             let hidden = |n: [i32; 3]| full(at + I64Vec3::new(n[0] as i64, n[1] as i64, n[2] as i64));
             mesh_occupant(&mut mesh, occupant, at.as_vec3().to_array(), blocks, volumes, hidden, &around, ao, &mut drawn);
@@ -558,8 +728,20 @@ fn mesh_chunk_with(grid: &Grid, pos: ChunkPos, blocks: &BlockRegistry, volumes: 
             grid.light(pos.origin().offset(local))
         }
     };
-    let covered = std::cell::RefCell::new(std::collections::HashMap::new());
-    let faces = |local: I64Vec3| *covered.borrow_mut().entry(local).or_insert_with(|| sim::light::covered_faces_of(near(local), blocks));
+    // Each boxel's covered faces, from the chunk and the layer around it, worked out as asked.
+    const UNKNOWN: u8 = u8::MAX;
+    let covered: Vec<std::cell::Cell<u8>> = vec![std::cell::Cell::new(UNKNOWN); (FullBoxels::SIDE.pow(3)) as usize];
+    let faces = |local: I64Vec3| {
+        let inside = local.cmpge(I64Vec3::splat(-1)).all() && local.cmple(I64Vec3::splat(CHUNK_SIZE)).all();
+        if !inside {
+            return sim::light::covered_faces_of(near(local), blocks);
+        }
+        let cell = &covered[FullBoxels::index(local)];
+        if cell.get() == UNKNOWN {
+            cell.set(sim::light::covered_faces_of(near(local), blocks));
+        }
+        cell.get()
+    };
     bake_light(&mut mesh, light, faces);
     mesh
 }
@@ -595,22 +777,30 @@ fn bake_light(mesh: &mut MeshData, light: impl Fn(I64Vec3) -> sim::Light, faces:
         for i in first..first + 4 {
             let texel = mesh.positions[i].map(|c| (c * size as f32).round() as i64);
             // On each axis, the boxels in front of the corner: across the normal, the one in
-            // front; along the face, both sides of a boxel edge, or the one it's inside.
-            let options: [Vec<i64>; 3] = std::array::from_fn(|k| {
+            // front; along the face, both sides of a boxel edge, or the one it's inside. As
+            // the options and how many there are.
+            let options: [([i64; 2], usize); 3] = std::array::from_fn(|k| {
                 if normal[k] != 0 {
-                    vec![front[k]]
+                    ([front[k], 0], 1)
                 } else if texel[k].rem_euclid(size) == 0 {
-                    vec![texel[k] / size - 1, texel[k] / size]
+                    ([texel[k] / size - 1, texel[k] / size], 2)
                 } else {
-                    vec![texel[k].div_euclid(size)]
+                    ([texel[k].div_euclid(size), 0], 1)
                 }
             });
             let reachable = |at: I64Vec3| {
-                let off: Vec<usize> = (0..3).filter(|&k| at[k] != front[k]).collect();
-                match off[..] {
-                    [] => true,
-                    [_] => passes(at, front),
-                    [a, b] => [a, b].iter().any(|&k| {
+                let mut off = [0usize; 3];
+                let mut n = 0;
+                for k in 0..3 {
+                    if at[k] != front[k] {
+                        off[n] = k;
+                        n += 1;
+                    }
+                }
+                match n {
+                    0 => true,
+                    1 => passes(at, front),
+                    2 => off[..2].iter().any(|&k| {
                         let mut beside = front;
                         beside[k] = at[k];
                         passes(at, beside) && passes(beside, front)
@@ -619,9 +809,9 @@ fn bake_light(mesh: &mut MeshData, light: impl Fn(I64Vec3) -> sim::Light, faces:
                 }
             };
             let (mut sum, mut count) = ([0u32; 4], 0);
-            for &x in &options[0] {
-                for &y in &options[1] {
-                    for &z in &options[2] {
+            for &x in &options[0].0[..options[0].1] {
+                for &y in &options[1].0[..options[1].1] {
+                    for &z in &options[2].0[..options[2].1] {
                         let at = I64Vec3::new(x, y, z);
                         if faces(at) == sim::light::ALL_FACES || !reachable(at) {
                             continue;

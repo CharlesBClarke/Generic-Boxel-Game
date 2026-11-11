@@ -166,7 +166,7 @@ impl Items {
         dt: f32,
         terrain: &impl Terrain,
         collector: Option<Collector>,
-        awake: Option<(WorldPos, f32)>,
+        awake: Option<crate::combat::Awake>,
     ) -> Vec<Drop> {
         let mut picked = Vec::new();
         let mut collector = collector;

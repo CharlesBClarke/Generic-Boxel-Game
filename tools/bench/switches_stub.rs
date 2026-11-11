@@ -7,3 +7,8 @@ use bevy::prelude::*;
 pub fn set(_world: &mut World, _key: &str, _on: bool) -> bool {
     false
 }
+
+/// Older commits load their whole world at startup, so there's never anything to wait for.
+pub fn loading(_world: &World) -> bool {
+    false
+}

@@ -902,14 +902,30 @@ pub struct StepContext<'a> {
     pub player: Option<&'a mut Player>,
     pub tick: u64,
     pub dt: f32,
-    /// Only targets within this many meters of this spot (the player) move; the rest hold still
-    /// where they are. `None` moves them all.
-    pub awake: Option<(WorldPos, f32)>,
+    /// Which targets move; the rest hold still where they are. `None` moves them all.
+    pub awake: Option<Awake<'a>>,
 }
 
-/// Whether `pos` is within `awake`'s reach (see [`StepContext::awake`]).
-pub fn is_awake(awake: Option<(WorldPos, f32)>, pos: WorldPos) -> bool {
-    awake.is_none_or(|(center, reach)| center.delta_to(pos).length() <= reach)
+/// What's awake: everything within `reach` meters of `center` (the player), unless the ground
+/// under it is still to come (see [`crate::stream`]).
+#[derive(Clone, Copy)]
+pub struct Awake<'a> {
+    pub center: WorldPos,
+    pub reach: f32,
+    /// Whether the ground at a spot hasn't been loaded yet.
+    pub waiting: &'a dyn Fn(WorldPos) -> bool,
+}
+
+impl<'a> Awake<'a> {
+    /// Everything within `reach` of `center`, with no ground to wait for.
+    pub fn near(center: WorldPos, reach: f32) -> Self {
+        Self { center, reach, waiting: &|_| false }
+    }
+}
+
+/// Whether `pos` is awake (see [`StepContext::awake`]).
+pub fn is_awake(awake: Option<Awake>, pos: WorldPos) -> bool {
+    awake.is_none_or(|a| a.center.delta_to(pos).length() <= a.reach && !(a.waiting)(pos))
 }
 
 /// Records something hurting `target`, coming from the level direction `from`. Hurts before its

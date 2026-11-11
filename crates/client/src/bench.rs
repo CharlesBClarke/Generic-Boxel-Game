@@ -87,10 +87,11 @@ impl Plugin for BenchPlugin {
             since: Instant::now(),
             last_stall: Instant::now(),
             last_fly: None,
+            loading: false,
             frames: Vec::new(),
         })
         .add_systems(Startup, start_bench)
-        .add_systems(Update, drive_bench.after(crate::mouse_look).before(crate::update_camera));
+        .add_systems(Update, (watch_loading, drive_bench).chain().after(crate::mouse_look).before(crate::update_camera));
     }
 }
 
@@ -247,7 +248,18 @@ struct Bench {
     last_stall: Instant,
     /// When flying was last switched on, so it isn't switched again before the server answers.
     last_fly: Option<Instant>,
+    /// The world around the spot is still loading (see `switches::loading`): counts as a stall,
+    /// so measuring waits until it's all there.
+    loading: bool,
     frames: Vec<f32>,
+}
+
+/// Notes whether the world is still loading, for the bench to wait.
+fn watch_loading(world: &mut World) {
+    let loading = switches::loading(world);
+    if let Some(mut bench) = world.get_resource_mut::<Bench>() {
+        bench.loading = loading;
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -307,7 +319,7 @@ fn drive_bench(
     let flying = player.flying();
     let frame = time.delta_secs();
     let now = Instant::now();
-    if frame > STALL {
+    if frame > STALL || bench.loading {
         bench.last_stall = now;
     }
     let bench = &mut *bench;

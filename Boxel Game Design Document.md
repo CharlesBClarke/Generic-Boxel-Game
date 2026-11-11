@@ -164,7 +164,7 @@ The engine's data model assumes these capabilities from day one, because retrofi
 
 **Multiple world views.** The client can load and draw any grid from any camera, not just the world the player stands in. Uses include portals, security cameras and screens, mirrors, blueprint previews, structures shown inside menus, minimaps, replays, split-screen and pocket dimensions.
 
-**3D chunks.** The world is split into cubes, not full-height columns, so worlds can be arbitrarily deep or high and only the parts near players are loaded.
+**3D chunks.** The world is split into cubes, not full-height columns, so worlds can be arbitrarily deep or high and only the parts near players are loaded. *For now* (2026-11-11, Terrain streaming), generated terrain loads and unloads as whole columns of its fixed height around each player, out to their render distance; the chunks themselves stay cubes, so loading by cube can come when terrain gets deep or tall.
 
 **Level of detail (LOD).** Distant terrain is drawn at reduced detail, so players can see far without loading full chunks. 3D chunks make this easier, since each cube can be simplified on its own. Mods' blocks must work with LOD automatically, without extra code.
 

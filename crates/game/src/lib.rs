@@ -48,7 +48,7 @@ impl Mod for WasmCow {
 }
 
 /// The engine with the base mod loaded from the source tree, the player spawned and the terrain
-/// generated.
+/// under them generated (the rest streams in as the game runs).
 pub fn load(code: Code) -> Result<Simulation, Box<dyn Error>> {
     load_from(Path::new(base::DATA_DIR), code)
 }
@@ -96,11 +96,10 @@ pub fn load_world(data: &Path, code: Code, save: Option<&SaveData>) -> Result<(S
             }
         }
     }
-    if let Some(stats) = sim.generation() {
-        eprintln!(
-            "terrain: {} chunks ({} of one block all through) in {:.2} s, lit in {:.2} s",
-            stats.chunks, stats.uniform, stats.seconds, stats.light_seconds
-        );
-    }
+    let stats = sim.stream_stats();
+    eprintln!(
+        "terrain: {} columns loaded around the player at start ({:.2} s on the workers); the rest streams in",
+        stats.columns, stats.seconds
+    );
     Ok((sim, fresh))
 }
