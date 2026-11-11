@@ -169,9 +169,12 @@ impl DaySky {
         let moon_up = smoothstep(0.0, 7.0, moon_el);
         let moon_light = Vec3::new(0.5, 0.6, 0.95) * t.moon_strength * night * moon_up;
 
-        // The sky's light: the block's hemisphere light by day (0.25 + strength × 0.25 at
-        // Eanpa's scale), easing to the night floor.
-        let daylight = (0.25 + pal.strength * 0.25) / (0.25 + noon * 0.25);
+        // The sky's light: the block's hemisphere light (0.25 + strength × 0.25 at Eanpa's
+        // scale), in the sky's own color, which darkens through dusk to near black at night;
+        // relative to noon, with the night floor under it.
+        let top = PALETTE[PALETTE.len() - 1];
+        let darkness = Vec3::from_array(pal.zenith).max_element() / Vec3::from_array(top.zenith).max_element();
+        let daylight = (0.25 + pal.strength * 0.25) / (0.25 + noon * 0.25) * darkness;
         let sky_hue = tinted(pal.zenith, t.sky_tint);
         let ground_hue = tinted(horizon, t.sky_tint);
         let night_hue = Vec3::new(0.55, 0.65, 1.0);
@@ -288,8 +291,11 @@ mod tests {
         assert!(midnight.stars > 0.99);
         assert!(midnight.moon.z > 0.7 && midnight.moon_light.max_element() > 0.0, "the moon is high at midnight");
         assert!(midnight.zenith.max_element() < noon.zenith.max_element() / 10.0);
-        // The night floor keeps a little sky light.
+        // The night floor keeps a little sky light, and with it at 0 the night is near black.
         assert!(midnight.sky_light.min_element() >= t.night_light * 0.5);
+        let dark = DaySky::at(0.0, &SkyTuning { night_light: 0.0, moon_strength: 0.0, ..t }, 0.0);
+        assert!(dark.sky_light.max_element() < 0.01 && dark.ground_light.max_element() < 0.01, "{dark:?}");
+        assert_eq!(dark.moon_light, Vec3::ZERO);
     }
 
     #[test]
