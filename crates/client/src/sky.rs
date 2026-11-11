@@ -178,8 +178,11 @@ impl DaySky {
         let sky_hue = tinted(pal.zenith, t.sky_tint);
         let ground_hue = tinted(horizon, t.sky_tint);
         let night_hue = Vec3::new(0.55, 0.65, 1.0);
-        let sky_light = (sky_hue * t.sky_light * daylight).max(night_hue * t.night_light);
-        let ground_light = (ground_hue * t.ground_light * daylight).max(night_hue * t.night_light * 0.5);
+        // Through dusk the palette's light hands over to the night's, which is all there is
+        // once the sun is 10° down: `night_light` alone, so at 0 the open world is as dark as
+        // a cave.
+        let sky_light = (sky_hue * t.sky_light * daylight).lerp(night_hue * t.night_light, night);
+        let ground_light = (ground_hue * t.ground_light * daylight).lerp(night_hue * t.night_light * 0.5, night);
 
         Self {
             hours,
@@ -294,7 +297,7 @@ mod tests {
         // The night floor keeps a little sky light, and with it at 0 the night is near black.
         assert!(midnight.sky_light.min_element() >= t.night_light * 0.5);
         let dark = DaySky::at(0.0, &SkyTuning { night_light: 0.0, moon_strength: 0.0, ..t }, 0.0);
-        assert!(dark.sky_light.max_element() < 0.01 && dark.ground_light.max_element() < 0.01, "{dark:?}");
+        assert_eq!((dark.sky_light, dark.ground_light), (Vec3::ZERO, Vec3::ZERO), "as dark as a cave");
         assert_eq!(dark.moon_light, Vec3::ZERO);
     }
 
