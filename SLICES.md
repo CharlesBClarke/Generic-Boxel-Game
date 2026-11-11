@@ -104,7 +104,30 @@ A run of small toy slices. Each one takes a single game-feel feature that doesn'
 
 ### Current toy
 
-None in progress: Greedy meshing closed 2026-11-10. Suggested next: Shadow speed (backlog; notes in `docs/notes/shadow-speed.md`).
+#### Day and night (`toy-day-and-night`)
+
+**Stage:** Implement (plan approved and engaged 2026-11-10)
+
+**Goal:** a day that runs through dawn, day, dusk and night, with the sky and its light colored by the time of day, from the time-of-day palette in `../stylised-sky` (MIT, from Eanpa Sky by SkyeShark, MIT). No clouds. The user: "it has a nice time of day colors and we can have colored light right? no need the clouds."
+
+**Plan**
+1. *Time in `sim`:* a time of day (hours, 0 to 24) the simulation advances each tick, sent to the client in snapshots and saved with the world (a save without it starts at a default hour). Day length is a server tunable, short by default (120 s) and variable ("we want it short now and long latter"); the panel can also set the time and pause it.
+2. *Palette (`client::sky`):* Eanpa's six keyframes by sun elevation (zenith, horizon, sun color and strength, star fade) and the low-sun warmth, driving the existing Atmosphere values (zenith, horizon, sun color, sky and ground light); fog follows the horizon.
+3. *Sky shader:* their gradient and sun glow, **their sun** (disc, halo, glow; the user: "their sun our sun sucks"), stars and a simple moon lit from the sun. Our rayed sun and its ray sliders go.
+4. *Night:* the moon is a dim blue light without shadows, gated by stored sky light so caves stay dark; shadow maps and the far shadow switch off once the sun has faded out. A floor of night light; lamps stand out. Sun and moon can both be up near dawn and dusk; only the sun casts shadows.
+5. *Sun:* driven by the sim's time instead of `Sun::on_day`, keeping `sun_step` so shadows don't crawl.
+6. *Tuning:* their numbers rescaled for our tone mapping; a time slider to scrub, and overall sun, sky and moon strengths.
+7. *Tests:* palette ends and blends, sun and moon arcs at given hours, both up at once, time advancing and wrapping, time saved and loaded (and missing from an old save), shadows off at night.
+8. *Credits:* both MIT licenses under `licenses/`.
+
+**Out of scope:** clouds, cloud shadows, weather, rain, lightning, the moon's sea texture, light on cows, items and the held tool.
+
+**Done when**
+1. A day runs through dawn, day, dusk and night in the ported colors.
+2. Sun and sky light take those colors, with no remesh.
+3. Night shows stars and a moon; moonlight casts no shadows and stays out of caves; lamps stand out.
+4. Time is owned by the sim, saved and loaded; day length tunable live; time can be set and paused.
+5. The quick bench runs; compare a day spot against a night spot.
 
 **Waiting for a play check** (remind the user at the start of every session, and at good moments during one, until they confirm; then delete the line):
 
