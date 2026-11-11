@@ -1,12 +1,21 @@
 //! The bench's switches: settings that are checkboxes in the tuning panel rather than values in
-//! the tuning file, by `section.name`. The one part of the bench that changes with the commit:
-//! `tools/bench/backport.sh` gives older commits a stub that knows none.
+//! the tuning file, by `section.name`, and whether the world is still loading. The one part of
+//! the bench that changes with the commit: `tools/bench/backport.sh` gives older commits a stub
+//! that knows no switches and never waits for loading.
 
 use bevy::prelude::*;
 
 use crate::shading::ShadingTuning;
 use crate::shadows::ShadowTuning;
 use crate::view::ViewSwitches;
+
+/// Whether the world around the player is still loading: terrain the server hasn't brought in
+/// yet, or chunks still being meshed in the background.
+pub fn loading(world: &World) -> bool {
+    let waiting = world.get_resource::<crate::world::ClientWorld>().is_some_and(|w| w.terrain().waiting > 0);
+    let meshing = world.get_resource::<crate::meshing::BackgroundMesher>().is_some_and(|m| m.pending() > 0);
+    waiting || meshing
+}
 
 /// Sets the switch named `key` to `on`; false if there is no such switch.
 pub fn set(world: &mut World, key: &str, on: bool) -> bool {

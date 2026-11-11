@@ -34,8 +34,9 @@ impl Simulation {
         let name = |id| blocks.get(id).map_or(String::new(), |def| def.name.clone());
         let mut terrain: Vec<(String, String, f32)> =
             self.world.tunables().into_iter().map(|t| ("world".to_owned(), t.name.to_string(), t.value)).collect();
-        for (generator, g) in &self.generators {
-            terrain.extend(g.tunables().into_iter().map(|t| (format!("terrain {generator}"), t.name.to_string(), t.value)));
+        for (i, (generator, _)) in self.generators.iter().enumerate() {
+            let values = self.generator_tunables(i).into_iter();
+            terrain.extend(values.map(|t| (format!("terrain {generator}"), t.name.to_string(), t.value)));
         }
 
         let mut made = Vec::new();
@@ -67,22 +68,24 @@ impl Simulation {
 
         let grid = self.universe.main();
         let edited = self.changed.edited();
-        let mut positions: Vec<ChunkPos> = grid
+        // Built chunks, edited terrain loaded now, and edited terrain dropped by streaming.
+        let mut chunks: Vec<ChunkData> = grid
             .chunks()
             .map(|(pos, _)| pos)
-            .filter(|pos| !self.generated.contains(pos) || edited.contains(pos))
+            .filter(|&pos| !self.is_terrain(pos) || edited.contains(&pos))
+            .map(|pos| grid.export_chunk(pos))
+            .chain(self.stream.kept().cloned())
             .collect();
-        positions.sort_by_key(|p| p.0.to_array());
-        let chunks = positions
+        chunks.sort_by_key(|c| c.pos.0.to_array());
+        let chunks = chunks
             .into_iter()
-            .map(|pos| {
-                let data = grid.export_chunk(pos);
+            .map(|data| {
                 let lists = data
                     .lists
                     .iter()
                     .map(|list| list.iter().map(|o| (name(o.block), o.orientation)).collect())
                     .collect();
-                SavedChunk { pos, lists, cells: data.cells }
+                SavedChunk { pos: data.pos, lists, cells: data.cells }
             })
             .collect();
 
@@ -121,8 +124,8 @@ impl Simulation {
             let set = match section.strip_prefix("terrain ") {
                 None => section == "world" && self.world.set_tunable(name, *value),
                 Some(generator) => {
-                    let found = self.generators.iter_mut().find(|(n, _)| n == generator);
-                    found.is_some_and(|(_, g)| g.set_tunable(name, *value))
+                    let found = self.generators.iter().position(|(n, _)| n == generator);
+                    found.is_some_and(|i| self.tune_generator(i, name, *value))
                 }
             };
             if !set {
@@ -135,15 +138,17 @@ impl Simulation {
             }
         }
 
-        self.fill_terrain()?;
-        // Nothing counts as edited but what the save brings back.
+        // The terrain is made again from the save's values as it streams in; everything else
+        // comes from the save. Nothing counts as edited but what the save brings back.
+        self.drop_terrain();
         self.changed.forget_all_edits();
         let grid = self.universe.main_mut();
-        let built: Vec<ChunkPos> = grid.chunks().map(|(pos, _)| pos).filter(|p| !self.generated.contains(p)).collect();
+        let built: Vec<ChunkPos> = grid.chunks().map(|(pos, _)| pos).collect();
         for pos in built {
             grid.remove_chunk(pos);
             self.changed.mark_chunk(pos);
         }
+        self.light_settled = false;
         for chunk in &save.chunks {
             let lists = chunk
                 .lists
@@ -160,13 +165,17 @@ impl Simulation {
                         .collect()
                 })
                 .collect();
-            grid.import_chunk(&ChunkData { pos: chunk.pos, lists, cells: chunk.cells.clone(), light: Layer::Uniform(Light::SKY) });
+            let data = ChunkData { pos: chunk.pos, lists, cells: chunk.cells.clone(), light: Layer::Uniform(Light::SKY) };
+            if self.is_terrain_place(chunk.pos) {
+                // Edited terrain comes back when its column streams in.
+                self.stream.keep(data);
+                continue;
+            }
+            let grid = self.universe.main_mut();
+            grid.import_chunk(&data);
             // Its neighbors' border faces may have changed too.
             for side in [I64Vec3::ZERO, I64Vec3::X, I64Vec3::NEG_X, I64Vec3::Y, I64Vec3::NEG_Y, I64Vec3::Z, I64Vec3::NEG_Z] {
                 self.changed.mark_chunk(ChunkPos(chunk.pos.0 + side));
-            }
-            if self.generated.contains(&chunk.pos) {
-                self.changed.mark_edited(chunk.pos);
             }
         }
 
@@ -203,9 +212,12 @@ impl Simulation {
         let library = load_blueprints(&self.blocks, &save.blueprints, &mut report);
         self.set_blueprints(library);
         self.respawn_targets();
-        self.lift_out_of_ground();
         self.settle_light();
-        Ok(report)
+        self.stream_terrain(Some(Self::NEAR));
+        match &self.stream.error {
+            Some(e) => Err(e.clone()),
+            None => Ok(report),
+        }
     }
 
     /// Makes a block again from how a save says it was made.

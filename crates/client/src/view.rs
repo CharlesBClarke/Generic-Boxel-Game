@@ -1,5 +1,6 @@
 //! How far the world is drawn: chunks farther than the render distance from the camera are
-//! hidden, and the camera's far plane follows the distance. Live-tunable, to find what the
+//! hidden, the camera's far plane follows the distance, and the server keeps that much terrain
+//! loaded around the player. Live-tunable, to find what the
 //! machine can take.
 
 use api::{CHUNK_SIZE, Tunable, Tunables};
@@ -188,6 +189,20 @@ pub struct ViewStats {
 pub fn within(corner: Vec3, eye: Vec3, distance: f32) -> bool {
     let center = corner + coords::to_render(Vec3::splat(CHUNK_SIZE as f32 * 0.5));
     center.distance(eye) <= distance
+}
+
+/// Tells the server how far the view reaches whenever that changes, so it keeps that much
+/// terrain loaded.
+pub(crate) fn send_view_distance(
+    view: Res<ViewTuning>,
+    mut sent: Local<Option<f32>>,
+    mut link: ResMut<crate::world::Link>,
+    mut world: ResMut<crate::world::ClientWorld>,
+) {
+    if *sent != Some(view.render_distance) {
+        *sent = Some(view.render_distance);
+        link.command(protocol::Command::ViewDistance(view.render_distance), &mut world);
+    }
 }
 
 /// Hides chunks beyond the render distance and shows the rest, and sets the far plane.

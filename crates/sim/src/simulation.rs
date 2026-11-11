@@ -15,7 +15,8 @@ use crate::crafting::{Craft, CraftPlan, CraftRefusal};
 use crate::edit::{ChangedChunks, Repeater};
 use crate::inventory::{Inventory, capacity_units};
 use crate::items::{Collector, Items, pop_velocity};
-use crate::terrain::{GenerationStats, WorldSettings};
+use crate::stream::{Column, SharedGenerator, Stream, StreamStats};
+use crate::terrain::WorldSettings;
 use crate::clock::Clock;
 use crate::view::{GridTerrain, PlaceTarget, View, bodies_clear};
 use crate::{
@@ -94,14 +95,13 @@ pub struct Simulation {
     target_brains: Vec<Option<usize>>,
     /// Targets stand still as dummies, whatever their brains would do.
     brains_off: bool,
-    /// Terrain generators by name, in registration order.
-    generators: Vec<(String, Box<dyn Generator>)>,
+    /// Terrain generators by name, in registration order, shared with the threads that
+    /// generate terrain.
+    generators: Vec<(String, SharedGenerator)>,
     /// Where generated terrain goes, as the mods placed it.
     terrains: Vec<TerrainDef>,
-    /// Every chunk generated last time, so generating again can drop the ones no longer reached.
-    generated: HashSet<ChunkPos>,
-    /// How the last generation went.
-    generation: Option<GenerationStats>,
+    /// Which columns of terrain are loaded around the player, and the rest of streaming.
+    stream: Stream,
     world: WorldSettings,
     /// The time of day.
     clock: Clock,
@@ -247,6 +247,7 @@ impl Simulation {
                 grab: sim.signal_def.as_ref().map_or(0, SignalDef::grab_texels),
             })?;
         }
+        sim.stream.set_built(sim.universe.main());
         Ok(sim)
     }
 
@@ -294,46 +295,217 @@ impl Simulation {
         add_controller(&mut self.controllers, name, controller)
     }
 
-    /// Fills every terrain the mods placed, at the size the world settings give, replacing what
-    /// was generated before (edits in it are lost) and dropping chunks it no longer reaches.
-    /// Then anything left inside the ground (the player, creatures and their spots) is lifted
-    /// out, and the whole world is lit. Every chunk touched is marked changed.
-    pub fn generate_terrain(&mut self) -> Result<GenerationStats, ApiError> {
-        self.fill_terrain()?;
+    /// Makes the terrain again from scratch with its current tuning: every column is dropped
+    /// (edits in them are lost) and the columns around the player load again, those within
+    /// [`Simulation::NEAR`] before this returns and the rest over the next ticks. Fails if
+    /// generating failed.
+    pub fn generate_terrain(&mut self) -> Result<StreamStats, ApiError> {
+        self.drop_terrain();
+        self.stream_terrain(Some(Self::NEAR));
         self.settle_light();
-        Ok(self.generation.unwrap_or_default())
+        match &self.stream.error {
+            Some(e) => Err(e.clone()),
+            None => Ok(self.stream.stats),
+        }
     }
 
-    /// [`Simulation::generate_terrain`] without the light, which is left to settle later.
-    fn fill_terrain(&mut self) -> Result<GenerationStats, ApiError> {
-        let mut total = GenerationStats::default();
-        let mut now = HashSet::new();
-        for def in &self.terrains {
-            let generator = self.generators.iter().find(|(n, _)| *n == def.generator).map(|(_, g)| &**g);
-            let generator = generator.ok_or_else(|| ApiError::UnknownGenerator(def.generator.clone()))?;
-            let (data, stats) = crate::terrain::generate(generator, def, &self.world, &self.blocks)?;
+    /// Meters around the player whose terrain [`Simulation::generate_terrain`] and
+    /// [`Simulation::load`]'s callers wait for: the ground underfoot and a little around it.
+    pub const NEAR: f32 = 48.0;
+
+    /// Seconds a tick may spend bringing generated columns in, beyond the first.
+    const STREAM_BUDGET: f32 = 0.004;
+
+    /// Drops every column of terrain and forgets its edits, so it's made again from scratch.
+    fn drop_terrain(&mut self) {
+        let height = self.world.terrain_height;
+        self.stream.forget_kept();
+        let rows: Vec<_> = self.terrains.iter().map(|def| crate::stream::rows(def, self.stream.height())).collect();
+        for column in self.stream.reset(height) {
             let grid = self.universe.main_mut();
-            for chunk in &data {
-                grid.import_chunk(chunk);
-                now.insert(chunk.pos);
-                self.changed.mark_chunk(chunk.pos);
-                self.changed.forget_edits(chunk.pos);
+            let chunks: Vec<ChunkPos> = column.chunks(rows[column.terrain].clone()).collect();
+            for &pos in &chunks {
+                grid.remove_chunk(pos);
+                self.changed.forget_edits(pos);
             }
-            total.chunks += stats.chunks;
-            total.uniform += stats.uniform;
-            total.seconds += stats.seconds;
+            self.stream.drop_column(column, chunks.into_iter());
         }
+    }
+
+    /// Where terrain loads around: the player, or the spawn point without one.
+    fn stream_center(&self) -> WorldPos {
+        self.player.as_ref().map_or(self.spawn, |p| p.pos())
+    }
+
+    /// Sets how far around the player terrain is kept loaded, in meters: a client's render
+    /// distance and a chunk more, so what it draws is always there.
+    pub fn set_view_distance(&mut self, meters: f32) {
+        self.stream.radius = meters.max(0.0) + api::CHUNK_SIZE as f32;
+    }
+
+    /// How far around the player terrain is kept loaded, in meters.
+    pub fn load_distance(&self) -> f32 {
+        self.stream.radius
+    }
+
+    /// Streams the terrain one step: drops columns left far behind, asks for the nearest ones
+    /// missing, and brings in what has been generated, within a budget. With `wait`, keeps
+    /// going until every wanted column within that many meters is in.
+    pub fn stream_terrain(&mut self, wait: Option<f32>) {
+        let start = std::time::Instant::now();
+        self.stream.follow_height(self.world.terrain_height);
+        let center = self.stream_center();
+        for column in self.stream.too_far(center) {
+            self.drop_column(column);
+        }
+        self.stream.wanted(center, self.terrains.len());
+        let generators: Vec<SharedGenerator> = self.generators_for_terrains();
+        loop {
+            self.stream.request(&generators, &self.terrains, &self.blocks);
+            let waiting = wait.is_some_and(|r| self.stream.missing_within(center, r));
+            let done = self.stream.finished(waiting);
+            if done.is_empty() {
+                if waiting && self.stream.error.is_none() && self.stream.busy() {
+                    continue;
+                }
+                break;
+            }
+            self.bring_in(done);
+            if !waiting && start.elapsed().as_secs_f32() > Self::STREAM_BUDGET {
+                break;
+            }
+        }
+        self.stream.request(&generators, &self.terrains, &self.blocks);
+    }
+
+    /// Loads every column within the load distance before returning, for tests and tools.
+    pub fn stream_all(&mut self) {
+        self.stream_terrain(Some(self.stream.radius));
+    }
+
+    /// Each terrain's generator, by terrain.
+    fn generators_for_terrains(&self) -> Vec<SharedGenerator> {
+        self.terrains
+            .iter()
+            .map(|def| {
+                // `add_terrain` checked every terrain's generator is registered.
+                let (_, g) = self.generators.iter().find(|(n, _)| *n == def.generator).expect("a terrain's generator");
+                std::sync::Arc::clone(g)
+            })
+            .collect()
+    }
+
+    /// Drops a column of terrain, keeping the chunks edited in it to bring back later.
+    fn drop_column(&mut self, column: Column) {
+        let rows = crate::stream::rows(&self.terrains[column.terrain], self.stream.height());
         let grid = self.universe.main_mut();
-        for &gone in self.generated.difference(&now) {
-            grid.remove_chunk(gone);
-            self.changed.mark_chunk(gone);
-            self.changed.forget_edits(gone);
+        let chunks: Vec<ChunkPos> = column.chunks(rows).collect();
+        for &pos in &chunks {
+            if self.changed.edited().contains(&pos) {
+                self.stream.keep(grid.export_chunk(pos));
+                self.changed.forget_edits(pos);
+            }
+            grid.remove_chunk(pos);
         }
-        self.generated = now;
-        self.generation = Some(total);
-        self.light_settled = false;
-        self.lift_out_of_ground();
-        Ok(total)
+        self.stream.drop_column(column, chunks.into_iter());
+    }
+
+    /// Brings generated columns into the world: their chunks (or the edited ones kept from
+    /// before), light across their seams, and anything buried by them lifted out.
+    fn bring_in(&mut self, done: Vec<crate::stream::Done>) {
+        let start = std::time::Instant::now();
+        let mut new = Vec::new();
+        let mut kept = Vec::new();
+        let mut columns = HashSet::new();
+        for d in done {
+            let chunks = match d.chunks {
+                Ok(chunks) => chunks,
+                Err(e) => {
+                    self.stream.error = Some(e);
+                    continue;
+                }
+            };
+            let grid = self.universe.main_mut();
+            let positions: Vec<ChunkPos> = chunks.iter().map(|c| c.pos).collect();
+            for chunk in chunks {
+                match self.stream.take_kept(chunk.pos) {
+                    Some(edited) => {
+                        grid.import_chunk(&edited);
+                        self.changed.mark_edited(chunk.pos);
+                        kept.push(chunk.pos);
+                    }
+                    None => grid.import_chunk(&chunk),
+                }
+            }
+            new.extend_from_slice(&positions);
+            columns.insert((d.column.x, d.column.y));
+            self.stream.add_column(d.column, positions.into_iter(), d.seconds);
+        }
+        if new.is_empty() {
+            return;
+        }
+        if self.light_settled {
+            let grid = self.universe.main_mut();
+            let fresh: HashSet<ChunkPos> = new.iter().copied().collect();
+            let mut changed = grid.light_seams(&self.blocks, &new);
+            if !kept.is_empty() {
+                // An edited chunk's light was worked out with the generated one in its column.
+                let boxels: Vec<BoxelPos> = kept
+                    .iter()
+                    .flat_map(|&c| (0..api::CHUNK_VOLUME).map(move |i| c.boxel(api::LocalPos::from_index(i))))
+                    .collect();
+                changed.extend(grid.relight(&self.blocks, &boxels));
+            }
+            for pos in changed.into_iter().filter(|p| !fresh.contains(p)) {
+                self.changed.mark_chunk(pos);
+            }
+        }
+        // Whatever stood where the ground came in is lifted out of it.
+        let (grid, blocks) = (self.universe.main(), &self.blocks);
+        let in_new = |pos: WorldPos| {
+            let c = pos.boxel().chunk().0;
+            columns.contains(&(c.x, c.y))
+        };
+        let lifted = |pos: WorldPos| if in_new(pos) { lift_out(grid, blocks, pos) } else { pos };
+        if let Some(player) = &mut self.player {
+            let pos = player.pos();
+            let up = lifted(pos);
+            if up != pos {
+                player.teleport(up);
+            }
+        }
+        self.targets.move_all(lifted);
+        self.stream.stats.join_seconds += start.elapsed().as_secs_f32();
+    }
+
+    /// Whether the ground at `pos` is terrain still to come: in or above a terrain's rows, in a
+    /// column that will be generated but isn't loaded yet.
+    pub fn awaiting_ground(&self, pos: WorldPos) -> bool {
+        awaiting_ground(&self.stream, &self.terrains, pos)
+    }
+
+    /// Chunks brought in by streaming since the last call.
+    pub fn take_loaded_chunks(&mut self) -> Vec<ChunkPos> {
+        self.stream.take_loaded()
+    }
+
+    /// Chunks dropped by streaming since the last call.
+    pub fn take_unloaded_chunks(&mut self) -> Vec<ChunkPos> {
+        self.stream.take_unloaded()
+    }
+
+    /// Whether the chunk at `pos` is where terrain goes, loaded or not: in a terrain's rows,
+    /// away from what the mods built.
+    pub fn is_terrain_place(&self, pos: ChunkPos) -> bool {
+        let height = self.stream.height();
+        !self.stream.cleared(pos.0.x, pos.0.y)
+            && self.terrains.iter().any(|def| crate::stream::rows(def, height).contains(&pos.0.z))
+    }
+
+    /// Whether the chunk at `pos` is part of the loaded terrain, rather than built.
+    pub fn is_terrain(&self, pos: ChunkPos) -> bool {
+        let height = self.stream.height();
+        self.terrains.iter().enumerate().any(|(i, def)| self.stream.covers(i, &crate::stream::rows(def, height), pos))
     }
 
     /// Brings the light up to date with the blocks (see [`crate::light`]): the whole world if it
@@ -348,9 +520,6 @@ impl Simulation {
             grid.relight_all(&self.blocks);
             self.light_settled = true;
             self.relight_seconds = start.elapsed().as_secs_f32();
-            if let Some(stats) = &mut self.generation {
-                stats.light_seconds = self.relight_seconds;
-            }
         } else if !unlit.is_empty() {
             for pos in grid.relight(&self.blocks, &unlit) {
                 self.changed.mark_chunk(pos);
@@ -364,31 +533,20 @@ impl Simulation {
         self.relight_seconds
     }
 
-    /// Moves the player, every creature and every creature's spot straight up until the boxels
-    /// at their feet and just above are clear, so a teleport or new terrain never leaves them
-    /// buried.
-    fn lift_out_of_ground(&mut self) {
-        let (grid, blocks) = (self.universe.main(), &self.blocks);
-        let lifted = |pos: WorldPos| lift_out(grid, blocks, pos);
-        if let Some(player) = &mut self.player {
-            let pos = player.pos();
-            let up = lifted(pos);
-            if up != pos {
-                player.teleport(up);
-            }
-        }
-        self.targets.move_all(lifted);
-    }
-
     /// Drops every creature whose spot `keep` refuses, for good: for tests and tools that want
     /// only some of what the mods placed.
     pub fn keep_targets(&mut self, keep: impl Fn(WorldPos) -> bool) {
         self.targets.keep_spots(keep);
     }
 
-    /// How the last terrain generation went, if there was one.
-    pub fn generation(&self) -> Option<GenerationStats> {
-        self.generation
+    /// How streaming the terrain has gone.
+    pub fn stream_stats(&self) -> StreamStats {
+        self.stream.stats
+    }
+
+    /// Why generating terrain last failed, if it did.
+    pub fn terrain_error(&self) -> Option<&ApiError> {
+        self.stream.error.as_ref()
     }
 
     pub fn world_settings(&self) -> &WorldSettings {
@@ -413,9 +571,16 @@ impl Simulation {
         self.generators.iter().map(|(name, _)| name.as_str())
     }
 
-    /// The generator at `index`, in registration order, for tuning.
-    pub fn generator_mut(&mut self, index: usize) -> Option<&mut dyn Generator> {
-        self.generators.get_mut(index).map(|(_, g)| &mut **g as &mut dyn Generator)
+    /// The tunables of a registered generator, by its place in registration order.
+    pub fn generator_tunables(&self, index: usize) -> Vec<api::Tunable> {
+        self.generators.get(index).map_or_else(Vec::new, |(_, g)| g.read().map_or_else(|_| Vec::new(), |g| g.tunables()))
+    }
+
+    /// Sets one of a registered generator's tunables. Columns generated from now on use it;
+    /// [`Simulation::generate_terrain`] makes the rest again with it. False if there's no such
+    /// value.
+    pub fn tune_generator(&mut self, index: usize, name: &str, value: f32) -> bool {
+        self.generators.get(index).is_some_and(|(_, g)| g.write().is_ok_and(|mut g| g.set_tunable(name, value)))
     }
 
     /// Puts the player at the spawn point. Needs a mod to have registered a player definition,
@@ -435,6 +600,7 @@ impl Simulation {
     /// move after the player, and loose items after them, toward where the player ended up. Last,
     /// creatures' attacks that hit the player hurt them.
     pub fn step(&mut self, input: &PlayerInput) {
+        self.stream_terrain(None);
         self.look = (input.yaw, input.pitch);
         if let Some(edit) = &input.blueprint {
             let result = self.blueprints.edit(&self.blocks, edit);
@@ -455,16 +621,37 @@ impl Simulation {
         self.use_tool(input);
         self.throw(input);
         let capacity = self.capacity();
-        let awake = self.player.as_ref().map(|p| (p.pos(), self.world.sim_distance));
         let Self {
-            blocks, universe, player, items, item_drop_def, inventory, targets, target_defs, crowd_def, controllers, player_def, ..
+            blocks,
+            universe,
+            player,
+            items,
+            item_drop_def,
+            inventory,
+            targets,
+            target_defs,
+            crowd_def,
+            controllers,
+            player_def,
+            stream,
+            terrains,
+            world,
+            ..
         } = self;
+        let waiting = |pos: WorldPos| awaiting_ground(stream, terrains, pos);
+        let awake = player.as_ref().map(|p| crate::combat::Awake { center: p.pos(), reach: world.sim_distance, waiting: &waiting });
         let terrain = GridTerrain { grid: universe.main(), blocks };
         // A player exists only once `spawn_player` found its controller.
         if let (Some(player), Some(def)) = (player.as_mut(), player_def.as_ref())
             && let Some(controller) = controllers.get(&def.controller)
         {
-            player.step(controller.as_ref(), input, Self::TICK_SECONDS, &terrain);
+            if !player.flying() && waiting(player.pos()) {
+                // Held where they are until the ground under them comes in.
+                let pos = player.pos();
+                player.teleport(pos);
+            } else {
+                player.step(controller.as_ref(), input, Self::TICK_SECONDS, &terrain);
+            }
         }
         let brains: Vec<Option<&dyn Brain>> = if self.brains_off {
             Vec::new()
@@ -1412,7 +1599,7 @@ struct ContentRegistrar<'a> {
     blocks: &'a mut BlockRegistry,
     controllers: &'a mut HashMap<String, Box<dyn MovementController>>,
     brains: &'a mut Vec<(String, Box<dyn Brain>)>,
-    generators: &'a mut Vec<(String, Box<dyn Generator>)>,
+    generators: &'a mut Vec<(String, SharedGenerator)>,
     player: &'a mut Option<PlayerDef>,
     interaction: &'a mut Option<InteractionDef>,
     push_out: &'a mut Option<PushOutDef>,
@@ -1464,7 +1651,7 @@ impl Registrar for ContentRegistrar<'_> {
 
     fn register_generator(&mut self, name: &str, generator: Box<dyn Generator>) -> Result<(), ApiError> {
         check_new_name(name, self.generators.iter().map(|(n, _)| n.clone()))?;
-        self.generators.push((name.into(), generator));
+        self.generators.push((name.into(), std::sync::Arc::new(std::sync::RwLock::new(generator))));
         Ok(())
     }
 
@@ -1587,7 +1774,7 @@ struct WorldEditor<'a> {
     waypoints: &'a mut Vec<(String, WorldPos)>,
     target_defs: &'a [TargetDef],
     targets: &'a mut Targets,
-    generators: &'a [(String, Box<dyn Generator>)],
+    generators: &'a [(String, SharedGenerator)],
     terrains: &'a mut Vec<TerrainDef>,
     /// The signal definition's grab, for pieces placed hidden.
     grab: i32,
@@ -1694,6 +1881,16 @@ impl WorldEdit for WorldEditor<'_> {
         self.terrains.push(def);
         Ok(())
     }
+}
+
+/// Whether the ground at `pos` is terrain still to come (see [`Simulation::awaiting_ground`]).
+fn awaiting_ground(stream: &Stream, terrains: &[TerrainDef], pos: WorldPos) -> bool {
+    let chunk = pos.boxel().chunk().0;
+    terrains.iter().enumerate().any(|(terrain, def)| {
+        chunk.z >= crate::stream::rows(def, stream.height()).start
+            && !stream.cleared(chunk.x, chunk.y)
+            && !stream.is_loaded(Column { terrain, x: chunk.x, y: chunk.y })
+    })
 }
 
 /// How far [`lift_out`] looks up before giving up, in boxels.

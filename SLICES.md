@@ -104,7 +104,17 @@ A run of small toy slices. Each one takes a single game-feel feature that doesn'
 
 ### Current toy
 
-None in progress: Day and night closed 2026-11-11. Suggested next: Shadow speed (backlog; notes in `docs/notes/shadow-speed.md`), now measured against nights that draw no shadows.
+**Terrain streaming** (infrastructure: world generation stage 2, `toy-terrain-streaming`). **Stage:** Implement (engaged 2026-11-11).
+
+*Goal:* the terrain is endless and loads around the player; startup reaches play in a second or two instead of ~8 s of meshing. Notes: `docs/notes/world-generation.md`.
+
+*Plan (approved 2026-11-11; the user: "endless, keep edits in memory, tie to render distance, one slice"):*
+- *Server.* Endless: `terrain_width` goes, `terrain_height` stays as the column height; save format bumped, older saves still load. New `sim::stream`: whole columns loaded out to the render distance plus a chunk, unloaded a little past it (leeway); the client tells the server its render distance. New columns generated on worker threads, nearest first, brought in at the start of a tick; light settles for each new column and its neighbors. Edited chunks that unload are kept in memory and come back instead of being generated; saves keep storing only edited chunks, loaded or not. Regenerate drops every generated column and loads again around the player (edits lost, as today). Protocol: `Welcome` sends only what's loaded, then `ChunksLoaded` / `ChunksUnloaded`; the server tracks what each client has. Creatures and items in unloaded columns hold still; a teleport or load holds the player until the ground under them has arrived.
+- *Client.* Arriving chunks meshed off the main thread, loaded neighbors remeshed; edits still remesh right away on the main thread, a background mesh finishing after its chunk was edited is thrown away. Unloading drops meshes; the far-shadow height map follows columns coming and going. The cost readout shows what's still loading.
+- *Bench.* Waits at each spot until everything around it is loaded before measuring.
+- *Tests.* Which columns load and unload (leeway); streamed chunks match full generation (blocks and light); an edited chunk survives unload, reload and a save; an old save loads; client and server stay in step through the protocol as the player crosses chunk borders; meshing after a neighbor arrives matches meshing with everything loaded.
+- *Done when:* (1) startup reaches play in a second or two; (2) flying fast across the terrain shows no holes near the player; (3) edits survive leaving and coming back, and a save; (4) changing the render distance loads or unloads to match; (5) the quick bench shows no surprises, measured on loaded terrain.
+- *Out of scope:* LOD, writing unloaded edits to disk, saving creatures, loading in 3D cubes rather than columns.
 
 **Waiting for a play check** (remind the user at the start of every session, and at good moments during one, until they confirm; then delete the line):
 

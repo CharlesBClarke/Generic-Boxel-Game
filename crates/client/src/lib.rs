@@ -18,6 +18,7 @@ pub mod heights;
 pub mod hurt;
 pub mod items;
 pub mod mesher;
+pub mod meshing;
 pub mod perf;
 pub mod shading;
 pub mod shadows;
@@ -92,6 +93,7 @@ pub fn run(connection: Box<dyn Connection>) {
         .init_resource::<ui_scale::UiScaleTuning>()
         .init_resource::<view::ViewStats>()
         .init_resource::<view::ViewSwitches>()
+        .init_resource::<meshing::BackgroundMesher>()
         .init_resource::<FeelState>()
         .init_resource::<TuningPanel>()
         .init_resource::<dev::DevMode>()
@@ -143,7 +145,7 @@ pub fn run(connection: Box<dyn Connection>) {
                 (dev::dev_keys, dev::show_dev_text).chain(),
                 (double_tap_sprint, sprint_toggle),
                 drill::drill_keys,
-                editing::remesh_changed_chunks,
+                (editing::remesh_changed_chunks, meshing::stream_meshes, view::send_view_distance).chain(),
                 // Strikes first: a broken target bursts from where its view was drawn.
                 (combat::play_strikes, combat::play_slams, blast::play_blasts, hurt::play_player_hurts, combat::update_hit_stop).chain(),
                 blast::update_beams,
@@ -353,7 +355,15 @@ fn spawn_chunk_meshes(
         entities.insert(pos, spawn_chunk(&mut commands, &mut meshes, material.clone(), pos, data, origin.cell));
     }
     info!("meshed {} chunks in {:.2} s", grid.chunks().count(), last_meshing.map_or(0.0, |(_, s)| s));
-    commands.insert_resource(ChunkMeshes { material, volumes, entities, quads, last_meshing, merged: view.merge_faces });
+    commands.insert_resource(ChunkMeshes {
+        material,
+        volumes,
+        entities,
+        quads,
+        last_meshing,
+        merged: view.merge_faces,
+        versions: std::collections::HashMap::new(),
+    });
 }
 
 pub(crate) fn spawn_chunk(
@@ -661,13 +671,13 @@ fn update_hud(
     feel: Res<CameraFeel>,
     time: Res<Time>,
     chunk_meshes: Option<Res<ChunkMeshes>>,
-    (view, drawn): (Res<view::ViewTuning>, Res<view::ViewStats>),
+    (view, drawn, background): (Res<view::ViewTuning>, Res<view::ViewStats>, Res<meshing::BackgroundMesher>),
     mut text: Single<&mut Text, With<Hud>>,
 ) {
     let Some(player) = world.player() else {
         return;
     };
-    let cost = world_cost(&world, chunk_meshes.as_deref(), &view, &drawn);
+    let cost = world_cost(&world, chunk_meshes.as_deref(), &view, &drawn, background.pending());
     let pos = player.pos();
     let precise = pos.cell().as_dvec3() + pos.offset().as_dvec3();
     let fps = 1.0 / time.delta_secs().max(1e-6);
@@ -690,13 +700,16 @@ fn update_hud(
     );
 }
 
-/// What the world costs to hold and draw: terrain generation, meshing, chunks loaded and
+/// What the world costs to hold and draw: terrain streaming, meshing, chunks loaded and
 /// drawn, triangles, memory, and the render and simulation distances.
-fn world_cost(world: &ClientWorld, meshes: Option<&ChunkMeshes>, view: &view::ViewTuning, drawn: &view::ViewStats) -> String {
-    let generation = match &world.defs().generation {
-        Some(Ok(g)) => format!("terrain {} chunks in {:.2} s, lit in {:.2} s", g.chunks, g.seconds, g.light_seconds),
-        Some(Err(e)) => format!("terrain failed: {e}"),
-        None => "no terrain".into(),
+fn world_cost(world: &ClientWorld, meshes: Option<&ChunkMeshes>, view: &view::ViewTuning, drawn: &view::ViewStats, meshing: usize) -> String {
+    let t = world.terrain();
+    let generation = match &world.defs().terrain_error {
+        Some(e) => format!("terrain failed: {e}"),
+        None => format!(
+            "terrain {} columns, {} waiting, {} meshing | generated {} in {:.1} s on the workers, joined in {:.2} s",
+            t.columns, t.waiting, meshing, t.generated, t.seconds, t.join_seconds
+        ),
     };
     let meshing = meshes.and_then(|m| m.last_meshing).map_or(String::new(), |(n, s)| format!(" | meshed {n} in {s:.2} s"));
     let meshed = meshes.map_or(0, |m| m.entities.len());

@@ -16,6 +16,20 @@ use sim::{
     PlayerHurt, Slam, Strike, Swing, Target, TargetKind, ToolId, Universe, View,
 };
 
+/// Chunks that arrived from the server and went, since the last look.
+#[derive(Default)]
+pub struct ChunkNews {
+    /// Chunks streaming brought in, new to the client.
+    pub arrived: Vec<ChunkPos>,
+    /// Chunks streaming dropped.
+    pub gone: Vec<ChunkPos>,
+    /// Every chunk that arrived or changed, as sent, in order.
+    pub data: Vec<sim::ChunkData>,
+    /// The whole world came anew (a welcome): a copy kept elsewhere starts again from
+    /// [`ClientWorld::universe`].
+    pub restart: bool,
+}
+
 #[derive(Resource)]
 pub struct ClientWorld {
     looks: LookRegistry,
@@ -34,6 +48,8 @@ pub struct ClientWorld {
     shown: Snapshot,
     /// Chunks the server changed since the last [`ClientWorld::take_changed_chunks`].
     changed: Vec<ChunkPos>,
+    /// What arrived and went since the last [`ClientWorld::take_chunk_news`].
+    news: ChunkNews,
     strikes: Vec<Strike>,
     slams: Vec<Slam>,
     blasts: Vec<Blast>,
@@ -75,6 +91,7 @@ impl ClientWorld {
             latest: Snapshot::default(),
             shown: Snapshot::default(),
             changed: Vec::new(),
+            news: ChunkNews { restart: true, ..ChunkNews::default() },
             strikes: Vec::new(),
             slams: Vec::new(),
             blasts: Vec::new(),
@@ -103,6 +120,20 @@ impl ClientWorld {
                 if !self.changed.contains(&chunk.pos) {
                     self.changed.push(chunk.pos);
                 }
+                self.news.data.push(chunk);
+            }
+            ServerMsg::ChunksLoaded(chunks) => {
+                for chunk in chunks {
+                    self.universe.main_mut().import_chunk(&chunk);
+                    self.news.arrived.push(chunk.pos);
+                    self.news.data.push(chunk);
+                }
+            }
+            ServerMsg::ChunksUnloaded(gone) => {
+                for &pos in &gone {
+                    self.universe.main_mut().remove_chunk(pos);
+                }
+                self.news.gone.extend(gone);
             }
             ServerMsg::Blocks(blocks) => self.blocks = *blocks,
             ServerMsg::Blueprints(library) => self.blueprints = *library,
@@ -298,6 +329,18 @@ impl ClientWorld {
     /// Chunks the server changed since the last call.
     pub fn take_changed_chunks(&mut self) -> Vec<ChunkPos> {
         std::mem::take(&mut self.changed)
+    }
+
+    /// Chunks that arrived and went since the last call, and the data of every chunk that
+    /// arrived or changed, in the order it came, for a copy of the world kept elsewhere (see
+    /// [`crate::meshing`]).
+    pub fn take_chunk_news(&mut self) -> ChunkNews {
+        std::mem::take(&mut self.news)
+    }
+
+    /// How streaming the terrain is going on the server, as of the latest tick.
+    pub fn terrain(&self) -> sim::StreamStats {
+        self.latest.terrain
     }
 
     /// Tool strikes since the last call, oldest first.

@@ -6,15 +6,14 @@ use std::collections::BTreeSet;
 use api::{BoxelPos, CHUNK_VOLUME, ChunkPos, I64Vec3, LocalPos, Mod, ShapeGrid, Vec3, WorldPos};
 use sim::{Cells, Craft, MaterialId, Piece, PlayerInput, SaveData, Simulation};
 
-/// The base game with a small terrain, so tests stay quick. Not generated yet.
+/// The base game keeping little terrain loaded, so tests stay quick. Not generated yet.
 fn base_sim() -> Simulation {
     let data = data_mods::load(std::path::Path::new(base::DATA_DIR)).unwrap();
     let mods: [&dyn Mod; 4] = [&data, &base::BaseMod, &base_cow::BaseCowMod, &base_movement::BaseMovementMod];
     let mut sim = Simulation::with_mods(&mods).expect("base mod loads");
     sim.spawn_player().expect("base registers a player");
-    let w = sim.world_settings_mut();
-    w.terrain_width = 2;
-    w.terrain_height = 16;
+    sim.world_settings_mut().terrain_height = 16;
+    sim.set_view_distance(32.0);
     sim
 }
 
@@ -89,6 +88,7 @@ fn dig_terrain(sim: &mut Simulation) -> ChunkPos {
     // Just above the ground, which teleporting lifts the player onto: a long fall would hurt.
     let ground = base::terrain::Hills::default().ground(5, 7);
     sim.teleport_player(WorldPos::at_boxel(base::TERRAIN_CENTER.offset(I64Vec3::new(5, 7, ground))));
+    sim.stream_all();
     settle(sim);
     let below = BoxelPos(sim.player().unwrap().pos().cell() - I64Vec3::Z);
     assert!(!sim.universe().main().cell(below).is_empty(), "standing on the ground");
@@ -180,13 +180,27 @@ fn loading_undoes_what_changed_since_the_save() {
 #[test]
 fn the_terrain_comes_back_with_the_values_it_was_saved_with() {
     let mut sim = base_sim();
-    sim.world_settings_mut().terrain_width = 3;
-    sim.generate_terrain().unwrap();
+    sim.world_settings_mut().terrain_height = 12;
+    let seed = sim.generator_names().position(|n| n == base::terrain::HILLS).unwrap();
+    assert!(sim.tune_generator(seed, "seed", 9.0));
+    dig_terrain(&mut sim);
     let save = sim.save();
     let mut other = base_sim();
     other.load(&save).unwrap();
-    assert_eq!(other.world_settings().terrain_width, 3);
-    assert_eq!(other.generation().unwrap().chunks, 3 * 3 * 16);
+    assert_eq!(other.world_settings().terrain_height, 12);
+    assert!(other.generator_tunables(seed).iter().any(|t| t.name == "seed" && t.value == 9.0));
+    other.stream_all();
+    assert_eq!(other.stream_stats().columns, sim.stream_stats().columns, "loaded around where the player was saved");
+    assert_same_world(&sim, &other);
+}
+
+#[test]
+fn a_save_from_before_endless_terrain_loads_quietly() {
+    let mut sim = base_sim();
+    let mut save = sim.save();
+    save.terrain.push(("world".into(), "terrain_width".into(), 11.0));
+    let report = sim.load(&save).unwrap();
+    assert_eq!(report.skipped, Vec::<String>::new(), "the old width is ignored");
 }
 
 #[test]
