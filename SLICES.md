@@ -104,7 +104,7 @@ A run of small toy slices. Each one takes a single game-feel feature that doesn'
 
 ### Current toy
 
-**Terrain streaming** (infrastructure: world generation stage 2, `toy-terrain-streaming`). **Stage:** Implement (engaged 2026-11-11).
+**Terrain streaming** (infrastructure: world generation stage 2, `toy-terrain-streaming`). **Stage:** Verify (implemented and tested 2026-11-11; waiting for a play check, then the quick bench).
 
 *Goal:* the terrain is endless and loads around the player; startup reaches play in a second or two instead of ~8 s of meshing. Notes: `docs/notes/world-generation.md`.
 
@@ -115,6 +115,7 @@ A run of small toy slices. Each one takes a single game-feel feature that doesn'
 - *Tests.* Which columns load and unload (leeway); streamed chunks match full generation (blocks and light); an edited chunk survives unload, reload and a save; an old save loads; client and server stay in step through the protocol as the player crosses chunk borders; meshing after a neighbor arrives matches meshing with everything loaded.
 - *Done when:* (1) startup reaches play in a second or two; (2) flying fast across the terrain shows no holes near the player; (3) edits survive leaving and coming back, and a save; (4) changing the render distance loads or unloads to match; (5) the quick bench shows no surprises, measured on loaded terrain.
 - *Out of scope:* LOD, writing unloaded edits to disk, saving creatures, loading in 3D cubes rather than columns.
+- *Changed during Implement (asked, 2026-11-11):* endless terrain would have run through the test area at the origin. The user: "what ever is easyiest we area going to not have this issue when we impiment saved chunks anyway." Raising the terrain would have moved it out from under the bench's fixed spots, so instead no terrain is made within 1 km of a chunk the mods built (`sim::stream::CLEAR_DISTANCE`); the terrain stays where it was.
 
 **Waiting for a play check** (remind the user at the start of every session, and at good moments during one, until they confirm; then delete the line):
 
