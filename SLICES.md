@@ -104,7 +104,7 @@ A run of small toy slices. Each one takes a single game-feel feature that doesn'
 
 ### Current toy
 
-None in progress: Terrain streaming closed 2026-11-11. Suggested next: `fix-greedy-sparkles` (backlog, a small fix), then AO in the shader or Shadow speed, as the full view now costs 19–32 ms a frame.
+None in progress: Chunk storage closed 2026-11-11. Suggested next: `fix-greedy-sparkles` (backlog, a small fix), then AO in the shader or Shadow speed; or, toward a server on another machine, a dedicated server seam (headless server program, serialization, QUIC on the LAN).
 
 **Waiting for a play check** (remind the user at the start of every session, and at good moments during one, until they confirm; then delete the line):
 
@@ -116,6 +116,8 @@ None in progress: Terrain streaming closed 2026-11-11. Suggested next: `fix-gree
 - Cow pathfinding (low priority, 2026-11-06): the user called the toy "really good" without going through the five course checks one by one; note any that misbehave: cows through the pen's gap and up its terraces, up the mesa's steps, a charge baited off the mesa's cliff (landing hurt), waiting below the pillar (orange route), climbing hills on the generated terrain.
 
 ### Toy backlog
+
+- **The test area on the terrain.** Added 2026-11-11, from Chunk storage: storing chunks didn't remove the 1 km clear zone around the mods' built area (`sim::stream::CLEAR_DISTANCE`), since endless terrain would still run through the test area. Options: flatten the terrain around it, set it on a plateau, or move it somewhere generated. The user had expected saved chunks to fix it ("we area going to not have this issue when we impiment saved chunks anyway").
 
 - **Greedy meshing sparkles** (a fix: `fix-greedy-sparkles`). Added 2026-11-11, found by the user after Terrain streaming: "I now notice the sparkals caused by the greedy mesher". Pixel speckles along the edges where a merged quad meets smaller ones (T-junctions: a vertex of one quad sits partway along the other's edge, and rasterizing leaves hairline gaps), predicted in `docs/notes/greedy-meshing.md`; far more visible now the terrain reaches the fog. The usual fixes: split the long edge at the T-junction vertices, or merge only into quads whose edges line up; a test can check that no quad corner lies inside another quad's edge.
 - **AO in the shader.** Added 2026-11-10, from Greedy meshing: AO is the only thing still stopping merges on open terrain; looked up by the shader instead of baked per corner, the bench terrain would go from 0.29M triangles to ~0.15M. Notes: `docs/notes/greedy-meshing.md`.
@@ -166,7 +168,7 @@ Ideas that come up while playing get added here.
 ### Infrastructure (added when a toy needs it)
 
 - ~~Saving and loading, with block names in the save~~ Done (Saving, 2026-11-07), see Done toys. Creatures aren't saved yet.
-- World generation. *The generator is done (Generated terrain, 2026-11-05); streaming is done (Terrain streaming, 2026-11-11). Next: saving unloaded edits to disk and LOD, as they start to hurt.* Staging and the creatures-on-terrain checklist. Notes: `docs/notes/world-generation.md`.
+- World generation. *The generator is done (Generated terrain, 2026-11-05); streaming is done (Terrain streaming, 2026-11-11). Unloaded edits are stored on disk (Chunk storage, 2026-11-11). Next: LOD, as it starts to hurt.* Staging and the creatures-on-terrain checklist. Notes: `docs/notes/world-generation.md`.
 - LOD, once world generation exists
 - ~~Meshing off the main thread~~ Done for streamed terrain (Terrain streaming, 2026-11-11): arriving columns are meshed in the background. Edits still remesh on the main thread, at once; an edit beside a finely cut chunk still takes ~55 ms in the dev build.
 
@@ -227,6 +229,7 @@ Bugs found in already-merged code, each fixed on its own `fix-` branch (see the 
 ### Done toys
 
 Full write-ups (plans, implementation notes, verify rounds, decisions) are in `docs/done-toys.md`. One line each, newest first:
+- **Chunk storage** (2026-11-11, `toy-chunk-storage`, infrastructure). Edited terrain goes to region files in the world's folder when its column unloads and comes back from them, so memory stays flat; saves stay snapshots (unsaved chunks wait in `unsaved/` until F2, F8 throws them away), Save as copies them, the world autosaves every 5 minutes (tunable), old saves move their terrain over.
 - **Terrain streaming** (2026-11-11, `toy-terrain-streaming`, infrastructure). The generated terrain is endless, loaded in columns around the player out to the render distance and dropped past it, generated, lit and meshed in the background; edits wait in memory when their column unloads and are saved; startup is quick and flying keeps up. No terrain within 1 km of the mods' built area. The full 512 m view costs 19–32 ms a frame.
 - **Day and night** (2026-11-11, `toy-day-and-night`). A time of day owned by the sim and saved, with Eanpa Sky's palette: dawn, day, dusk and a near-black night with stars and a glowing moon, the light on blocks taking the sky's colors. Moonlight casts no shadows, so nights draw none (half the frame time). ACES tone mapping, dithering, and the Shading sliders in groups.
 - **Greedy meshing** (2026-11-10, `toy-greedy-meshing`). Neighboring terrain faces that look alike are drawn as one bigger quad, the shader repeating looks and edge lines every boxel: 70% fewer triangles, frames 22–36% faster at the bench's spots. A merge faces checkbox in the View section.

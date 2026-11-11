@@ -1,5 +1,6 @@
 //! Where saved worlds live: one folder per world, `$XDG_DATA_HOME/boxel/worlds/<name>/`
-//! (usually `~/.local/share/boxel/worlds/<name>/`), holding `world.bin` (see [`sim::save`]).
+//! (usually `~/.local/share/boxel/worlds/<name>/`), holding `world.bin` (see [`sim::save`]) and
+//! the edited terrain in region files (see [`crate::chunk_files`]).
 //! Copy a world's folder under another name to keep a copy to come back to.
 
 use std::path::{Path, PathBuf};
@@ -55,6 +56,11 @@ impl WorldFile {
             .collect();
         worlds.sort_by(|a, b| b.0.cmp(&a.0).then_with(|| a.1.cmp(&b.1)));
         worlds.into_iter().map(|(_, name)| name).collect()
+    }
+
+    /// The world's chunk store (see [`crate::chunk_files`]).
+    pub fn chunk_files(&self) -> crate::ChunkFiles {
+        crate::ChunkFiles::open(&self.folder)
     }
 
     /// The save file itself.

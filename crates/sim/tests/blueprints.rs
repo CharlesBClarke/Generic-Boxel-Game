@@ -115,7 +115,7 @@ fn blueprints_come_back_from_a_save_by_name() {
     outer.cells[0][0][0] = Some(Piece { thing: v.into(), turns: 1 });
     edit(&mut sim, BlueprintEdit::Save { name: "outer".into(), recipe: outer }).unwrap();
 
-    let bytes = sim.save().to_bytes();
+    let bytes = sim.save().unwrap().to_bytes();
     let mut again = at_table();
     let revision = again.blueprints_revision();
     let report = again.load(&SaveData::from_bytes(&bytes).unwrap()).unwrap();
@@ -143,7 +143,7 @@ fn a_blueprint_naming_a_lost_material_is_left_out_with_those_using_it() {
     let wood = material(&sim, base::WOOD);
     let plain = Recipe::top([[[Some(Piece::new(wood)), None, None, None]; 4]; 4]);
     edit(&mut sim, BlueprintEdit::Save { name: "plain".into(), recipe: plain }).unwrap();
-    let mut save = sim.save();
+    let mut save = sim.save().unwrap();
     let SavedDesign::Recipe { layers, .. } = &mut save.blueprints[0].design else { panic!("the corner is a recipe") };
     let first = layers.iter_mut().flatten().next().unwrap();
     first.0 = SavedThing::Material("gone:unobtainium".into());

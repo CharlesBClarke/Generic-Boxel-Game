@@ -1,14 +1,14 @@
 //! Terrain streaming: generated terrain goes on forever sideways, so only the columns of its
 //! chunks near the player are kept. Columns are generated and lit on worker threads, nearest
 //! first, and brought into the world between ticks (see [`crate::Simulation`]); columns that fall
-//! far behind are dropped, but chunks edited in them are kept in memory and come back in place
-//! of generating them again.
+//! far behind are dropped, but chunks edited in them go to the chunk store (see [`crate::store`])
+//! and come back from it in place of the generated ones.
 //!
 //! A column is every chunk of one terrain at one chunk X and Y, the terrain's full height, so
 //! the sky above a column is always known. No terrain is made within [`CLEAR_DISTANCE`] of a
 //! chunk the mods built, so the test areas stand apart from it.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 use std::ops::Range;
 use std::sync::mpsc::{Receiver, Sender, channel};
 use std::sync::{Arc, Mutex, RwLock};
@@ -16,6 +16,8 @@ use std::time::Instant;
 
 use api::{ApiError, CHUNK_SIZE, ChunkFill, ChunkPos, Generator, I64Vec3, TerrainDef, WorldPos};
 
+use crate::save::SavedChunk;
+use crate::store::{ChunkStore, MemoryStore};
 use crate::{BlockRegistry, ChunkData, Grid};
 
 /// A generator the worker threads share with the simulation, which tunes it.
@@ -84,13 +86,17 @@ struct Job {
     center: I64Vec3,
     rows: Range<i64>,
     blocks: Arc<BlockRegistry>,
+    store: Arc<dyn ChunkStore>,
 }
 
-/// A generated column, lit on its own.
+/// A generated column, lit on its own, and its stored chunks to bring in instead.
 pub(crate) struct Done {
     pub epoch: u64,
     pub column: Column,
     pub chunks: Result<Vec<ChunkData>, ApiError>,
+    /// The column's chunks the store has, by name: the simulation names their blocks, since
+    /// blocks made while the game runs are newer than the workers' registry.
+    pub stored: Vec<SavedChunk>,
     pub seconds: f32,
 }
 
@@ -126,7 +132,12 @@ impl Workers {
                         // A generator that panics fails its column, not the thread.
                         let chunks = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| generate_column(&job)))
                             .unwrap_or_else(|_| Err(ApiError::InvalidDef(format!("generating column {:?} panicked", job.column))));
-                        let done = Done { epoch: job.epoch, column: job.column, chunks, seconds: start.elapsed().as_secs_f32() };
+                        let (chunks, stored) = match (chunks, read_stored(&job)) {
+                            (Ok(chunks), Ok(stored)) => (Ok(chunks), stored),
+                            (Err(e), _) | (_, Err(e)) => (Err(e), Vec::new()),
+                        };
+                        let seconds = start.elapsed().as_secs_f32();
+                        let done = Done { epoch: job.epoch, column: job.column, chunks, stored, seconds };
                         if outbox.send(done).is_err() {
                             return;
                         }
@@ -136,6 +147,18 @@ impl Workers {
         }
         Self { jobs, done, count }
     }
+}
+
+/// The column's chunks the store has.
+fn read_stored(job: &Job) -> Result<Vec<SavedChunk>, ApiError> {
+    let mut out = Vec::new();
+    for pos in job.column.chunks(job.rows.clone()) {
+        if let Some(bytes) = job.store.read(pos).map_err(ApiError::Storage)? {
+            let chunk = SavedChunk::from_bytes(&bytes).map_err(|e| ApiError::Storage(format!("chunk {:?}: {e}", pos.0.to_array())))?;
+            out.push(chunk);
+        }
+    }
+    Ok(out)
 }
 
 /// Generates a column and lights it as if nothing stood beside it.
@@ -153,8 +176,8 @@ fn generate_column(job: &Job) -> Result<Vec<ChunkData>, ApiError> {
     Ok(positions.into_iter().map(|pos| grid.export_chunk(pos)).collect())
 }
 
-/// Which columns are loaded, which are wanted and which are on their way; the edited chunks of
-/// dropped columns; and the worker threads.
+/// Which columns are loaded, which are wanted and which are on their way; the store edited
+/// chunks of dropped columns go to; and the worker threads.
 pub struct Stream {
     /// Meters around the player to keep loaded.
     pub radius: f32,
@@ -170,8 +193,8 @@ pub struct Stream {
     wanted: Vec<Column>,
     /// What `wanted` was worked out for: the player's column, the radius and the epoch.
     wanted_for: Option<((i64, i64), u32, u64)>,
-    /// Edited chunks of columns that were dropped, to bring back when they load again.
-    kept: HashMap<ChunkPos, ChunkData>,
+    /// Where edited chunks of dropped columns go, to come back when they load again.
+    store: Arc<dyn ChunkStore>,
     /// Columns of chunks the mods built, which keep terrain away.
     built: Vec<(i64, i64)>,
     /// Goes up whenever the terrain is made from scratch, so columns generated before are
@@ -210,7 +233,7 @@ impl Stream {
             ready: std::collections::VecDeque::new(),
             wanted: Vec::new(),
             wanted_for: None,
-            kept: HashMap::new(),
+            store: Arc::new(MemoryStore::default()),
             built: Vec::new(),
             epoch: 0,
             workers: None,
@@ -266,24 +289,14 @@ impl Stream {
         self.loaded.iter().copied()
     }
 
-    /// The edited chunks of dropped columns.
-    pub fn kept(&self) -> impl Iterator<Item = &ChunkData> {
-        self.kept.values()
+    /// Where edited chunks of dropped columns go.
+    pub fn store(&self) -> &Arc<dyn ChunkStore> {
+        &self.store
     }
 
-    /// Takes back an edited chunk of a dropped column, if there is one.
-    pub fn take_kept(&mut self, pos: ChunkPos) -> Option<ChunkData> {
-        self.kept.remove(&pos)
-    }
-
-    /// Keeps an edited chunk of a column being dropped.
-    pub fn keep(&mut self, data: ChunkData) {
-        self.kept.insert(data.pos, data);
-    }
-
-    /// Forgets every kept chunk, as when the terrain is made from scratch.
-    pub fn forget_kept(&mut self) {
-        self.kept.clear();
+    /// Keeps edited chunks in `store` from now on. Columns asked for already read the old one.
+    pub fn set_store(&mut self, store: Arc<dyn ChunkStore>) {
+        self.store = store;
     }
 
     /// Forgets every column, loaded or on its way, so the terrain is made again from scratch,
@@ -385,6 +398,7 @@ impl Stream {
                 center: def.center.0,
                 rows: rows(def, self.height),
                 blocks: Arc::clone(blocks),
+                store: Arc::clone(&self.store),
             };
             if workers.jobs.send(job).is_ok() {
                 self.in_flight.insert(column);

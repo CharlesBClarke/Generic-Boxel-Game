@@ -103,7 +103,8 @@ pub enum ServerMsg {
 /// How saving or loading the world went.
 #[derive(Clone, Debug, PartialEq)]
 pub enum WorldNote {
-    Saved { name: String },
+    /// Saved; `auto` when the server saved it on its own (autosave).
+    Saved { name: String, auto: bool },
     /// Loaded, with where the player looked when it was saved, and anything a missing mod named
     /// that was left out. A fresh world is loaded too, from how the game started.
     Loaded { name: String, look: (f32, f32), skipped: Vec<String>, fresh: bool },

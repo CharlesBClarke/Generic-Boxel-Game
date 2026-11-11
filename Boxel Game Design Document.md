@@ -164,7 +164,7 @@ The engine's data model assumes these capabilities from day one, because retrofi
 
 **Multiple world views.** The client can load and draw any grid from any camera, not just the world the player stands in. Uses include portals, security cameras and screens, mirrors, blueprint previews, structures shown inside menus, minimaps, replays, split-screen and pocket dimensions.
 
-**3D chunks.** The world is split into cubes, not full-height columns, so worlds can be arbitrarily deep or high and only the parts near players are loaded. *For now* (2026-11-11, Terrain streaming), generated terrain loads and unloads as whole columns of its fixed height around each player, out to their render distance; the chunks themselves stay cubes, so loading by cube can come when terrain gets deep or tall.
+**3D chunks.** The world is split into cubes, not full-height columns, so worlds can be arbitrarily deep or high and only the parts near players are loaded. *For now* (2026-11-11, Terrain streaming), generated terrain loads and unloads as whole columns of its fixed height around each player, out to their render distance; the chunks themselves stay cubes, so loading by cube can come when terrain gets deep or tall. Chunks edited since they were generated are stored on disk when they unload and come back from there (2026-11-11, Chunk storage); untouched terrain is made again by the generator. A world's folder holds `world.bin` (what's always loaded) and region files of 16×16×16 chunks, in two layers so a save stays a snapshot: `chunks/` as last saved, `unsaved/` for chunks unloaded since, merged by a save and thrown away by a load. The simulation sees only a chunk store; the files are the server's.
 
 **Level of detail (LOD).** Distant terrain is drawn at reduced detail, so players can see far without loading full chunks. 3D chunks make this easier, since each cube can be simplified on its own. Mods' blocks must work with LOD automatically, without extra code.
 
@@ -212,7 +212,7 @@ Recommendations from the multiplayer research. Rates and budgets are starting po
 
 **World data**
 
-- **One chunk format on disk and network.** Each layer (blocks, fluids, overlays) gets its own palette; uniform chunks cost almost nothing; batches are compressed with zstd using a dictionary trained on real chunks.
+- **One chunk format on disk and network.** Each layer (blocks, fluids, overlays) gets its own palette; uniform chunks cost almost nothing; batches are compressed with zstd using a dictionary trained on real chunks. *On disk since 2026-11-11 (Chunk storage):* a chunk is its occupant lists by block name and its cells in runs, zstd-packed, without light; no dictionary yet, and the network still sends chunks unpacked.
 - **Rate-limited chunk sending** per player, so exploring doesn't choke the server's upload. Home upload speed is the first limit player-hosted servers hit.
 - **Anti-xray by design.** Hidden interiors are sent as "unknown solid" until a face is exposed; far terrain (LOD) never reveals ores.
 

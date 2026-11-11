@@ -163,7 +163,7 @@ fn an_edit_survives_its_column_being_dropped() {
     sim.teleport_player(over(400, 0, 20));
     sim.stream_all();
     assert!(sim.universe().main().chunk(dug).is_none(), "dropped");
-    assert!(sim.save().chunks.iter().any(|c| c.pos == dug), "still saved while dropped");
+    assert!(sim.chunk_store().read(dug).unwrap().is_some(), "stored while dropped");
     sim.teleport_player(WorldPos::at_boxel(below.offset(I64Vec3::new(3, 3, 40))));
     sim.stream_all();
     assert!(sim.universe().main().cell(below).is_empty(), "comes back dug");

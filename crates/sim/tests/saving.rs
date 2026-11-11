@@ -129,14 +129,19 @@ fn a_world_comes_back_the_same_in_a_new_game() {
     assert!(sim.edited_chunks().contains(&dug), "the dug chunk counts as edited");
     sim.step(&PlayerInput { toggle_fly: true, yaw: 1.25, pitch: -0.5, ..Default::default() });
     assert!(sim.player().unwrap().flying());
-    let save = sim.save();
-    assert!(save.chunks.iter().any(|c| c.pos == dug), "the edited terrain chunk is saved");
-    assert!(!generated().save().chunks.iter().any(|c| c.pos == dug), "but only once edited: it's generated terrain");
+    let save = sim.save().unwrap();
+    assert!(sim.chunk_store().read(dug).unwrap().is_some(), "the edited terrain chunk is stored");
+    assert!(!save.chunks.iter().any(|c| c.pos == dug), "in the store, not the save");
+    let fresh = generated();
+    fresh.save().unwrap();
+    assert!(fresh.chunk_store().read(dug).unwrap().is_none(), "but only once edited: it's generated terrain");
     assert!(save.chunks.len() < sim.universe().main().chunks().count(), "untouched terrain isn't saved");
     let bytes = save.to_bytes();
 
-    // A new game that made another shape first, so every made block gets another ID.
+    // A new game that made another shape first, so every made block gets another ID, playing
+    // the same world (its store).
     let mut other = base_sim();
+    other.set_chunk_store(std::sync::Arc::clone(sim.chunk_store()));
     let mut odd = ShapeGrid::EMPTY;
     odd.set(3, 4, 5, true);
     other.shaped_block(material(&other, base::STONE), &odd).unwrap();
@@ -153,7 +158,7 @@ fn a_world_comes_back_the_same_in_a_new_game() {
     let items = |s: &Simulation| s.items().iter().map(|i| (s.blocks().material_name(i.drop.material).to_owned(), i.drop.amount, i.pos.cell())).collect::<Vec<_>>();
     assert_eq!(items(&other), items(&sim));
     // Saving the loaded world keeps the same things, look included.
-    let (again, first) = (other.save(), SaveData::from_bytes(&bytes).unwrap());
+    let (again, first) = (other.save().unwrap(), SaveData::from_bytes(&bytes).unwrap());
     assert_eq!(again.terrain, first.terrain);
     assert_eq!(again.chunks, first.chunks);
     assert_eq!(again.player, first.player);
@@ -166,8 +171,9 @@ fn a_world_comes_back_the_same_in_a_new_game() {
 fn loading_undoes_what_changed_since_the_save() {
     let mut sim = generated();
     craft_things(&mut sim);
-    let save = sim.save();
+    let save = sim.save().unwrap();
     let mut before = generated();
+    before.set_chunk_store(std::sync::Arc::clone(sim.chunk_store()));
     before.load(&save).unwrap();
 
     work_the_door(&mut sim);
@@ -185,8 +191,9 @@ fn the_terrain_comes_back_with_the_values_it_was_saved_with() {
     let seed = sim.generator_names().position(|n| n == base::terrain::HILLS).unwrap();
     assert!(sim.tune_generator(seed, "seed", 9.0));
     dig_terrain(&mut sim);
-    let save = sim.save();
+    let save = sim.save().unwrap();
     let mut other = base_sim();
+    other.set_chunk_store(std::sync::Arc::clone(sim.chunk_store()));
     other.load(&save).unwrap();
     assert_eq!(other.world_settings().terrain_height, 12);
     assert!(other.generator_tunables(seed).iter().any(|t| t.name == "seed" && t.value == 9.0));
@@ -198,7 +205,7 @@ fn the_terrain_comes_back_with_the_values_it_was_saved_with() {
 #[test]
 fn a_save_from_before_endless_terrain_loads_quietly() {
     let mut sim = base_sim();
-    let mut save = sim.save();
+    let mut save = sim.save().unwrap();
     save.terrain.push(("world".into(), "terrain_width".into(), 11.0));
     let report = sim.load(&save).unwrap();
     assert_eq!(report.skipped, Vec::<String>::new(), "the old width is ignored");
@@ -208,7 +215,7 @@ fn a_save_from_before_endless_terrain_loads_quietly() {
 fn what_a_missing_mod_named_is_left_out() {
     let mut sim = generated();
     craft_things(&mut sim);
-    let mut save = sim.save();
+    let mut save = sim.save().unwrap();
     let chunk = save.chunks.iter_mut().find(|c| c.lists.iter().any(|l| !l.is_empty())).unwrap();
     let list = chunk.lists.iter_mut().find(|l| !l.is_empty()).unwrap();
     list[0].0 = "gone:thing".into();
@@ -228,7 +235,7 @@ fn the_time_of_day_comes_back_from_a_save() {
     let mut sim = generated();
     sim.clock_mut().set_hours(20.5);
     sim.clock_mut().paused = true;
-    let save = sim.save();
+    let save = sim.save().unwrap();
     let mut other = generated();
     other.load(&save).unwrap();
     assert_eq!(other.clock().hours(), 20.5);
@@ -247,4 +254,97 @@ fn the_time_of_day_runs_with_the_ticks() {
         sim.step(&PlayerInput::default());
     }
     assert!((sim.clock().hours() - 7.0).abs() < 1e-6, "{}", sim.clock().hours());
+}
+
+/// Flies the player far enough away that the terrain they were on unloads, then back to `back`.
+fn away_and_back(sim: &mut Simulation, back: WorldPos) {
+    sim.teleport_player(WorldPos::at_boxel(base::TERRAIN_CENTER.offset(I64Vec3::new(600, 0, 200))));
+    sim.player_mut().unwrap().set_flying(true);
+    sim.stream_all();
+    sim.teleport_player(back);
+    sim.stream_all();
+}
+
+#[test]
+fn a_stored_chunk_leaves_memory_and_comes_back_the_same_light_and_all() {
+    let mut sim = generated();
+    let dug = dig_terrain(&mut sim);
+    let here = sim.player().unwrap().pos();
+    settle(&mut sim);
+    let before = sim.universe().main().export_chunk(dug);
+    sim.teleport_player(WorldPos::at_boxel(base::TERRAIN_CENTER.offset(I64Vec3::new(600, 0, 200))));
+    sim.player_mut().unwrap().set_flying(true);
+    sim.stream_all();
+    assert!(sim.universe().main().chunk(dug).is_none(), "unloaded");
+    assert!(!sim.edited_chunks().contains(&dug), "out of memory");
+    assert!(sim.chunk_store().read(dug).unwrap().is_some(), "in the store");
+    sim.teleport_player(here);
+    sim.stream_all();
+    sim.settle_light();
+    let after = sim.universe().main().export_chunk(dug);
+    assert_eq!(after.lists, before.lists);
+    assert_eq!(after.cells, before.cells);
+    for i in 0..CHUNK_VOLUME {
+        assert_eq!(after.light.at(i), before.light.at(i), "light at boxel {i}");
+    }
+    assert!(sim.edited_chunks().contains(&dug), "still counts as edited");
+}
+
+#[test]
+fn loading_undoes_edits_unloaded_since_the_save() {
+    let mut sim = generated();
+    let first = dig_terrain(&mut sim);
+    let save = sim.save().unwrap();
+    // A second hole elsewhere, carried off to the store by flying away.
+    sim.teleport_player(WorldPos::at_boxel(base::TERRAIN_CENTER.offset(I64Vec3::new(70, -40, 0))));
+    sim.stream_all();
+    settle(&mut sim);
+    let below = BoxelPos(sim.player().unwrap().pos().cell() - I64Vec3::Z);
+    sim.step(&PlayerInput { pitch: -89.0f32.to_radians(), use_pressed: true, use_held: true, ..Default::default() });
+    assert!(sim.universe().main().cell(below).is_empty(), "dug out");
+    let here = sim.player().unwrap().pos();
+    away_and_back(&mut sim, here);
+    assert!(sim.universe().main().cell(below).is_empty(), "came back from the store dug");
+
+    sim.load(&save).unwrap();
+    sim.teleport_player(here);
+    sim.stream_all();
+    assert!(!sim.universe().main().cell(below).is_empty(), "the hole dug since the save is gone");
+    assert!(sim.chunk_store().read(first).unwrap().is_some(), "the saved one stays");
+}
+
+#[test]
+fn regenerating_drops_stored_edits_until_a_load_brings_them_back() {
+    let mut sim = generated();
+    let dug = dig_terrain(&mut sim);
+    let below = BoxelPos(sim.player().unwrap().pos().cell() - I64Vec3::Z);
+    let save = sim.save().unwrap();
+    sim.generate_terrain().unwrap();
+    sim.stream_all();
+    assert!(!sim.universe().main().cell(below).is_empty(), "made again from scratch");
+    assert!(sim.chunk_store().read(dug).unwrap().is_none(), "the store forgets it too");
+    sim.load(&save).unwrap();
+    sim.stream_all();
+    assert!(sim.universe().main().cell(below).is_empty(), "back as saved");
+}
+
+#[test]
+fn a_save_from_before_the_store_moves_its_terrain_into_it() {
+    let mut sim = generated();
+    let dug = dig_terrain(&mut sim);
+    let below = BoxelPos(sim.player().unwrap().pos().cell() - I64Vec3::Z);
+    let mut save = sim.save().unwrap();
+    // A version 3 save held the edited terrain chunk itself.
+    let bytes = sim.chunk_store().read(dug).unwrap().unwrap();
+    save.chunks.push(sim::save::SavedChunk::from_bytes(&bytes).unwrap());
+    let mut old = save.to_bytes();
+    old[8..12].copy_from_slice(&3u32.to_le_bytes());
+
+    let mut other = base_sim();
+    other.load(&SaveData::from_bytes(&old).unwrap()).unwrap();
+    other.stream_all();
+    assert!(other.universe().main().cell(below).is_empty(), "the dug terrain is back");
+    let again = other.save().unwrap();
+    assert!(!again.chunks.iter().any(|c| c.pos == dug), "saved again, it's in the store, not the file");
+    assert!(other.chunk_store().read(dug).unwrap().is_some());
 }

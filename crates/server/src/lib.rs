@@ -3,15 +3,18 @@
 //! path whether or not the server is far away.
 
 use std::collections::HashSet;
+use std::sync::Arc;
 use std::sync::mpsc::{Receiver, Sender, channel};
 use std::thread::JoinHandle;
 
-use api::Tunables;
+use api::{Tunable, Tunables};
 use protocol::{ClientMsg, Command, Connection, Content, Defs, Event, ServerMsg, Snapshot, TuningSection, Welcome, WorldNote};
-use sim::{PlayerInput, SaveData, Simulation};
+use sim::{ChunkStore, PlayerInput, SaveData, Simulation};
 
+pub mod chunk_files;
 pub mod worlds;
 
+pub use chunk_files::ChunkFiles;
 pub use worlds::{DEFAULT_WORLD, WorldFile};
 
 /// Reads the sounds again from wherever the mods came from.
@@ -36,7 +39,14 @@ pub struct Server {
     /// Every chunk the client has, so it hears of changes only to those, and of every chunk
     /// streaming brings in or drops.
     has: HashSet<api::ChunkPos>,
+    /// Minutes between autosaves while playing; 0 for none. Tuned in the `saving` section.
+    autosave_minutes: f32,
+    /// Ticks since the world was last saved or loaded.
+    since_saved: u64,
 }
+
+/// Minutes between autosaves unless tuned.
+pub const AUTOSAVE_MINUTES: f32 = 5.0;
 
 impl Server {
     /// A server running `sim`, which must already have its mods loaded and its player spawned.
@@ -51,10 +61,15 @@ impl Server {
             loaded: false,
             fresh: None,
             has: HashSet::new(),
+            autosave_minutes: AUTOSAVE_MINUTES,
+            since_saved: 0,
         }
     }
 
     /// Saves and loads the world at `file`. `loaded` says `sim` was loaded from it already.
+    /// The simulation must already keep its edited terrain in the world's chunk store (see
+    /// [`WorldFile::chunk_files`]), as `game::load_world` sets it up, since terrain loads from
+    /// the store before the server exists.
     pub fn with_world(mut self, file: WorldFile, loaded: bool) -> Self {
         self.world = Some(file);
         self.loaded = loaded;
@@ -108,7 +123,7 @@ impl Server {
         match msg {
             ClientMsg::Input(input) => self.tick(&input),
             ClientMsg::Command(Command::ReloadSounds) => vec![ServerMsg::Sounds(self.reload_sounds())],
-            ClientMsg::Command(Command::SaveWorld) => vec![ServerMsg::World(self.save_world())],
+            ClientMsg::Command(Command::SaveWorld) => vec![ServerMsg::World(self.save_world(false))],
             ClientMsg::Command(Command::LoadWorld) => vec![ServerMsg::World(self.load_world())],
             ClientMsg::Command(Command::SaveWorldAs(name)) => vec![ServerMsg::World(self.save_world_as(&name))],
             ClientMsg::Command(Command::OpenWorld(name)) => vec![ServerMsg::World(self.open_world(&name))],
@@ -126,6 +141,11 @@ impl Server {
     fn tick(&mut self, input: &PlayerInput) -> Vec<ServerMsg> {
         self.sim.step(input);
         let mut out = Vec::new();
+        self.since_saved += 1;
+        let every = (self.autosave_minutes as f64 * 60.0 * Simulation::TICK_RATE) as u64;
+        if self.world.is_some() && every > 0 && self.since_saved >= every {
+            out.push(ServerMsg::World(self.save_world(true)));
+        }
         if self.sim.blocks().len() != self.blocks_sent {
             self.blocks_sent = self.sim.blocks().len();
             out.push(ServerMsg::Blocks(Box::new(self.sim.blocks().clone())));
@@ -217,24 +237,36 @@ impl Server {
         Ok(self.sim.sounds().to_vec())
     }
 
-    /// Writes the world to its file.
-    fn save_world(&mut self) -> WorldNote {
+    /// Writes the world to its file, and its edited terrain to its chunk store. `auto` says
+    /// it's an autosave.
+    fn save_world(&mut self, auto: bool) -> WorldNote {
+        self.since_saved = 0;
         let Some(file) = &self.world else { return WorldNote::Failed("this server has no world file".into()) };
-        match file.write(&self.sim.save()) {
-            Ok(()) => WorldNote::Saved { name: file.name.clone() },
+        match self.sim.save().and_then(|save| file.write(&save)) {
+            Ok(()) => WorldNote::Saved { name: file.name.clone(), auto },
             Err(e) => WorldNote::Failed(format!("saving: {e}")),
         }
     }
 
-    /// Saves the world as `name`, and plays on in that one.
+    /// Saves the world as `name`, and plays on in that one; the world left stays as it was
+    /// last saved.
     fn save_world_as(&mut self, name: &str) -> WorldNote {
         let Some(file) = &self.world else { return WorldNote::Failed("this server has no world file".into()) };
-        match file.sibling(name) {
-            Ok(file) => {
-                self.world = Some(file);
-                self.save_world()
+        if file.name == name {
+            return self.save_world(false);
+        }
+        let next = match file.sibling(name) {
+            Ok(next) => next,
+            Err(e) => return WorldNote::Failed(e),
+        };
+        self.since_saved = 0;
+        let saved = self.sim.save_as(Arc::new(next.chunk_files())).and_then(|save| next.write(&save));
+        match saved {
+            Ok(()) => {
+                self.world = Some(next);
+                WorldNote::Saved { name: name.to_owned(), auto: false }
             }
-            Err(e) => WorldNote::Failed(e),
+            Err(e) => WorldNote::Failed(format!("saving as {name}: {e}")),
         }
     }
 
@@ -260,16 +292,27 @@ impl Server {
             Ok(save) => save,
             Err(e) => return WorldNote::Failed(format!("opening: {e}")),
         };
-        if let WorldNote::Failed(why) = self.save_world() {
+        if save.is_none() && self.fresh.is_none() {
+            return WorldNote::Failed("this server can't start fresh worlds".into());
+        }
+        if let WorldNote::Failed(why) = self.save_world(false) {
             return WorldNote::Failed(format!("{why}; stayed in this world"));
         }
+        let store = Arc::new(next.chunk_files());
+        if save.is_none() {
+            // A world never saved has no chunks: any left in its folder go.
+            if let Err(e) = store.forget().and_then(|()| store.commit()) {
+                return WorldNote::Failed(format!("opening {name}: {e}; stayed in this world"));
+            }
+        }
         self.world = Some(next);
+        self.sim.set_chunk_store(store);
         match save {
             Some(save) => self.load(name, &save, false),
             None => {
-                let Some(fresh) = &self.fresh else { return WorldNote::Failed("this server can't start fresh worlds".into()) };
                 // Fresh, but with the terrain as it's tuned now.
-                let fresh = SaveData { terrain: self.sim.save().terrain, ..fresh.clone() };
+                let terrain = self.sim.snapshot().terrain;
+                let fresh = SaveData { terrain, ..self.fresh.clone().expect("checked above") };
                 self.load(name, &fresh, true)
             }
         }
@@ -277,6 +320,7 @@ impl Server {
 
     /// Puts the world back as `save` has it, as world `name`.
     fn load(&mut self, name: &str, save: &SaveData, fresh: bool) -> WorldNote {
+        self.since_saved = 0;
         match self.sim.load(save) {
             Ok(report) => {
                 self.generation_error = None;
@@ -292,6 +336,14 @@ impl Server {
     fn command(&mut self, command: Command) {
         let sim = &mut self.sim;
         match command {
+            Command::Tune { section, name, value } if section == "saving" => {
+                let mut values = Saving { autosave_minutes: self.autosave_minutes };
+                if values.set_tunable(&name, value) {
+                    self.autosave_minutes = values.autosave_minutes;
+                } else {
+                    eprintln!("server: no tuning value [{section}] {name}");
+                }
+            }
             Command::Tune { section, name, value } => {
                 if !tune(sim, &section, &name, value) {
                     eprintln!("server: no tuning value [{section}] {name}");
@@ -321,7 +373,9 @@ impl Server {
     }
 
     fn defs(&mut self) -> Defs {
-        let tuning = sections(&mut self.sim);
+        let mut tuning = sections(&mut self.sim);
+        let saving = Saving { autosave_minutes: self.autosave_minutes };
+        tuning.push(TuningSection { name: "saving".into(), values: saving.tunables() });
         let sim = &self.sim;
         Defs {
             player: sim.player_def().cloned(),
@@ -395,6 +449,25 @@ fn sections(sim: &mut Simulation) -> Vec<TuningSection> {
         add(format!("terrain {name}"), sim.generator_tunables(i));
     }
     out
+}
+
+/// The server's own saving values, tuned in the `saving` section.
+struct Saving {
+    autosave_minutes: f32,
+}
+
+impl Tunables for Saving {
+    fn tunables(&self) -> Vec<Tunable> {
+        vec![Tunable::new("autosave_minutes", self.autosave_minutes, 0.0, 60.0)]
+    }
+
+    fn set_tunable(&mut self, name: &str, value: f32) -> bool {
+        match name {
+            "autosave_minutes" => self.autosave_minutes = value.clamp(0.0, 60.0),
+            _ => return false,
+        }
+        true
+    }
 }
 
 /// Sets one value in one section (see [`sections`]). False if there's no such value.

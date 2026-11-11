@@ -46,6 +46,8 @@ bevy_egui = "0.39.1"
 kira = { version = "0.10.8", default-features = false, features = ["cpal", "ogg", "wav"] }
 # Trig that gives the same bits natively and in WebAssembly.
 libm = "0.2.16"
+# zstd in plain Rust, for stored chunks: the format the design doc names for disk and network.
+ruzstd = "0.8.3"
 # Data mods: TOML definitions and PNG textures.
 serde = { version = "1.0.229", features = ["derive"] }
 toml = "1.1.8"

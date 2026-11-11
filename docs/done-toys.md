@@ -3,6 +3,39 @@
 Moved out of `SLICES.md` on 2026-11-03 so the roadmap stays short. Each toy's full write-up, newest first, as it stood when it closed. `SLICES.md` keeps a one-line summary of each.
 
 
+#### Chunk storage (`toy-chunk-storage`)
+
+*Infrastructure: world generation stage 3.* **Stage:** Done (2026-11-11)
+
+*Goal:* edited chunks of unloaded columns go to disk instead of staying in memory, so memory stays flat however far you go and however much you edit; the world saves itself now and then. *Order note:* no toy needs this yet; taken at the user's request (2026-11-11), ahead of the suggested `fix-greedy-sparkles`, and as the groundwork for a dedicated server on another machine (the user: "if we split the server can we move the server to a other machine?").
+
+*Plan (approved 2026-11-11; the user's answers: edited chunks only, saves stay snapshots, clear zone stays, autosave yes):*
+- *Chunk bytes* (`sim`): one chunk as self-contained bytes, its occupant lists by block name and run-length cells, zstd-compressed; no light (worked out again). Meant to become the network's chunk format later; a trained dictionary waits for real chunks.
+- *Store* (`sim`): a `ChunkStore` trait (read a chunk, write chunks), so `sim` still does no file access. A column's worker asks the store before generating: a stored chunk replaces the generated one, then the column is lit. Unloading hands edited chunks to the store; `Stream.kept` goes.
+- *Region files* (`server::worlds`): `<world>/chunks/` holds region files of 16×16×16 chunks, each rewritten whole (`.part` then rename) on a background writer thread. Saves stay snapshots: chunks unloaded since the last save go to `<world>/unsaved/`; saving merges them into `chunks/`, F8 and opening another world throw them away, Save as copies the merged chunks.
+- *`world.bin`*: player, items, made blocks, blueprints, terrain values, time of day; no chunks. Version bumped; an old save still loads and its chunks move into the store on the next save.
+- *Autosave*: every 5 minutes while playing, tunable.
+- *Only edited chunks are stored* (the user, on storing all: worth it once generating a chunk gets costly; easy to switch later, as stored chunks already beat generated ones).
+- *Tests:* chunk bytes round trip and refuse damage; an edited chunk unloads, leaves memory and comes back from disk the same, light included; reload, Save as and Open behave as before; an old save loads and moves its chunks; a damaged region file stops the load instead of being saved over; save and load through the server; autosave fires.
+- *Done when:* (1) editing in many places while flying far, memory stays flat; (2) edits survive leaving, coming back, quitting and restarting; (3) F8, Save as and Open work as before; (4) an old world loads; (5) tests and clippy clean, quick bench no surprises.
+- *Out of scope:* LOD, saving creatures, the format on the network, dictionary training, removing the 1 km clear zone (storing chunks alone doesn't: the endless terrain would still run through the test area; logged in the backlog).
+- *Changed during Implement:* `world.bin` still holds the chunks outside the terrain (the test areas): they're always loaded, so only streamed terrain goes to the store. A save's version went to 4 with the layout unchanged, so older builds refuse a save whose terrain they'd miss.
+- *Implementation notes:* `sim::store` (`ChunkStore`, `MemoryStore`, `copy`, and `check_store`, the rules every store is tested against); `SavedChunk::to_bytes`/`from_bytes` (names inline, runs, zstd through `ruzstd`, plain Rust at its fastest level, about zstd's level 1, the same format the C library reads); `Stream.kept` replaced by the store, the terrain threads read stored chunks and the game thread names their blocks (blocks made while playing are newer than the threads' registry); `Simulation::save` now commits the store and returns `Result`, `save_as` copies into a new store, `snapshot` touches no store; `load` discards unsaved chunks first (so a crash's leftovers go too) and moves an old save's terrain into the store. `server::chunk_files::ChunkFiles`: region files, a writer thread, region indexes cached; `ApiError::Storage`. Server: `saving` tuning section with `autosave_minutes` (default 5, 0 for none), the note says AUTOSAVED; Save as onto the world's own name is a plain save; opening a never-saved world clears any chunks left in its folder.
+- *Verify (2026-11-11):* (1)–(4) met in play, the user: "ok I played it it works". (5) tests and clippy clean (above), and the quick bench, `master` (7ed5ab2) against this branch:
+
+  | spot | master ms | branch ms | change | master fps | branch fps | master 1% low | branch 1% low |
+  |---|---|---|---|---|---|---|---|
+  | recorded | 19.4 | 19.2 | -1% | 51.5 | 52.1 | 40.7 | 42.6 |
+  | overlook | 30.3 | 28.6 | -6% | 33.0 | 35.0 | 29.2 | 33.0 |
+  | lake | 17.8 | 16.0 | -10% | 56.3 | 62.4 | 45.3 | 51.6 |
+
+  Nothing flagged slower. Drawing didn't change, so the faster rows are run-to-run noise (the bench's spots have no edited terrain to store); the screenshots match master's.
+- *Measured:* packing a chunk takes about 0.1 ms for terrain-like runs, 2.5 ms for the worst case (every boxel a different run); copies of the user's five worlds load, move their edited terrain into region files (1, 3 and 31 chunks), save in 5–7 ms and load again.
+- *Tests:* 775 pass across the workspace (10 ignored, the timing harnesses), clippy clean. New: stored chunk bytes (2), the store rules on memory and on files (3), region places, files reopened, many puts leaving memory, a damaged region refused and not saved over (4); sim: a stored chunk leaves memory and comes back with the same light, loading undoes edits unloaded since the save, regenerating drops stored edits until a load, an old save's terrain moves into the store; server: edited terrain to the folder and back in a new game, Save as copies and leaves the old world as last saved, autosave fires and stops at 0.
+- *Decisions:* only edited terrain is stored, and generated chunks are made again (switch to storing every chunk once generating gets costly, or once generator changes leave seams by old edits); saves stay snapshots: chunks unloaded since the last save sit in `unsaved/` until a save merges them, and a load (F8, Open, startup) throws them away, so a crash loses what it did before; `world.bin` holds what's always loaded, region files hold streamed terrain; the store is a `sim` trait and the files are the server's, so `sim` still touches no files; autosave belongs to the server (`saving` section), not the world.
+- *Deferred:* every save packs and rewrites all the edited terrain loaded at the time, changed or not (5–7 ms on the user's worlds; track chunks changed since the last save once it shows); packing happens on the game thread when a column unloads (about 0.1 ms a chunk, 2.5 ms in the worst case); a trained zstd dictionary; using the format on the network; the clear zone (backlog: The test area on the terrain).
+- *API debt:* none new. `ApiError::Storage` is an engine error mods never cause.
+
 #### Terrain streaming (`toy-terrain-streaming`)
 
 *Infrastructure: world generation stage 2.* **Stage:** Done (2026-11-11)

@@ -164,6 +164,8 @@ pub struct Simulation {
     /// boxels marked changed need relighting. False until the first time, and after the world
     /// is made again or loaded.
     light_settled: bool,
+    /// Block names stored terrain asked for that no mod registers, each told once.
+    missing_names: HashSet<String>,
     /// Seconds the last relight took, for the developer readout.
     relight_seconds: f32,
 }
@@ -296,10 +298,11 @@ impl Simulation {
     }
 
     /// Makes the terrain again from scratch with its current tuning: every column is dropped
-    /// (edits in them are lost) and the columns around the player load again, those within
-    /// [`Simulation::NEAR`] before this returns and the rest over the next ticks. Fails if
-    /// generating failed.
+    /// (edits in them are lost, stored ones too, until a load brings back the last save) and
+    /// the columns around the player load again, those within [`Simulation::NEAR`] before this
+    /// returns and the rest over the next ticks. Fails if generating failed.
     pub fn generate_terrain(&mut self) -> Result<StreamStats, ApiError> {
+        self.stream.store().forget().map_err(ApiError::Storage)?;
         self.drop_terrain();
         self.stream_terrain(Some(Self::NEAR));
         self.settle_light();
@@ -316,10 +319,10 @@ impl Simulation {
     /// Seconds a tick may spend bringing generated columns in, beyond the first.
     const STREAM_BUDGET: f32 = 0.004;
 
-    /// Drops every column of terrain and forgets its edits, so it's made again from scratch.
+    /// Drops every column of terrain and forgets the edits loaded in it, so it's made again
+    /// (from scratch, or from the store) as it streams back in.
     fn drop_terrain(&mut self) {
         let height = self.world.terrain_height;
-        self.stream.forget_kept();
         let rows: Vec<_> = self.terrains.iter().map(|def| crate::stream::rows(def, self.stream.height())).collect();
         for column in self.stream.reset(height) {
             let grid = self.universe.main_mut();
@@ -395,22 +398,27 @@ impl Simulation {
             .collect()
     }
 
-    /// Drops a column of terrain, keeping the chunks edited in it to bring back later.
+    /// Drops a column of terrain, handing the chunks edited in it to the store to bring back
+    /// later.
     fn drop_column(&mut self, column: Column) {
         let rows = crate::stream::rows(&self.terrains[column.terrain], self.stream.height());
         let grid = self.universe.main_mut();
         let chunks: Vec<ChunkPos> = column.chunks(rows).collect();
+        let mut stored = Vec::new();
         for &pos in &chunks {
             if self.changed.edited().contains(&pos) {
-                self.stream.keep(grid.export_chunk(pos));
+                stored.push((pos, save::name_chunk(&self.blocks, &grid.export_chunk(pos)).to_bytes()));
                 self.changed.forget_edits(pos);
             }
             grid.remove_chunk(pos);
         }
+        if !stored.is_empty() {
+            self.stream.store().put(stored);
+        }
         self.stream.drop_column(column, chunks.into_iter());
     }
 
-    /// Brings generated columns into the world: their chunks (or the edited ones kept from
+    /// Brings generated columns into the world: their chunks (or the edited ones stored from
     /// before), light across their seams, and anything buried by them lifted out.
     fn bring_in(&mut self, done: Vec<crate::stream::Done>) {
         let start = std::time::Instant::now();
@@ -425,17 +433,22 @@ impl Simulation {
                     continue;
                 }
             };
-            let grid = self.universe.main_mut();
             let positions: Vec<ChunkPos> = chunks.iter().map(|c| c.pos).collect();
-            for chunk in chunks {
-                match self.stream.take_kept(chunk.pos) {
-                    Some(edited) => {
-                        grid.import_chunk(&edited);
-                        self.changed.mark_edited(chunk.pos);
-                        kept.push(chunk.pos);
-                    }
-                    None => grid.import_chunk(&chunk),
+            let mut report = crate::LoadReport::default();
+            let stored: Vec<crate::ChunkData> = d.stored.iter().map(|c| save::unname_chunk(&self.blocks, c, &mut report)).collect();
+            for skipped in report.skipped {
+                if self.missing_names.insert(skipped.clone()) {
+                    eprintln!("loading stored terrain: left out {skipped}");
                 }
+            }
+            let grid = self.universe.main_mut();
+            for chunk in chunks.iter().filter(|c| !stored.iter().any(|s| s.pos == c.pos)) {
+                grid.import_chunk(chunk);
+            }
+            for edited in stored.into_iter().filter(|s| positions.contains(&s.pos)) {
+                grid.import_chunk(&edited);
+                self.changed.mark_edited(edited.pos);
+                kept.push(edited.pos);
             }
             new.extend_from_slice(&positions);
             columns.insert((d.column.x, d.column.y));

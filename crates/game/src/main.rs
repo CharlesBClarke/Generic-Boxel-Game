@@ -36,7 +36,8 @@ fn main() {
         Some(_) => eprintln!("world: {} (loaded from {})", world.name, world.path().display()),
         None => eprintln!("world: {} (new; saves to {})", world.name, world.path().display()),
     }
-    let (sim, fresh) = game::load_world(&data, code, save.as_ref()).unwrap_or_else(|e| fail(e.to_string()));
+    let store = std::sync::Arc::new(world.chunk_files());
+    let (sim, fresh) = game::load_world(&data, code, save.as_ref(), Some(store)).unwrap_or_else(|e| fail(e.to_string()));
     let sounds = data.clone();
     let server = server::Server::new(sim)
         .with_sound_source(Box::new(move || data_mods::load_sounds(&sounds).map_err(|e| e.to_string())))

@@ -149,7 +149,7 @@ impl ClientWorld {
                         self.look_to = Some(*look);
                         self.world_name = Some(name.clone());
                     }
-                    WorldNote::Saved { name } => self.world_name = Some(name.clone()),
+                    WorldNote::Saved { name, .. } => self.world_name = Some(name.clone()),
                     WorldNote::Failed(_) => {}
                 }
                 self.world_notes.push(note);
