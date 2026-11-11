@@ -104,7 +104,7 @@ A run of small toy slices. Each one takes a single game-feel feature that doesn'
 
 ### Current toy
 
-**AO in the shader** (`toy-ao-in-shader`, from the backlog entry of the same name). **Stage:** Test (plan approved 2026-11-11; built as planned, plus an "ambient occlusion" draw switch in the Shading section and the bench's `shading.ao`, for comparing on and off).
+**AO in the shader** (`toy-ao-in-shader`, from the backlog entry of the same name). **Stage:** Verify (plan approved 2026-11-11; built as planned, plus an "ambient occlusion" draw switch in the Shading section and the bench's `shading.ao`, for comparing on and off).
 
 *Goal:* corner AO stops blocking greedy merges, for the triangle count (bench terrain ~0.29M toward ~0.15M). Notes: `docs/notes/greedy-meshing.md`.
 
@@ -117,6 +117,21 @@ A run of small toy slices. Each one takes a single game-feel feature that doesn'
 - Decided: `fix-greedy-sparkles` not first (the user: "we don't need to fix sparkels unless it would require more work if we do it latter"; it doesn't), so more sparkles in play are expected. The blend across a boxel changes a little (smooth instead of two triangles), judged in play. Light stays baked. Texel AO stays with the GPU boxel grid.
 
 *Done when:* (1) AO looks the same in play: wall bases, steps, the house, no seams or creases at quad edges; (2) strength, `full_at` and curve tune live, `reach` waits for Apply; (3) the bench terrain drops from ~0.29M toward ~0.15M triangles; (4) the quick bench is run, any slower row explained; (5) remesh time measured and acceptable; (6) tests pass, clippy clean.
+
+*Test and verify notes (2026-11-11)*
+- Tests: 777 pass across the workspace, clippy clean. New or changed: a lone dark corner fades evenly (replaces the diagonal test), a stair's riser foot darkens mid-boxel (and not its top at half reach), darkened corners merge as much as plain ones, a floor along a wall is one quad; the merged-looks-the-same pixel tests now include AO as the shader works it out.
+- Terrain (`time_meshing_the_terrain`, 224 m view, 3391 chunks): 273,263 merged quads before, 185,080 after (−32%); merging with AO off entirely gives 185,034, so AO no longer blocks merges. Meshing it all: unmerged 1.07 → 1.29 s, merged 1.37 → 1.42 s.
+- An edit in `house`'s most finely cut chunk (`time_edits_in_a_save`): ~41 → ~47 ms merged (four cubes measured per corner instead of one box).
+- Played by the user: "I checked them and the AO works" (the look, the live sliders with `reach` waiting for Apply, the on/off switch).
+- Quick bench (`master` c4dd088 vs work 788110c), nothing flagged slower:
+
+  | spot | A ms | B ms | change |
+  |---|---|---|---|
+  | recorded | 19.1 | 18.1 | −6% |
+  | overlook | 29.9 | 26.7 | −11% (faster) |
+  | lake | 17.2 | 16.7 | −3% |
+
+  Less than the triangle count's drop: the bench's spots draw the full 512 m view, and each pixel now works AO out (four corner sums), so part of the saving goes to the fragment shader. Screenshots match `master`'s by eye.
 
 **Waiting for a play check** (remind the user at the start of every session, and at good moments during one, until they confirm; then delete the line):
 
