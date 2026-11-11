@@ -117,6 +117,16 @@ fn sky_bodies(a: Atmosphere, dir: vec3<f32>, color: vec3<f32>) -> vec3<f32> {
     return out;
 }
 
+// A tone-mapped color with Bevy's screen-space dither added, as its own materials do: a dark
+// gradient (the night sky) spans only a few of the screen's 256 steps, and without the noise
+// those show as bands. `frag` is the pixel's position on screen.
+fn dithered(color: vec3<f32>, frag: vec2<f32>) -> vec3<f32> {
+    let x = (vec3<f32>(dot(vec2<f32>(171.0, 231.0), frag)) / vec3<f32>(103.0, 71.0, 97.0));
+    let dither = (fract(x) - 0.5) / 255.0;
+    // Dithered in the screen's gamma, then back: the output texture is sRGB.
+    return pow(max(pow(max(color, vec3<f32>(0.0)), vec3<f32>(1.0 / 2.2)) + dither, vec3<f32>(0.0)), vec3<f32>(2.2));
+}
+
 // How much fog there is at `distance` meters, from 0 to the fog's thickness.
 fn fog_amount(a: Atmosphere, distance: f32) -> f32 {
     let t = clamp((distance - a.fog.x) / max(a.fog.y - a.fog.x, 0.001), 0.0, 1.0);

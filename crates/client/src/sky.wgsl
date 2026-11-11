@@ -2,7 +2,7 @@
 // pixel looks (see `client::shading`).
 
 #import bevy_pbr::mesh_view_bindings::view
-#import boxel::atmosphere::{Atmosphere, sky, sky_bodies}
+#import boxel::atmosphere::{Atmosphere, dithered, sky, sky_bodies}
 #ifdef TONEMAP_IN_SHADER
 #import bevy_core_pipeline::tonemapping::tone_mapping
 #endif
@@ -36,6 +36,9 @@ fn fragment(in: VertexOutput) -> @location(0) vec4<f32> {
     var color = vec4<f32>(sky_bodies(atmosphere, dir, sky(atmosphere, dir)), 1.0);
 #ifdef TONEMAP_IN_SHADER
     color = tone_mapping(color, view.color_grading);
+#ifdef DEBAND_DITHER
+    color = vec4<f32>(dithered(color.rgb, in.clip_position.xy), 1.0);
+#endif
 #endif
     return color;
 }

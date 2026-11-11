@@ -10,7 +10,7 @@
 #import bevy_pbr::mesh_view_types::DIRECTIONAL_LIGHT_FLAGS_SHADOWS_ENABLED_BIT
 #import bevy_pbr::shadows::{fetch_directional_shadow, cascade_debug_visualization}
 #import bevy_pbr::view_transformations::position_world_to_clip
-#import boxel::atmosphere::{Atmosphere, sky, fog_amount, ambient_light, sun_light, moon_light, sheen, edge_shade, sky_reach, block_light}
+#import boxel::atmosphere::{Atmosphere, dithered, sky, fog_amount, ambient_light, sun_light, moon_light, sheen, edge_shade, sky_reach, block_light}
 #ifdef TONEMAP_IN_SHADER
 #import bevy_core_pipeline::tonemapping::tone_mapping
 #endif
@@ -257,6 +257,9 @@ fn fragment(in: VertexOutput) -> @location(0) vec4<f32> {
     var color = vec4<f32>(rgb, base.a);
 #ifdef TONEMAP_IN_SHADER
     color = tone_mapping(color, view.color_grading);
+#ifdef DEBAND_DITHER
+    color = vec4<f32>(dithered(color.rgb, in.clip_position.xy), color.a);
+#endif
 #endif
     return color;
 }
