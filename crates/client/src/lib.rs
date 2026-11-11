@@ -678,16 +678,19 @@ fn update_hud(
     chunk_meshes: Option<Res<ChunkMeshes>>,
     (view, drawn, background): (Res<view::ViewTuning>, Res<view::ViewStats>, Res<meshing::BackgroundMesher>),
     mut text: Single<&mut Text, With<Hud>>,
+    mut meter: Local<perf::FpsMeter>,
 ) {
+    // Counted before the player check, so the average is ready when the HUD first shows.
+    let rate = meter.frame(time.delta_secs_f64());
     let Some(player) = world.player() else {
         return;
     };
     let cost = world_cost(&world, chunk_meshes.as_deref(), &view, &drawn, background.pending());
     let pos = player.pos();
     let precise = pos.cell().as_dvec3() + pos.offset().as_dvec3();
-    let fps = 1.0 / time.delta_secs().max(1e-6);
+    let fps = rate.map_or_else(|| "--".to_string(), |(fps, ms)| format!("{fps:.0} fps ({ms:.1} ms)"));
     text.0 = format!(
-        "pos {:.2}, {:.2}, {:.2}  speed {:.1} m/s  last landing {:.1} m/s ({})\norigin {}, {}, {}\n{cost}\n{} | {:.0} fps | cap {} ({})\n{}",
+        "pos {:.2}, {:.2}, {:.2}  speed {:.1} m/s  last landing {:.1} m/s ({})\norigin {}, {}, {}\n{cost}\n{} | {} | cap {} ({})\n{}",
         precise.x,
         precise.y,
         precise.z,

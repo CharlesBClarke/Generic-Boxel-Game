@@ -5,7 +5,7 @@
 //! where the player stood and looked, and the `perf_spot` key goes back there, in this run or
 //! a later one, so two builds can be measured from the same view. A line also keeps the window's
 //! size, the sun, and the shading and shadow values that differ from their defaults. For
-//! measuring without pressing keys, see `bench`.
+//! measuring without pressing keys, see `bench`. Also the HUD's steady fps readout, [`FpsMeter`].
 
 use std::path::PathBuf;
 use std::time::Instant;
@@ -250,9 +250,70 @@ pub fn changed_values(sections: &[(&str, &dyn Tunables, &dyn Tunables)]) -> Stri
     if out.is_empty() { "-".into() } else { out.join(" ") }
 }
 
+/// The HUD's frame rate: frames and their time added up, and shown as an average that
+/// refreshes every [`FpsMeter::EVERY`] seconds, so it holds still long enough to read.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct FpsMeter {
+    frames: u32,
+    seconds: f64,
+    /// The last average: frames a second and milliseconds a frame. None until the first.
+    shown: Option<(f64, f64)>,
+}
+
+impl FpsMeter {
+    pub const EVERY: f64 = 0.5;
+
+    /// Counts a frame that took `seconds`, and gives what to show.
+    pub fn frame(&mut self, seconds: f64) -> Option<(f64, f64)> {
+        self.frames += 1;
+        self.seconds += seconds.max(0.0);
+        if self.seconds >= Self::EVERY {
+            self.shown = Some((self.frames as f64 / self.seconds, self.seconds * 1000.0 / self.frames as f64));
+            *self = Self { shown: self.shown, ..Self::default() };
+        }
+        self.shown
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn steady_frames_show_their_exact_rate() {
+        let mut meter = FpsMeter::default();
+        let mut shown = None;
+        for _ in 0..100 {
+            shown = meter.frame(1.0 / 125.0);
+        }
+        let (fps, ms) = shown.unwrap();
+        assert!((fps - 125.0).abs() < 1e-6 && (ms - 8.0).abs() < 1e-6, "{fps} {ms}");
+    }
+
+    #[test]
+    fn the_number_holds_between_refreshes() {
+        let mut meter = FpsMeter::default();
+        assert_eq!(meter.frame(0.01), None, "nothing to show before the first half second");
+        let first = loop {
+            if let Some(shown) = meter.frame(0.01) {
+                break shown;
+            }
+        };
+        assert!((first.0 - 100.0).abs() < 1e-6, "{first:?}");
+        // A slow frame and then fast ones: the shown number waits for the next refresh.
+        assert_eq!(meter.frame(0.1), Some(first));
+        assert_eq!(meter.frame(0.001), Some(first));
+        // Then the average takes in all of them.
+        let mut next = Some(first);
+        for _ in 0..400 {
+            next = meter.frame(0.001);
+            if next != Some(first) {
+                break;
+            }
+        }
+        let (fps, _) = next.unwrap();
+        assert!(fps < 1000.0 && fps > 100.0, "the slow frame pulls the average down: {fps}");
+    }
 
     #[test]
     fn a_spot_round_trips_through_its_line() {
