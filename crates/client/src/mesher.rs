@@ -163,20 +163,27 @@ impl Tunables for AoTuning {
 pub type TexelBox = ([i32; 3], [i32; 3]);
 
 /// The boxes filled by everything in the 27 boxels around (and including) the boxel at `at`,
-/// in texels relative to that boxel, turned as they stand in the world.
-fn neighborhood<'a>(at: I64Vec3, occupants_at: impl Fn(I64Vec3) -> &'a [Occupant], blocks: &BlockRegistry) -> Vec<TexelBox> {
+/// in texels relative to that boxel, turned as they stand in the world. No two overlap:
+/// occupants sharing a boxel may (a post through a slab), so a boxel with several gives the
+/// boxes of all their texels together instead of each one's own.
+fn neighborhood<'a>(at: I64Vec3, occupants_at: impl Fn(I64Vec3) -> &'a [Occupant], blocks: &BlockRegistry, shapes: &TurnedShapes) -> Vec<TexelBox> {
     let size = BlockBox::SIZE as i32;
     let mut boxes = Vec::new();
     for d in (0..27).map(|i| [i % 3 - 1, i / 3 % 3 - 1, i / 9 - 1]) {
-        for occupant in occupants_at(at + I64Vec3::new(d[0] as i64, d[1] as i64, d[2] as i64)) {
-            let Some(def) = blocks.get(occupant.block).filter(|_| !blocks.is_hidden(occupant.block)) else {
-                continue;
-            };
-            for &b in &def.shape {
-                let b = occupant.orientation.apply_box(b);
-                let shift = |p: [u8; 3]| [0, 1, 2].map(|i| p[i] as i32 + d[i] * size);
+        let shown: Vec<Occupant> = occupants_at(at + I64Vec3::new(d[0] as i64, d[1] as i64, d[2] as i64))
+            .iter()
+            .copied()
+            .filter(|o| !blocks.is_hidden(o.block) && blocks.get(o.block).is_some())
+            .collect();
+        let shift = |p: [u8; 3]| [0, 1, 2].map(|i| p[i] as i32 + d[i] * size);
+        if let [one] = shown[..] {
+            for &b in &blocks.get(one.block).expect("shown blocks are registered").shape {
+                let b = one.orientation.apply_box(b);
                 boxes.push((shift(b.min), shift(b.max)));
             }
+        } else if !shown.is_empty() {
+            let all = shown.iter().fold(ShapeGrid::EMPTY, |all, &o| all.union(&shapes.of(o, blocks)));
+            boxes.extend(all.to_boxes().into_iter().map(|b| (shift(b.min), shift(b.max))));
         }
     }
     boxes
@@ -211,7 +218,7 @@ fn gather<'a>(
     };
     let count: usize = around().map(|(_, o)| blocks.get(o.block).map_or(0, |def| def.shape.len())).sum();
     if count <= dense_at {
-        return Neighborhood { boxes: neighborhood(at, occupants_at, blocks), dense: None };
+        return Neighborhood { boxes: neighborhood(at, occupants_at, blocks, shapes), dense: None };
     }
     const N: usize = BlockBox::SIZE as usize;
     let mut rows = vec![0u64; SPAN * SPAN];
@@ -282,7 +289,7 @@ impl Neighborhood {
     }
 
     /// How many texels are filled in the box from `lo` to `hi`, in texels relative to the
-    /// middle boxel. Boxes of one boxel's occupants never overlap, so adding up how much of
+    /// middle boxel. Its boxes never overlap (see [`neighborhood`]), so adding up how much of
     /// each falls inside counts each texel once.
     fn filled(&self, lo: [i32; 3], hi: [i32; 3]) -> i32 {
         if let Some(dense) = &self.dense {
@@ -435,7 +442,7 @@ fn occlusion(around: &Neighborhood, corner: [i32; 3], normal: [i32; 3], reach: i
     let (mut lo, mut hi) = (corner.map(|c| c - reach), corner.map(|c| c + reach));
     if normal[axis] > 0 { lo[axis] = corner[axis] } else { hi[axis] = corner[axis] }
     let filled = around.filled(lo, hi);
-    // Boxes of one boxel's occupants never overlap, but clamp in case.
+    // A neighborhood's boxes never overlap, but clamp in case.
     (filled as f32 / (4 * reach * reach * reach) as f32).min(1.0)
 }
 
@@ -1676,6 +1683,67 @@ mod tests {
                 let boxes = mesh_chunk_with(&grid, chunk, &blocks, &volumes, &ao, usize::MAX);
                 let texels = mesh_chunk_with(&grid, chunk, &blocks, &volumes, &ao, 0);
                 assert!(boxes.quad_count() > 1000, "{}", boxes.quad_count());
+                same(&boxes, &texels);
+            }
+        }
+    }
+
+    /// Stairs of two steps and of four, both rising toward +Y, as crafting cuts them into boxes.
+    fn two_stairs() -> (BlockRegistry, Volumes, BlockId, BlockId) {
+        let mut blocks = BlockRegistry::default();
+        let mut four = api::ShapeGrid::EMPTY;
+        for z in 0..16 {
+            for y in 0..16 {
+                for x in 0..16 {
+                    four.set(x, y, z, z < (y / 4 + 1) * 4);
+                }
+            }
+        }
+        let two = vec![SLAB, BlockBox::new([0, 8, 8], [16, 16, 16])];
+        let two = blocks.register(BlockDef::new("test:two_steps", true, [200, 0, 0]).with_shape(two)).unwrap();
+        let four = blocks.register(BlockDef::new("test:four_steps", true, [0, 0, 200]).with_shape(four.to_boxes())).unwrap();
+        let volumes = Volumes::build(&looks(&[]), &blocks);
+        (blocks, volumes, two, four)
+    }
+
+    #[test]
+    fn overlapping_stairs_in_a_boxel_show_every_step_top() {
+        let (blocks, volumes, two, four) = two_stairs();
+        for cell in [[Occupant::new(four), Occupant::new(two)], [Occupant::new(two), Occupant::new(four)]] {
+            let mut grid = Grid::default();
+            grid.set_cell(BoxelPos::new(3, 3, 3), &cell);
+            let mesh = super::mesh_chunk(&grid, ChunkPos::new(0, 0, 0), &blocks, &volumes, &AoTuning::OFF);
+            // Each texel row across the stairs shows a top at the taller stair's height there.
+            // (Faces inside the other stair may be drawn too, unseen, as under a post on a slab.)
+            let tops: Vec<_> = quads(&mesh).into_iter().filter(|(n, _, _)| n[2] == 1.0).collect();
+            for y in 0..16 {
+                let height = if y < 8 { 8.max((y / 4 + 1) * 4) } else { 16 };
+                let (y, z) = (3.0 + (y as f32 + 0.5) / 16.0, 3.0 + height as f32 / 16.0);
+                let shown = tops.iter().any(|(_, min, max)| min[1] < y && y < max[1] && max[2] == z && min[0] == 3.0 && max[0] == 4.0);
+                assert!(shown, "no top at z {z} over y {y}, placed as {cell:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn overlapping_occupants_mesh_the_same_through_texels() {
+        let (blocks, volumes, two, four) = two_stairs();
+        let upside_down = Orientation::quarter_turns(0, 2);
+        let cells = [
+            [Occupant::new(four), Occupant::new(two)],
+            [Occupant::new(two), Occupant::new(four)],
+            [Occupant::new(two), Occupant::turned(four, upside_down)],
+            [Occupant::turned(two, upside_down), Occupant::new(four)],
+        ];
+        for cell in cells {
+            // A row of the pair, so faces between neighbors are read through overlapping ones.
+            let mut grid = Grid::default();
+            for x in 3..6 {
+                grid.set_cell(BoxelPos::new(x, 3, 3), &cell);
+            }
+            for ao in [AoTuning::OFF, AoTuning::default()] {
+                let boxes = mesh_chunk_with(&grid, ChunkPos::new(0, 0, 0), &blocks, &volumes, &ao, usize::MAX);
+                let texels = mesh_chunk_with(&grid, ChunkPos::new(0, 0, 0), &blocks, &volumes, &ao, 0);
                 same(&boxes, &texels);
             }
         }
