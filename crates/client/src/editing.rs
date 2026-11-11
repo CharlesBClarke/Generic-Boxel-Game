@@ -151,6 +151,8 @@ pub(crate) struct ChunkMeshes {
     /// How long the last big meshing took (the startup's, or a remesh of many chunks), and of
     /// how many chunks.
     pub last_meshing: Option<(usize, f32)>,
+    /// Whether the meshes have their faces merged (see [`crate::greedy`]).
+    pub merged: bool,
 }
 
 /// Whether the mouse is captured for playing. Clicks only edit while it is, so the click
@@ -443,7 +445,7 @@ pub(crate) fn update_hidden_ghosts(
 const BIG_REMESH: usize = 64;
 
 /// Rebuilds the meshes of chunks the simulation changed, and of every chunk when the ambient
-/// occlusion tuning changes.
+/// occlusion tuning or whether faces merge changes.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn remesh_changed_chunks(
     mut commands: Commands,
@@ -453,6 +455,7 @@ pub(crate) fn remesh_changed_chunks(
     mut chunk_meshes: ResMut<ChunkMeshes>,
     mut handles: Query<&mut Mesh3d, With<ChunkMesh>>,
     ao: Res<mesher::AoTuning>,
+    view: Res<crate::view::ViewSwitches>,
     mut hidden: ResMut<HiddenGhosts>,
     mut heights: ResMut<crate::heights::Heights>,
 ) {
@@ -461,12 +464,13 @@ pub(crate) fn remesh_changed_chunks(
     let mut changed = world.take_changed_chunks();
     heights.changed(&changed);
     let grid = world.universe().main();
-    if ao.is_changed() && !ao.is_added() {
+    if (ao.is_changed() && !ao.is_added()) || chunk_meshes.merged != view.merge_faces {
+        chunk_meshes.merged = view.merge_faces;
         changed = grid.chunks().map(|(pos, _)| pos).collect();
     }
     hidden.dirty |= !changed.is_empty();
     let start = std::time::Instant::now();
-    let meshed = mesher::mesh_chunks(grid, &changed, world.blocks(), &chunk_meshes.volumes, &ao);
+    let meshed = mesher::mesh_chunks(grid, &changed, world.blocks(), &chunk_meshes.volumes, &ao, view.merge_faces);
     if changed.len() >= BIG_REMESH {
         chunk_meshes.last_meshing = Some((changed.len(), start.elapsed().as_secs_f32()));
     }
@@ -1035,7 +1039,7 @@ mod remesh_timing {
         let ticked = start.elapsed();
         let changed = world.take_changed_chunks();
         let start = std::time::Instant::now();
-        let meshed = mesher::mesh_chunks(world.universe().main(), &changed, world.blocks(), &volumes, &ao);
+        let meshed = mesher::mesh_chunks(world.universe().main(), &changed, world.blocks(), &volumes, &ao, true);
         let meshing = start.elapsed();
         let quads: Vec<usize> = meshed.iter().map(|m| m.quad_count()).collect();
         let start = std::time::Instant::now();
@@ -1101,14 +1105,18 @@ mod remesh_timing {
             step(&mut link, world, &input);
             let ticked = start.elapsed();
             let changed = world.take_changed_chunks();
-            let start = std::time::Instant::now();
-            let meshed = mesher::mesh_chunks(world.universe().main(), &changed, world.blocks(), &volumes, &ao);
-            let meshing = start.elapsed();
-            let quads: Vec<usize> = meshed.iter().map(|m| m.quad_count()).collect();
-            let start = std::time::Instant::now();
-            let bevy: Vec<_> = meshed.into_iter().map(crate::to_bevy_mesh).collect();
-            let converting = start.elapsed();
-            println!("{what}: tick {ticked:?}; {} chunks, quads {quads:?}: meshed {meshing:?}, converted {converting:?}", bevy.len());
+            println!("{what}: tick {ticked:?}; {} chunks", changed.len());
+            for merge in [false, true] {
+                let start = std::time::Instant::now();
+                let meshed = mesher::mesh_chunks(world.universe().main(), &changed, world.blocks(), &volumes, &ao, merge);
+                let meshing = start.elapsed();
+                let quads: Vec<usize> = meshed.iter().map(|m| m.quad_count()).collect();
+                let start = std::time::Instant::now();
+                let bevy: Vec<_> = meshed.into_iter().map(crate::to_bevy_mesh).collect();
+                let converting = start.elapsed();
+                let merged = if merge { "merged" } else { "unmerged" };
+                println!("  {merged}: quads {quads:?}: meshed {meshing:?}, converted {converting:?} ({})", bevy.len());
+            }
             // A quiet tick after, to see what the tick costs with nothing happening.
             let start = std::time::Instant::now();
             step(&mut link, world, &PlayerInput { yaw: input.yaw, pitch: input.pitch, ..Default::default() });
@@ -1137,16 +1145,15 @@ mod remesh_timing {
         let ao = mesher::AoTuning::default();
         let grid = world.universe().main();
         let chunks: Vec<_> = grid.chunks().map(|(pos, _)| pos).collect();
-        let start = std::time::Instant::now();
-        let meshes = mesher::mesh_chunks(grid, &chunks, world.blocks(), &volumes, &ao);
-        let took = start.elapsed();
-        let with_faces = meshes.iter().filter(|m| !m.is_empty()).count();
-        let quads: usize = meshes.iter().map(|m| m.quad_count()).sum();
-        println!(
-            "generated {} chunks in {:.2} s; meshed {} ({with_faces} with faces, {quads} quads) in {took:?}",
-            generated.chunks,
-            generated.seconds,
-            chunks.len()
-        );
+        println!("generated {} chunks in {:.2} s", generated.chunks, generated.seconds);
+        for merge in [false, true] {
+            let start = std::time::Instant::now();
+            let meshes = mesher::mesh_chunks(grid, &chunks, world.blocks(), &volumes, &ao, merge);
+            let took = start.elapsed();
+            let with_faces = meshes.iter().filter(|m| !m.is_empty()).count();
+            let quads: usize = meshes.iter().map(|m| m.quad_count()).sum();
+            let merged = if merge { "merged" } else { "unmerged" };
+            println!("meshed {} ({with_faces} with faces, {quads} quads, {merged}) in {took:?}", chunks.len());
+        }
     }
 }

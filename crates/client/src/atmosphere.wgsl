@@ -151,8 +151,9 @@ fn sheen(a: Atmosphere, normal: vec3<f32>, to_eye: vec3<f32>, strength: f32, sha
 // How one edge shades a texel `along` texels down it and `distance` texels in from it: each
 // texel one flat value, so the line stays crisp and blocky. Kinds as `client::mesher`: 0 flat,
 // 1 crease, 2 ridge.
-fn edge_factor(a: Atmosphere, kinds: u32, along: f32, distance: f32) -> f32 {
-    let texel = u32(clamp(floor(along), 0.0, 15.0));
+fn edge_factor(a: Atmosphere, kinds: u32, along: f32, length: f32, distance: f32) -> f32 {
+    // A merged quad's edge holds one boxel's pattern, repeated along it (see `client::greedy`).
+    let texel = u32(clamp(floor(along), 0.0, max(length - 1.0, 0.0))) % 16u;
     let kind = (kinds >> (2u * texel)) & 3u;
     let row = floor(max(distance, 0.0));
     let width = a.edges.z;
@@ -173,8 +174,8 @@ fn edge_shade(a: Atmosphere, kinds: vec4<u32>, face: vec4<f32>) -> f32 {
     let v = face.y;
     let w = face.z;
     let h = face.w;
-    return edge_factor(a, kinds.x, u, v)
-        * edge_factor(a, kinds.y, v, w - u)
-        * edge_factor(a, kinds.z, w - u, h - v)
-        * edge_factor(a, kinds.w, h - v, u);
+    return edge_factor(a, kinds.x, u, w, v)
+        * edge_factor(a, kinds.y, v, h, w - u)
+        * edge_factor(a, kinds.z, w - u, w, h - v)
+        * edge_factor(a, kinds.w, h - v, h, u);
 }

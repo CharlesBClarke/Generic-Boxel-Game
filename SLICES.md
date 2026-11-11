@@ -104,7 +104,32 @@ A run of small toy slices. Each one takes a single game-feel feature that doesn'
 
 ### Current toy
 
-None in progress: Bench closed 2026-11-10. Next: Greedy meshing (the user's pick, 2026-11-10; notes in `docs/notes/greedy-meshing.md`), then Shadow speed.
+#### Greedy meshing (`toy-greedy-meshing`)
+
+**Stage:** Verify
+
+**Goal:** fewer terrain triangles by merging neighboring faces into bigger quads, for the frame rate (main pass and every shadow pass). Notes: `docs/notes/greedy-meshing.md`. Then Shadow speed.
+
+**Plan** (approved 2026-11-10; the user said yes to plain greedy only and to the checkbox)
+- Plain greedy: merge only where light and AO match (~71% fewer triangles on the bench terrain). AO in the shader (~84%) is a backlog follow-up.
+- `client::greedy`: a pass at the end of `mesh_chunk_with`, after `bake_light`; chunk meshes only (items and the ghost keep single quads). Two quads merge when both are whole boxel faces on the same plane facing the same way, with the same look volume, the same color (so AO) and light at every corner, a `FLAT` edge between them, and each outer edge's per-boxel pattern the same along the run. Rectangles per plane per chunk, at most 32 boxels a side.
+- Vertex format: `FACE_SCALE` from 16 texels to 512 (a chunk); `edges` stay 2 bits a texel for one boxel, read repeating every 16 texels on a merged quad; `solid` carried out along the run (0 to 16N texels).
+- Shader: `solid.wgsl` wraps the look position every 16 texels instead of clamping; `edge_factor` wraps along the edge.
+- Switch: a "merge faces" checkbox in the tuning panel's View section (on by default) and a bench switch.
+- Tests: existing `quad_count` tests run with merging off; new ones: a flat floor becomes one quad per chunk, AO or light differences stop a merge, a merged quad's corners match the single quads it replaces, turned looks. The bench terrain's triangles drop to ~0.28M. Remesh time before and after (`time_edits_in_a_save`, `time_meshing_the_terrain`).
+
+**Done when**
+- Terrain looks the same: textures, crease lines, AO, light.
+- No speckle gaps at T-junctions in play.
+- Triangles at the bench's spots down ~70%.
+- An edit's remesh time not noticeably worse.
+- Quick bench comparison against `master` in the verify notes.
+
+**Test notes** (2026-11-10)
+- `client::greedy` tests check that every sampled pixel of the unmerged mesh looks the same on the merged one (color, light, look texel, edge lines), for a floor, AO around a block, a roofed half floor, steps with slabs and a pit, turned logs, and slabs.
+- The base terrain (`time_meshing_the_terrain`, release): 1,317,248 quads unmerged, 313,945 merged (76% fewer); meshing all of it 8.5 s vs 8.2 s (noise).
+- An edit in the `house` save (`time_edits_in_a_save`, its most finely cut chunk, barely merging): remesh ~52 ms unmerged, ~54 ms merged.
+- *Not in the plan:* the look position is interpolated at the centroid, so with MSAA a pixel on a quad's edge never reads past it now that the shader wraps instead of clamping. `FACE_SCALE` isn't a whole number of steps per texel any more (off by 0.0002 texel).
 
 **Waiting for a play check** (remind the user at the start of every session, and at good moments during one, until they confirm; then delete the line):
 

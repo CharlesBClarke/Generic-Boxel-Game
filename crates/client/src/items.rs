@@ -242,7 +242,7 @@ mod tests {
             .insert_resource(sim)
             .init_resource::<RenderOrigin>()
             .init_resource::<ItemViews>()
-            .insert_resource(ChunkMeshes { material: Handle::default(), volumes, entities: HashMap::new(), quads: HashMap::new(), last_meshing: None })
+            .insert_resource(ChunkMeshes { material: Handle::default(), volumes, entities: HashMap::new(), quads: HashMap::new(), last_meshing: None, merged: true })
             .add_systems(Update, sync_items);
         app.update();
 

@@ -13,6 +13,7 @@ pub mod dev;
 pub mod drill;
 pub mod editing;
 pub mod feel;
+pub mod greedy;
 pub mod heights;
 pub mod hurt;
 pub mod items;
@@ -279,6 +280,7 @@ fn setup_scene(mut commands: Commands, mut cursor: Single<&mut CursorOptions, Wi
     set_grab(&mut cursor, true);
 }
 
+#[allow(clippy::too_many_arguments)]
 fn spawn_chunk_meshes(
     mut commands: Commands,
     world: Res<ClientWorld>,
@@ -287,6 +289,7 @@ fn spawn_chunk_meshes(
     mut materials: ResMut<Assets<SolidMaterial>>,
     mut images: ResMut<Assets<Image>>,
     ao: Res<mesher::AoTuning>,
+    view: Res<view::ViewSwitches>,
 ) {
     let volumes = Volumes::build(world.looks(), world.blocks());
     let image = images.add(solid::volume_image(&volumes));
@@ -339,7 +342,7 @@ fn spawn_chunk_meshes(
     let mut quads = std::collections::HashMap::new();
     let start = Instant::now();
     let positions: Vec<ChunkPos> = grid.chunks().map(|(pos, _)| pos).collect();
-    let meshed = mesher::mesh_chunks(grid, &positions, world.blocks(), &volumes, &ao);
+    let meshed = mesher::mesh_chunks(grid, &positions, world.blocks(), &volumes, &ao, view.merge_faces);
     let last_meshing = Some((positions.len(), start.elapsed().as_secs_f32()));
     for (pos, data) in positions.into_iter().zip(meshed) {
         if data.is_empty() {
@@ -349,7 +352,7 @@ fn spawn_chunk_meshes(
         entities.insert(pos, spawn_chunk(&mut commands, &mut meshes, material.clone(), pos, data, origin.cell));
     }
     info!("meshed {} chunks in {:.2} s", grid.chunks().count(), last_meshing.map_or(0.0, |(_, s)| s));
-    commands.insert_resource(ChunkMeshes { material, volumes, entities, quads, last_meshing });
+    commands.insert_resource(ChunkMeshes { material, volumes, entities, quads, last_meshing, merged: view.merge_faces });
 }
 
 pub(crate) fn spawn_chunk(

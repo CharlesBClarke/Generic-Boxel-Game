@@ -26,6 +26,7 @@ pub fn set(world: &mut World, key: &str, on: bool) -> bool {
         "shadows.show_cascades" => &mut shadows.switches.show_cascades,
         "view.msaa" => &mut view.msaa,
         "view.depth_prepass" => &mut view.depth_prepass,
+        "view.merge_faces" => &mut view.merge_faces,
         _ => return false,
     };
     *switch = on;
@@ -52,6 +53,7 @@ mod tests {
         assert!(world.resource::<ShadowTuning>().switches.far);
         assert!(!world.resource::<ShadingTuning>().parts.fog);
         assert!(set(&mut world, "view.msaa", false) && set(&mut world, "view.depth_prepass", true));
-        assert_eq!(*world.resource::<ViewSwitches>(), ViewSwitches { msaa: false, depth_prepass: true });
+        assert!(set(&mut world, "view.merge_faces", false));
+        assert_eq!(*world.resource::<ViewSwitches>(), ViewSwitches { msaa: false, depth_prepass: true, merge_faces: false });
     }
 }
