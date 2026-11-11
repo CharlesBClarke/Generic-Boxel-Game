@@ -3,6 +3,7 @@
 //! ticks. It never touches the simulation itself.
 
 pub mod animation;
+pub mod bench;
 pub mod blast;
 pub mod combat;
 pub mod controls;
@@ -74,6 +75,7 @@ pub fn run(connection: Box<dyn Connection>) {
         .init_resource::<heights::Heights>()
         .insert_resource(ClearColor(Color::srgb(0.55, 0.75, 0.95)))
         .insert_resource(Time::<Fixed>::from_hz(protocol::TICK_RATE))
+        .add_plugins(bench::BenchPlugin)
         .insert_resource(world)
         .insert_resource(link)
         .insert_resource(Controls::load())
@@ -87,6 +89,7 @@ pub fn run(connection: Box<dyn Connection>) {
         .init_resource::<view::ViewTuning>()
         .init_resource::<ui_scale::UiScaleTuning>()
         .init_resource::<view::ViewStats>()
+        .init_resource::<view::ViewSwitches>()
         .init_resource::<FeelState>()
         .init_resource::<TuningPanel>()
         .init_resource::<dev::DevMode>()
@@ -158,7 +161,7 @@ pub fn run(connection: Box<dyn Connection>) {
                 .chain(),
         )
         .add_systems(EguiPrimaryContextPass, (editing::hotbar, tuning::tuning_panel, crafting::crafting_menu, world_menu::world_menu).chain())
-        .add_systems(Update, (world_notes, ui_scale::apply_ui_scale))
+        .add_systems(Update, (world_notes, ui_scale::apply_ui_scale, view::apply_view_switches))
         .add_systems(PostUpdate, heights::update_heights.before(shading::ShadingSet))
         .add_systems(Last, (save_on_exit, limit_frame_rate))
         .run();

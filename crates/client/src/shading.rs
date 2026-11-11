@@ -405,11 +405,20 @@ fn show_sky(tuning: Res<ShadingTuning>, mut sky: Query<&mut Visibility, With<Sky
 }
 
 /// Says in each perf recording which parts were off.
-fn tag_recordings(tuning: Res<ShadingTuning>, shadows: Res<ShadowTuning>, mut tags: ResMut<crate::perf::PerfTags>) {
+fn tag_recordings(
+    tuning: Res<ShadingTuning>,
+    shadows: Res<ShadowTuning>,
+    view: Res<crate::view::ViewSwitches>,
+    mut tags: ResMut<crate::perf::PerfTags>,
+) {
     let mut off = tuning.parts.off();
     let shadows_off = shadows.switches.off();
     if !shadows_off.is_empty() {
         off += &format!("; off: {}", shadows_off.join(", "));
+    }
+    let view = view.changed();
+    if !view.is_empty() {
+        off += &format!("; view: {}", view.join(", "));
     }
     if tags.0 != off {
         tags.0 = off;

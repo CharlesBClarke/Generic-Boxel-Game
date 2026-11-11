@@ -3,6 +3,61 @@
 Moved out of `SLICES.md` on 2026-11-03 so the roadmap stays short. Each toy's full write-up, newest first, as it stood when it closed. `SLICES.md` keeps a one-line summary of each.
 
 
+#### Bench (`toy-bench`)
+
+**Stage:** Done (2026-11-10)
+
+**Goal:** frame rate measured the same way every time, without the user pressing anything, on any commit.
+
+The user: "better benchmarking, automated, go to the same location on the same seed, ablity to change settings, and hopefully it could be a backwards compatible mod that could be tested on old commits. make a habbit of test all new toys in the benchmark, keep it short". The bench half of the backlog's Benchmark and render scale; render scale is its own backlog entry.
+
+**Plan**
+- `tools/bench.sh [--quick] [--sets a,b] [REV…]` (no REV: the working tree): builds each commit in a git worktree under `~/.cache/boxel/bench/` (release, one shared target folder) and runs it once per settings set, with `XDG_DATA_HOME` in a throwaway folder (your worlds and `perf.txt` untouched) and `BOXEL_TUNING` at a file the bench writes. With two or more REVs it prints a comparison; `--compare A B` prints one from saved results.
+- `tools/bench/bench.txt`: `[bench]` timings and window size, `[base]` settings every set gets (your terrain's seed and shape, the world size, so every build sees the same place), `[spot name]` lines in F9's spot format, `[set name]` lines like `shadows.maps = 0`.
+- `client::bench`, only active with `BOXEL_BENCH`: writes the set's tuning file before the panel loads it, sets switches (`client::bench::switches`, the only commit-specific part), a 1080×1080 window (square, fits the user's portrait screen; agreed 2026-11-10), no frame cap, dev text off; at each spot (flying, look held still) waits until frames are steady, measures 5 s, then appends one line per spot to `~/.local/share/boxel/bench/results.txt` and quits.
+- Old commits without the bench get it copied in by `tools/bench/backport.sh` (the module, a stub `switches.rs`, two lines in `lib.rs`); supported back to `f9fbc16` (perf recorder, 2026-11-05). Settings an old build doesn't know are listed in the results, not failed.
+- F9 lines also record the window size, the shading and shadow switches and their values that differ from defaults.
+- Quick mode: the `shipped` set only, every spot. Habit: every toy's Verify runs `tools/bench.sh --quick master` plus the branch and pastes the comparison (a catch for surprises, not a pass/fail).
+
+**Done when**
+- One command benchmarks a commit unattended and leaves a report.
+- Two runs of the same build agree within about 5%.
+- The backport works on at least two older merges.
+- Quick mode takes under about 2 minutes once built.
+- F9 lines carry the window size and settings.
+
+**Changes along the way** (2026-11-10)
+- *Window:* the plan said 1920×1080; the user's active monitor is portrait (1080×1920) and GNOME squeezed the window to 1080×1885. The user picked 1080×1080, which fits either way. On Wayland the game can't choose its monitor: the window opens where the mouse is.
+- *One launch per settings set* (was: every set in one launch): the shadow and shading switches are checkboxes, not tuning values, and a fresh launch per set needs no undoing between sets and keeps the backport to two lines in `lib.rs`.
+- *Spots:* the test area spot was dropped at the user's request ("the other sceense have some materials we didn't have long ago"); three terrain spots remain. The user chose to keep the noisy `recorded` spot "for now".
+- *A screenshot of each spot* (not in the plan), taken before measuring, so a run shows what was drawn; the agent can read them.
+- *Engaged mid-toy, the user asking for a shadow investigation:* `--study FILE` (sets from a study file, at bench.txt's spots), the study files `tools/bench/shadows.txt`, `shadows_small.txt` and `drawing.txt`, two view switches (`view.msaa`, `view.depth_prepass`, also checkboxes in the tuning panel's View section, defaults unchanged), and the GPU's clock and throttling on every bench line. Strictly the start of Shadow speed; done here because the answer decides what that toy is.
+- *Proposed, not built:* `--bisect GOOD BAD` over master's merges and `--every` for a curve; the Sun shadows jump was found without them.
+
+**Found while verifying**
+- Old-commit checkouts share one target folder; cargo names a crate's output the same in every checkout and trusts file dates, so a rebuilt older checkout linked another commit's crates and failed to compile. Now a kept binary is reused when its bench stamp matches, and a rebuild touches the checkout's sources first.
+- The comparison listed every study set one build had; it now shows only sets and spots both builds have.
+
+**Verify** (2026-11-10)
+1. One command, unattended, a report: met.
+2. Two runs agree within about 5%: partly. `overlook` and `lake` within 2%; `recorded` moves 5–9% between runs.
+3. Backport on at least two older merges: met on three (`d02e0d4` Sun shadows, `de21664` Stored light, `bc542a2` Shading), screenshots showing the same terrain.
+4. Quick mode under about 2 minutes once built: met, about 50 s a build.
+5. F9 lines carry the window size and settings: met; the user pressed it (`… | 2560x1376 | sun 150 50 | changed: shadows.distance=64 shadows.cascades=2 shadows.filter=1`). The user: "why is that a criterion … why wouold I be needing to mannualy do it": it was a one-time check of the backlog's F9 item; the habit is only the automatic bench.
+- Tests: 717 passed, 0 failed (workspace); clippy clean; `compare.py --self-test` passes.
+- The toy's own quick bench, `master` vs this branch (ms): recorded 19.8 / 18.7, overlook 21.2 / 21.4, lake 16.0 / 16.2. Nothing drawn by default changed.
+
+**Measured** (release, 1080×1080, Iris Xe, mean of the three spots)
+- By toy: Shading 5.6 ms, Stored light 6.1 ms, Sun shadows 17.9 ms.
+- Shadows: shipped 16.9, none 6.4, maps only 13.0, far only 13.2 (the far shadow fills in everywhere with the maps off). Full tables and what they mean: `docs/notes/shadow-speed.md`.
+
+*Decisions:* see Phase 2 decisions, Bench. Results and screenshots live outside the repo (`~/.local/share/boxel/bench/`), builds of old commits under `~/.cache/boxel/bench/` (`tools/bench.sh --clean` removes the checkouts).
+
+*Deferred:* `--bisect` and `--every`; the `recorded` spot's noise (replace it, or measure longer); GPU time per render pass from Bevy's render diagnostics, which would split a frame without inference; render scale (its own backlog entry); the bench only reads the GPU clock on Intel under Linux.
+
+*API debt:* none; all client-side and tools.
+
+
 #### Sun shadows (`toy-sun-shadows`)
 
 **Stage:** Done (2026-11-10), with criterion 6 (frame rate) not met and deferred

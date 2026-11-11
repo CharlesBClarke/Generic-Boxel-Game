@@ -3,16 +3,21 @@
 //! `$XDG_DATA_HOME/boxel/perf.txt` (usually `~/.local/share/boxel/perf.txt`): average fps, the
 //! slowest frames, what was drawn, where from, and on which branch. Each recording also keeps
 //! where the player stood and looked, and the `perf_spot` key goes back there, in this run or
-//! a later one, so two builds can be measured from the same view.
+//! a later one, so two builds can be measured from the same view. A line also keeps the window's
+//! size, the sun, and the shading and shadow values that differ from their defaults. For
+//! measuring without pressing keys, see `bench`.
 
 use std::path::PathBuf;
 use std::time::Instant;
 
-use api::{I64Vec3, Vec3 as ApiVec3, WorldPos};
+use api::{I64Vec3, Tunables, Vec3 as ApiVec3, WorldPos};
 use bevy::prelude::*;
+use bevy::window::PrimaryWindow;
 use protocol::Command;
 
 use crate::controls::Controls;
+use crate::shading::ShadingTuning;
+use crate::shadows::{ShadowTuning, Sun};
 use crate::view::{ViewStats, ViewTuning};
 use crate::world::{ClientWorld, Link};
 use crate::{FrameCap, Look, PendingToggles};
@@ -140,6 +145,8 @@ pub(crate) fn record_perf(
     mut link: ResMut<Link>,
     (mut look, mut toggles, cap): (ResMut<Look>, ResMut<PendingToggles>, Res<FrameCap>),
     (view, drawn, tags): (Res<ViewTuning>, Res<ViewStats>, Res<PerfTags>),
+    window: Single<&Window, With<PrimaryWindow>>,
+    (sun, shading, shadows): (Res<Sun>, Res<ShadingTuning>, Res<ShadowTuning>),
     mut text: Single<&mut Text, With<PerfText>>,
 ) {
     let Some(player) = world.player() else {
@@ -185,7 +192,7 @@ pub(crate) fn record_perf(
             let frames = recorder.frames.take().unwrap_or_default();
             let (average, low) = summarize(&frames[1..]);
             let line = format!(
-                "{} | {} | {} build | avg {average:.1} fps | 1% low {low:.1} fps | {:.1} ms | cap {} | {:.2}M triangles | {} chunks drawn | render {:.0} m | at {} | {}",
+                "{} | {} | {} build | avg {average:.1} fps | 1% low {low:.1} fps | {:.1} ms | cap {} | {:.2}M triangles | {} chunks drawn | render {:.0} m | at {} | {} | {}x{} | sun {:.0} {:.0} | changed: {}",
                 now(),
                 branch(),
                 if cfg!(debug_assertions) { "debug" } else { "release" },
@@ -196,6 +203,11 @@ pub(crate) fn record_perf(
                 view.render_distance,
                 spot.to_line(),
                 if tags.0.is_empty() { "-" } else { &tags.0 },
+                window.physical_width(),
+                window.physical_height(),
+                sun.azimuth,
+                sun.elevation,
+                changed_values(&[("shading", &*shading, &ShadingTuning::default()), ("shadows", &*shadows, &ShadowTuning::default())]),
             );
             let written = data_dir().and_then(|dir| {
                 std::fs::create_dir_all(&dir).ok()?;
@@ -224,6 +236,20 @@ pub(crate) fn record_perf(
     }
 }
 
+/// `section.name=value` for each value that differs from its default, or `-`.
+pub fn changed_values(sections: &[(&str, &dyn Tunables, &dyn Tunables)]) -> String {
+    let mut out = Vec::new();
+    for (section, now, default) in sections {
+        let defaults = default.tunables();
+        for t in now.tunables() {
+            if defaults.iter().find(|d| d.name == t.name).is_none_or(|d| d.value != t.value) {
+                out.push(format!("{section}.{}={}", t.name, t.value));
+            }
+        }
+    }
+    if out.is_empty() { "-".into() } else { out.join(" ") }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -233,6 +259,15 @@ mod tests {
         let spot = Spot { cell: I64Vec3::new(-12, 4096, 77), offset: [0.25, -0.5, 0.125], yaw: 1.5, pitch: -0.25, flying: true };
         assert_eq!(Spot::from_line(&spot.to_line()), Some(spot));
         assert_eq!(Spot::from_line("1 2 3"), None);
+    }
+
+    #[test]
+    fn only_values_off_their_defaults_are_listed() {
+        let mut shadows = ShadowTuning::default();
+        let shading = ShadingTuning::default();
+        assert_eq!(changed_values(&[("shading", &shading, &ShadingTuning::default())]), "-");
+        assert!(shadows.set_tunable("map_size", 1024.0));
+        assert_eq!(changed_values(&[("shading", &shading, &ShadingTuning::default()), ("shadows", &shadows, &ShadowTuning::default())]), "shadows.map_size=1024");
     }
 
     #[test]

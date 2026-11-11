@@ -1,0 +1,30 @@
+# A study of how the view is drawn: `tools/bench.sh --study tools/bench/drawing.txt`. Does the
+# shadows' cost follow triangles because of 4× MSAA (every triangle touching a pixel shades it)
+# or because hidden surfaces are shaded (no depth prepass)? Each is tried with shadows on and
+# off, so a row shows what it does to the shadows' cost and to the rest of the frame.
+
+[set shipped]
+[set msaa_off]
+view.msaa = 0
+[set prepass]
+view.depth_prepass = 1
+[set msaa_off_prepass]
+view.msaa = 0
+view.depth_prepass = 1
+
+[set none]
+shadows.maps = 0
+shadows.far = 0
+[set none_msaa_off]
+shadows.maps = 0
+shadows.far = 0
+view.msaa = 0
+[set none_prepass]
+shadows.maps = 0
+shadows.far = 0
+view.depth_prepass = 1
+[set none_both]
+shadows.maps = 0
+shadows.far = 0
+view.msaa = 0
+view.depth_prepass = 1

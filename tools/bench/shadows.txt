@@ -1,0 +1,75 @@
+# A shadow study: `tools/bench.sh --study tools/bench/shadows.txt`. Sets only; the world and the
+# spots are bench.txt's. Every set changes one thing from the shipped shadows, so each row says
+# what that one thing costs. `shipped` runs first and `shipped_again` last: if they differ, the
+# machine drifted (heat) during the run and the rows in between need a pinch of salt.
+# About 50 s a set.
+
+[set shipped]
+
+# What each part costs.
+[set none]
+shadows.maps = 0
+shadows.far = 0
+[set maps_only]
+shadows.far = 0
+[set far_only]
+shadows.maps = 0
+# Sun and sky light off. This also turns the shadow maps off (no light to cast them), but the far
+# shadow still runs, for the sheen: so it reads like far_only minus the lighting.
+[set no_light]
+shading.light = 0
+
+# The user's own tuning (64 m, 2 maps, soft edges), from their tuning file on 2026-11-10.
+[set user]
+shadows.distance = 64
+shadows.cascades = 2
+shadows.filter = 1
+
+# The shadow maps: how many, how big, how far, how filtered. Bevy draws every caster once per
+# map, so the cost should follow the count and the distance more than the size.
+[set cascades_1]
+shadows.cascades = 1
+[set cascades_2]
+shadows.cascades = 2
+[set cascades_4]
+shadows.cascades = 4
+[set map_512]
+shadows.map_size = 512
+[set map_1024]
+shadows.map_size = 1024
+[set map_4096]
+shadows.map_size = 4096
+[set distance_32]
+shadows.distance = 32
+[set distance_64]
+shadows.distance = 64
+[set distance_256]
+shadows.distance = 256
+[set filter_soft]
+shadows.filter = 1
+[set filter_temporal]
+shadows.filter = 2
+
+# The far shadow: reads per pixel toward the sun, and how far it looks.
+[set far_reads_8]
+shadows.far_reads = 8
+[set far_reads_16]
+shadows.far_reads = 16
+[set far_reads_32]
+shadows.far_reads = 32
+[set far_reads_128]
+shadows.far_reads = 128
+[set far_reach_128]
+shadows.far_reach = 128
+[set far_reach_2048]
+shadows.far_reach = 2048
+
+# Does the cost follow the world drawn? Half the render distance, with and without shadows.
+[set render_256]
+view.render_distance = 256
+[set render_256_none]
+view.render_distance = 256
+shadows.maps = 0
+shadows.far = 0
+
+[set shipped_again]
