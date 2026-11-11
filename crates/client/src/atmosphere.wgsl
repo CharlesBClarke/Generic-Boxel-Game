@@ -70,43 +70,47 @@ fn sky_bodies(a: Atmosphere, dir: vec3<f32>, color: vec3<f32>) -> vec3<f32> {
     var out = color;
     let night = a.moon_color.w;
 
+    // How much of this pixel the moon covers: it hides the stars behind it.
+    let m = a.moon_direction.xyz;
+    let cos_a = dot(dir, m);
+    let edge = a.moon_direction.w;
+    var moon_cover = 0.0;
+    if m.y > -0.05 {
+        let px = max(fwidth(cos_a), 1e-7);
+        moon_cover = smoothstep(edge - px, edge + px, cos_a);
+    }
+
     // Stars, only where the sky is dark enough to show them.
-    if a.night.x > 0.002 {
+    if a.night.x > 0.002 && moon_cover < 1.0 {
         let turn = a.night.y;
         let d = vec3<f32>(dir.x * cos(turn) - dir.z * sin(turn), dir.y, dir.x * sin(turn) + dir.z * cos(turn)) * 190.0;
         let f = fract(d) - 0.5;
         let bright = smoothstep(0.93, 1.0, hash3(floor(d))) * smoothstep(0.42, 0.0, length(f));
-        out += vec3<f32>(0.85, 0.92, 1.0) * bright * bright * a.night.x * 1.8 * smoothstep(0.0, 0.12, dir.y);
+        out += vec3<f32>(0.85, 0.92, 1.0) * bright * bright * a.night.x * 1.8 * smoothstep(0.0, 0.12, dir.y) * (1.0 - moon_cover);
     }
 
-    // The moon: a disc, lit on the side toward the sun, with faint darker seas.
-    let m = a.moon_direction.xyz;
-    if m.y > -0.05 {
-        let cos_a = dot(dir, m);
-        let edge = a.moon_direction.w;
-        if cos_a > edge - 0.0002 {
-            let radius = sqrt(max(1.0 - edge * edge, 1e-8));
-            let px = max(fwidth(cos_a), 1e-7);
-            let disc = smoothstep(edge - px, edge + px, cos_a);
-            let right = normalize(vec3<f32>(m.z, 0.0, -m.x) + vec3<f32>(1e-5, 0.0, 0.0));
-            let up = cross(right, m);
-            let lx = dot(dir, right) / radius;
-            let ly = dot(dir, up) / radius;
-            let nz = sqrt(max(1.0 - lx * lx - ly * ly, 0.0));
-            let n = right * lx + up * ly + m * nz;
-            let lit = max(dot(n, a.sun_direction.xyz), 0.04);
-            let seas = 0.5 + 0.5 * sin(lx * 5.1 + 1.3) * sin(ly * 4.3 - 0.7) * sin((lx + ly) * 3.7);
-            let moon = vec3<f32>(0.82, 0.86, 0.95) * mix(0.55, 1.1, seas) * lit * mix(0.5, 1.15, night);
-            out = mix(out, moon + out * 0.15, disc);
-        }
+    // The moon: a disc, lit on the side toward the sun, with a faint, broad shading for seas.
+    if moon_cover > 0.0 {
+        let radius = sqrt(max(1.0 - edge * edge, 1e-8));
+        let right = normalize(vec3<f32>(m.z, 0.0, -m.x) + vec3<f32>(1e-5, 0.0, 0.0));
+        let up = cross(right, m);
+        let lx = dot(dir, right) / radius;
+        let ly = dot(dir, up) / radius;
+        let nz = sqrt(max(1.0 - lx * lx - ly * ly, 0.0));
+        let n = right * lx + up * ly + m * nz;
+        let lit = max(dot(n, a.sun_direction.xyz), 0.04);
+        let seas = 0.5 + 0.5 * sin(lx * 2.1 + 1.3) * sin(ly * 1.7 - 0.4);
+        let moon = vec3<f32>(0.82, 0.86, 0.95) * mix(0.85, 1.05, seas) * lit * mix(0.5, 1.15, night);
+        // The sky's own color shows a little through it by day, never the stars.
+        out = mix(out, moon + color * 0.15, moon_cover);
     }
 
     // The sun: a crisp disc and a tight halo, then a wider glow.
     let s = a.sun_direction.xyz;
     let mu = dot(dir, s);
-    let edge = a.sun_direction.w;
-    let px = max(fwidth(mu), 1e-7);
-    let disc = smoothstep(edge - px, edge + px, mu);
+    let sun_edge = a.sun_direction.w;
+    let sun_px = max(fwidth(mu), 1e-7);
+    let disc = smoothstep(sun_edge - sun_px, sun_edge + sun_px, mu);
     let glow = a.sun_color.w;
     let toward = max(mu, 0.0);
     out += a.sun_hue.rgb * (disc * 48.0 + (pow(toward, 900.0) * 3.0 + pow(toward, 60.0) * 0.22) * glow);
