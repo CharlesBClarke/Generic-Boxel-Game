@@ -13,3 +13,9 @@ Moved from the `SLICES.md` backlog on 2026-11-03; the backlog keeps a short pitc
 ## Sheen in shadow (2026-11-07)
 
 Recorded at the user's request: the Blinn-Phong sheen needs to know about boxels occluding the path to the sun. Today a face's highlight comes from the sun direction alone, so a shiny face in shadow (ice under an overhang) still glints. Whatever casts sun shadows (the GPU boxel grid's ray march, see the backlog) should gate the sheen as well as the direct sunlight; only the sky's light reaches a face in shadow.
+
+**Play findings, 2026-11-11** (the user, verbatim): "creads and ridge stuff are not texel acureate even thougth I thougt of there point was to basicaly be AO like for texel geometry. im looking at a stsair and the sading is only being applied to 1 side of where the stairs meat insted of both, also when I place two gadgets in a boxel there is no crease or ridgge wher ethey meet."
+- *Stair:* where a stair's tread meets its riser, only one of the two faces gets the crease line; both should darken toward the crease.
+- *Two gadgets in one boxel:* no crease or ridge where they meet. Unchecked guess: the edge recording looks past each quad's edge at the cell's shape from one occupant, not at every occupant's texels.
+- Not yet checked against the code; the backlog entry "Texel-accurate creases and ridges" decides at planning whether these are fixes or a redesign.
+
