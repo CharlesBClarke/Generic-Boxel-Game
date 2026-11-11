@@ -24,7 +24,7 @@ use crate::tuning_file;
 use crate::ui_scale::UiScaleTuning;
 use crate::shading::ShadingTuning;
 use crate::shadows::{Filter, ShadowTuning};
-use crate::view::ViewTuning;
+use crate::view::{ViewSwitches, ViewTuning};
 use crate::world::{ClientWorld, Link};
 
 #[derive(Resource, Default)]
@@ -58,7 +58,7 @@ pub fn tuning_panel(
     mut sound: ResMut<SoundTuning>,
     mut preview_sound: ResMut<SoundPreview>,
     mut picks: ResMut<SoundPicks>,
-    mut view: ResMut<ViewTuning>,
+    (mut view, mut view_switches): (ResMut<ViewTuning>, ResMut<ViewSwitches>),
     (mut light, mut shadow): (ResMut<ShadingTuning>, ResMut<ShadowTuning>),
     mut ui_scale: ResMut<UiScaleTuning>,
 ) -> Result {
@@ -97,6 +97,7 @@ pub fn tuning_panel(
     let mut shading = panel.ao_draft.unwrap_or(*ao);
     let mut apply_ao = false;
     let mut seeing = *view;
+    let mut drawing = *view_switches;
     let mut sizing = *ui_scale;
     let mut lighting = *light;
     let mut shadows = *shadow;
@@ -210,6 +211,10 @@ pub fn tuning_panel(
                 ui.separator();
                 ui.heading("View");
                 sliders(ui, "view", &mut seeing);
+                ui.horizontal(|ui| {
+                    ui.checkbox(&mut drawing.msaa, "anti-aliasing (4× MSAA)");
+                    ui.checkbox(&mut drawing.depth_prepass, "depth prepass");
+                });
                 ui.separator();
                 ui.heading("UI scale");
                 ui.label("menus and text grow with the window's height (natural size at reference_height), times size");
@@ -328,6 +333,7 @@ pub fn tuning_panel(
                     shading = AoTuning::default();
                     apply_ao = true;
                     seeing = ViewTuning::default();
+                    drawing = ViewSwitches::default();
                     sizing = UiScaleTuning::default();
                     lighting = ShadingTuning::default();
                     shadows = ShadowTuning::default();
@@ -414,6 +420,7 @@ pub fn tuning_panel(
     }
     panel.ao_draft = (shading != *ao).then_some(shading);
     view.set_if_neq(seeing);
+    view_switches.set_if_neq(drawing);
     ui_scale.set_if_neq(sizing);
     light.set_if_neq(lighting);
     shadow.set_if_neq(shadows);

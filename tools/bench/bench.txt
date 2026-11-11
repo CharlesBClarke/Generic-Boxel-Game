@@ -1,0 +1,73 @@
+# The bench: where to stand and which settings to measure there (see tools/bench.sh and the
+# client's `bench` module). Every build is measured with this file, the newest one, so old
+# commits see the same spots and settings.
+
+[bench]
+seconds = 5        # measured at each spot
+settle = 2         # seconds without a stalled frame before measuring
+timeout = 90       # a spot that never settles is measured anyway, and says so
+window = 1080 1080   # square: fits a portrait or a landscape screen (the user's is portrait)
+
+# Every set gets these first: the world, so every build stands in the same place. The terrain
+# is the user's own (seed 120, from their tuning file on 2026-11-10).
+[base]
+view.render_distance = 512
+world.terrain_width = 11
+world.terrain_height = 6
+world.sim_distance = 256
+terrain base:hills.seed = 120
+terrain base:hills.continent_scale = 700
+terrain base:hills.erosion_scale = 420
+terrain base:hills.ridge_scale = 260
+terrain base:hills.range_scale = 320
+terrain base:hills.weathering_scale = 160
+terrain base:hills.warp = 60
+terrain base:hills.low_height = -40
+terrain base:hills.inland_height = 50
+terrain base:hills.mountain_height = 170
+terrain base:hills.hill_height = 22
+terrain base:hills.valley_depth = 26
+terrain base:hills.jaggedness = 12
+terrain base:hills.detail = 3
+terrain base:hills.ice_level = 0
+terrain base:hills.cliff_slope = 2.5
+terrain base:hills.stone_line = 150
+terrain base:hills.dirt_depth = 4
+terrain base:hills.rock_spacing = 18
+terrain base:hills.rock_chance = 0.3
+terrain base:hills.rock_min = 1.2
+terrain base:hills.rock_max = 3.5
+
+# Spots: the part after "at" in an F9 line of perf.txt (cell, offset, yaw, pitch, flying).
+# Yaw 0 looks east, 1.57 north. The bench always flies.
+
+# The user's last F9 spot, on the terrain, looking down at the hills.
+[spot recorded]
+at = -70 4084 60 0.28 0.4 0 6.166385 -0.64 true
+
+# High over the lake to the south-east, looking west across the terrain to the hills.
+[spot overlook]
+at = 150 3946 130 0.5 0.5 0 2.8 -0.3 true
+
+# Low over the frozen lake, looking west at the hills rising behind it.
+[spot lake]
+at = 110 4160 8 0.5 0.5 0 3.14 0.05 true
+
+# Only terrain spots (the user, 2026-11-10): the test area's materials and gadgets change from
+# commit to commit, so old builds wouldn't draw the same thing there. It was:
+# [spot test_area]
+# at = 0 -6 4 0.5 0.5 0 1.5708 -0.2 true
+
+# Sets: `section.name = value`, tuning values or switches (see the bench's `switches`).
+# --quick runs only `shipped`.
+[set shipped]
+
+[set no_shadows]
+shadows.maps = 0
+shadows.far = 0
+
+[set maps_only]
+shadows.far = 0
+
+[set far_only]
+shadows.maps = 0

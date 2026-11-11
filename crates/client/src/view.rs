@@ -3,6 +3,7 @@
 //! machine can take.
 
 use api::{CHUNK_SIZE, Tunable, Tunables};
+use bevy::core_pipeline::prepass::DepthPrepass;
 use bevy::prelude::*;
 
 use crate::editing::ChunkMeshes;
@@ -32,6 +33,58 @@ impl Tunables for ViewTuning {
             _ => return false,
         }
         true
+    }
+}
+
+/// Ways of drawing the view that can be switched, to measure what each costs (see the bench's
+/// `switches`); not saved.
+#[derive(Resource, Clone, Copy, Debug, PartialEq)]
+pub struct ViewSwitches {
+    /// 4× multisample anti-aliasing, Bevy's default; off, edges are jagged but each pixel is
+    /// shaded once however many triangles touch it.
+    pub msaa: bool,
+    /// Depth drawn first in a pass of its own, so the main pass shades only what ends up seen.
+    pub depth_prepass: bool,
+}
+
+impl Default for ViewSwitches {
+    fn default() -> Self {
+        Self { msaa: true, depth_prepass: false }
+    }
+}
+
+impl ViewSwitches {
+    /// What differs from the default, for a perf recording; empty if nothing does.
+    pub fn changed(&self) -> Vec<&'static str> {
+        let mut out = Vec::new();
+        if !self.msaa {
+            out.push("msaa off");
+        }
+        if self.depth_prepass {
+            out.push("depth prepass");
+        }
+        out
+    }
+}
+
+/// Puts the switches on the camera, when they change or the camera is new.
+pub(crate) fn apply_view_switches(
+    switches: Res<ViewSwitches>,
+    mut commands: Commands,
+    cameras: Query<Entity, With<PlayerCamera>>,
+    new: Query<(), Added<PlayerCamera>>,
+) {
+    if !(switches.is_changed() || !new.is_empty()) {
+        return;
+    }
+    for camera in &cameras {
+        let mut camera = commands.entity(camera);
+        camera.insert(if switches.msaa { Msaa::Sample4 } else { Msaa::Off });
+        if switches.depth_prepass {
+            camera.insert(DepthPrepass);
+        } else {
+            camera.remove::<DepthPrepass>();
+        }
     }
 }
 
