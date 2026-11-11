@@ -456,9 +456,17 @@ struct Saving {
     autosave_minutes: f32,
 }
 
+/// The tuning panel's groups for [`Saving`]'s values.
+const SAVING_GROUPS: &[(&str, &[&str])] = &[
+];
+/// What each of [`Saving`]'s values does, for the tuning panel.
+const SAVING_HELP: &[(&str, &str)] = &[
+    ("autosave_minutes", "Minutes between autosaves of the world; 0 never autosaves."),
+];
+
 impl Tunables for Saving {
     fn tunables(&self) -> Vec<Tunable> {
-        vec![Tunable::new("autosave_minutes", self.autosave_minutes, 0.0, 60.0)]
+        api::tuning::described(vec![Tunable::new("autosave_minutes", self.autosave_minutes, 0.0, 60.0)], SAVING_GROUPS, SAVING_HELP)
     }
 
     fn set_tunable(&mut self, name: &str, value: f32) -> bool {

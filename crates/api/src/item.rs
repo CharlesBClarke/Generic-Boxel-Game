@@ -54,9 +54,28 @@ impl ItemDropDef {
     }
 }
 
+/// The tuning panel's groups for [`ItemDropDef`]'s values.
+const ITEM_DROP_GROUPS: &[(&str, &[&str])] = &[
+    ("Flying out", &["pop_speed", "gravity", "bounce", "drag"]),
+    ("Look", &["size"]),
+    ("Picking up", &["pull_radius", "pull_speed", "pickup_radius", "merge_radius"]),
+];
+/// What each of [`ItemDropDef`]'s values does, for the tuning panel.
+const ITEM_DROP_HELP: &[(&str, &str)] = &[
+    ("pop_speed", "Speed a dropped item pops out of the broken block at, m/s, mostly upward."),
+    ("gravity", "Downward acceleration of loose items, m/s²."),
+    ("bounce", "Share of its speed an item keeps when it hits something: 0 stops dead, 1 bounces forever."),
+    ("drag", "How fast an item on the ground slows sideways, per second."),
+    ("size", "Edge length of an item holding a full block's worth of material, meters. More or less material scales it."),
+    ("pull_radius", "How close to your body an item has to be to get pulled toward you, meters."),
+    ("pull_speed", "Speed of the pull, m/s."),
+    ("pickup_radius", "How close to your body an item has to be to get picked up, meters."),
+    ("merge_radius", "Items of the same material closer than this merge into one, meters."),
+];
+
 impl Tunables for ItemDropDef {
     fn tunables(&self) -> Vec<Tunable> {
-        vec![
+        crate::tuning::described(vec![
             Tunable::new("pop_speed", self.pop_speed, 0.0, 15.0),
             Tunable::new("gravity", self.gravity, 0.0, 60.0),
             Tunable::new("bounce", self.bounce, 0.0, 1.0),
@@ -66,7 +85,7 @@ impl Tunables for ItemDropDef {
             Tunable::new("pull_speed", self.pull_speed, 0.0, 30.0),
             Tunable::new("pickup_radius", self.pickup_radius, 0.0, 3.0),
             Tunable::new("merge_radius", self.merge_radius, 0.0, 3.0),
-        ]
+        ], ITEM_DROP_GROUPS, ITEM_DROP_HELP)
     }
 
     fn set_tunable(&mut self, name: &str, value: f32) -> bool {
@@ -157,6 +176,14 @@ impl Tunables for InventoryDef {
                 Tunable::new("throw_speed", self.throw_speed, 0.0, 20.0),
                 Tunable::new("pickup_delay", self.pickup_delay, 0.0, 5.0),
             ])
+            .map(|t| {
+                let help = match t.name.as_str() {
+                    "capacity" => "How much you can carry, in boxels' worth of material, every material together.",
+                    "throw_speed" => "Speed a thrown item leaves you at, m/s, along your look.",
+                    _ => "Seconds before you can pick up an item you threw.",
+                };
+                t.help(help)
+            })
             .collect()
     }
 

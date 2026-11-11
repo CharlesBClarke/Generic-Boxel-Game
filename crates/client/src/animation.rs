@@ -21,9 +21,18 @@ impl Default for AnimationTuning {
     }
 }
 
+/// The tuning panel's groups for [`AnimationTuning`]'s values.
+const ANIMATION_GROUPS: &[(&str, &[&str])] = &[
+];
+/// What each of [`AnimationTuning`]'s values does, for the tuning panel.
+const ANIMATION_HELP: &[(&str, &str)] = &[
+    ("speed", "How fast every clip plays, as a share of its own speed."),
+    ("blend", "Seconds a change of clip blends over."),
+];
+
 impl Tunables for AnimationTuning {
     fn tunables(&self) -> Vec<Tunable> {
-        vec![Tunable::new("speed", self.speed, 0.0, 3.0), Tunable::new("blend", self.blend, 0.0, 1.0)]
+        api::tuning::described(vec![Tunable::new("speed", self.speed, 0.0, 3.0), Tunable::new("blend", self.blend, 0.0, 1.0)], ANIMATION_GROUPS, ANIMATION_HELP)
     }
 
     fn set_tunable(&mut self, name: &str, value: f32) -> bool {

@@ -160,9 +160,33 @@ impl ShadowTuning {
     }
 }
 
+/// The tuning panel's groups for [`ShadowTuning`]'s values.
+const SHADOW_GROUPS: &[(&str, &[&str])] = &[
+    ("Shadow maps (near)", &["distance", "cascades", "first_cascade", "map_size", "fade"]),
+    ("Acne and edges", &["depth_bias", "normal_bias", "filter"]),
+    ("Far shadow", &["far_reads", "far_reach", "far_softness", "far_bias"]),
+    ("Sun", &["sun_step"]),
+];
+/// What each of [`ShadowTuning`]'s values does, for the tuning panel.
+const SHADOW_HELP: &[(&str, &str)] = &[
+    ("distance", "How far from the camera the sharp shadow maps reach, meters."),
+    ("cascades", "How many shadow maps share that distance, each farther one coarser."),
+    ("first_cascade", "Where the first, sharpest map ends, meters."),
+    ("map_size", "Each map's width and height in texels, a power of two."),
+    ("fade", "The last share of distance over which the maps fade into the far shadow."),
+    ("depth_bias", "How far a shadow is pushed back toward the sun, so a face doesn't shadow itself in stripes (acne)."),
+    ("normal_bias", "How far a shadow is pushed out along the surface's normal, in map texels, against acne."),
+    ("filter", "How shadow edges are softened."),
+    ("far_reads", "The far (height-map) shadow: at most how many reads it makes toward the sun per pixel. More costs more."),
+    ("far_reach", "How far the far shadow looks toward the sun, meters."),
+    ("far_softness", "How soft the far shadow's edges are; higher is softer."),
+    ("far_bias", "How far a column must rise above a ray before it shades it, so flat ground under a low sun doesn't shade itself."),
+    ("sun_step", "The sun moves in steps of this many degrees, so shadows don't crawl every frame."),
+];
+
 impl Tunables for ShadowTuning {
     fn tunables(&self) -> Vec<Tunable> {
-        vec![
+        api::tuning::described(vec![
             Tunable::new("distance", self.distance, 16.0, 512.0),
             Tunable::new("cascades", self.cascades, 1.0, 4.0),
             Tunable::new("first_cascade", self.first_cascade, 2.0, 64.0),
@@ -176,7 +200,7 @@ impl Tunables for ShadowTuning {
             Tunable::new("far_softness", self.far_softness, 0.0, 16.0),
             Tunable::new("far_bias", self.far_bias, 0.0, 4.0),
             Tunable::new("sun_step", self.sun_step, 0.0, 2.0),
-        ]
+        ], SHADOW_GROUPS, SHADOW_HELP)
     }
 
     fn set_tunable(&mut self, name: &str, value: f32) -> bool {

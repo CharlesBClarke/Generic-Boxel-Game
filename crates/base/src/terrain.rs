@@ -90,9 +90,44 @@ impl Default for Hills {
     }
 }
 
+/// The tuning panel's groups for [`Hills`]'s values.
+const HILLS_GROUPS: &[(&str, &[&str])] = &[
+    ("Seed", &["seed"]),
+    ("Feature sizes", &["continent_scale", "erosion_scale", "ridge_scale", "range_scale", "weathering_scale", "warp"]),
+    ("Heights", &["low_height", "inland_height", "mountain_height", "hill_height", "valley_depth"]),
+    ("Roughness", &["jaggedness", "detail", "cliff_slope"]),
+    ("Ground cover", &["ice_level", "stone_line", "dirt_depth"]),
+    ("Boulders", &["rock_spacing", "rock_chance", "rock_min", "rock_max"]),
+];
+/// What each of [`Hills`]'s values does, for the tuning panel.
+const HILLS_HELP: &[(&str, &str)] = &[
+    ("seed", "Which world: each seed makes different terrain from the same shape values."),
+    ("continent_scale", "How big the inland and lowland areas are, boxels across."),
+    ("erosion_scale", "How big the worn-flat and rugged areas are, boxels across."),
+    ("ridge_scale", "How far apart ridges and valleys are, boxels."),
+    ("range_scale", "How far apart mountain ranges are, boxels. Higher spreads them into broader ranges."),
+    ("weathering_scale", "How big the gaps that break up the ranges are, boxels."),
+    ("warp", "How far the land is pushed around, boxels, so features don't line up with the noise grid."),
+    ("low_height", "Ground height deep in the lowlands, boxels above the terrain's center."),
+    ("inland_height", "Ground height far inland, boxels above the terrain's center."),
+    ("mountain_height", "How tall the most rugged mountains get above the land around them, boxels."),
+    ("hill_height", "How tall rolling hills are where the land is worn down, boxels."),
+    ("valley_depth", "How deep valleys cut, boxels."),
+    ("jaggedness", "How rough mountain sides are. Lower softens the pointy peaks."),
+    ("detail", "Small bumps everywhere, boxels."),
+    ("cliff_slope", "Slopes steeper than this (boxels of rise per boxel across) are bare stone."),
+    ("ice_level", "Hollows below this height fill with ice, boxels."),
+    ("stone_line", "Above this height the ground is bare stone, boxels."),
+    ("dirt_depth", "How deep dirt goes under grass, boxels."),
+    ("rock_spacing", "Boulders: at most one sits in each square this many boxels wide."),
+    ("rock_chance", "Boulders: the chance each square gets one."),
+    ("rock_min", "Boulders: the smallest one's reach, boxels."),
+    ("rock_max", "Boulders: the biggest one's reach, boxels."),
+];
+
 impl Tunables for Hills {
     fn tunables(&self) -> Vec<Tunable> {
-        vec![
+        api::tuning::described(vec![
             Tunable::new("seed", self.seed, 0.0, 1000.0),
             Tunable::new("continent_scale", self.continent_scale, 50.0, 4000.0),
             Tunable::new("erosion_scale", self.erosion_scale, 50.0, 4000.0),
@@ -115,7 +150,7 @@ impl Tunables for Hills {
             Tunable::new("rock_chance", self.rock_chance, 0.0, 1.0),
             Tunable::new("rock_min", self.rock_min, 0.5, ROCK_REACH_MAX),
             Tunable::new("rock_max", self.rock_max, 0.5, ROCK_REACH_MAX),
-        ]
+        ], HILLS_GROUPS, HILLS_HELP)
     }
 
     fn set_tunable(&mut self, name: &str, value: f32) -> bool {

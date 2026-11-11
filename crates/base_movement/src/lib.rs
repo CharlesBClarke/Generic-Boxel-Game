@@ -200,9 +200,38 @@ impl MovementController for QuakeController {
     }
 }
 
+/// The tuning panel's groups for [`QuakeController`]'s values.
+const QUAKE_GROUPS: &[(&str, &[&str])] = &[
+    ("Running", &["walk_speed", "sprint_speed", "ground_accel", "ground_friction", "stop_speed"]),
+    ("Air control", &["air_accel", "air_speed_cap"]),
+    ("Jumping and falling", &["jump_height", "gravity", "fall_gravity_scale", "terminal_velocity"]),
+    ("Jump timing", &["jump_buffer", "coyote_time", "hold_to_hop"]),
+    ("Crouching", &["crouch_height", "crouch_speed", "edge_guard_drop"]),
+];
+/// What each of [`QuakeController`]'s values does, for the tuning panel.
+const QUAKE_HELP: &[(&str, &str)] = &[
+    ("walk_speed", "Top ground speed walking, m/s."),
+    ("sprint_speed", "Top ground speed sprinting, m/s."),
+    ("ground_accel", "How quickly top speed is reached on the ground, as a fraction of top speed per second. Too low and held-jump stair climbs stall against risers."),
+    ("ground_friction", "How quickly ground speed bleeds off when not pushing a direction."),
+    ("stop_speed", "Below this speed friction acts as if moving at it, so stopping finishes cleanly instead of creeping, m/s."),
+    ("air_accel", "How hard you can steer in the air. High, with a low air_speed_cap, gives Quake-style air strafing."),
+    ("air_speed_cap", "The most speed air control adds along the direction you push. What lets air strafing build speed, m/s."),
+    ("jump_height", "How high a jump lifts the feet, meters."),
+    ("gravity", "Gravity while rising, m/s². Also sets how long a jump takes."),
+    ("fall_gravity_scale", "Gravity multiplier while falling, so jumps come down faster than they go up and feel less floaty."),
+    ("terminal_velocity", "The fastest you can fall, m/s."),
+    ("jump_buffer", "A jump pressed up to this many seconds before landing still happens on landing."),
+    ("coyote_time", "A jump up to this many seconds after walking off an edge still works."),
+    ("hold_to_hop", "1: holding jump re-jumps on every landing (bunny hopping). 0: each jump needs a fresh press."),
+    ("crouch_height", "Body height while crouched, meters. A crouch-jump tucks the feet up by the difference, clearing higher ledges."),
+    ("crouch_speed", "Ground speed while crouched, as a fraction of walk_speed."),
+    ("edge_guard_drop", "While crouched on the ground, the biggest drop you may walk off, meters. Below 1 stops at every boxel edge, like Minecraft's sneak."),
+];
+
 impl Tunables for QuakeController {
     fn tunables(&self) -> Vec<Tunable> {
-        vec![
+        api::tuning::described(vec![
             Tunable::new("walk_speed", self.walk_speed, 0.5, 20.0),
             Tunable::new("sprint_speed", self.sprint_speed, 0.5, 30.0),
             Tunable::new("ground_accel", self.ground_accel, 0.5, 50.0),
@@ -220,7 +249,7 @@ impl Tunables for QuakeController {
             Tunable::new("crouch_height", self.crouch_height, 0.3, 1.8),
             Tunable::new("crouch_speed", self.crouch_speed, 0.05, 1.0),
             Tunable::new("edge_guard_drop", self.edge_guard_drop, 0.0, 5.0),
-        ]
+        ], QUAKE_GROUPS, QUAKE_HELP)
     }
 
     fn set_tunable(&mut self, name: &str, value: f32) -> bool {

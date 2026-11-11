@@ -151,14 +151,25 @@ impl Default for AoTuning {
     }
 }
 
+/// The tuning panel's groups for [`AoTuning`]'s values.
+const AO_GROUPS: &[(&str, &[&str])] = &[
+];
+/// What each of [`AoTuning`]'s values does, for the tuning panel.
+const AO_HELP: &[(&str, &str)] = &[
+    ("strength", "How much a corner darkens with all the space in front of it filled: 0 turns ambient occlusion off, 1 makes such a corner black. A floor against one wall is half filled; two walls, three quarters."),
+    ("reach", "How far from a corner shapes count, texels (16 is a whole block). Changing it remeshes every chunk: press Apply."),
+    ("full_at", "How full the space has to be for a corner to darken by the whole strength. Two walls meeting fill three quarters."),
+    ("curve", "How darkness rises as the space fills: 1 is a straight line; above 1 a little occlusion stays light while creases still go dark."),
+];
+
 impl Tunables for AoTuning {
     fn tunables(&self) -> Vec<Tunable> {
-        vec![
+        api::tuning::described(vec![
             Tunable::new("strength", self.strength, 0.0, 1.0),
             Tunable::new("reach", self.reach, 1.0, 16.0),
             Tunable::new("full_at", self.full_at, 0.05, 1.0),
             Tunable::new("curve", self.curve, 0.25, 4.0),
-        ]
+        ], AO_GROUPS, AO_HELP)
     }
 
     fn set_tunable(&mut self, name: &str, value: f32) -> bool {

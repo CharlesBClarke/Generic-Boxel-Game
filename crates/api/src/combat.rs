@@ -113,9 +113,34 @@ impl TargetDef {
     }
 }
 
+/// The tuning panel's groups for [`TargetDef`]'s values.
+const TARGET_GROUPS: &[(&str, &[&str])] = &[
+    ("Body", &["health", "weight", "respawn_time"]),
+    ("Getting about", &["step_height", "hop_speed", "max_drop"]),
+    ("Knocked around", &["gravity", "drag", "air_drag", "bounce"]),
+    ("Slams and falls", &["slam_speed", "slam_damage", "fall_speed", "fall_damage"]),
+];
+/// What each of [`TargetDef`]'s values does, for the tuning panel.
+const TARGET_HELP: &[(&str, &str)] = &[
+    ("health", "Damage it takes before it breaks (is killed)."),
+    ("weight", "How hard it is to knock around: a hit's knockback is divided by it. Also how hard it shoves and is shoved in a crowd."),
+    ("respawn_time", "Seconds from breaking to being back at its spot, if it respawns on its own."),
+    ("step_height", "How high a ledge it walks up without hopping, meters."),
+    ("hop_speed", "Upward speed of a hop for ledges too high to step, m/s. 0 never hops, so a block-high ledge stops it."),
+    ("max_drop", "The deepest drop its paths walk off, meters. Charges ignore it and can run off cliffs."),
+    ("gravity", "Downward acceleration, m/s²."),
+    ("drag", "How fast it slows sliding along the ground, per second. Walking eases toward the brain's wanted speed at the same rate."),
+    ("air_drag", "How fast it slows in the air, per second, so a hit sends it off fast but it stops short instead of sailing."),
+    ("bounce", "Share of its speed kept when it hits something: 0 stops dead, 1 bounces forever."),
+    ("slam_speed", "Sideways speed into a wall from which hitting it hurts (a slam), m/s."),
+    ("slam_damage", "Damage a slam deals for each m/s over slam_speed."),
+    ("fall_speed", "Landing faster than this hurts, m/s."),
+    ("fall_damage", "Damage for each m/s of landing speed over fall_speed."),
+];
+
 impl Tunables for TargetDef {
     fn tunables(&self) -> Vec<Tunable> {
-        vec![
+        crate::tuning::described(vec![
             Tunable::new("health", self.health, 1.0, 200.0),
             Tunable::new("step_height", self.step_height, 0.0, 1.2),
             Tunable::new("weight", self.weight, 0.1, 20.0),
@@ -130,7 +155,7 @@ impl Tunables for TargetDef {
             Tunable::new("max_drop", self.max_drop, 0.0, 10.0),
             Tunable::new("fall_speed", self.fall_speed, 0.0, 60.0),
             Tunable::new("fall_damage", self.fall_damage, 0.0, 10.0),
-        ]
+        ], TARGET_GROUPS, TARGET_HELP)
     }
 
     fn set_tunable(&mut self, name: &str, value: f32) -> bool {
@@ -218,9 +243,32 @@ impl ToolDef {
     }
 }
 
+/// The tuning panel's groups for [`ToolDef`]'s values.
+const TOOL_GROUPS: &[(&str, &[&str])] = &[
+    ("Aim", &["reach", "radius"]),
+    ("Hit", &["damage", "knockback", "lift"]),
+    ("Your speed into it", &["momentum", "momentum_damage"]),
+    ("Air recoil", &["recoil", "recoil_bounce"]),
+    ("Swing timing", &["windup", "recover"]),
+];
+/// What each of [`ToolDef`]'s values does, for the tuning panel.
+const TOOL_HELP: &[(&str, &str)] = &[
+    ("reach", "How far from the eyes the strike lands, meters."),
+    ("radius", "How far off the line of sight a target can be and still get hit, meters, so a near miss still connects."),
+    ("damage", "Damage per hit, before hit boxes multiply it (a head hit doubles it)."),
+    ("knockback", "Speed the strike knocks a weight-1 target away at, level along the swing, m/s."),
+    ("lift", "Upward speed the strike adds to a weight-1 target, m/s."),
+    ("momentum", "Share of your own speed toward the target passed on as extra knockback, whatever its weight: sprinting or falling into a swing hits further."),
+    ("momentum_damage", "Extra damage for each m/s you move toward the target."),
+    ("recoil", "A hit while you're in the air pushes you back (opposite your look) by this many m/s per point of damage: swinging down onto something slows a fall."),
+    ("recoil_bounce", "The most upward speed recoil can leave you with, m/s, so it can stop a fall and bounce you a little but not launch you."),
+    ("windup", "Seconds from starting a swing to the strike."),
+    ("recover", "Seconds after the strike before the next swing can start."),
+];
+
 impl Tunables for ToolDef {
     fn tunables(&self) -> Vec<Tunable> {
-        vec![
+        crate::tuning::described(vec![
             Tunable::new("reach", self.reach, 0.5, 8.0),
             Tunable::new("radius", self.radius, 0.0, 1.5),
             Tunable::new("damage", self.damage, 0.0, 50.0),
@@ -232,7 +280,7 @@ impl Tunables for ToolDef {
             Tunable::new("recoil_bounce", self.recoil_bounce, 0.0, 15.0),
             Tunable::new("windup", self.windup, 0.0, 1.0),
             Tunable::new("recover", self.recover, 0.0, 2.0),
-        ]
+        ], TOOL_GROUPS, TOOL_HELP)
     }
 
     fn set_tunable(&mut self, name: &str, value: f32) -> bool {

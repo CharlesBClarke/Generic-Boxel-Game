@@ -49,9 +49,18 @@ impl PushOutDef {
     }
 }
 
+/// The tuning panel's groups for [`PushOutDef`]'s values.
+const PUSH_OUT_GROUPS: &[(&str, &[&str])] = &[
+];
+/// What each of [`PushOutDef`]'s values does, for the tuning panel.
+const PUSH_OUT_HELP: &[(&str, &str)] = &[
+    ("strength", "Launch speed when a block is placed inside a body (such as at your own feet), m/s. The body is moved out the shortest way that has room."),
+    ("upward_bias", "How much the launch leans upward: 0 pushes straight from the block's center to the body's, higher points it more toward straight up."),
+];
+
 impl Tunables for PushOutDef {
     fn tunables(&self) -> Vec<Tunable> {
-        vec![Tunable::new("strength", self.strength, 0.0, 30.0), Tunable::new("upward_bias", self.upward_bias, 0.0, 5.0)]
+        crate::tuning::described(vec![Tunable::new("strength", self.strength, 0.0, 30.0), Tunable::new("upward_bias", self.upward_bias, 0.0, 5.0)], PUSH_OUT_GROUPS, PUSH_OUT_HELP)
     }
 
     fn set_tunable(&mut self, name: &str, value: f32) -> bool {
@@ -65,9 +74,18 @@ impl Tunables for PushOutDef {
     }
 }
 
+/// The tuning panel's groups for [`InteractionDef`]'s values.
+const INTERACTION_GROUPS: &[(&str, &[&str])] = &[
+];
+/// What each of [`InteractionDef`]'s values does, for the tuning panel.
+const INTERACTION_HELP: &[(&str, &str)] = &[
+    ("reach", "How far from the eyes blocks can be broken or placed, meters."),
+    ("repeat_rate", "Breaks or placements per second while the button is held."),
+];
+
 impl Tunables for InteractionDef {
     fn tunables(&self) -> Vec<Tunable> {
-        vec![Tunable::new("reach", self.reach, 1.0, 20.0), Tunable::new("repeat_rate", self.repeat_rate, 0.5, 20.0)]
+        crate::tuning::described(vec![Tunable::new("reach", self.reach, 1.0, 20.0), Tunable::new("repeat_rate", self.repeat_rate, 0.5, 20.0)], INTERACTION_GROUPS, INTERACTION_HELP)
     }
 
     fn set_tunable(&mut self, name: &str, value: f32) -> bool {

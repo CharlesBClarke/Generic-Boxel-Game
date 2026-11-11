@@ -27,6 +27,7 @@ pub mod solid;
 pub mod sound;
 pub mod tuning;
 pub mod tuning_file;
+pub mod tuning_layout;
 pub mod ui_scale;
 pub mod view;
 pub mod volumes;

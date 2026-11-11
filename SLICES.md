@@ -104,7 +104,19 @@ A run of small toy slices. Each one takes a single game-feel feature that doesn'
 
 ### Current toy
 
-None in progress: AO in the shader closed 2026-11-11. Suggested next: Shadow speed (start with a bench run of the switches to see where the frame goes now), or plain Render scale to test whether the frame is still bound by triangles; `fix-greedy-sparkles` whenever the sparkles bother.
+**Tuning panel** (`toy-tuning-panel`). **Stage:** Verify (built and tested; waiting for the user to try it).
+
+**Goal:** the tuning panel (~230 sliders in ~25 sections stacked in one scroll) is easy to get around: the user, "the slider menu is getting compersome, tons of scrolling, can we improve it, flaten it, organize it, tool tips for what they do and search, maybe in the future a RAG system".
+
+**Plan (approved 2026-11-11)**
+- *Tabs:* a sidebar of a few broad tabs (Favourites, Player, Items and tools, Creatures, World, Light and sky, Display, Sound, Dev, and Other for sections no tab claims), one page at a time. The sidebar folds away (the user: "make sure the top level list can also be mimzied"). Server sections pick a tab by name or prefix (`tool `, `target `, `brain `, `terrain `), so mods' sections land somewhere. A tab with one section shows it without a header.
+- *Subgroups everywhere:* `api::Tunable` gets plain-text `group` and `help` (and the WIT `tunable` records too). Sections sort their values into small groups of things that touch the same thing, as Shading's are (the user: "use judgment"); Shading moves onto the same field. Sections open, groups folded, with fold-all and unfold-all.
+- *Tooltips:* hovering a slider's name shows its help, range, default and saved name. Help is encouraged, not required: a slider without it still works.
+- *Search:* a box at the top; while it has text the page is one flat list of matching sliders from every tab, tagged with tab and section, matching every word against name (underscores as spaces), section, group and help.
+- *Extras:* a dot on values that differ from their default; right-click a slider to reset it or (un)favourite it; a star per row; favourites saved at once to `tuning_favourites.txt` beside the tuning file.
+- *Unchanged:* the tuning file's format and section names; tabs are display only.
+- *Tests:* search matching; every built-in section lands in a tab other than Other; grouping keeps every value once; favourites file round trip.
+- *Later, not this toy:* a RAG "ask which slider does X" over the help text.
 
 **Waiting for a play check** (remind the user at the start of every session, and at good moments during one, until they confirm; then delete the line):
 

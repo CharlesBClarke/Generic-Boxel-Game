@@ -73,11 +73,42 @@ impl Default for CameraFeel {
     }
 }
 
+/// The tuning panel's groups for [`CameraFeel`]'s values.
+const CAMERA_GROUPS: &[(&str, &[&str])] = &[
+    ("Field of view", &["fov", "fov_per_speed", "fov_speed_start", "fov_max", "fov_response"]),
+    ("Head bob", &["bob_amount", "bob_per_meter"]),
+    ("Landing suspension", &["landing_absorb", "landing_stiffness", "landing_damping", "landing_max_travel"]),
+    ("Hard landings", &["hard_landing_speed", "hard_recover_stiffness", "hard_nod"]),
+    ("Nod", &["landing_nod", "nod_recover"]),
+    ("Steps and crouching", &["step_recover", "crouch_recover"]),
+];
+/// What each of [`CameraFeel`]'s values does, for the tuning panel.
+const CAMERA_HELP: &[(&str, &str)] = &[
+    ("fov", "Field of view at rest, degrees."),
+    ("fov_per_speed", "Extra degrees of field of view per m/s of level speed above fov_speed_start."),
+    ("fov_speed_start", "Level speed at which the field of view starts widening, m/s (walk speed and below stays at fov)."),
+    ("fov_max", "The widest the field of view goes, degrees."),
+    ("fov_response", "How quickly the field of view follows its target, per second."),
+    ("bob_amount", "Head bob height while walking, meters."),
+    ("bob_per_meter", "Head bob cycles per meter walked."),
+    ("landing_absorb", "How much of the landing speed the camera's shock absorber takes on, as a share."),
+    ("landing_stiffness", "The shock absorber's spring stiffness, per second squared: higher snaps back faster."),
+    ("landing_damping", "The shock absorber's damping: below 1 bounces, 1 settles without bouncing."),
+    ("landing_max_travel", "How far the shock absorber can compress, meters."),
+    ("hard_landing_speed", "Landing speed at which the absorber bottoms out with a nod and slow recovery (\"this fall hurts\"), m/s. With fall damage on, health's fall_speed is used instead."),
+    ("hard_recover_stiffness", "Spring stiffness while recovering from a hard landing; lower is slower."),
+    ("hard_nod", "Downward nod on a hard landing, degrees."),
+    ("landing_nod", "Downward nod per m/s of landing speed on soft landings, degrees."),
+    ("nod_recover", "How quickly a nod recovers, per second."),
+    ("step_recover", "How quickly the camera catches up after a step up, per second."),
+    ("crouch_recover", "How quickly the camera follows crouching and standing, per second."),
+];
+
 macro_rules! tunable_fields {
     ($($field:ident: $min:expr, $max:expr;)*) => {
         impl Tunables for CameraFeel {
             fn tunables(&self) -> Vec<Tunable> {
-                vec![$(Tunable::new(stringify!($field), self.$field, $min, $max)),*]
+                api::tuning::described(vec![$(Tunable::new(stringify!($field), self.$field, $min, $max)),*], CAMERA_GROUPS, CAMERA_HELP)
             }
 
             fn set_tunable(&mut self, name: &str, value: f32) -> bool {

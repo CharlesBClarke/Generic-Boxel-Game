@@ -6,6 +6,10 @@
 //! terrain is generated again. Save keeps them in the tuning file (see `tuning_file`), which is
 //! applied at startup.
 //!
+//! Sections sit on tabs in a sidebar that folds away (see `tuning_layout`), their values in
+//! the groups each section gives them; a search box lists every match instead. Hovering a
+//! slider's name shows its help; right-click resets it or stars it as a favourite.
+//!
 //! The server's values are edited as copies and each change is sent back as a command; the
 //! server answers with its definitions as changed.
 
@@ -21,6 +25,7 @@ use crate::feel::CameraFeel;
 use crate::mesher::AoTuning;
 use crate::sound::{Kind, Pick, Picks, SoundPicks, SoundPreview, SoundTuning};
 use crate::tuning_file;
+use crate::tuning_layout::{self, Favourites, Tab};
 use crate::ui_scale::UiScaleTuning;
 use crate::shading::ShadingTuning;
 use crate::shadows::{Filter, ShadowTuning};
@@ -41,6 +46,19 @@ pub struct TuningPanel {
     /// Ambient occlusion values moved but not applied yet: applying remeshes every chunk,
     /// too slow to do on every slider step.
     ao_draft: Option<AoTuning>,
+    /// The sidebar's page.
+    tab: Tab,
+    /// Whether the sidebar's list of tabs is folded away.
+    hide_tabs: bool,
+    /// What's typed in the search box; while it has words, the page is every match.
+    search: String,
+    /// Fold or unfold every header this frame (the Fold all and Unfold all buttons).
+    fold: Option<bool>,
+    /// The starred sliders, loaded from their file when the panel first opens.
+    favourites: Option<Favourites>,
+    /// Every section's values as the game started, by saved name, for the changed marks and
+    /// resetting one value.
+    defaults: Vec<(String, Vec<Tunable>)>,
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -84,6 +102,21 @@ pub fn tuning_panel(
     let before = world.defs().tuning.clone();
     if panel.server_defaults.is_none() {
         panel.server_defaults = Some(before.clone());
+        let mut defaults: Vec<(String, Vec<Tunable>)> = before.iter().map(|s| (s.name.clone(), s.values.clone())).collect();
+        let client = [
+            ("combat", CombatFeel::default().tunables()),
+            ("animation", AnimationTuning::default().tunables()),
+            ("camera", CameraFeel::default().tunables()),
+            ("ao", AoTuning::default().tunables()),
+            ("view", ViewTuning::default().tunables()),
+            ("ui", UiScaleTuning::default().tunables()),
+            ("shading", ShadingTuning::default().tunables()),
+            ("shadows", ShadowTuning::default().tunables()),
+            ("drill", DrillTuning::default().tunables()),
+            ("sound", SoundTuning::default().tunables()),
+        ];
+        defaults.extend(client.map(|(name, values)| (name.to_owned(), values)));
+        panel.defaults = defaults;
     }
     let mut server: Vec<(String, Values)> = before.iter().map(|s| (s.name.clone(), Values(s.values.clone()))).collect();
     let mut unkillable = world.defs().unkillable;
@@ -177,173 +210,270 @@ pub fn tuning_panel(
     let mut save = false;
     if panel.open {
         let ctx = contexts.ctx_mut()?;
-        egui::Window::new("Tuning").default_pos([10.0, 120.0]).show(ctx, |ui| {
-            egui::ScrollArea::vertical().max_height(600.0).show(ui, |ui| {
-                let mut first = true;
-                let mut brains_shown = false;
-                for (name, values) in &mut server {
-                    if !first && !name.starts_with("brain ") {
-                        ui.separator();
+        let TuningPanel { tab, hide_tabs, search, fold, favourites, defaults, server_defaults, printout, note, .. } =
+            &mut *panel;
+        let favourites = favourites.get_or_insert_with(Favourites::load);
+        // A star clicked this frame, applied and saved after drawing.
+        let mut toggled: Option<(String, String)> = None;
+        // Every section's saved name, in panel order.
+        let keys: Vec<String> = sections!().into_iter().map(|(name, _)| name).collect();
+        let tabs: Vec<Tab> =
+            Tab::ALL.into_iter().filter(|&t| t == Tab::Favourites || keys.iter().any(|k| Tab::of(k) == t)).collect();
+        if !tabs.contains(tab) {
+            *tab = Tab::default();
+        }
+        let height = ctx.content_rect().height() * 0.7;
+
+        // Sliders for every value of `section` that `keep` keeps, under a heading per
+        // section that has any: search results and favourites.
+        macro_rules! flat_list {
+            ($ui:expr, $keep:expr) => {{
+                let ui: &mut egui::Ui = $ui;
+                let mut any = false;
+                for (key, target) in sections!() {
+                    let hits: Vec<Tunable> =
+                        target.tunables().into_iter().filter(|t| !skipped(&key, &t.name) && $keep(&key, t)).collect();
+                    if hits.is_empty() {
+                        continue;
                     }
-                    first = false;
-                    if let Some(brain) = name.strip_prefix("brain ") {
-                        if !brains_shown {
-                            brains_shown = true;
-                            ui.separator();
-                            ui.heading("Brains");
-                            ui.checkbox(&mut brains_on, "think (off: targets are dummies)");
-                        }
-                        ui.label(format!("Brain: {brain}"));
-                    } else {
-                        ui.heading(heading(name));
+                    any = true;
+                    let title = format!("{} › {}", Tab::of(&key).label(), tuning_layout::heading(&key));
+                    let go = ui.add(egui::Label::new(egui::RichText::new(title).strong()).sense(egui::Sense::click()));
+                    if go.on_hover_text("Go to this section's tab").clicked() {
+                        *tab = Tab::of(&key);
+                        search.clear();
                     }
-                    if name == "health" {
+                    rows(ui, &key, "flat", hits, target, defaults, favourites, &mut toggled);
+                    ui.add_space(4.0);
+                }
+                any
+            }};
+        }
+
+        // A section's own controls that aren't sliders, above its sliders (`before`) or
+        // below them.
+        macro_rules! extras {
+            ($ui:expr, $key:expr, before) => {{
+                let ui: &mut egui::Ui = $ui;
+                match $key {
+                    "health" => {
                         ui.horizontal(|ui| {
                             ui.checkbox(&mut unkillable, "Can't be knocked out");
                             refill = ui.button("Heal").clicked();
                         });
                     }
-                    if name == "time" {
+                    "time" => {
                         ui.horizontal(|ui| {
                             ui.add(egui::Slider::new(&mut hours, 0.0..=23.99).text(clock_text(clock.hours())));
                             ui.checkbox(&mut paused, "paused");
                         });
                     }
-                    sliders(ui, name, values);
-                    if name == "world" || name.starts_with("terrain ") {
+                    "view" => {
+                        egui::ComboBox::from_label("tone mapper")
+                            .selected_text(seeing.tone_mapper.label())
+                            .show_ui(ui, |ui| {
+                                for t in ToneMapper::ALL {
+                                    ui.selectable_value(&mut seeing.tone_mapper, t, t.label());
+                                }
+                            });
+                    }
+                    "ui" => {
+                        ui.label("menus and text grow with the window's height (natural size at reference_height), times size");
+                    }
+                    "shading" => {
+                        ui.label("sun and sky light, the sky, fog, and the lines along creases and ridges");
+                        ui.horizontal_wrapped(|ui| {
+                            ui.label("draw:");
+                            let parts = &mut lighting.parts;
+                            ui.checkbox(&mut parts.light, "sun and sky light");
+                            ui.checkbox(&mut parts.edges, "edges");
+                            ui.checkbox(&mut parts.sheen, "sheen");
+                            ui.checkbox(&mut parts.fog, "fog");
+                            ui.checkbox(&mut parts.sky, "sky");
+                            ui.checkbox(&mut parts.stored, "stored light");
+                            ui.checkbox(&mut parts.ao, "ambient occlusion");
+                        });
+                    }
+                    "shadows" => {
+                        ui.label("sun shadows: sharp maps near the camera, fading into a coarse height-map shadow farther out");
+                        ui.horizontal(|ui| {
+                            let switches = &mut shadows.switches;
+                            ui.checkbox(&mut switches.maps, "shadow maps");
+                            ui.checkbox(&mut switches.far, "far shadow");
+                            ui.checkbox(&mut switches.show_cascades, "tint each map");
+                        });
+                        egui::ComboBox::from_label("edges")
+                            .selected_text(shadows.filter.label())
+                            .show_ui(ui, |ui| {
+                                for f in Filter::ALL {
+                                    ui.selectable_value(&mut shadows.filter, f, f.label());
+                                }
+                            });
+                    }
+                    "animation" => {
+                        let mut shown = preview.clip.clone();
+                        egui::ComboBox::from_label("every creature plays")
+                            .selected_text(shown.as_deref().unwrap_or("its own choice"))
+                            .show_ui(ui, |ui| {
+                                ui.selectable_value(&mut shown, None, "its own choice");
+                                for clip in &clips {
+                                    ui.selectable_value(&mut shown, Some(clip.clone()), clip);
+                                }
+                            });
+                        if shown != preview.clip {
+                            preview.clip = shown;
+                        }
+                    }
+                    key if key.starts_with("brain ") => {
+                        ui.checkbox(&mut brains_on, "think (off: every brain's targets are dummies)");
+                    }
+                    _ => {}
+                }
+            }};
+            ($ui:expr, $key:expr, after) => {{
+                let ui: &mut egui::Ui = $ui;
+                match $key {
+                    key if key == "world" || key.starts_with("terrain ") => {
                         ui.horizontal(|ui| {
                             regenerate |= ui.button("Regenerate terrain").clicked();
                             ui.label("terrain values take effect here (edits in it are lost)");
                         });
                     }
+                    "view" => {
+                        ui.horizontal(|ui| {
+                            ui.checkbox(&mut drawing.msaa, "anti-aliasing (4× MSAA)");
+                            ui.checkbox(&mut drawing.depth_prepass, "depth prepass");
+                            ui.checkbox(&mut drawing.merge_faces, "merge faces");
+                        });
+                    }
+                    "ao" => {
+                        ui.horizontal(|ui| {
+                            let pending = shading.meshing() != ao.meshing();
+                            apply_ao = ui.add_enabled(pending, egui::Button::new("Apply")).clicked();
+                            ui.label(if pending { "reach (or turning it on from 0) changed: Apply remeshes every chunk" } else { "live" });
+                        });
+                    }
+                    "sound" => {
+                        egui::CollapsingHeader::new("Footsteps").open(*fold).show(ui, |ui| {
+                            ui.label("Try any step sound on any surface. Save and Print values keep them too.");
+                            for (surface, own) in &surfaces {
+                                pick_row(ui, surface, short(surface), own, &step_sounds, &all_sounds, &mut trying.steps, &mut preview_sound.0);
+                            }
+                            if ui.button("Reset footsteps").clicked() {
+                                trying.steps = Picks::default();
+                            }
+                        });
+                        egui::CollapsingHeader::new("Body sounds").open(*fold).show(ui, |ui| {
+                            ui.label("A landing is the surface's footstep, louder (land_loudness); a hard one adds this. A pick-up plays the material too (pickup_material).");
+                            for (kind, own, choices) in kinds.iter().filter(|(k, _, _)| Kind::BODY.contains(k)) {
+                                pick_row(ui, kind.key(), kind.label(), own, choices, &all_sounds, &mut trying.combat, &mut preview_sound.0);
+                            }
+                        });
+                        egui::CollapsingHeader::new("Combat sounds").open(*fold).show(ui, |ui| {
+                            ui.label("Try any sound for each kind. A swing that hits a block plays the block's footstep, louder (block_hit_volume).");
+                            for (kind, own, choices) in kinds.iter().filter(|(k, _, _)| Kind::COMBAT.contains(k)) {
+                                pick_row(ui, kind.key(), kind.label(), own, choices, &all_sounds, &mut trying.combat, &mut preview_sound.0);
+                            }
+                            if ui.button("Reset combat and body sounds").clicked() {
+                                trying.combat = Picks::default();
+                            }
+                        });
+                        egui::CollapsingHeader::new("Hear a sound").open(*fold).show(ui, |ui| {
+                            for name in world.sounds().iter().filter(|s| !s.looping).map(|s| s.name.clone()) {
+                                if ui.button(format!("Play {name}")).clicked() {
+                                    preview_sound.0 = Some(Pick::plain(name));
+                                }
+                            }
+                        });
+                    }
+                    _ => {}
                 }
-                ui.separator();
-                ui.heading("View");
-                egui::ComboBox::from_label("tone mapper")
-                    .selected_text(seeing.tone_mapper.label())
-                    .show_ui(ui, |ui| {
-                        for t in ToneMapper::ALL {
-                            ui.selectable_value(&mut seeing.tone_mapper, t, t.label());
-                        }
-                    });
-                sliders_except(ui, "view", &mut seeing, &["tone_mapper"]);
-                ui.horizontal(|ui| {
-                    ui.checkbox(&mut drawing.msaa, "anti-aliasing (4× MSAA)");
-                    ui.checkbox(&mut drawing.depth_prepass, "depth prepass");
-                    ui.checkbox(&mut drawing.merge_faces, "merge faces");
-                });
-                ui.separator();
-                ui.heading("UI scale");
-                ui.label("menus and text grow with the window's height (natural size at reference_height), times size");
-                sliders(ui, "ui", &mut sizing);
-                ui.separator();
-                ui.heading("Shading");
-                ui.label("sun and sky light, the sky, fog, and the lines along creases and ridges");
-                ui.horizontal(|ui| {
-                    ui.label("draw:");
-                    let parts = &mut lighting.parts;
-                    ui.checkbox(&mut parts.light, "sun and sky light");
-                    ui.checkbox(&mut parts.edges, "edges");
-                    ui.checkbox(&mut parts.sheen, "sheen");
-                    ui.checkbox(&mut parts.fog, "fog");
-                    ui.checkbox(&mut parts.sky, "sky");
-                    ui.checkbox(&mut parts.stored, "stored light");
-                    ui.checkbox(&mut parts.ao, "ambient occlusion");
-                });
-                for (title, names) in crate::shading::GROUPS {
-                    egui::CollapsingHeader::new(title).id_salt(("shading", title)).default_open(true).show(ui, |ui| {
-                        sliders_only(ui, title, &mut lighting, names);
-                    });
+            }};
+        }
+
+        // One section on its tab's page: its own controls and its sliders in their groups.
+        macro_rules! section_body {
+            ($ui:expr, $key:expr) => {{
+                let ui: &mut egui::Ui = $ui;
+                let key: &str = $key;
+                extras!(ui, key, before);
+                {
+                    let mut all = sections!();
+                    if let Some((_, target)) = all.iter_mut().find(|(name, _)| name == key) {
+                        grouped(ui, key, &mut **target, defaults, favourites, &mut toggled, *fold);
+                    }
                 }
-                ui.separator();
-                ui.heading("Shadows");
-                ui.label("sun shadows: sharp maps near the camera, fading into a coarse height-map shadow farther out");
-                ui.horizontal(|ui| {
-                    let switches = &mut shadows.switches;
-                    ui.checkbox(&mut switches.maps, "shadow maps");
-                    ui.checkbox(&mut switches.far, "far shadow");
-                    ui.checkbox(&mut switches.show_cascades, "tint each map");
-                });
-                egui::ComboBox::from_label("edges")
-                    .selected_text(shadows.filter.label())
-                    .show_ui(ui, |ui| {
-                        for f in Filter::ALL {
-                            ui.selectable_value(&mut shadows.filter, f, f.label());
-                        }
-                    });
-                sliders_except(ui, "shadows", &mut shadows, &["filter"]);
-                ui.separator();
-                ui.heading("Sound");
-                sliders(ui, "sound", &mut hearing);
-                ui.collapsing("Footsteps", |ui| {
-                    ui.label("Try any step sound on any surface. Save and Print values keep them too.");
-                    for (surface, own) in &surfaces {
-                        pick_row(ui, surface, short(surface), own, &step_sounds, &all_sounds, &mut trying.steps, &mut preview_sound.0);
-                    }
-                    if ui.button("Reset footsteps").clicked() {
-                        trying.steps = Picks::default();
-                    }
-                });
-                ui.collapsing("Body sounds", |ui| {
-                    ui.label("A landing is the surface's footstep, louder (land_loudness); a hard one adds this. A pick-up plays the material too (pickup_material).");
-                    for (kind, own, choices) in kinds.iter().filter(|(k, _, _)| Kind::BODY.contains(k)) {
-                        pick_row(ui, kind.key(), kind.label(), own, choices, &all_sounds, &mut trying.combat, &mut preview_sound.0);
-                    }
-                });
-                ui.collapsing("Combat sounds", |ui| {
-                    ui.label("Try any sound for each kind. A swing that hits a block plays the block's footstep, louder (block_hit_volume).");
-                    for (kind, own, choices) in kinds.iter().filter(|(k, _, _)| Kind::COMBAT.contains(k)) {
-                        pick_row(ui, kind.key(), kind.label(), own, choices, &all_sounds, &mut trying.combat, &mut preview_sound.0);
-                    }
-                    if ui.button("Reset combat and body sounds").clicked() {
-                        trying.combat = Picks::default();
-                    }
-                });
-                ui.collapsing("Hear a sound", |ui| {
-                    for name in world.sounds().iter().filter(|s| !s.looping).map(|s| s.name.clone()) {
-                        if ui.button(format!("Play {name}")).clicked() {
-                            preview_sound.0 = Some(Pick::plain(name));
-                        }
-                    }
-                });
-                ui.separator();
-                ui.heading("Combat feel");
-                sliders(ui, "combat", &mut juice);
-                ui.separator();
-                ui.heading("Animation");
-                let mut shown = preview.clip.clone();
-                egui::ComboBox::from_label("every creature plays")
-                    .selected_text(shown.as_deref().unwrap_or("its own choice"))
-                    .show_ui(ui, |ui| {
-                        ui.selectable_value(&mut shown, None, "its own choice");
-                        for clip in &clips {
-                            ui.selectable_value(&mut shown, Some(clip.clone()), clip);
-                        }
-                    });
-                if shown != preview.clip {
-                    preview.clip = shown;
+                extras!(ui, key, after);
+            }};
+        }
+
+        egui::Window::new("Tuning").default_pos([10.0, 120.0]).default_size([640.0, 560.0]).resizable(true).show(ctx, |ui| {
+            ui.horizontal(|ui| {
+                if ui.selectable_label(!*hide_tabs, "☰").on_hover_text("Show or hide the list of tabs").clicked() {
+                    *hide_tabs = !*hide_tabs;
                 }
-                sliders(ui, "animation", &mut playing);
-                ui.separator();
-                ui.heading("Camera");
-                sliders(ui, "camera", &mut camera);
-                ui.separator();
-                ui.heading("Ambient occlusion");
-                sliders(ui, "ao", &mut shading);
-                ui.horizontal(|ui| {
-                    let pending = shading.meshing() != ao.meshing();
-                    apply_ao = ui.add_enabled(pending, egui::Button::new("Apply")).clicked();
-                    ui.label(if pending { "reach (or turning it on from 0) changed: Apply remeshes every chunk" } else { "live" });
+                ui.add(egui::TextEdit::singleline(search).hint_text("Search every slider and its help").desired_width(240.0));
+                if !search.is_empty() && ui.small_button("✕").on_hover_text("Clear the search").clicked() {
+                    search.clear();
+                }
+                if ui.small_button("Fold all").clicked() {
+                    *fold = Some(false);
+                }
+                if ui.small_button("Unfold all").clicked() {
+                    *fold = Some(true);
+                }
+            });
+            ui.separator();
+            ui.horizontal_top(|ui| {
+                if !*hide_tabs {
+                    ui.vertical(|ui| {
+                        ui.set_width(130.0);
+                        for &t in &tabs {
+                            if ui.selectable_label(*tab == t && search.trim().is_empty(), t.label()).clicked() {
+                                *tab = t;
+                                search.clear();
+                            }
+                        }
+                    });
+                    ui.separator();
+                }
+                ui.vertical(|ui| {
+                    egui::ScrollArea::vertical().max_height(height).auto_shrink([false, true]).show(ui, |ui| {
+                        if !search.trim().is_empty() {
+                            let query = search.clone();
+                            if !flat_list!(ui, |key: &str, t: &Tunable| tuning_layout::matches(&query, key, t)) {
+                                ui.label("Nothing matches. Search looks at names, sections, groups and help.");
+                            }
+                        } else if *tab == Tab::Favourites {
+                            let marked = favourites.clone();
+                            if !flat_list!(ui, |key: &str, t: &Tunable| marked.has(key, &t.name)) {
+                                ui.label("No favourites yet: click a slider's ☆, or right-click it.");
+                            }
+                        } else {
+                            let here: Vec<&String> = keys.iter().filter(|k| Tab::of(k) == *tab).collect();
+                            let single = here.len() == 1;
+                            for key in here {
+                                let title = tuning_layout::heading(key);
+                                if single {
+                                    ui.heading(title);
+                                    section_body!(ui, key);
+                                } else {
+                                    egui::CollapsingHeader::new(egui::RichText::new(title).heading())
+                                        .id_salt(("section", key))
+                                        .default_open(true)
+                                        .open(*fold)
+                                        .show(ui, |ui| section_body!(ui, key));
+                                }
+                            }
+                        }
+                    });
                 });
-                ui.separator();
-                ui.heading("Chase drill");
-                sliders(ui, "drill", &mut drill_tuning);
             });
             ui.separator();
             ui.horizontal(|ui| {
                 if ui.button("Reset all").clicked() {
                     for (name, values) in &mut server {
-                        let defaults = panel.server_defaults.iter().flatten().find(|d| d.name == *name);
+                        let defaults = server_defaults.iter().flatten().find(|d| d.name == *name);
                         for t in defaults.map(|d| d.values.as_slice()).unwrap_or_default() {
                             values.set_tunable(&t.name, t.value);
                         }
@@ -368,15 +498,23 @@ pub fn tuning_panel(
                 save = ui.button("Save").on_hover_text("Keep these values for next time").clicked();
                 print = ui.button("Print values").clicked();
             });
-            if !panel.note.is_empty() {
-                ui.label(&panel.note);
+            if !note.is_empty() {
+                ui.label(&*note);
             }
-            if !panel.printout.is_empty() {
+            if !printout.is_empty() {
                 ui.label("Printed to the log too:");
-                let mut text = panel.printout.clone();
+                let mut text = printout.clone();
                 ui.add(egui::TextEdit::multiline(&mut text).code_editor().desired_rows(6));
             }
         });
+        *fold = None;
+        if let Some((section, name)) = toggled {
+            favourites.toggle(&section, &name);
+            if let Err(e) = favourites.save() {
+                *note = format!("Couldn't save favourites: {e}");
+                warn!("{note}");
+            }
+        }
     }
 
     if print || save {
@@ -510,27 +648,6 @@ fn short(name: &str) -> &str {
     name.split_once(':').map_or(name, |(_, path)| path)
 }
 
-/// A server section's heading in the panel.
-fn heading(section: &str) -> String {
-    match section {
-        "movement" => "Movement".into(),
-        "interaction" => "Interaction".into(),
-        "push_out" => "Push-out".into(),
-        "crowd" => "Crowd".into(),
-        "health" => "Player health".into(),
-        "item_drops" => "Item drops".into(),
-        "inventory" => "Inventory".into(),
-        "world" => "World".into(),
-        "time" => "Time of day".into(),
-        _ => match section.split_once(' ') {
-            Some(("tool", name)) => format!("Tool: {name}"),
-            Some(("target", name)) => format!("Target: {name}"),
-            Some(("terrain", name)) => format!("Terrain: {name}"),
-            _ => section.into(),
-        },
-    }
-}
-
 /// A command for every value in `edited` that differs from `before`.
 fn changes(before: &[TuningSection], edited: &[(String, Values)]) -> Vec<Command> {
     let mut out = Vec::new();
@@ -584,34 +701,97 @@ impl Tunables for Values {
     }
 }
 
-fn sliders<T: Tunables + ?Sized>(ui: &mut egui::Ui, id: &str, target: &mut T) {
-    sliders_except(ui, id, target, &[]);
+/// Values with a control of their own instead of a slider.
+fn skipped(section: &str, name: &str) -> bool {
+    matches!((section, name), ("view", "tone_mapper") | ("shadows", "filter"))
 }
 
-/// [`sliders`], leaving out the values named in `skip`, which have controls of their own.
-fn sliders_except<T: Tunables + ?Sized>(ui: &mut egui::Ui, id: &str, target: &mut T, skip: &[&str]) {
-    egui::Grid::new(id).num_columns(2).show(ui, |ui| {
-        for t in target.tunables().into_iter().filter(|t| !skip.contains(&t.name.as_str())) {
-            let mut value = t.value;
-            ui.label(&t.name);
-            if ui.add(egui::Slider::new(&mut value, t.min..=t.max)).changed() {
-                target.set_tunable(&t.name, value);
-            }
-            ui.end_row();
+/// The value `name` of `section` had as the game started.
+fn default_of(defaults: &[(String, Vec<Tunable>)], section: &str, name: &str) -> Option<f32> {
+    defaults.iter().find(|(s, _)| s == section)?.1.iter().find(|t| t.name == name).map(|t| t.value)
+}
+
+/// A section's sliders: those in no group first, then each group under a header of its own,
+/// folded unless `fold` says otherwise this frame.
+#[allow(clippy::too_many_arguments)]
+fn grouped(
+    ui: &mut egui::Ui,
+    section: &str,
+    target: &mut dyn Tunables,
+    defaults: &[(String, Vec<Tunable>)],
+    favourites: &Favourites,
+    toggled: &mut Option<(String, String)>,
+    fold: Option<bool>,
+) {
+    let all: Vec<Tunable> = target.tunables().into_iter().filter(|t| !skipped(section, &t.name)).collect();
+    let loose: Vec<Tunable> = all.iter().filter(|t| t.group.is_empty()).cloned().collect();
+    rows(ui, section, "", loose, target, defaults, favourites, toggled);
+    let mut groups: Vec<&str> = Vec::new();
+    for t in &all {
+        if !t.group.is_empty() && !groups.contains(&t.group.as_str()) {
+            groups.push(&t.group);
         }
-    });
+    }
+    for group in groups {
+        let values: Vec<Tunable> = all.iter().filter(|t| t.group == group).cloned().collect();
+        let moved = values.iter().any(|t| default_of(defaults, section, &t.name).is_some_and(|d| tuning_layout::changed(t, d)));
+        let title = format!("{group}  ({}){}", values.len(), if moved { " •" } else { "" });
+        egui::CollapsingHeader::new(title).id_salt((section, group)).open(fold).show(ui, |ui| {
+            rows(ui, section, group, values, target, defaults, favourites, toggled);
+        });
+    }
 }
 
-/// [`sliders`] for only the values named in `names`, in that order.
-fn sliders_only<T: Tunables + ?Sized>(ui: &mut egui::Ui, id: &str, target: &mut T, names: &[&str]) {
-    let all = target.tunables();
-    egui::Grid::new(id).num_columns(2).show(ui, |ui| {
-        for t in names.iter().filter_map(|n| all.iter().find(|t| t.name == *n)) {
+/// A grid of slider rows for `values` of `section`: a star, the name (its help on hover, a dot
+/// when off its default) and the slider. Right-click resets a value or stars it. A star
+/// clicked lands in `toggled`.
+#[allow(clippy::too_many_arguments)]
+fn rows(
+    ui: &mut egui::Ui,
+    section: &str,
+    salt: &str,
+    values: Vec<Tunable>,
+    target: &mut dyn Tunables,
+    defaults: &[(String, Vec<Tunable>)],
+    favourites: &Favourites,
+    toggled: &mut Option<(String, String)>,
+) {
+    if values.is_empty() {
+        return;
+    }
+    egui::Grid::new((section, salt, "rows")).num_columns(3).show(ui, |ui| {
+        for t in values {
+            let default = default_of(defaults, section, &t.name);
+            let starred = favourites.has(section, &t.name);
+            let star = ui.add(egui::Button::new(if starred { "★" } else { "☆" }).frame(false).small());
+            if star.on_hover_text(if starred { "Unfavourite" } else { "Favourite" }).clicked() {
+                *toggled = Some((section.to_owned(), t.name.clone()));
+            }
+            let moved = default.is_some_and(|d| tuning_layout::changed(&t, d));
+            let text = if moved {
+                egui::RichText::new(format!("{} •", t.name)).color(ui.visuals().warn_fg_color)
+            } else {
+                egui::RichText::new(&t.name)
+            };
+            let label = ui.add(egui::Label::new(text).sense(egui::Sense::click()));
+            let label = label.on_hover_text(tuning_layout::tooltip(section, &t, default));
             let mut value = t.value;
-            ui.label(&t.name);
-            if ui.add(egui::Slider::new(&mut value, t.min..=t.max)).changed() {
+            let slider = ui.add(egui::Slider::new(&mut value, t.min..=t.max));
+            if slider.changed() {
                 target.set_tunable(&t.name, value);
             }
+            label.union(slider).context_menu(|ui| {
+                if let Some(d) = default
+                    && ui.add_enabled(moved, egui::Button::new(format!("Reset to {}", tuning_layout::number(d)))).clicked()
+                {
+                    target.set_tunable(&t.name, d);
+                    ui.close();
+                }
+                if ui.button(if starred { "Unfavourite" } else { "Favourite" }).clicked() {
+                    *toggled = Some((section.to_owned(), t.name.clone()));
+                    ui.close();
+                }
+            });
             ui.end_row();
         }
     });
