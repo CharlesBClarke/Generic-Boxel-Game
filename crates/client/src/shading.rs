@@ -19,6 +19,7 @@ use crate::heights::Heights;
 use crate::mesher::AoTuning;
 use crate::shadows::{ShadowTuning, Sun};
 use crate::sky::{DaySky, SkyTuning};
+use crate::model::ModelMaterial;
 use crate::solid::SolidMaterial;
 use crate::view::ViewTuning;
 
@@ -607,6 +608,7 @@ fn sync_atmosphere(
     view: Res<ViewTuning>,
     ao: Res<AoTuning>,
     mut solids: ResMut<Assets<SolidMaterial>>,
+    mut models: ResMut<Assets<ModelMaterial>>,
     mut skies: ResMut<Assets<SkyMaterial>>,
 ) {
     let mut atmosphere = tuning.atmosphere(&sun.sky, view.render_distance);
@@ -620,6 +622,19 @@ fn sync_atmosphere(
         .collect();
     for id in stale {
         if let Some(m) = solids.get_mut(id) {
+            m.atmosphere = atmosphere;
+            if let Some(image) = &image {
+                m.heights = image.clone();
+            }
+        }
+    }
+    let stale: Vec<_> = models
+        .iter()
+        .filter(|(_, m)| m.atmosphere != atmosphere || image.as_ref().is_some_and(|i| *i != m.heights))
+        .map(|(id, _)| id)
+        .collect();
+    for id in stale {
+        if let Some(m) = models.get_mut(id) {
             m.atmosphere = atmosphere;
             if let Some(image) = &image {
                 m.heights = image.clone();

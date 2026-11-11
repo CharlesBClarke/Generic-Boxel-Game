@@ -3,6 +3,45 @@
 Moved out of `SLICES.md` on 2026-11-03 so the roadmap stays short. Each toy's full write-up, newest first, as it stood when it closed. `SLICES.md` keeps a one-line summary of each.
 
 
+#### Lit models (`toy-model-lighting`)
+
+From the backlog's "Shadows on cows, items and the held tool" (the user: "can we now fix the cow rendering, and loose items and the mace"; the mace is the club, kept as "club", now in the Terminology table). **Stage:** Done (2026-11-11). Verified: the user played all five checks ("the cows lighting work, club too, the hit flash looks good aat night"; items: "yes"; debris at night: "yes I can see noting"). Built as planned; the user also picked including hit debris and slam dust.
+
+*Problem:* cows, the club and hit debris are drawn with Bevy's unlit `StandardMaterial`: they cast shadows but don't take them, and glow at night and in caves. Loose items use `SolidMaterial` (so they take sun shadows) but their mesh has no stored light, so they're lit as under open sky and glow in caves.
+
+*Plan:*
+1. Move the sun shadow (shadow maps and far shadow) out of `solid.wgsl` into a shared shader module, so blocks and models light the same way.
+2. A `ModelMaterial` (`client::model`, `model.wgsl`) for cows, the club, hit debris and slam dust: a texture (plain white plus a color for the club and debris), the flash, the stored light where it stands, the atmosphere and height map. Only the fragment shader is ours; Bevy's vertex and shadow shaders keep skinning and casting. `shading::sync_atmosphere` keeps it current. The baked vertex shading on models goes, as real light replaces it.
+3. Stored light per object, read on the CPU from the client world at a cow's body middle, the camera's boxel for the club, an item's boxel, and a debris piece's spawn spot; eased over about 0.2 s so it doesn't step per boxel.
+4. Items: `SolidMaterial` gets a `light` added to the vertex light (0 for chunks); each item gets its own material with its boxel's light, and item meshes stop baking in open sky.
+
+*Tests:* a cow under a roof gets low sky light and one in the open full; an item in a cave gets its boxel's light; the light eases, not steps; no unlit `StandardMaterial` is left on cows, the club or debris.
+
+*Done when:* cows, the club and debris darken in shadow, at night and in caves and light up near lumite; the hit flash still reads; items in caves look dark; the quick bench shows no surprise.
+
+*Built*
+- `sun.wgsl` (`boxel::sun`): the shadow maps, far shadow and a `lit(position, normal, stored)` giving the light and the sun's share; it declares the atmosphere at binding 2 and the height map at binding 4, so any material importing it keeps those slots. `solid.wgsl` uses it.
+- `client::model`: `ModelMaterial` (color, texture, atmosphere, heights, `light`, `flash`), fragment shader only (`model.wgsl`), so Bevy's vertex and shadow shaders keep skinning and casting. `ModelMedia` (a white texture and a stand-in height map, made in `PreStartup`). `stored_light` blends the eight boxel middles around a point, leaving out boxels closed on every side; `ease_light` comes most of the way in `LIGHT_EASE` (0.2 s).
+- Cows: one `ModelMaterial` each, light at the body's middle; the flash goes after lighting (mixes toward the texture times `FLASH_BRIGHTNESS`), so it reads the same at night. Baked vertex shading on models removed. Club: three plain materials, lit at the camera's boxel (`combat::light_weapon`). Debris and dust: lit by the light at the burst's start.
+- Items: `SolidMaterial.light` (binding 5) is added to the vertex light; each item gets its own copy of the blocks' material, and item meshes carry zero light. `shading::sync_atmosphere` keeps both materials' atmosphere current.
+- Tests: no sky light inside a closed hut, full outside; walls don't darken the light beside them; light climbs smoothly out through a doorway (no jump over 0.05 per 5 cm); easing; an item has its own material with the light where it lies and a mesh with no light. 238 client tests pass.
+
+*Verify:* the five play checks passed (above). Quick bench (`tools/bench.sh --quick master work`; the first try measured nothing and left no log, the rerun was fine):
+
+| set | spot | master ms | work ms | change |
+| --- | --- | --- | --- | --- |
+| shipped | recorded | 24.2 | 25.8 | +7% |
+| shipped | overlook | 34.8 | 36.1 | +4% |
+| shipped | lake | 20.5 | 21.0 | +2% |
+
+No throttling. The club fills much of the frame at every spot and is now lit per pixel (a shadow map read), where before it was a flat color; same-code runs have differed by about 1 ms, so part is noise. Screenshots match except the club, now shaded on its sides.
+
+*Decisions:* anything drawn in the world is lit: blocks with `SolidMaterial`, everything else with `ModelMaterial` (both through `sun.wgsl`), not an unlit material (recorded in Phase 2 decisions).
+
+*Deferred:* a model texture with see-through texels would cast a solid shadow (`ModelMaterial` has no prepass discard; the cow has no such texels). At night debris is lit only by the moon and sky and is close to invisible in the dark; the user found that fine, a small light floor if not.
+
+*API debt:* none.
+
 #### Smooth FPS readout (`toy-smooth-fps`)
 
 Asked for by the user. **Stage:** Done (2026-11-11). Verified: the user tried it ("good job it works both"). Built as planned.

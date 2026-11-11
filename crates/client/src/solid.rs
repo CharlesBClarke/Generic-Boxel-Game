@@ -1,6 +1,7 @@
 //! The material every block is drawn with: each fragment colored from its block's look volume
 //! (see `solid.wgsl`), times the vertex color, ambient occlusion and a tint, then lit and
-//! fogged from the atmosphere (see `crate::shading`).
+//! fogged from the atmosphere (see `crate::shading`). The sun's shadow is in `sun.wgsl`, which
+//! models share (see `crate::model`).
 
 use bevy::asset::{AssetPath, RenderAssetUsages, embedded_asset, embedded_path};
 use bevy::image::ImageSampler;
@@ -48,6 +49,10 @@ pub struct SolidMaterial {
     /// `crate::shading`.
     #[texture(4, sample_type = "float", filterable = false)]
     pub heights: Handle<Image>,
+    /// Stored light added to every vertex's (red, green, blue, sky, 0 to 1): a loose item's,
+    /// as its mesh carries none (see `crate::items`). Zero for the world's meshes.
+    #[uniform(5)]
+    pub light: Vec4,
     pub alpha_mode: AlphaMode,
 }
 
@@ -100,6 +105,7 @@ pub struct SolidPlugin;
 
 impl Plugin for SolidPlugin {
     fn build(&self, app: &mut App) {
+        bevy::shader::load_shader_library!(app, "sun.wgsl");
         embedded_asset!(app, "solid.wgsl");
         app.add_plugins(MaterialPlugin::<SolidMaterial>::default());
     }
