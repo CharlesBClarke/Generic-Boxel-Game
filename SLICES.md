@@ -104,7 +104,7 @@ A run of small toy slices. Each one takes a single game-feel feature that doesn'
 
 ### Current toy
 
-**AO in the shader** (`toy-ao-in-shader`, from the backlog entry of the same name). **Stage:** Implement (plan approved 2026-11-11).
+**AO in the shader** (`toy-ao-in-shader`, from the backlog entry of the same name). **Stage:** Test (plan approved 2026-11-11; built as planned, plus an "ambient occlusion" draw switch in the Shading section and the bench's `shading.ao`, for comparing on and off).
 
 *Goal:* corner AO stops blocking greedy merges, for the triangle count (bench terrain ~0.29M toward ~0.15M). Notes: `docs/notes/greedy-meshing.md`.
 
