@@ -3,6 +3,57 @@
 Moved out of `SLICES.md` on 2026-11-03 so the roadmap stays short. Each toy's full write-up, newest first, as it stood when it closed. `SLICES.md` keeps a one-line summary of each.
 
 
+#### Greedy meshing (`toy-greedy-meshing`)
+
+**Stage:** Done (2026-11-10)
+
+**Goal:** fewer terrain triangles by merging neighboring faces into bigger quads, for the frame rate (main pass and every shadow pass). Notes: `docs/notes/greedy-meshing.md`. Then Shadow speed.
+
+**Plan** (approved 2026-11-10; the user said yes to plain greedy only and to the checkbox)
+- Plain greedy: merge only where light and AO match (~71% fewer triangles on the bench terrain). AO in the shader (~84%) is a backlog follow-up.
+- `client::greedy`: a pass at the end of `mesh_chunk_with`, after `bake_light`; chunk meshes only (items and the ghost keep single quads). Two quads merge when both are whole boxel faces on the same plane facing the same way, with the same look volume, the same color (so AO) and light at every corner, a `FLAT` edge between them, and each outer edge's per-boxel pattern the same along the run. Rectangles per plane per chunk, at most 32 boxels a side.
+- Vertex format: `FACE_SCALE` from 16 texels to 512 (a chunk); `edges` stay 2 bits a texel for one boxel, read repeating every 16 texels on a merged quad; `solid` carried out along the run (0 to 16N texels).
+- Shader: `solid.wgsl` wraps the look position every 16 texels instead of clamping; `edge_factor` wraps along the edge.
+- Switch: a "merge faces" checkbox in the tuning panel's View section (on by default) and a bench switch.
+- Tests: existing `quad_count` tests run with merging off; new ones: a flat floor becomes one quad per chunk, AO or light differences stop a merge, a merged quad's corners match the single quads it replaces, turned looks. The bench terrain's triangles drop to ~0.28M. Remesh time before and after (`time_edits_in_a_save`, `time_meshing_the_terrain`).
+
+**Done when**
+- Terrain looks the same: textures, crease lines, AO, light.
+- No speckle gaps at T-junctions in play.
+- Triangles at the bench's spots down ~70%.
+- An edit's remesh time not noticeably worse.
+- Quick bench comparison against `master` in the verify notes.
+
+**Test notes** (2026-11-10)
+- `client::greedy` tests check that every sampled pixel of the unmerged mesh looks the same on the merged one (color, light, look texel, edge lines), for a floor, AO around a block, a roofed half floor, steps with slabs and a pit, turned logs, and slabs.
+- The base terrain (`time_meshing_the_terrain`, release): 1,317,248 quads unmerged, 313,945 merged (76% fewer); meshing all of it 8.5 s vs 8.2 s (noise).
+- An edit in the `house` save (`time_edits_in_a_save`, its most finely cut chunk, barely merging): remesh ~52 ms unmerged, ~54 ms merged.
+- *Not in the plan:* the look position is interpolated at the centroid, so with MSAA a pixel on a quad's edge never reads past it now that the shader wraps instead of clamping. `FACE_SCALE` isn't a whole number of steps per texel any more (off by 0.0002 texel).
+
+**Verify** (2026-11-10)
+- The user played it: "everything looks find"; AO works; the View section's checkboxes work. Crease and ridge lines weren't singled out (the user didn't know the term); no gaps reported.
+- Triangles at the bench's spots: 0.97M to 0.29M (70% fewer).
+- An edit's remesh: ~+2 ms on a chunk that barely merges (~5%); accepted.
+- Quick bench, `master` (25b908e) against the branch (2e24a5a):
+
+| set | spot | A ms | B ms | change | A fps | B fps | A 1% | B 1% |
+|---|---|---|---|---|---|---|---|---|
+| shipped | recorded | 18.8 | 12.1 | -36% | 53.3 | 82.7 | 43.2 | 51.9 |
+| shipped | overlook | 19.7 | 15.3 | -22% | 50.8 | 65.1 | 39.6 | 36.3 |
+| shipped | lake | 15.8 | 10.6 | -33% | 63.4 | 94.7 | 47.1 | 56.5 |
+
+  Every spot faster. Overlook's 1% low dipped (39.6 to 36.3) while its average rose 22%; the GPU was throttling on and off during the run, so read as noise. Screenshots of both builds match.
+
+**Decisions**
+- Merged quads repeat their look and their edge pattern every boxel in the shader, so a merge never changes a pixel; anything new carried per quad must repeat per boxel too, or stop merges where it differs.
+- Merging is the client's, after meshing: `mesh_chunk` stays unmerged, `mesh_chunks` merges when asked.
+
+**Deferred**
+- AO in the shader (~84% fewer triangles): backlog.
+
+**API debt:** none.
+
+
 #### Bench (`toy-bench`)
 
 **Stage:** Done (2026-11-10)
