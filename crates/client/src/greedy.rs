@@ -74,9 +74,120 @@ fn past(mesh: &MeshData, q: usize, k: usize) -> Option<(u32, u32)> {
     mesh.ao.get(4 * q).map(|w| (w[k] >> 8 & 0xff, w[(k + 1) % 4] >> 16 & 0xff))
 }
 
+/// Merges the quads of a chunk's mesh where it can (see the module), then closes the seams
+/// that leaves (see [`close_t_junctions`]).
+pub fn merge(mesh: &MeshData) -> MeshData {
+    close_t_junctions(&merge_quads(mesh))
+}
+
+/// Closes T-junctions: where a corner of one quad sits partway along another's edge, the GPU
+/// rounds the two sides of the seam apart and leaves pixel gaps, seen as sparkles. A quad
+/// more than a boxel long with such corners on its edges becomes a fan of triangles from its
+/// middle around its outline, its edges split at those corners, so both sides share them.
+///
+/// Corners are looked for a whole boxel apart along each edge, from its start, which finds
+/// every whole face's and every merged quad's. On a chunk's border the next chunk's corners
+/// aren't known here, so an edge there is split at every boxel. Corners partway through a
+/// boxel along an edge (a turned slab's side, say) aren't looked for.
+///
+/// A fan keeps two triangles a quad in [`MeshData::quad_count`]'s count, and the quad's own
+/// values on every vertex: a merged quad's values change evenly across it, so they come out
+/// the same at every point.
+pub fn close_t_junctions(mesh: &MeshData) -> MeshData {
+    let key = |p: [f32; 3]| p.map(f32::to_bits);
+    let corners: std::collections::HashSet<[u32; 3]> = mesh.positions.iter().map(|&p| key(p)).collect();
+    let border = api::CHUNK_SIZE as f32;
+    let mut out = MeshData::default();
+    for q in 0..mesh.quad_count() {
+        let p = &mesh.positions[4 * q..4 * q + 4];
+        // Along each edge, the boxels from its start where it splits.
+        let splits: [Vec<i32>; 4] = std::array::from_fn(|k| {
+            let (a, b) = (p[k], p[(k + 1) % 4]);
+            let d: [f32; 3] = std::array::from_fn(|c| b[c] - a[c]);
+            if d.iter().filter(|&&c| c != 0.0).count() != 1 {
+                return Vec::new();
+            }
+            let length = d.iter().map(|c| c.abs()).sum::<f32>();
+            let unit = d.map(|c| c / length);
+            let on_border = (0..3).any(|c| d[c] == 0.0 && (a[c] == 0.0 || a[c] == border));
+            let steps = length.ceil() as i32;
+            (1..steps)
+                .filter(|&i| on_border || corners.contains(&key(std::array::from_fn(|c| a[c] + unit[c] * i as f32))))
+                .collect()
+        });
+        if splits.iter().all(Vec::is_empty) {
+            copy(mesh, q, &mut out);
+        } else {
+            fan(mesh, q, &splits, &mut out);
+        }
+    }
+    out
+}
+
+/// Adds quad `q` of `from` as a fan of triangles from its middle, its edges split `splits`
+/// boxels from each one's start (see [`close_t_junctions`]).
+fn fan(from: &MeshData, q: usize, splits: &[Vec<i32>; 4], to: &mut MeshData) {
+    let i = 4 * q;
+    let p = &from.positions[i..i + 4];
+    // Each vertex as a weight on each of the quad's corners.
+    let corner = |k: usize| std::array::from_fn::<f32, 4, _>(|c| if c == k { 1.0 } else { 0.0 });
+    let mut outline: Vec<([f32; 4], [f32; 3])> = Vec::new();
+    for k in 0..4 {
+        outline.push((corner(k), p[k]));
+        let (a, b) = (p[k], p[(k + 1) % 4]);
+        let length = (0..3).map(|c| (b[c] - a[c]).abs()).sum::<f32>();
+        for &step in &splits[k] {
+            let f = step as f32 / length;
+            let mut weights = [0.0; 4];
+            weights[k] = 1.0 - f;
+            weights[(k + 1) % 4] = f;
+            // Placed exactly a whole number of boxels along, to land on the other corner.
+            let at = std::array::from_fn(|c| a[c] + (b[c] - a[c]) / length * step as f32);
+            outline.push((weights, at));
+        }
+    }
+    let middle: [f32; 3] = std::array::from_fn(|c| (p[0][c] + p[1][c] + p[2][c] + p[3][c]) / 4.0);
+
+    let base = to.positions.len() as u32;
+    let mut push = |weights: [f32; 4], at: [f32; 3]| {
+        let mix = |v: [f32; 4]| (0..4).map(|k| v[k] * weights[k]).sum::<f32>();
+        let mix4 = |field: &[[f32; 4]]| std::array::from_fn::<f32, 4, _>(|c| mix(std::array::from_fn(|k| field[i + k][c])));
+        to.positions.push(at);
+        to.normals.push(from.normals[i]);
+        to.colors.push(mix4(&from.colors));
+        to.solid.push(mix4(&from.solid));
+        to.edges.push(from.edges[i]);
+        to.face.push(std::array::from_fn(|c| mix(std::array::from_fn(|k| from.face[i + k][c] as f32)).round() as u16));
+        if !from.light.is_empty() {
+            to.light.push(std::array::from_fn(|c| mix(std::array::from_fn(|k| from.light[i + k][c] as f32)).round() as u8));
+        }
+        if !from.ao.is_empty() {
+            to.ao.push(from.ao[i]);
+        }
+    };
+    push([0.25; 4], middle);
+    for &(weights, at) in &outline {
+        push(weights, at);
+    }
+    // Wound as the quad's first triangle is.
+    let tri = &from.indices[6 * q..6 * q + 3];
+    let at = |v: u32| from.positions[v as usize];
+    let normal = |a: [f32; 3], b: [f32; 3], c: [f32; 3]| {
+        let (d, e): ([f32; 3], [f32; 3]) = (std::array::from_fn(|k| b[k] - a[k]), std::array::from_fn(|k| c[k] - a[k]));
+        [d[1] * e[2] - d[2] * e[1], d[2] * e[0] - d[0] * e[2], d[0] * e[1] - d[1] * e[0]]
+    };
+    let (n1, n2) = (normal(at(tri[0]), at(tri[1]), at(tri[2])), normal(p[0], p[1], p[2]));
+    let backwards = (0..3).map(|k| n1[k] * n2[k]).sum::<f32>() < 0.0;
+    let n = outline.len() as u32;
+    for k in 0..n {
+        let (a, b) = (base + 1 + k, base + 1 + (k + 1) % n);
+        to.indices.extend(if backwards { [base, b, a] } else { [base, a, b] });
+    }
+}
+
 /// Merges the quads of a chunk's mesh where it can (see the module). Quads that don't merge
 /// are kept as they were.
-pub fn merge(mesh: &MeshData) -> MeshData {
+fn merge_quads(mesh: &MeshData) -> MeshData {
     let quads = mesh.quad_count();
     let mut groups: HashMap<Key, HashMap<[i32; 2], usize>> = HashMap::new();
     let mut grouped = vec![false; quads];
@@ -259,7 +370,7 @@ mod tests {
     fn both(grid: &mut Grid, blocks: &BlockRegistry, volumes: &Volumes, ao: &AoTuning) -> (MeshData, MeshData) {
         grid.relight_all(blocks);
         let plain = mesh_chunk(grid, ChunkPos::new(0, 0, 0), blocks, volumes, ao);
-        let merged = merge(&plain);
+        let merged = merge_quads(&plain);
         (plain, merged)
     }
 
@@ -457,6 +568,113 @@ mod tests {
         let sides = (0..merged.quad_count()).filter(|&q| merged.normals[4 * q] == [0.0, -1.0, 0.0] && merged.positions[4 * q][1] == 0.0).count();
         assert_eq!(sides, 4, "half faces aren't merged");
         looks_the_same(&plain, &merged);
+    }
+
+    /// Points where a vertex lies strictly inside an outer edge of the triangles, edges
+    /// counted by where they are, so the two triangles of a quad (or a fan) share theirs.
+    fn t_junctions(mesh: &MeshData) -> Vec<[f32; 3]> {
+        let key = |p: [f32; 3]| p.map(f32::to_bits);
+        let mut edges: HashMap<([u32; 3], [u32; 3]), usize> = HashMap::new();
+        for tri in mesh.indices.chunks(3) {
+            for k in 0..3 {
+                let (a, b) = (key(mesh.positions[tri[k] as usize]), key(mesh.positions[tri[(k + 1) % 3] as usize]));
+                *edges.entry(if a < b { (a, b) } else { (b, a) }).or_default() += 1;
+            }
+        }
+        let points: std::collections::HashSet<[u32; 3]> = mesh.positions.iter().map(|&p| key(p)).collect();
+        let mut found = Vec::new();
+        for (&(a, b), &count) in &edges {
+            if count > 1 {
+                continue;
+            }
+            let (a, b) = (a.map(f32::from_bits), b.map(f32::from_bits));
+            for p in points.iter().map(|p| p.map(f32::from_bits)) {
+                let d: [f32; 3] = std::array::from_fn(|k| b[k] - a[k]);
+                let e: [f32; 3] = std::array::from_fn(|k| p[k] - a[k]);
+                let cross = [d[1] * e[2] - d[2] * e[1], d[2] * e[0] - d[0] * e[2], d[0] * e[1] - d[1] * e[0]];
+                let along = (0..3).map(|k| d[k] * e[k]).sum::<f32>() / (0..3).map(|k| d[k] * d[k]).sum::<f32>();
+                if cross.iter().all(|c| c.abs() < 1e-5) && along > 1e-5 && along < 1.0 - 1e-5 {
+                    found.push(p);
+                }
+            }
+        }
+        found
+    }
+
+    /// The area the triangles cover.
+    fn triangle_area(mesh: &MeshData) -> f64 {
+        mesh.indices
+            .chunks(3)
+            .map(|t| {
+                let [a, b, c] = [0, 1, 2].map(|i| mesh.positions[t[i] as usize].map(f64::from));
+                let (d, e) = ([b[0] - a[0], b[1] - a[1], b[2] - a[2]], [c[0] - a[0], c[1] - a[1], c[2] - a[2]]);
+                let n = [d[1] * e[2] - d[2] * e[1], d[2] * e[0] - d[0] * e[2], d[0] * e[1] - d[1] * e[0]];
+                (n[0] * n[0] + n[1] * n[1] + n[2] * n[2]).sqrt() / 2.0
+            })
+            .sum()
+    }
+
+    #[test]
+    fn no_corner_sits_partway_along_a_merged_edge() {
+        let (blocks, volumes, [stone, slab, log]) = blocks();
+        let mut grid = Grid::default();
+        // Away from the chunk's borders: a row of stone whose tops merge, beside a row of
+        // stone and logs taking turns, whose tops can't; and a row of slabs, whose half-high
+        // sides end partway along their merged top's edge.
+        for x in 4..12 {
+            grid.set_block(BoxelPos::new(x, 4, 4), stone);
+            grid.set_block(BoxelPos::new(x, 5, 4), if x % 2 == 0 { stone } else { log });
+            grid.set_block(BoxelPos::new(x, 8, 4), slab);
+        }
+        grid.relight_all(&blocks);
+        let plain = mesh_chunk(&grid, ChunkPos::new(0, 0, 0), &blocks, &volumes, &AoTuning::OFF);
+        let quads = merge_quads(&plain);
+        assert!(!t_junctions(&quads).is_empty(), "the test should have T-junctions to close");
+        let closed = merge(&plain);
+        assert_eq!(t_junctions(&closed), Vec::<[f32; 3]>::new());
+        assert!((triangle_area(&closed) - triangle_area(&plain)).abs() < 1e-3);
+        same_values(&quads, &closed);
+    }
+
+    /// Every vertex of `closed` carries what a quad of `quads` it lies on has there (on an
+    /// edge between two, either one's).
+    fn same_values(quads: &MeshData, closed: &MeshData) {
+        for v in 0..closed.positions.len() {
+            let point = closed.positions[v];
+            let matches = |q: usize, s: f32, t: f32| {
+                let i = 4 * q;
+                let w = [(1.0 - s) * (1.0 - t), s * (1.0 - t), s * t, (1.0 - s) * t];
+                let mix = |f: &dyn Fn(usize) -> f32| (0..4).map(|k| f(i + k) * w[k]).sum::<f32>();
+                (0..4).all(|c| {
+                    (mix(&|k| quads.solid[k][c]) - closed.solid[v][c]).abs() < 1e-4
+                        && (mix(&|k| quads.colors[k][c]) - closed.colors[v][c]).abs() < 1e-5
+                        && (mix(&|k| quads.face[k][c] as f32) - closed.face[v][c] as f32).abs() <= 0.5
+                        && quads.light.get(i).is_none_or(|_| (mix(&|k| quads.light[k][c] as f32) - closed.light[v][c] as f32).abs() <= 0.5)
+                }) && closed.edges[v] == quads.edges[i]
+                    && quads.ao.get(i) == closed.ao.get(v)
+            };
+            let found = (0..quads.quad_count())
+                .filter(|&q| quads.normals[4 * q] == closed.normals[v])
+                .filter_map(|q| on_quad(quads, q, point).map(|(s, t)| (q, s, t)))
+                .any(|(q, s, t)| matches(q, s, t));
+            assert!(found, "{point:?} facing {:?} matches no quad under it", closed.normals[v]);
+        }
+    }
+
+    #[test]
+    fn edges_on_the_chunks_border_split_at_every_boxel() {
+        let (blocks, volumes, [stone, ..]) = blocks();
+        let mut grid = Grid::default();
+        // The next chunk's corners along the border aren't known, so the floor's top splits at
+        // every boxel along its four sides: one point at each boxel, eight triangles a boxel.
+        floor(&mut grid, stone, 32);
+        let (plain, quads) = both(&mut grid, &blocks, &volumes, &AoTuning::default());
+        let closed = close_t_junctions(&quads);
+        let top = |m: &MeshData| m.indices.chunks(3).filter(|t| m.normals[t[0] as usize] == [0.0, 0.0, 1.0]).count();
+        assert_eq!(top(&quads), 2);
+        assert_eq!(top(&closed), 4 * 32);
+        assert!((triangle_area(&closed) - triangle_area(&plain)).abs() < 1e-3);
+        same_values(&quads, &closed);
     }
 
     #[test]
