@@ -99,8 +99,9 @@ pub struct SkyTuning {
     /// How much warmer than the palette a low sun is (the stylised-sky block's tweak: tone
     /// mapping washes a low sun's colors pale otherwise); 0 is the palette as it is.
     pub warmth: f32,
-    /// The sky's colors, brighter or darker.
-    pub sky_brightness: f32,
+    /// The sky's colors, brighter or darker, by day and at full night.
+    pub day_sky: f32,
+    pub night_sky: f32,
 }
 
 /// Everything about the sky at one moment. Directions Z-up, colors linear.
@@ -156,6 +157,7 @@ impl DaySky {
         let warm = t.warmth * smoothstep(16.0, 2.0, sun_elevation) * ((sun_elevation + 8.0) / 8.0).clamp(0.0, 1.0);
         let horizon = [pal.horizon[0], pal.horizon[1] * (1.0 - warm * 0.2), pal.horizon[2] * (1.0 - warm * 0.42)];
         let night = ((-sun_elevation - 2.0) / 8.0).clamp(0.0, 1.0);
+        let sky_brightness = t.day_sky + (t.night_sky - t.day_sky) * night;
         let noon = PALETTE[PALETTE.len() - 1].strength;
         let day = pal.strength / noon;
 
@@ -194,8 +196,8 @@ impl DaySky {
             moon_light,
             night,
             stars: pal.stars,
-            zenith: Vec3::from_array(pal.zenith) * t.sky_brightness,
-            horizon: Vec3::from_array(horizon) * t.sky_brightness,
+            zenith: Vec3::from_array(pal.zenith) * sky_brightness,
+            horizon: Vec3::from_array(horizon) * sky_brightness,
             sky_light,
             ground_light,
         }
@@ -229,7 +231,8 @@ mod tests {
             moon_strength: 0.15,
             night_light: 0.05,
             warmth: 1.0,
-            sky_brightness: 1.0,
+            day_sky: 1.0,
+            night_sky: 1.0,
         }
     }
 
@@ -337,6 +340,19 @@ mod tests {
         assert!(afternoon.sun_elevation > 0.0 && afternoon.moon.z > 0.0);
         // But only the sun lights faces while it's up: moonlight waits for the night.
         assert_eq!(afternoon.moon_light, Vec3::ZERO);
+    }
+
+    #[test]
+    fn day_and_night_skies_are_brightened_apart() {
+        let t = SkyTuning { day_sky: 2.0, night_sky: 0.5, ..tuning() };
+        let plain = tuning();
+        let noon = DaySky::at(12.0, &t, 0.0).zenith;
+        assert!(noon.distance(DaySky::at(12.0, &plain, 0.0).zenith * 2.0) < 1e-5);
+        let midnight = DaySky::at(0.0, &t, 0.0).horizon;
+        assert!(midnight.distance(DaySky::at(0.0, &plain, 0.0).horizon * 0.5) < 1e-5);
+        // Halfway through dusk (the sun 6° down), halfway between.
+        let dusk = DaySky::at(18.0 + 6.0 / 58.0 * 12.0 / std::f64::consts::PI, &t, 0.0);
+        assert!((dusk.night - 0.5).abs() < 0.02, "{}", dusk.night);
     }
 
     #[test]

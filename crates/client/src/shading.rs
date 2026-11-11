@@ -37,8 +37,10 @@ pub struct ShadingTuning {
     /// How much the sky's light takes the sky's color (0 is white), and the ground's the
     /// horizon's.
     pub sky_tint: f32,
-    /// The sky's colors, brighter or darker than the palette.
-    pub sky_brightness: f32,
+    /// The sky's colors, brighter or darker than the palette: by day, and at full night,
+    /// blended between through dusk. Fog fades the far world to the sky, so it follows.
+    pub day_sky: f32,
+    pub night_sky: f32,
     /// How much warmer than the palette a low sun is; 0 is the palette as it is.
     pub warmth: f32,
     /// The sun's disc, as its radius in degrees, and how strong the glow around it is.
@@ -128,7 +130,8 @@ impl Default for ShadingTuning {
             sky_light: 0.55,
             ground_light: 0.35,
             sky_tint: 0.3,
-            sky_brightness: 1.0,
+            day_sky: 1.0,
+            night_sky: 0.35,
             warmth: 1.0,
             sun_size: 0.6,
             sun_glow: 3.0,
@@ -168,7 +171,8 @@ impl ShadingTuning {
             moon_strength: self.moon_strength,
             night_light: self.night_light,
             warmth: self.warmth,
-            sky_brightness: self.sky_brightness,
+            day_sky: self.day_sky,
+            night_sky: self.night_sky,
         }
     }
 
@@ -217,7 +221,8 @@ impl Tunables for ShadingTuning {
             Tunable::new("sky_light", self.sky_light, 0.0, 2.0),
             Tunable::new("ground_light", self.ground_light, 0.0, 2.0),
             Tunable::new("sky_tint", self.sky_tint, 0.0, 1.0),
-            Tunable::new("sky_brightness", self.sky_brightness, 0.0, 3.0),
+            Tunable::new("day_sky", self.day_sky, 0.0, 3.0),
+            Tunable::new("night_sky", self.night_sky, 0.0, 3.0),
             Tunable::new("warmth", self.warmth, 0.0, 2.0),
             Tunable::new("sun_size", self.sun_size, 0.1, 5.0),
             Tunable::new("sun_glow", self.sun_glow, 0.0, 3.0),
@@ -248,7 +253,8 @@ impl Tunables for ShadingTuning {
             "sky_light" => self.sky_light = value,
             "ground_light" => self.ground_light = value,
             "sky_tint" => self.sky_tint = value,
-            "sky_brightness" => self.sky_brightness = value,
+            "day_sky" => self.day_sky = value,
+            "night_sky" => self.night_sky = value,
             "warmth" => self.warmth = value,
             "sun_size" => self.sun_size = value,
             "sun_glow" => self.sun_glow = value,
