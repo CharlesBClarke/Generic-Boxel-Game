@@ -102,6 +102,9 @@ pub struct SkyTuning {
     /// The sky's colors, brighter or darker, by day and at full night.
     pub day_sky: f32,
     pub night_sky: f32,
+    /// How pale and misty the horizon is while the sun is high: 1 is the palette's, 0 takes
+    /// the zenith's blue at the horizon's brightness. Low suns keep their own horizons.
+    pub haze: f32,
 }
 
 /// Everything about the sky at one moment. Directions Z-up, colors linear.
@@ -156,6 +159,13 @@ impl DaySky {
         // The stylised-sky block's warmth for a low sun: at its most just above the horizon.
         let warm = t.warmth * smoothstep(16.0, 2.0, sun_elevation) * ((sun_elevation + 8.0) / 8.0).clamp(0.0, 1.0);
         let horizon = [pal.horizon[0], pal.horizon[1] * (1.0 - warm * 0.2), pal.horizon[2] * (1.0 - warm * 0.42)];
+        let horizon = {
+            let h = Vec3::from_array(horizon);
+            let zenith = Vec3::from_array(pal.zenith);
+            let blue = zenith / zenith.max_element().max(1e-4) * h.max_element();
+            let high = smoothstep(8.0, 30.0, sun_elevation);
+            h.lerp(blue, (1.0 - t.haze.clamp(0.0, 1.0)) * high).to_array()
+        };
         let night = ((-sun_elevation - 2.0) / 8.0).clamp(0.0, 1.0);
         let sky_brightness = t.day_sky + (t.night_sky - t.day_sky) * night;
         let noon = PALETTE[PALETTE.len() - 1].strength;
@@ -233,6 +243,7 @@ mod tests {
             warmth: 1.0,
             day_sky: 1.0,
             night_sky: 1.0,
+            haze: 1.0,
         }
     }
 
@@ -353,6 +364,17 @@ mod tests {
         // Halfway through dusk (the sun 6° down), halfway between.
         let dusk = DaySky::at(18.0 + 6.0 / 58.0 * 12.0 / std::f64::consts::PI, &t, 0.0);
         assert!((dusk.night - 0.5).abs() < 0.02, "{}", dusk.night);
+    }
+
+    #[test]
+    fn less_haze_turns_the_day_horizon_blue_but_keeps_sunsets() {
+        let misty = DaySky::at(12.0, &tuning(), 0.0).horizon;
+        let clear = DaySky::at(12.0, &SkyTuning { haze: 0.0, ..tuning() }, 0.0).horizon;
+        let blueness = |c: Vec3| c.z - c.x;
+        assert!(blueness(clear) > blueness(misty) + 0.2, "{misty:?} {clear:?}");
+        assert!((clear.max_element() - misty.max_element()).abs() < 1e-5, "as bright");
+        let sunset = |haze| DaySky::at(17.9, &SkyTuning { haze, ..tuning() }, 0.0).horizon;
+        assert_eq!(sunset(0.0), sunset(1.0));
     }
 
     #[test]

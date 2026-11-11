@@ -18,6 +18,7 @@ struct Atmosphere {
     sky_light: vec4<f32>,
     ground_light: vec4<f32>,
     zenith: vec4<f32>,
+    // Then the power the zenith's color fades down into it by: lower reaches farther down.
     horizon: vec4<f32>,
     // How bright the stars are, and how far they've turned (radians).
     night: vec4<f32>,
@@ -49,7 +50,7 @@ struct Atmosphere {
 // zenith's, and a glow toward the sun lowest down. From the stylised-sky block (Eanpa Sky's
 // sky, MIT). Fog fades to it, so far terrain melts into the sky behind it.
 fn sky(a: Atmosphere, dir: vec3<f32>) -> vec3<f32> {
-    let up = pow(clamp(dir.y * 1.35 + 0.02, 0.0, 1.0), 0.82);
+    let up = pow(clamp(dir.y * 1.35 + 0.02, 0.0, 1.0), a.horizon.w);
     var color = mix(a.horizon.rgb, a.zenith.rgb, up);
     let toward = max(dot(dir, a.sun_direction.xyz), 0.0);
     color += a.sun_hue.rgb * pow(toward, 6.0) * 0.35 * (1.0 - up) * a.sun_color.w;

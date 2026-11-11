@@ -4,6 +4,7 @@
 
 use api::{CHUNK_SIZE, Tunable, Tunables};
 use bevy::core_pipeline::prepass::DepthPrepass;
+use bevy::core_pipeline::tonemapping::Tonemapping;
 use bevy::prelude::*;
 
 use crate::editing::ChunkMeshes;
@@ -14,25 +15,104 @@ use crate::{ChunkMesh, PlayerCamera, coords};
 pub struct ViewTuning {
     /// Chunks whose centers are farther than this from the camera, in meters, aren't drawn.
     pub render_distance: f32,
+    /// How the frame's light is fitted to the screen. Switching rebuilds the block and sky
+    /// shaders, so it stalls for a moment once.
+    pub tone_mapper: ToneMapper,
 }
 
 impl Default for ViewTuning {
     fn default() -> Self {
-        Self { render_distance: 512.0 }
+        Self { render_distance: 512.0, tone_mapper: ToneMapper::TonyMcMapface }
     }
 }
 
 impl Tunables for ViewTuning {
     fn tunables(&self) -> Vec<Tunable> {
-        vec![Tunable::new("render_distance", self.render_distance, 32.0, 4096.0)]
+        vec![
+            Tunable::new("render_distance", self.render_distance, 32.0, 4096.0),
+            Tunable::new("tone_mapper", self.tone_mapper.index() as f32, 0.0, (ToneMapper::ALL.len() - 1) as f32),
+        ]
     }
 
     fn set_tunable(&mut self, name: &str, value: f32) -> bool {
         match name {
             "render_distance" => self.render_distance = value.max(0.0),
+            "tone_mapper" => self.tone_mapper = ToneMapper::from_index(value),
             _ => return false,
         }
         true
+    }
+}
+
+/// The tone mappers to pick from: Bevy's, by name. Saved by place in [`ToneMapper::ALL`], so
+/// new ones go at the end.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ToneMapper {
+    /// Bevy's default: keeps hues, but pulls bright colors toward white.
+    TonyMcMapface,
+    /// The film industry's curve, fitted; what the stylised-sky demo used. More contrast and
+    /// color in bright skies.
+    Aces,
+    AgX,
+    BlenderFilmic,
+    Reinhard,
+    ReinhardLuminance,
+    SomewhatBoring,
+    /// Colors as the shaders work them out, clipped at full brightness.
+    None,
+}
+
+impl ToneMapper {
+    pub const ALL: [ToneMapper; 8] = [
+        ToneMapper::TonyMcMapface,
+        ToneMapper::Aces,
+        ToneMapper::AgX,
+        ToneMapper::BlenderFilmic,
+        ToneMapper::Reinhard,
+        ToneMapper::ReinhardLuminance,
+        ToneMapper::SomewhatBoring,
+        ToneMapper::None,
+    ];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            ToneMapper::TonyMcMapface => "Tony McMapface (Bevy's default)",
+            ToneMapper::Aces => "ACES (the sky demo's)",
+            ToneMapper::AgX => "AgX",
+            ToneMapper::BlenderFilmic => "Blender Filmic",
+            ToneMapper::Reinhard => "Reinhard",
+            ToneMapper::ReinhardLuminance => "Reinhard (by brightness)",
+            ToneMapper::SomewhatBoring => "Somewhat boring",
+            ToneMapper::None => "none",
+        }
+    }
+
+    pub fn index(self) -> usize {
+        Self::ALL.iter().position(|&t| t == self).unwrap_or(0)
+    }
+
+    pub fn from_index(value: f32) -> Self {
+        Self::ALL[(value.round().max(0.0) as usize).min(Self::ALL.len() - 1)]
+    }
+
+    pub fn bevy(self) -> Tonemapping {
+        match self {
+            ToneMapper::TonyMcMapface => Tonemapping::TonyMcMapface,
+            ToneMapper::Aces => Tonemapping::AcesFitted,
+            ToneMapper::AgX => Tonemapping::AgX,
+            ToneMapper::BlenderFilmic => Tonemapping::BlenderFilmic,
+            ToneMapper::Reinhard => Tonemapping::Reinhard,
+            ToneMapper::ReinhardLuminance => Tonemapping::ReinhardLuminance,
+            ToneMapper::SomewhatBoring => Tonemapping::SomewhatBoringDisplayTransform,
+            ToneMapper::None => Tonemapping::None,
+        }
+    }
+}
+
+/// Puts the picked tone mapper on the camera.
+pub(crate) fn apply_tone_mapper(view: Res<ViewTuning>, mut cameras: Query<&mut Tonemapping, With<PlayerCamera>>) {
+    for mut tonemapping in &mut cameras {
+        tonemapping.set_if_neq(view.tone_mapper.bevy());
     }
 }
 
@@ -141,6 +221,17 @@ pub(crate) fn apply_render_distance(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn tone_mappers_round_trip_through_their_slider() {
+        for t in ToneMapper::ALL {
+            let mut view = ViewTuning::default();
+            assert!(view.set_tunable("tone_mapper", t.index() as f32));
+            assert_eq!(view.tone_mapper, t);
+        }
+        assert_eq!(ToneMapper::from_index(99.0), ToneMapper::None);
+        assert_eq!(ToneMapper::from_index(-3.0), ToneMapper::TonyMcMapface);
+    }
     use api::{ChunkPos, I64Vec3, WorldPos};
 
     /// A chunk's render-space corner, with the origin at the world's origin.

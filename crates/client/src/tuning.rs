@@ -24,7 +24,7 @@ use crate::tuning_file;
 use crate::ui_scale::UiScaleTuning;
 use crate::shading::ShadingTuning;
 use crate::shadows::{Filter, ShadowTuning};
-use crate::view::{ViewSwitches, ViewTuning};
+use crate::view::{ToneMapper, ViewSwitches, ViewTuning};
 use crate::world::{ClientWorld, Link};
 
 #[derive(Resource, Default)]
@@ -219,7 +219,14 @@ pub fn tuning_panel(
                 }
                 ui.separator();
                 ui.heading("View");
-                sliders(ui, "view", &mut seeing);
+                egui::ComboBox::from_label("tone mapper")
+                    .selected_text(seeing.tone_mapper.label())
+                    .show_ui(ui, |ui| {
+                        for t in ToneMapper::ALL {
+                            ui.selectable_value(&mut seeing.tone_mapper, t, t.label());
+                        }
+                    });
+                sliders_except(ui, "view", &mut seeing, &["tone_mapper"]);
                 ui.horizontal(|ui| {
                     ui.checkbox(&mut drawing.msaa, "anti-aliasing (4× MSAA)");
                     ui.checkbox(&mut drawing.depth_prepass, "depth prepass");

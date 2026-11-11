@@ -163,7 +163,7 @@ pub fn run(connection: Box<dyn Connection>) {
                 .chain(),
         )
         .add_systems(EguiPrimaryContextPass, (editing::hotbar, tuning::tuning_panel, crafting::crafting_menu, world_menu::world_menu).chain())
-        .add_systems(Update, (world_notes, ui_scale::apply_ui_scale, view::apply_view_switches))
+        .add_systems(Update, (world_notes, ui_scale::apply_ui_scale, view::apply_view_switches, view::apply_tone_mapper))
         .add_systems(PostUpdate, heights::update_heights.before(shading::ShadingSet))
         .add_systems(Last, (save_on_exit, limit_frame_rate))
         .run();

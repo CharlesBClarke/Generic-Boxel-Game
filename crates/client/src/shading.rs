@@ -41,6 +41,12 @@ pub struct ShadingTuning {
     /// blended between through dusk. Fog fades the far world to the sky, so it follows.
     pub day_sky: f32,
     pub night_sky: f32,
+    /// How pale and misty the horizon is while the sun is high: 1 is the palette's, 0 takes
+    /// the zenith's blue. Sunrise and sunset keep their own.
+    pub haze: f32,
+    /// How far down the zenith's blue reaches before it fades into the horizon's color: 1 is
+    /// the palette's, higher brings the blue lower.
+    pub blue_reach: f32,
     /// How much warmer than the palette a low sun is; 0 is the palette as it is.
     pub warmth: f32,
     /// The sun's disc, as its radius in degrees, and how strong the glow around it is.
@@ -132,6 +138,8 @@ impl Default for ShadingTuning {
             sky_tint: 0.3,
             day_sky: 1.0,
             night_sky: 0.35,
+            haze: 1.0,
+            blue_reach: 1.0,
             warmth: 1.0,
             sun_size: 0.6,
             sun_glow: 3.0,
@@ -173,6 +181,7 @@ impl ShadingTuning {
             warmth: self.warmth,
             day_sky: self.day_sky,
             night_sky: self.night_sky,
+            haze: self.haze,
         }
     }
 
@@ -196,7 +205,8 @@ impl ShadingTuning {
             sky_light: sky.sky_light.extend(0.0),
             ground_light: sky.ground_light.extend(0.0),
             zenith: sky.zenith.extend(0.0),
-            horizon: sky.horizon.extend(0.0),
+            // The gradient's power: the palette's 0.82, lower as the blue reaches farther down.
+            horizon: sky.horizon.extend(0.82 / self.blue_reach.max(0.01)),
             // The stars turn once a day around the pole.
             night: Vec4::new(sky.stars * self.stars, (sky.hours as f32 / 24.0) * std::f32::consts::TAU, 0.0, 0.0),
             fog: Vec4::new(fog_start, (self.fog_end * render_distance).max(fog_start + 1.0), self.fog, 0.0),
@@ -223,6 +233,8 @@ impl Tunables for ShadingTuning {
             Tunable::new("sky_tint", self.sky_tint, 0.0, 1.0),
             Tunable::new("day_sky", self.day_sky, 0.0, 3.0),
             Tunable::new("night_sky", self.night_sky, 0.0, 3.0),
+            Tunable::new("haze", self.haze, 0.0, 1.0),
+            Tunable::new("blue_reach", self.blue_reach, 0.25, 4.0),
             Tunable::new("warmth", self.warmth, 0.0, 2.0),
             Tunable::new("sun_size", self.sun_size, 0.1, 5.0),
             Tunable::new("sun_glow", self.sun_glow, 0.0, 3.0),
@@ -255,6 +267,8 @@ impl Tunables for ShadingTuning {
             "sky_tint" => self.sky_tint = value,
             "day_sky" => self.day_sky = value,
             "night_sky" => self.night_sky = value,
+            "haze" => self.haze = value,
+            "blue_reach" => self.blue_reach = value,
             "warmth" => self.warmth = value,
             "sun_size" => self.sun_size = value,
             "sun_glow" => self.sun_glow = value,
@@ -299,7 +313,8 @@ pub struct Atmosphere {
     /// Light on faces looking straight up, and straight down, blended between.
     pub sky_light: Vec4,
     pub ground_light: Vec4,
-    /// The sky's color straight up and at the horizon.
+    /// The sky's color straight up, and at the horizon with how the one fades into the other
+    /// (a power: lower brings the zenith's color farther down).
     pub zenith: Vec4,
     pub horizon: Vec4,
     /// The night sky: how bright the stars are, and how far they've turned (radians).
