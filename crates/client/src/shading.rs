@@ -16,6 +16,7 @@ use bevy::shader::ShaderRef;
 use crate::RenderOrigin;
 use crate::coords;
 use crate::heights::Heights;
+use crate::mesher::AoTuning;
 use crate::shadows::{ShadowTuning, Sun};
 use crate::sky::{DaySky, SkyTuning};
 use crate::solid::SolidMaterial;
@@ -114,11 +115,13 @@ pub struct Parts {
     pub sky: bool,
     /// Stored light: off, sun and sky light every face as if under the open sky.
     pub stored: bool,
+    /// Ambient occlusion: off, nothing darkens corners (without remeshing, unlike its strength).
+    pub ao: bool,
 }
 
 impl Default for Parts {
     fn default() -> Self {
-        Self { edges: true, fog: true, sheen: true, light: true, sky: true, stored: true }
+        Self { edges: true, fog: true, sheen: true, light: true, sky: true, stored: true, ao: true }
     }
 }
 
@@ -132,6 +135,7 @@ impl Parts {
             ("light", self.light),
             ("sky", self.sky),
             ("stored light", self.stored),
+            ("ambient occlusion", self.ao),
         ];
         let off: Vec<&str> = all.iter().filter(|(_, on)| !on).map(|(name, _)| *name).collect();
         if off.is_empty() { "shading all on".into() } else { format!("shading off: {}", off.join(", ")) }
@@ -238,6 +242,7 @@ impl ShadingTuning {
             far: Vec4::ZERO,
             heights: Vec4::ZERO,
             fine_heights: Vec4::ZERO,
+            ao: Vec4::ZERO,
         }
     }
 }
@@ -399,6 +404,9 @@ pub struct Atmosphere {
     pub heights: Vec4,
     /// The same for the fine height map, a texel to each column.
     pub fine_heights: Vec4,
+    /// Ambient occlusion (see [`crate::mesher::AoTuning`]): strength, how full the space must
+    /// be to darken by all of it, the curve, and on (1) or off (0).
+    pub ao: Vec4,
 }
 
 /// The sky: drawn over the whole screen at the far plane, so only where nothing else is.
@@ -530,6 +538,11 @@ pub fn shadow_atmosphere(a: &mut Atmosphere, shadows: &ShadowTuning, heights: Op
     }
 }
 
+/// What the shader gets for ambient occlusion: see [`Atmosphere::ao`].
+pub fn ao_atmosphere(ao: &AoTuning, on: bool) -> Vec4 {
+    Vec4::new(ao.strength, ao.full_at.max(0.05), ao.curve.max(0.05), if on { 1.0 } else { 0.0 })
+}
+
 /// Puts the current atmosphere into every material that draws with it, where it differs, and
 /// the latest height map into the block materials.
 #[allow(clippy::too_many_arguments)]
@@ -540,10 +553,12 @@ fn sync_atmosphere(
     heights: Res<Heights>,
     origin: Res<RenderOrigin>,
     view: Res<ViewTuning>,
+    ao: Res<AoTuning>,
     mut solids: ResMut<Assets<SolidMaterial>>,
     mut skies: ResMut<Assets<SkyMaterial>>,
 ) {
     let mut atmosphere = tuning.atmosphere(&sun.sky, view.render_distance);
+    atmosphere.ao = ao_atmosphere(&ao, tuning.parts.ao);
     shadow_atmosphere(&mut atmosphere, &shadows, heights.placed, origin.cell);
     let image = heights.image.clone();
     let stale: Vec<_> = solids

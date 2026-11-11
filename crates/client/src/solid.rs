@@ -1,6 +1,6 @@
 //! The material every block is drawn with: each fragment colored from its block's look volume
-//! (see `solid.wgsl`), times the vertex color and a tint, then lit and fogged from the
-//! atmosphere (see `crate::shading`).
+//! (see `solid.wgsl`), times the vertex color, ambient occlusion and a tint, then lit and
+//! fogged from the atmosphere (see `crate::shading`).
 
 use bevy::asset::{AssetPath, RenderAssetUsages, embedded_asset, embedded_path};
 use bevy::image::ImageSampler;
@@ -27,6 +27,9 @@ pub const ATTRIBUTE_EDGES: MeshVertexAttribute = MeshVertexAttribute::new("Edges
 pub const ATTRIBUTE_FACE: MeshVertexAttribute = MeshVertexAttribute::new("Face", 517_093_613, VertexFormat::Unorm16x4);
 /// The stored light at a vertex, red, green, blue and sky (see [`crate::mesher::MeshData::light`]).
 pub const ATTRIBUTE_LIGHT: MeshVertexAttribute = MeshVertexAttribute::new("Light", 517_093_614, VertexFormat::Unorm8x4);
+/// How full the space in front of the vertex's quad is around its corners (see
+/// [`crate::mesher::MeshData::ao`]).
+pub const ATTRIBUTE_AO: MeshVertexAttribute = MeshVertexAttribute::new("Ao", 517_093_615, VertexFormat::Uint32x4);
 
 #[derive(Asset, TypePath, AsBindGroup, Clone, Debug)]
 pub struct SolidMaterial {
@@ -80,6 +83,7 @@ impl Material for SolidMaterial {
             ATTRIBUTE_EDGES.at_shader_location(4),
             ATTRIBUTE_FACE.at_shader_location(5),
             ATTRIBUTE_LIGHT.at_shader_location(6),
+            ATTRIBUTE_AO.at_shader_location(7),
         ])?;
         descriptor.vertex.buffers = vec![vertex_layout];
         Ok(())

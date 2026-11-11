@@ -1,6 +1,8 @@
 // Solid looks: each fragment takes the texel of its block's look volume that it sits in. The
 // mesher has already moved every face's sample position half a texel inside the block, so a
-// face shows the outermost layer it cuts through. Then light and air (see `client::shading`):
+// face shows the outermost layer it cuts through. Ambient occlusion is worked out here from how
+// full the space in front of the quad is around its corners (see `client::mesher::ao_lit`,
+// which this matches). Then light and air (see `client::shading`):
 // the lines along the quad's creases and ridges, the sun and sky, a sheen if the look has one,
 // and fog toward the sky. The sun is shadowed by Bevy's shadow maps near the camera, and past
 // them by a coarse shadow stepped across a height map of the terrain (see `client::shadows`).
@@ -43,6 +45,8 @@ struct Vertex {
     @location(5) face: vec4<f32>,
     // Stored light: red, green, blue and sky, 0 to 1.
     @location(6) light: vec4<f32>,
+    // How full the space in front of the quad is around each corner: four bytes a corner.
+    @location(7) ao: vec4<u32>,
 };
 
 struct VertexOutput {
@@ -56,6 +60,7 @@ struct VertexOutput {
     @location(4) @interpolate(flat) edges: vec4<u32>,
     @location(5) face: vec4<f32>,
     @location(6) light: vec4<f32>,
+    @location(7) @interpolate(flat) ao: vec4<u32>,
 };
 
 @vertex
@@ -71,7 +76,63 @@ fn vertex(vertex: Vertex) -> VertexOutput {
     out.edges = vertex.edges;
     out.face = vertex.face * FACE_SCALE;
     out.light = vertex.light;
+    out.ao = vertex.ao;
     return out;
+}
+
+// Cube `j` of corner `k`'s word (see `client::mesher::CUBES`), 0 to 1.
+fn cube(ao: vec4<u32>, k: i32, j: u32) -> f32 {
+    return f32((ao[k] >> (8u * j)) & 0xffu) / 255.0;
+}
+
+// How full the space in front of a quad is at lattice point `p` of its `n` cells: the four
+// cubes meeting there, each from the cell it lies over. See `client::mesher::lattice_fill`.
+fn lattice_fill(ao: vec4<u32>, n: vec2<i32>, p: vec2<i32>) -> f32 {
+    var sum = 0.0;
+    for (var i = 0; i < 4; i++) {
+        let c = p - vec2<i32>(1 - (i & 1), 1 - (i >> 1));
+        let in_x = c.x >= 0 && c.x < n.x;
+        let in_y = c.y >= 0 && c.y < n.y;
+        if in_x && in_y {
+            // Which corner of its cell the point is: 0 at its lowest, then round.
+            var k = 2;
+            if c.x == p.x && c.y == p.y { k = 0; } else if c.y == p.y { k = 1; } else if c.x == p.x { k = 3; }
+            sum += cube(ao, k, 0u);
+        } else if in_x && c.y < 0 {
+            sum += select(cube(ao, 1, 2u), cube(ao, 0, 1u), c.x == p.x);
+        } else if in_x {
+            sum += select(cube(ao, 3, 2u), cube(ao, 2, 1u), c.x == p.x - 1);
+        } else if in_y && c.x >= n.x {
+            sum += select(cube(ao, 2, 2u), cube(ao, 1, 1u), c.y == p.y);
+        } else if in_y {
+            sum += select(cube(ao, 0, 2u), cube(ao, 3, 1u), c.y == p.y - 1);
+        } else {
+            var k = 2;
+            if c.x < 0 && c.y < 0 { k = 0; } else if c.y < 0 { k = 1; } else if c.x < 0 { k = 3; }
+            sum += cube(ao, k, 3u);
+        }
+    }
+    return sum / 4.0;
+}
+
+// How lit the fragment at `face` (texels from corner 0, then the quad's size) is by ambient
+// occlusion: the darkness at its cell's corners, blended across the cell.
+fn ao_lit(ao: vec4<u32>, face: vec4<f32>) -> f32 {
+    let size = f32(SIZE);
+    let n = max(vec2<i32>(floor(face.zw / size + 0.5)), vec2<i32>(1));
+    let cell = face.zw / vec2<f32>(n);
+    let at = clamp(floor(face.xy / cell), vec2<f32>(0.0), vec2<f32>(n - 1));
+    let f = clamp(face.xy / cell - at, vec2<f32>(0.0), vec2<f32>(1.0));
+    let p = vec2<i32>(at);
+    let a = atmosphere.ao;
+    let fills = vec4<f32>(
+        lattice_fill(ao, n, p),
+        lattice_fill(ao, n, p + vec2<i32>(1, 0)),
+        lattice_fill(ao, n, p + vec2<i32>(0, 1)),
+        lattice_fill(ao, n, p + vec2<i32>(1, 1)),
+    );
+    let lit = vec4<f32>(1.0) - a.x * pow(clamp(fills / a.y, vec4<f32>(0.0), vec4<f32>(1.0)), vec4<f32>(a.z));
+    return mix(mix(lit.x, lit.y, f.x), mix(lit.z, lit.w, f.x), f.y);
 }
 
 // Where height map `m` lies (0 fine, 1 coarse): see `atmosphere.fine_heights`.
@@ -212,7 +273,10 @@ fn fragment(in: VertexOutput) -> @location(0) vec4<f32> {
     let texel = ((vec3<i32>(floor(in.solid.xyz)) % SIZE) + SIZE) % SIZE;
     let volume = i32(round(in.solid.w));
     let own = textureLoad(volumes, texel + vec3<i32>(0, 0, volume * SIZE), 0) * tint;
-    let base = own * in.color;
+    var base = own * in.color;
+    if atmosphere.ao.w > 0.5 && any(in.ao != vec4<u32>(0u)) {
+        base = vec4<f32>(base.rgb * ao_lit(in.ao, in.face), base.a);
+    }
     let shine = textureLoad(sheens, vec2<i32>(volume, 0), 0);
     let normal = normalize(in.world_normal);
     let to_eye_far = view.world_position - in.world_position;

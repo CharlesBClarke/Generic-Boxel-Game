@@ -8,8 +8,10 @@
 //! blocks point at the white volume and carry their color in the vertices. Looks stay lined up
 //! with the world unless the look turns with its blocks, like a log's.
 //!
-//! Ambient occlusion is baked into the vertex colors: each corner of a face darkens by how much
-//! of the space in front of it, around the corner, block shapes fill (see [`AoTuning`]). Finer
+//! Ambient occlusion is the shader's, from what the mesher measures: each corner of a face
+//! darkens by how much of the space in front of it, around the corner, block shapes fill (see
+//! [`AoTuning`]), and every quad carries how full each part of that space is (see
+//! [`MeshData::ao`]), so faces with different shading still merge (see [`crate::greedy`]). Finer
 //! shading is left to the shader: every quad carries what lies past each of its four edges,
 //! texel by texel (see [`MeshData::edges`]), so creases and ridges can be drawn a few texels
 //! wide whatever size the face is. Light from the sun and sky is the shader's too.
@@ -44,6 +46,11 @@ pub struct MeshData {
     /// (see [`sim::light`]). Empty for meshes drawn outside the world, which are lit as if under
     /// the open sky.
     pub light: Vec<[u8; 4]>,
+    /// How full the space in front of the quad is around each of its corners, the same on all
+    /// four of its vertices: word `k` for corner `k`, one byte (0 empty to 255 full) for each of
+    /// the four cubes `reach` on a side that meet there (see [`corner_fills`]). Empty for meshes
+    /// without ambient occlusion.
+    pub ao: Vec<[u32; 4]>,
     pub indices: Vec<u32>,
 }
 
@@ -98,8 +105,9 @@ fn srgb_to_linear(c: u8) -> f32 {
     if c <= 0.04045 { c / 12.92 } else { ((c + 0.055) / 1.055).powf(2.4) }
 }
 
-/// Ambient occlusion: how dark inside corners and edges get. Live-tunable; changing it remeshes
-/// every chunk.
+/// Ambient occlusion: how dark inside corners and edges get. Live-tunable: the mesher measures
+/// how full the space is (with `reach`), and the shader darkens by it (with the rest), so only
+/// changing [`AoTuning::meshing`] remeshes.
 #[derive(Resource, Clone, Copy, Debug, PartialEq)]
 pub struct AoTuning {
     /// How much a corner darkens with all the space around it in front of the face filled: 0
@@ -123,6 +131,12 @@ impl AoTuning {
 
     fn reach(&self) -> i32 {
         (self.reach.round() as i32).clamp(1, BlockBox::SIZE as i32)
+    }
+
+    /// What meshing depends on: how far it measures, and whether it measures at all. The rest
+    /// is the shader's.
+    pub fn meshing(&self) -> (i32, bool) {
+        (self.reach(), self.strength > 0.0)
     }
 
     /// How much a corner darkens with `filled` (0 to 1) of the space around it filled.
@@ -432,18 +446,86 @@ fn edges(around: &Neighborhood, q: [[i32; 3]; 4], normal: [i32; 3]) -> [u32; 4] 
     })
 }
 
-/// How much of the space in front of a face around its corner `corner` is filled, from 0 to 1.
-/// The space is four cubes `reach` on a side, all in front of the face (the way `normal`
-/// points) and meeting at the corner: over the face, past each of the corner's two edges, and
-/// past the corner. `around` and `corner` are in texels relative to the same boxel.
-fn occlusion(around: &Neighborhood, corner: [i32; 3], normal: [i32; 3], reach: i32) -> f32 {
+/// Where each of the four cubes meeting at corner `k` of a quad lies, as signs along the quad's
+/// edge `k` (toward corner `k + 1`) and back along edge `k - 1` (toward corner `k - 1`): over
+/// the face, past edge `k`, past edge `k - 1`, past the corner. Byte `j` of a
+/// [`MeshData::ao`] word is cube `j`.
+pub const CUBES: [(i32, i32); 4] = [(1, 1), (1, -1), (-1, 1), (-1, -1)];
+
+/// How full each of the four cubes `reach` on a side in front of a face (the way `normal`
+/// points) is around each corner of quad `q`, as [`MeshData::ao`] holds them. `around` and
+/// `q` are in texels relative to the same boxel.
+fn corner_fills(around: &Neighborhood, q: [[i32; 3]; 4], normal: [i32; 3], reach: i32) -> [u32; 4] {
     let axis = normal.iter().position(|&n| n != 0).expect("a unit normal");
-    // The cubes together: in front along the normal, either side along the other two axes.
-    let (mut lo, mut hi) = (corner.map(|c| c - reach), corner.map(|c| c + reach));
-    if normal[axis] > 0 { lo[axis] = corner[axis] } else { hi[axis] = corner[axis] }
-    let filled = around.filled(lo, hi);
-    // A neighborhood's boxes never overlap, but clamp in case.
-    (filled as f32 / (4 * reach * reach * reach) as f32).min(1.0)
+    let unit = |from: [i32; 3], to: [i32; 3]| [0, 1, 2].map(|i| (to[i] - from[i]).signum());
+    let full = (reach * reach * reach) as f32;
+    std::array::from_fn(|k| {
+        let corner = q[k];
+        let (a, b) = (unit(corner, q[(k + 1) % 4]), unit(corner, q[(k + 3) % 4]));
+        CUBES.iter().enumerate().fold(0, |word, (j, &(sa, sb))| {
+            let (mut lo, mut hi) = (corner, corner);
+            for i in 0..3 {
+                let reach_to = if i == axis { normal[i] * reach } else { (a[i] * sa + b[i] * sb) * reach };
+                if reach_to < 0 { lo[i] += reach_to } else { hi[i] += reach_to }
+            }
+            let fill = (around.filled(lo, hi) as f32 / full).min(1.0);
+            word | ((fill * 255.0).round() as u32) << (8 * j)
+        })
+    })
+}
+
+/// Byte `j` of word `k` of a quad's [`MeshData::ao`], as 0 to 1.
+fn cube(ao: &[u32; 4], k: usize, j: usize) -> f32 {
+    (ao[k] >> (8 * j) & 0xff) as f32 / 255.0
+}
+
+/// How full the space in front of a quad is at lattice point `(x, y)` of its `cells` (boxels
+/// along edge 0 and back along edge 3; a quad within one boxel is one cell), from 0 to 1: the
+/// four cubes meeting there, each read from the cell it lies over, inside the quad, past one of
+/// its edges or past one of its corners. `solid.wgsl` does the same.
+pub fn lattice_fill(ao: &[u32; 4], cells: [i32; 2], x: i32, y: i32) -> f32 {
+    let [w, h] = cells;
+    let mut sum = 0.0;
+    for (cx, cy) in [(x - 1, y - 1), (x, y - 1), (x - 1, y), (x, y)] {
+        let (in_x, in_y) = ((0..w).contains(&cx), (0..h).contains(&cy));
+        sum += match (in_x, in_y) {
+            // Over the quad: the cube at this cell's corner, which every cell has alike.
+            (true, true) => cube(ao, [[2, 1], [3, 0]][(cx == x) as usize][(cy == y) as usize], 0),
+            // Past edge 0 or 2: which end of the cell's stretch of edge the point is.
+            (true, false) if cy < 0 => if cx == x { cube(ao, 0, 1) } else { cube(ao, 1, 2) },
+            (true, false) => if cx == x - 1 { cube(ao, 2, 1) } else { cube(ao, 3, 2) },
+            (false, true) if cx >= w => if cy == y { cube(ao, 1, 1) } else { cube(ao, 2, 2) },
+            (false, true) => if cy == y - 1 { cube(ao, 3, 1) } else { cube(ao, 0, 2) },
+            (false, false) => cube(ao, [[2, 1], [3, 0]][(cx < 0) as usize][(cy < 0) as usize], 3),
+        };
+    }
+    sum / 4.0
+}
+
+/// How many cells a quad `width` by `height` texels has along edge 0 and back along edge 3:
+/// boxels, or one for a quad within a boxel.
+pub fn cells(width: f32, height: f32) -> [i32; 2] {
+    let size = BlockBox::SIZE as f32;
+    [width, height].map(|l| ((l / size + 0.5).floor() as i32).max(1))
+}
+
+/// How lit a quad `width` by `height` texels is by ambient occlusion at `(s, t)` texels from
+/// its corner 0 (along edge 0, back along edge 3), from 0 to 1: the darkness at the corners of
+/// the cell it's in, blended across it. `solid.wgsl` does the same.
+pub fn ao_lit(ao: &[u32; 4], tuning: &AoTuning, [s, t, width, height]: [f32; 4]) -> f32 {
+    let n = cells(width, height);
+    let size = [width / n[0] as f32, height / n[1] as f32];
+    let mut at = [0; 2];
+    let mut f = [0.0; 2];
+    for (i, p) in [s, t].into_iter().enumerate() {
+        let c = (p / size[i]).floor().clamp(0.0, (n[i] - 1) as f32);
+        at[i] = c as i32;
+        f[i] = (p / size[i] - c).clamp(0.0, 1.0);
+    }
+    let lit = |dx: i32, dy: i32| 1.0 - tuning.darkness(lattice_fill(ao, n, at[0] + dx, at[1] + dy));
+    let low = lit(0, 0) + (lit(1, 0) - lit(0, 0)) * f[0];
+    let high = lit(0, 1) + (lit(1, 1) - lit(0, 1)) * f[0];
+    low + (high - low) * f[1]
 }
 
 /// The occupants of the boxel at `local` in `chunk` at `pos`, read from the next chunk past
@@ -755,7 +837,7 @@ fn mesh_chunk_with(grid: &Grid, pos: ChunkPos, blocks: &BlockRegistry, volumes: 
 /// shape. Closed boxels (full blocks) never count, as a wall beside a floor would only darken
 /// it twice over (corner AO does that). `light` and `faces` (covered faces, as
 /// [`sim::light::covered_faces_of`] gives them) take boxels relative to the chunk. Then splits
-/// each quad along the diagonal whose ends are lit most alike, light and AO together.
+/// each quad along the diagonal whose ends are lit most alike.
 fn bake_light(mesh: &mut MeshData, light: impl Fn(I64Vec3) -> sim::Light, faces: impl Fn(I64Vec3) -> u8) {
     // Whether light gets from `from` into its neighbor `to` through the face between them.
     let passes = |from: I64Vec3, to: I64Vec3| {
@@ -1019,28 +1101,22 @@ fn quad<'b>(
     let length = |a: [i32; 3], b: [i32; 3]| (0..3).map(|i| (a[i] - b[i]).abs()).sum::<i32>() as f32;
     let (width, height) = (length(q[0], q[1]), length(q[0], q[3]));
     let unit = face_unit;
-    let reach = ao.reach();
-    let mut lit = [0.0; 4];
+    let fills = if ao.strength > 0.0 { corner_fills(around, q, normal, ao.reach()) } else { [0; 4] };
     for k in 0..4 {
         // In the look, half a texel back from the face, into the block.
         let [x, y, z] = [0, 1, 2].map(|i| p[k][i] as f32 * texels - face.normal[i] as f32 * 0.5);
-        lit[k] = if ao.strength > 0.0 { 1.0 - ao.darkness(occlusion(around, q[k], normal, reach)) } else { 1.0 };
-        let l = lit[k];
         let (u, v) = [(0.0, 0.0), (width, 0.0), (width, height), (0.0, height)][k];
         mesh.positions.push([0, 1, 2].map(|i| at[i] + q[k][i] as f32 / BlockBox::SIZE as f32));
         mesh.normals.push(normal.map(|n| n as f32));
-        mesh.colors.push([base[0] * l, base[1] * l, base[2] * l, 1.0]);
+        mesh.colors.push([base[0], base[1], base[2], 1.0]);
         mesh.solid.push([x, y, z, volume as f32]);
         mesh.edges.push(edges);
         mesh.face.push([unit(u), unit(v), unit(width), unit(height)]);
+        mesh.ao.push(fills);
     }
-    // Split along the diagonal whose ends are lit most alike. Splitting along the other one
-    // would drag a lone dark (or lit) corner's color across the whole quad in a streak.
-    if (lit[0] - lit[2]).abs() <= (lit[1] - lit[3]).abs() {
-        mesh.indices.extend([first, first + 1, first + 2, first, first + 2, first + 3]);
-    } else {
-        mesh.indices.extend([first, first + 1, first + 3, first + 1, first + 2, first + 3]);
-    }
+    // The shader blends ambient occlusion across the quad itself, so the split only matters
+    // for stored light (see [`bake_light`]).
+    mesh.indices.extend([first, first + 1, first + 2, first, first + 2, first + 3]);
 }
 
 #[cfg(test)]
@@ -1549,19 +1625,36 @@ mod tests {
         super::mesh_chunk(grid, chunk, blocks, &flat(blocks), &AoTuning::LINEAR)
     }
 
-    /// The light of every upward-facing vertex at `at`, chunk-local; they must all agree.
+    /// Where vertex `i` is on its quad, and the quad's size, in texels (see [`MeshData::face`]).
+    fn face_texels(mesh: &MeshData, i: usize) -> [f32; 4] {
+        mesh.face[i].map(|c| c as f32 / u16::MAX as f32 * FACE_SCALE)
+    }
+
+    /// How lit vertex `i` is drawn, with ambient occlusion as the shader works it out.
+    fn shaded(mesh: &MeshData, i: usize, ao: &AoTuning) -> f32 {
+        mesh.colors[i][0] * ao_lit(&mesh.ao[i], ao, face_texels(mesh, i))
+    }
+
+    /// The light of every upward-facing vertex at `at`, chunk-local, meshed and drawn with
+    /// [`AoTuning::LINEAR`]; they must all agree.
     fn light_up(mesh: &MeshData, at: [f32; 3]) -> f32 {
+        light_facing(mesh, at, [0.0, 0.0, 1.0])
+    }
+
+    /// The same for vertices facing along `normal`.
+    fn light_facing(mesh: &MeshData, at: [f32; 3], normal: [f32; 3]) -> f32 {
         let found: Vec<f32> = (0..mesh.positions.len())
-            .filter(|&i| mesh.positions[i] == at && mesh.normals[i] == [0.0, 0.0, 1.0])
-            .map(|i| mesh.colors[i][0])
+            .filter(|&i| mesh.positions[i] == at && mesh.normals[i] == normal)
+            .map(|i| shaded(mesh, i, &AoTuning::LINEAR))
             .collect();
         assert!(!found.is_empty(), "no upward vertex at {at:?}");
         assert!(found.iter().all(|&l| (l - found[0]).abs() < 1e-6), "vertices at {at:?} disagree: {found:?}");
         found[0]
     }
 
+    /// Close enough, given each cube's fill is kept in a byte.
     fn close(a: f32, b: f32) -> bool {
-        (a - b).abs() < 1e-5
+        (a - b).abs() < 2e-3
     }
 
     #[test]
@@ -1570,7 +1663,9 @@ mod tests {
         grid.set_block(BoxelPos::new(5, 5, 5), cube);
         let chunk = ChunkPos::new(0, 0, 0);
         let off = super::mesh_chunk(&grid, chunk, &blocks, &flat(&blocks), &AoTuning::OFF);
-        assert_eq!(lit(&grid, &blocks, chunk).colors, off.colors);
+        let mesh = lit(&grid, &blocks, chunk);
+        assert_eq!(mesh.colors, off.colors);
+        assert!(mesh.ao.iter().all(|w| *w == [0; 4]), "nothing in front of any face");
         let mut grid = Grid::default();
         floor(&mut grid, cube);
         assert!(close(light_up(&lit(&grid, &blocks, chunk), [2.0, 2.0, 1.0]), 1.0));
@@ -1612,7 +1707,7 @@ mod tests {
     }
 
     #[test]
-    fn quads_split_along_the_diagonal_that_keeps_a_lone_dark_corner_to_itself() {
+    fn a_lone_dark_corner_fades_evenly_across_the_face() {
         let (mut grid, blocks, cube, _) = white();
         floor(&mut grid, cube);
         // A pillar touching the top of (1, 1, 0) only at its corner (2, 2).
@@ -1622,10 +1717,46 @@ mod tests {
         let q = (0..mesh.quad_count())
             .find(|&q| corners.iter().all(|c| mesh.positions[q * 4..q * 4 + 4].contains(c)))
             .expect("the floor tile's top");
-        let dark = (q * 4..q * 4 + 4).find(|&i| mesh.positions[i] == [2.0, 2.0, 1.0]).unwrap() as u32;
-        assert!(mesh.colors[dark as usize][0] < 1.0);
-        let triangles = &mesh.indices[q * 6..q * 6 + 6];
-        assert_eq!(triangles.chunks(3).filter(|t| t.contains(&dark)).count(), 1);
+        let i = 4 * q;
+        let dark = 1.0 - AoTuning::LINEAR.strength * 0.25;
+        assert!(close(light_up(&mesh, [2.0, 2.0, 1.0]), dark));
+        // No diagonal: the shader blends the corners, so the middle is their average and the
+        // corner across from the dark one is untouched.
+        let size = face_texels(&mesh, i);
+        let at = |s: f32, t: f32| ao_lit(&mesh.ao[i], &AoTuning::LINEAR, [s, t, size[2], size[3]]);
+        assert!(close(at(8.0, 8.0), (3.0 + dark) / 4.0));
+        let lit_corners = [at(0.0, 0.0), at(16.0, 0.0), at(16.0, 16.0), at(0.0, 16.0)];
+        assert_eq!(lit_corners.iter().filter(|&&l| close(l, 1.0)).count(), 3, "{lit_corners:?}");
+    }
+
+    #[test]
+    fn a_stairs_inner_corner_darkens_inside_the_boxel() {
+        let (mut grid, mut blocks, _, _) = white();
+        // A lone stair: a bottom slab, and the back half of the top.
+        let shape = vec![BlockBox::new([0, 0, 0], [16, 16, 8]), BlockBox::new([0, 8, 8], [16, 16, 16])];
+        let stair = blocks.register(BlockDef::new("test:white_stair", true, [255; 3]).with_shape(shape)).unwrap();
+        grid.set_block(BoxelPos::new(5, 5, 5), stair);
+        let mesh = lit(&grid, &blocks, ChunkPos::new(0, 0, 0));
+        let strength = AoTuning::LINEAR.strength;
+        // The riser's foot, in the middle of the boxel: of the four cubes in front of each of
+        // its corners there, the one below the tread's top is a quarter filled by the tread.
+        let south = [0.0, -1.0, 0.0];
+        let foot = 1.0 - strength * 0.25 / 4.0;
+        assert!(close(light_facing(&mesh, [5.0, 5.5, 5.5], south), foot));
+        assert!(close(light_facing(&mesh, [6.0, 5.5, 5.5], south), foot));
+        // With half a block's reach, the cube under each foot corner is all tread, and the
+        // riser's top is too far up to see it.
+        let half = AoTuning { reach: 8.0, ..AoTuning::LINEAR };
+        let near = super::mesh_chunk(&grid, ChunkPos::new(0, 0, 0), &blocks, &flat(&blocks), &half);
+        let shade = |at: [f32; 3]| {
+            let i = (0..near.positions.len()).find(|&i| near.positions[i] == at && near.normals[i] == south).expect("a riser corner");
+            near.colors[i][0] * ao_lit(&near.ao[i], &half, face_texels(&near, i))
+        };
+        assert!(close(shade([5.0, 5.5, 5.5]), 1.0 - strength / 4.0));
+        assert!(close(shade([5.0, 5.5, 6.0]), 1.0), "the riser's top");
+        // The tread is the slab's whole top, under the riser at the back, which fills a quarter
+        // of the cube over it at each corner.
+        assert!(close(light_up(&mesh, [5.0, 5.0, 5.5]), foot));
     }
 
     #[test]
@@ -1656,6 +1787,7 @@ mod tests {
         let mesh = super::mesh_chunk(&grid, ChunkPos::new(0, 0, 0), &blocks, &flat(&blocks), &off);
         let none = mesh_chunk(&grid, ChunkPos::new(0, 0, 0), &blocks);
         assert_eq!((mesh.colors, mesh.indices), (none.colors, none.indices));
+        assert!(mesh.ao.iter().all(|w| *w == [0; 4]));
     }
 
     #[test]

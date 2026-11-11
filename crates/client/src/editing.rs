@@ -502,8 +502,9 @@ pub(crate) fn update_hidden_ghosts(
 /// Remeshing at least this many chunks at once is timed for the readout.
 const BIG_REMESH: usize = 64;
 
-/// Rebuilds the meshes of chunks the simulation changed, and of every chunk when the ambient
-/// occlusion tuning or whether faces merge changes.
+/// Rebuilds the meshes of chunks the simulation changed, and of every chunk when what meshing
+/// takes from the ambient occlusion tuning (see [`mesher::AoTuning::meshing`]) or whether faces
+/// merge changes.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn remesh_changed_chunks(
     mut commands: Commands,
@@ -516,13 +517,15 @@ pub(crate) fn remesh_changed_chunks(
     view: Res<crate::view::ViewSwitches>,
     mut hidden: ResMut<HiddenGhosts>,
     mut heights: ResMut<crate::heights::Heights>,
+    mut meshed_with: Local<Option<(i32, bool)>>,
 ) {
     // Crafting registers blocks while playing; their looks must be known before they're drawn.
     chunk_meshes.volumes.sync(world.blocks());
     let mut changed = world.take_changed_chunks();
     heights.changed(&changed);
     let grid = world.universe().main();
-    if (ao.is_changed() && !ao.is_added()) || chunk_meshes.merged != view.merge_faces {
+    let ao_changed = meshed_with.replace(ao.meshing()).is_some_and(|before| before != ao.meshing());
+    if ao_changed || chunk_meshes.merged != view.merge_faces {
         chunk_meshes.merged = view.merge_faces;
         changed = grid.chunks().map(|(pos, _)| pos).collect();
     }
@@ -1197,5 +1200,8 @@ mod remesh_timing {
             let merged = if merge { "merged" } else { "unmerged" };
             println!("meshed {} ({with_faces} with faces, {quads} quads, {merged}) in {took:?}", chunks.len());
         }
+        // What merging would reach if nothing about ambient occlusion held it back.
+        let off = mesher::mesh_chunks(grid, &chunks, world.blocks(), &volumes, &mesher::AoTuning::OFF, true);
+        println!("merged without ambient occlusion: {} quads", off.iter().map(|m| m.quad_count()).sum::<usize>());
     }
 }
