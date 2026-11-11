@@ -45,11 +45,14 @@ pub struct ViewSwitches {
     pub msaa: bool,
     /// Depth drawn first in a pass of its own, so the main pass shades only what ends up seen.
     pub depth_prepass: bool,
+    /// Neighboring faces that look alike drawn as one bigger quad (see [`crate::greedy`]).
+    /// Changing it remeshes every chunk.
+    pub merge_faces: bool,
 }
 
 impl Default for ViewSwitches {
     fn default() -> Self {
-        Self { msaa: true, depth_prepass: false }
+        Self { msaa: true, depth_prepass: false, merge_faces: true }
     }
 }
 
@@ -62,6 +65,9 @@ impl ViewSwitches {
         }
         if self.depth_prepass {
             out.push("depth prepass");
+        }
+        if !self.merge_faces {
+            out.push("faces unmerged");
         }
         out
     }

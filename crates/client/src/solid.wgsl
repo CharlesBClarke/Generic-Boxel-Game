@@ -18,7 +18,7 @@
 // Texels along each side of a look; matches `api::LookDef::SIZE`.
 const SIZE: i32 = 16;
 // Texels a face's position counts up to; matches `client::mesher::FACE_SCALE`.
-const FACE_SCALE: f32 = 16.0;
+const FACE_SCALE: f32 = 512.0;
 
 @group(#{MATERIAL_BIND_GROUP}) @binding(0) var<uniform> tint: vec4<f32>;
 // Every look stacked along Z, one SIZE-deep volume after another.
@@ -48,7 +48,9 @@ struct Vertex {
 struct VertexOutput {
     @builtin(position) clip_position: vec4<f32>,
     @location(0) color: vec4<f32>,
-    @location(1) solid: vec4<f32>,
+    // Centroid: with MSAA a pixel on a quad's edge is shaded where it's covered, so the look
+    // position stays on the quad and its wrap (see `fragment`) never reaches the next boxel's.
+    @location(1) @interpolate(perspective, centroid) solid: vec4<f32>,
     @location(2) world_position: vec3<f32>,
     @location(3) world_normal: vec3<f32>,
     @location(4) @interpolate(flat) edges: vec4<u32>,
@@ -205,7 +207,9 @@ fn sun_shadow(position: vec3<f32>, normal: vec3<f32>, reach: f32) -> f32 {
 
 @fragment
 fn fragment(in: VertexOutput) -> @location(0) vec4<f32> {
-    let texel = clamp(vec3<i32>(floor(in.solid.xyz)), vec3<i32>(0), vec3<i32>(SIZE - 1));
+    // A merged quad's look position runs on across its boxels (see `client::greedy`): wrapped,
+    // the look repeats every boxel.
+    let texel = ((vec3<i32>(floor(in.solid.xyz)) % SIZE) + SIZE) % SIZE;
     let volume = i32(round(in.solid.w));
     let own = textureLoad(volumes, texel + vec3<i32>(0, 0, volume * SIZE), 0) * tint;
     let base = own * in.color;

@@ -214,6 +214,7 @@ pub fn tuning_panel(
                 ui.horizontal(|ui| {
                     ui.checkbox(&mut drawing.msaa, "anti-aliasing (4× MSAA)");
                     ui.checkbox(&mut drawing.depth_prepass, "depth prepass");
+                    ui.checkbox(&mut drawing.merge_faces, "merge faces");
                 });
                 ui.separator();
                 ui.heading("UI scale");

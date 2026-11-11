@@ -38,7 +38,7 @@ pub struct MeshData {
     pub edges: Vec<[u32; 4]>,
     /// Where on its quad a vertex is, in texels from corner 0 (along edge 0, then along edge
     /// 3 backwards), then the quad's size along those, all divided by [`FACE_SCALE`] to fit
-    /// a normalized 16-bit number.
+    /// a normalized 16-bit number. A merged quad (see [`crate::greedy`]) is up to a chunk wide.
     pub face: Vec<[u16; 4]>,
     /// The stored light at each vertex, red, green, blue and sky, 0 to 255 for none to full
     /// (see [`sim::light`]). Empty for meshes drawn outside the world, which are lit as if under
@@ -58,8 +58,14 @@ pub const CREASE: u32 = 1;
 /// outside corner.
 pub const RIDGE: u32 = 2;
 
-/// The largest texel count [`MeshData::face`] holds; a box's face is at most a boxel wide.
-pub const FACE_SCALE: f32 = BlockBox::SIZE as f32;
+/// The largest texel count [`MeshData::face`] holds: a chunk's width, as a merged quad is at
+/// most that wide (see [`crate::greedy`]).
+pub const FACE_SCALE: f32 = (BlockBox::SIZE as i64 * CHUNK_SIZE) as f32;
+
+/// `texels` along a quad as [`MeshData::face`] holds it.
+pub fn face_unit(texels: f32) -> u16 {
+    (texels / FACE_SCALE * u16::MAX as f32).round() as u16
+}
 
 impl MeshData {
     pub fn is_empty(&self) -> bool {
@@ -458,14 +464,19 @@ fn buried(grid: &Grid, pos: ChunkPos, blocks: &BlockRegistry) -> bool {
 }
 
 /// Meshes every chunk in `positions`, spread over every core. Comes back in the same order.
-pub fn mesh_chunks(grid: &Grid, positions: &[ChunkPos], blocks: &BlockRegistry, volumes: &Volumes, ao: &AoTuning) -> Vec<MeshData> {
-    mesh_chunks_with(grid, positions, blocks, volumes, ao, DENSE_AT)
+pub fn mesh_chunks(grid: &Grid, positions: &[ChunkPos], blocks: &BlockRegistry, volumes: &Volumes, ao: &AoTuning, merge: bool) -> Vec<MeshData> {
+    mesh_chunks_with(grid, positions, blocks, volumes, ao, DENSE_AT, merge)
 }
 
 /// [`mesh_chunks`], reading neighborhoods of more than `dense_at` boxes through their texels.
-fn mesh_chunks_with(grid: &Grid, positions: &[ChunkPos], blocks: &BlockRegistry, volumes: &Volumes, ao: &AoTuning, dense_at: usize) -> Vec<MeshData> {
+/// Merges faces (see [`crate::greedy`]) if `merge`.
+fn mesh_chunks_with(grid: &Grid, positions: &[ChunkPos], blocks: &BlockRegistry, volumes: &Volumes, ao: &AoTuning, dense_at: usize, merge: bool) -> Vec<MeshData> {
+    let one = |p: ChunkPos| {
+        let mesh = mesh_chunk_with(grid, p, blocks, volumes, ao, dense_at);
+        if merge { crate::greedy::merge(&mesh) } else { mesh }
+    };
     if positions.len() < 2 {
-        return positions.iter().map(|&p| mesh_chunk_with(grid, p, blocks, volumes, ao, dense_at)).collect();
+        return positions.iter().map(|&p| one(p)).collect();
     }
     let threads = std::thread::available_parallelism().map_or(1, |n| n.get());
     // Small parts, handed out as threads free up, since chunks differ a lot in cost; one chunk
@@ -482,7 +493,7 @@ fn mesh_chunks_with(grid: &Grid, positions: &[ChunkPos], blocks: &BlockRegistry,
                         let Some(part) = parts.get(i) else {
                             break out;
                         };
-                        out.push((i, part.iter().map(|&p| mesh_chunk_with(grid, p, blocks, volumes, ao, dense_at)).collect()));
+                        out.push((i, part.iter().map(|&p| one(p)).collect()));
                     }
                 })
             })
@@ -494,7 +505,8 @@ fn mesh_chunks_with(grid: &Grid, positions: &[ChunkPos], blocks: &BlockRegistry,
 }
 
 /// Meshes the chunk at `pos`. Neighbors are read through `grid`, so faces on chunk borders
-/// are culled and occluded against the next chunk. Unloaded neighbors count as empty.
+/// are culled and occluded against the next chunk. Unloaded neighbors count as empty. Its
+/// faces are left unmerged; [`mesh_chunks`] can merge them.
 pub fn mesh_chunk(grid: &Grid, pos: ChunkPos, blocks: &BlockRegistry, volumes: &Volumes, ao: &AoTuning) -> MeshData {
     mesh_chunk_with(grid, pos, blocks, volumes, ao, DENSE_AT)
 }
@@ -809,7 +821,7 @@ fn quad<'b>(
     let edges = edges(around, q, normal);
     let length = |a: [i32; 3], b: [i32; 3]| (0..3).map(|i| (a[i] - b[i]).abs()).sum::<i32>() as f32;
     let (width, height) = (length(q[0], q[1]), length(q[0], q[3]));
-    let unit = |texels: f32| (texels / FACE_SCALE * u16::MAX as f32).round() as u16;
+    let unit = face_unit;
     let reach = ao.reach();
     let mut lit = [0.0; 4];
     for k in 0..4 {
@@ -904,7 +916,7 @@ mod tests {
             positions.push(ChunkPos(c));
         }
         let volumes = flat(&blocks);
-        let together = mesh_chunks(&grid, &positions, &blocks, &volumes, &AoTuning::default());
+        let together = mesh_chunks(&grid, &positions, &blocks, &volumes, &AoTuning::default(), false);
         for (pos, mesh) in positions.iter().zip(&together) {
             let alone = super::mesh_chunk(&grid, *pos, &blocks, &volumes, &AoTuning::default());
             assert_eq!((alone.positions.clone(), alone.indices.clone()), (mesh.positions.clone(), mesh.indices.clone()), "{:?}", pos.0);
@@ -1571,8 +1583,9 @@ mod tests {
                     assert_eq!(kinds, (0..texels).map(|i| RIDGE << (2 * i)).sum::<u32>(), "edge {k} of {e:?}");
                 }
             }
-            // Where on the face each corner is, and the face's size, in texels.
-            let texels = |v: u16| v as f32 / u16::MAX as f32 * FACE_SCALE;
+            // Where on the face each corner is, and the face's size, in texels (to a thousandth:
+            // a texel isn't a whole number of steps).
+            let texels = |v: u16| (v as f32 / u16::MAX as f32 * FACE_SCALE * 1000.0).round() / 1000.0;
             let top = (0..6).find(|&q| mesh.normals[q * 4] == UP).unwrap();
             let face: Vec<[f32; 4]> = mesh.face[top * 4..top * 4 + 4].iter().map(|f| f.map(texels)).collect();
             assert_eq!(face, [[0.0, 0.0, 16.0, 16.0], [16.0, 0.0, 16.0, 16.0], [16.0, 16.0, 16.0, 16.0], [0.0, 16.0, 16.0, 16.0]]);
