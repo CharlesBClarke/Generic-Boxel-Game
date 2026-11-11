@@ -26,7 +26,7 @@ A throwaway test (not in the repo) generated the bench's terrain (the `[base]` o
 
 - **`MeshData::edges`** holds 2 bits a texel in a `u32` per edge: 16 texels, one boxel. `MeshData::face` divides by `FACE_SCALE`, also one boxel. A merged quad needs a new format for both (longer edges, or merged quads limited to plain edges, or the edges moved to a lookup).
 - **Textures** are sampled from the look's volume by `solid` (texel position in the look). A merged quad must repeat the look per boxel in the shader (wrap the position), not stretch it.
-- **T-junctions:** a big quad meeting several small ones along an edge can leave speckle gaps. Watch for them in play; the usual fixes are small.
+- **T-junctions:** a big quad meeting several small ones along an edge can leave speckle gaps. *Seen in play and fixed by `fix-greedy-sparkles` (2026-11-11): `greedy::close_t_junctions` turns such a quad into a fan with its edges split at the other corners.*
 - **`DrawnFaces`** and anything else that maps a quad back to one boxel: check what depends on one quad per boxel face.
 - **Light's diagonal split** (`bake_light` picks the diagonal per quad by lighting): merged quads are uniform, so the split stops mattering for them.
 - **Remesh cost:** an edit already remeshes the whole chunk; the merge is one extra sweep over its faces, small next to the edge, AO and light work. Fewer vertices make the GPU copy smaller. Measure an edit's remesh time before and after (`time_edits_in_a_save`, `time_meshing_the_terrain` in `client::editing`).
