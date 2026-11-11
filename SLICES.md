@@ -104,7 +104,7 @@ A run of small toy slices. Each one takes a single game-feel feature that doesn'
 
 ### Current toy
 
-None in progress: Bench closed 2026-11-10. Suggested next: Shadow speed (backlog; notes in `docs/notes/shadow-speed.md`).
+None in progress: Bench closed 2026-11-10. Next: Greedy meshing (the user's pick, 2026-11-10; notes in `docs/notes/greedy-meshing.md`), then Shadow speed.
 
 **Waiting for a play check** (remind the user at the start of every session, and at good moments during one, until they confirm; then delete the line):
 
@@ -118,6 +118,7 @@ None in progress: Bench closed 2026-11-10. Suggested next: Shadow speed (backlog
 
 ### Toy backlog
 
+- **Greedy meshing.** Added 2026-11-10, after the Bench, chosen over LOD: merge neighboring terrain faces into bigger quads. A merge count on the bench terrain: 0.97M triangles to 0.28M (71% fewer) if light and AO must match, 0.15M (84%) with AO moved to the shader. Speeds the main pass and every shadow pass. Notes: `docs/notes/greedy-meshing.md`.
 - **Render scale.** Split from Benchmark and render scale (2026-11-10, the bench became its own toy): a render scale slider that draws the world at 50–100% of the window and stretches it up, the HUD sharp.
 - **Shadow speed.** Added 2026-11-10, from Sun shadows, after the bench: shadows add ~11 ms a frame on the Iris Xe at the bench's spots (6–7 ms without, release build). *Bench findings (2026-11-10):* it's all GPU time and follows the triangle count, not pixels, cascades or map size; one more pass over ~1M triangles costs 2.5–4.5 ms, so start by measuring fewer triangles (greedy meshing). Notes: `docs/notes/shadow-speed.md`. The first idea, kept: Store the far shadow (how lit each column's top is, worked out only when the sun steps or a block changes) so a pixel makes one read instead of a walk; make the far shadow run only past the maps' range even when they're off, so each switch shows its own cost; tune cascades and map size on the bench.
 - **Day and night.** Added 2026-11-10, from Sun shadows' plan: time owned by `sim` and saved, the sun moving slowly through a day, and night itself. The moving sun's shake was let go for now as a slow sun shows it far less.
