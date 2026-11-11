@@ -104,11 +104,11 @@ A run of small toy slices. Each one takes a single game-feel feature that doesn'
 
 ### Current toy
 
-**Smooth FPS readout** (`toy-smooth-fps`, started 2026-11-11). **Stage:** Implement. The user: "I want the fps reader to be smooth I cant read it well". The HUD showed `1 / this frame's time`, changing every frame.
+**Smooth FPS readout** (`toy-smooth-fps`, started 2026-11-11). **Stage:** Verify. The user: "I want the fps reader to be smooth I cant read it well". The HUD showed `1 / this frame's time`, changing every frame.
 - Plan: a small counter in `client` adds up frames and their time and refreshes the shown number every 0.5 s with the average, plus the average frame time in ms (`142 fps (7.0 ms)`). No sim or API change, no new controls.
 - Test: unit tests on the counter (steady frames give the exact rate; the number holds between refreshes). Verify: the user reads it in play; quick bench.
 - Done when: the fps number is steady enough to read and still follows real changes within about a second.
-- Alongside it: `fix-typing-moves-player` (typing in the tuning search box moved the player), committed, waiting for the user's play check before it merges.
+- Alongside it: `fix-typing-moves-player` (typing in the tuning search box moved the player), committed and merged into this branch for one play check; merges into `master` once the user confirms.
 
 **Waiting for a play check** (remind the user at the start of every session, and at good moments during one, until they confirm; then delete the line):
 
