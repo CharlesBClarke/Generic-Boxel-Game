@@ -3,6 +3,49 @@
 Moved out of `SLICES.md` on 2026-11-03 so the roadmap stays short. Each toy's full write-up, newest first, as it stood when it closed. `SLICES.md` keeps a one-line summary of each.
 
 
+#### Sun shadows (`toy-sun-shadows`)
+
+**Stage:** Done (2026-11-10), with criterion 6 (frame rate) not met and deferred
+
+**Deviation from the agreed order** (2026-11-10, the user chose it): the backlog had the GPU boxel grid first and Bevy's shadow maps only if the grid was too slow, with Generated detail before both. Shadow maps come first instead; the risk is that sun shadows get built twice if the grid later takes them over.
+
+**Goal:** blocks cast sun shadows onto each other, sharp to the texel near the player, with cheap coarse shadows on distant terrain so nothing pops in.
+
+**Plan**
+1. *A shadow on screen first* (the risky step): a Bevy `DirectionalLight` with shadows, pointed from `sun_azimuth`/`sun_elevation` (Z-up to Y-up only there); its brightness unused, only its shadow maps. A prepass (shadow pass) shader for `SolidMaterial`, since its vertex layout is custom.
+2. *Cascaded shadow maps* to 128 m, 3 cascades, sampled in `solid.wgsl`: shadow gates the sun's direct light and the sheen; sky light and block light unchanged.
+3. *Height-map shadows past them*: a 2D texture of each column's top height within render distance, stepped toward the sun in the shader; coarse (per column, no overhangs) but cheap and fine with a moving sun. Shadow maps fade into it, so nothing pops in at 128 m. Edits update their column.
+4. *Casters*: chunks, cows, items and the held tool cast; the ghost and the sky don't.
+5. *Moving sun, for testing*: a "sun moves" switch and speed slider (client only), stepped finely so shadows don't shimmer.
+6. *Tuning* in the Shading section, live: shadow distance, cascades, map size, depth and normal bias, a filtering pick list (crisp 2×2, Gaussian, temporal), a shadows on/off switch for F9.
+7. *Tests*: sun direction across the Y-up boundary, tuning to cascade setup, building and updating the height map. The rest by eye and F9.
+8. *Backlog at close*: Day and night (time owned by `sim`, saved, night itself); cows, items and held tool receive shadows (moving them onto the one `SolidMaterial` like blocks, the planner's reading of the user's "we will fix the one matrial thing there too"); the GPU grid entry becomes "true AO, maybe shadows later".
+
+**Done when**
+1. Shadows are sharp to the texel near the player: a slab overhang, a panel, a carved shape, onto the ground and each other.
+2. Shadows follow the sun sliders live, with no remesh.
+3. A face in shadow gets no direct sun and no sheen; sky light and lamps still light it.
+4. No pop-in at 128 m; mountains shade valleys out to render distance.
+5. A moving sun shows no visible shimmer.
+6. The user judges the frame rate on the Iris Xe acceptable, shadows on vs off (F9).
+
+**Changes from play** (2026-11-10, agreed with the user during verify):
+- *Step 3 reworked:* at render distance 1100 a height-map texel covered 4×4 columns, so a one-block tower's far shadow came out "like 2 times thicker". Now two maps side by side in one texture: a fine one (a texel a column, at least ±384 m around the camera) and the coarse one past it. The shader skips only the point's own column (it used to skip the first 1.5 coarse texels, cutting shadows short at their base). *Then reworked again* (F9: far shadow alone 18 fps vs 74 with both off; far ends of tall towers' shadows a "spikey blob" as spreading steps missed the tower): each map's mip levels are now a pyramid of maximums, and the shader walks it, skipping whole texels the ray clears and looking closer where it doesn't, down to single columns. `far_steps` and the short-lived `far_columns` replaced by `far_reads` (64), a cap on reads per pixel.
+- *Steady shadow maps:* the speed FOV resized Bevy's shadow maps every frame, so with the Gaussian filter shadow edges shook while walking (the user confirmed with `fov_per_speed` at 0). The camera now uses a custom projection (`shadows::SteadyShadows`) that draws with the real FOV but gives the shadow maps the widest one (`fov_max`).
+- *Left as is:* shake from the moving sun ("the vibrations from the sun will matter alot less when the sun moves slower"); pixels up close are still open: try Gaussian first.
+
+**Verify** (2026-11-10)
+- *Found in play, the user:* "at close shadows I can trivaly see pixels"; "the lowest resultion shadow I see are far to crapy to be used"; with the Gaussian filter "when I move there is a noticable shake to the shadows"; the far shadow "I'm seeing insane peter panning … the shadows get like 2 times thicker"; then "the shadows start to take a irregular shape like a spikey blob". Each led to a change above.
+- *Measured* (F9, dev build, render 512 m, high up looking down, after the dock): both off 16 ms, shadow maps only ~32 ms, both on 36 ms, far shadow alone ~43–49 ms (it fills in everywhere when the maps are off). Shadows together add ~20 ms. A slower baseline than older recordings turned out to be a new dock driving the monitor faster, not code.
+- *Answers, the user:* (1) "yes works well with gausian"; (2) "yes"; (3) "yes"; (4) "I dont notice any"; (5) "yes let it go, if it anys me I will bring it up again"; (6) "Its not acceptable. but we really need some other stuff to do this rigth".
+
+*Decisions:* sun shadows are Bevy's cascaded shadow maps near the camera (depth only, Gaussian filtering picked) and a height-map shadow past them: a fine map (a texel a column) and a coarse one, each with a pyramid of maximums the shader walks toward the sun. The camera's projection gives the shadow maps a fixed widest FOV so speed FOV doesn't shake them. Shadows stay on by default (the user wasn't asked to choose at close; one line to change).
+
+*Deferred:* criterion 6, the frame rate (to a Benchmark and render scale toy, then Shadow speed); shake from a moving sun; with shadow maps off, the far shadow fills in near the camera, so the switches don't show each part's own cost; overhangs read solid in the far shadow; the plan's backlog items (Day and night, shadows on cows, items and the held tool, the GPU grid entry reworded).
+
+*API debt:* none; all client-side.
+
+
 #### Stored light (`toy-stored-light`)
 
 **Stage:** Done (2026-11-10)
