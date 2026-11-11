@@ -26,6 +26,7 @@ pub mod sky;
 pub mod solid;
 pub mod sound;
 pub mod tuning;
+pub mod typing;
 pub mod tuning_file;
 pub mod tuning_layout;
 pub mod ui_scale;
@@ -75,7 +76,7 @@ pub fn run(connection: Box<dyn Connection>) {
             primary_window: Some(Window { title: "Boxel".into(), ..default() }),
             ..default()
         }))
-        .add_plugins((EguiPlugin::default(), SolidPlugin, shading::ShadingPlugin, shadows::ShadowsPlugin))
+        .add_plugins((EguiPlugin::default(), typing::TypingPlugin, SolidPlugin, shading::ShadingPlugin, shadows::ShadowsPlugin))
         .init_resource::<heights::Heights>()
         .insert_resource(ClearColor(Color::srgb(0.55, 0.75, 0.95)))
         .insert_resource(Time::<Fixed>::from_hz(protocol::TICK_RATE))
