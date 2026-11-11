@@ -2,6 +2,7 @@
 //! view shaking more the closer it was.
 
 use api::{Vec3 as ZVec3, WorldPos};
+use bevy::light::NotShadowCaster;
 use bevy::prelude::*;
 
 use crate::RenderOrigin;
@@ -60,6 +61,7 @@ pub(crate) fn play_blasts(
             Mesh3d(mesh),
             MeshMaterial3d(material.clone()),
             transform,
+            NotShadowCaster,
             BeamView { center, along: coords::to_render(along), age: 0.0, life: feel.blast_time.max(0.01), material },
         ));
     }

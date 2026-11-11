@@ -11,6 +11,7 @@ use bevy::render::render_resource::{
     AsBindGroup, Extent3d, RenderPipelineDescriptor, SpecializedMeshPipelineError, TextureDimension, TextureFormat,
     VertexFormat,
 };
+use bevy::shader::ShaderDefVal;
 use bevy::shader::ShaderRef;
 
 use api::LookDef;
@@ -40,6 +41,10 @@ pub struct SolidMaterial {
     /// Each volume's sheen and glow: see [`sheen_image`].
     #[texture(3, sample_type = "float", filterable = false)]
     pub sheens: Handle<Image>,
+    /// The height map the far shadow steps across (see `crate::heights`), kept up to date by
+    /// `crate::shading`.
+    #[texture(4, sample_type = "float", filterable = false)]
+    pub heights: Handle<Image>,
     pub alpha_mode: AlphaMode,
 }
 
@@ -62,6 +67,11 @@ impl Material for SolidMaterial {
         layout: &MeshVertexBufferLayoutRef,
         _key: MaterialPipelineKey<Self>,
     ) -> Result<(), SpecializedMeshPipelineError> {
+        // The shadow pass draws with Bevy's own prepass shader, which needs only positions
+        // (and colors, which it is given), as Bevy laid them out.
+        if descriptor.vertex.shader_defs.iter().any(|d| matches!(d, ShaderDefVal::Bool(name, true) if name == "PREPASS_PIPELINE")) {
+            return Ok(());
+        }
         let vertex_layout = layout.0.get_layout(&[
             Mesh::ATTRIBUTE_POSITION.at_shader_location(0),
             Mesh::ATTRIBUTE_COLOR.at_shader_location(1),

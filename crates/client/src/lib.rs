@@ -12,11 +12,13 @@ pub mod dev;
 pub mod drill;
 pub mod editing;
 pub mod feel;
+pub mod heights;
 pub mod hurt;
 pub mod items;
 pub mod mesher;
 pub mod perf;
 pub mod shading;
+pub mod shadows;
 pub mod solid;
 pub mod sound;
 pub mod tuning;
@@ -33,6 +35,7 @@ use api::{ChunkPos, I64Vec3, Vec3 as ZVec3, WorldPos};
 use bevy::asset::RenderAssetUsages;
 use bevy::input::mouse::AccumulatedMouseMotion;
 use bevy::mesh::{Indices, PrimitiveTopology, VertexAttributeValues};
+use bevy::light::NotShadowCaster;
 use bevy::prelude::*;
 use bevy::window::{CursorGrabMode, CursorOptions, PresentMode, PrimaryWindow};
 use bevy_egui::{EguiPlugin, EguiPrimaryContextPass};
@@ -67,7 +70,8 @@ pub fn run(connection: Box<dyn Connection>) {
             primary_window: Some(Window { title: "Boxel".into(), ..default() }),
             ..default()
         }))
-        .add_plugins((EguiPlugin::default(), SolidPlugin, shading::ShadingPlugin))
+        .add_plugins((EguiPlugin::default(), SolidPlugin, shading::ShadingPlugin, shadows::ShadowsPlugin))
+        .init_resource::<heights::Heights>()
         .insert_resource(ClearColor(Color::srgb(0.55, 0.75, 0.95)))
         .insert_resource(Time::<Fixed>::from_hz(protocol::TICK_RATE))
         .insert_resource(world)
@@ -155,6 +159,7 @@ pub fn run(connection: Box<dyn Connection>) {
         )
         .add_systems(EguiPrimaryContextPass, (editing::hotbar, tuning::tuning_panel, crafting::crafting_menu, world_menu::world_menu).chain())
         .add_systems(Update, (world_notes, ui_scale::apply_ui_scale))
+        .add_systems(PostUpdate, heights::update_heights.before(shading::ShadingSet))
         .add_systems(Last, (save_on_exit, limit_frame_rate))
         .run();
 }
@@ -239,7 +244,7 @@ pub(crate) struct PlayerCamera;
 struct Hud;
 
 fn setup_scene(mut commands: Commands, mut cursor: Single<&mut CursorOptions, With<PrimaryWindow>>) {
-    commands.spawn((Camera3d::default(), Transform::default(), PlayerCamera));
+    commands.spawn((Camera3d::default(), Projection::custom(shadows::SteadyShadows::default()), Transform::default(), PlayerCamera));
     commands.spawn((
         Text::new(""),
         Node { position_type: PositionType::Absolute, top: px(8), left: px(8), ..default() },
@@ -283,12 +288,15 @@ fn spawn_chunk_meshes(
     let volumes = Volumes::build(world.looks(), world.blocks());
     let image = images.add(solid::volume_image(&volumes));
     let sheens = images.add(solid::sheen_image(&volumes));
+    // Replaced by the real height map once it's built (see `heights`).
+    let heights = images.add(heights::height_image(&[heights::NOTHING; 2], 2, 1));
     let solid = |tint: Color, alpha_mode: AlphaMode| SolidMaterial {
         tint: tint.into(),
         volumes: image.clone(),
         // Filled in by `shading` before the first frame is drawn.
         atmosphere: default(),
         sheens: sheens.clone(),
+        heights: heights.clone(),
         alpha_mode,
     };
     let material = materials.add(solid(Color::WHITE, AlphaMode::Opaque));
@@ -300,6 +308,7 @@ fn spawn_chunk_meshes(
                 MeshMaterial3d(material.clone()),
                 Transform::default(),
                 Visibility::Hidden,
+                NotShadowCaster,
             ))
             .id(),
         allowed: materials.add(ghost_material(Color::srgba(1.0, 1.0, 1.0, 0.5))),
@@ -315,6 +324,7 @@ fn spawn_chunk_meshes(
                 MeshMaterial3d(materials.add(ghost_material(Color::srgba(1.0, 1.0, 1.0, 0.3)))),
                 Transform::default(),
                 Visibility::Hidden,
+                NotShadowCaster,
             ))
             .id(),
         around: None,
@@ -611,8 +621,11 @@ fn update_camera(
     let limit = 89f32.to_radians();
     transform.rotation = coords::look_rotation(look.yaw, (look.pitch - feel_state.nod() + kick.pitch()).clamp(-limit, limit));
     transform.translation = coords::render_translation(eye, origin.cell) + transform.rotation * kick.shake_offset();
-    if let Projection::Perspective(perspective) = &mut **projection {
-        perspective.fov = feel_state.fov.to_radians();
+    if let Projection::Custom(custom) = &mut **projection
+        && let Some(steady) = custom.get_mut::<shadows::SteadyShadows>()
+    {
+        steady.view.fov = feel_state.fov.to_radians();
+        steady.shadow_fov = feel.fov_max.max(feel.fov).max(feel_state.fov).to_radians();
     }
 }
 

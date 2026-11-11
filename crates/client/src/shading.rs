@@ -13,7 +13,10 @@ use bevy::render::render_resource::{AsBindGroup, CompareFunction, RenderPipeline
 use bevy::asset::RenderAssetUsages;
 use bevy::shader::ShaderRef;
 
+use crate::RenderOrigin;
 use crate::coords;
+use crate::heights::Heights;
+use crate::shadows::{ShadowTuning, Sun};
 use crate::solid::SolidMaterial;
 use crate::view::ViewTuning;
 
@@ -179,6 +182,10 @@ impl ShadingTuning {
             ray_shape: Vec4::new(self.ray_variation, self.ray_fade, self.ray_spin, self.sun_size.to_radians()),
             stored: Vec4::new(self.block_light, self.light_falloff, self.block_falloff, self.min_light),
             stored_on: Vec4::new(on(self.parts.stored), 0.0, 0.0, 0.0),
+            shadow: Vec4::ZERO,
+            far: Vec4::ZERO,
+            heights: Vec4::ZERO,
+            fine_heights: Vec4::ZERO,
         }
     }
 }
@@ -304,6 +311,19 @@ pub struct Atmosphere {
     pub stored: Vec4,
     /// Stored light on (1) or off (0).
     pub stored_on: Vec4,
+    /// Shadows: how far the maps reach, where they start fading into the far shadow (meters
+    /// from the camera, along its view), the far shadow on (1) or off (0), the maps tinted by
+    /// cascade (1) or not.
+    pub shadow: Vec4,
+    /// The far shadow: most height-map reads toward the sun, how far it looks, how soft, how far
+    /// a column must rise above a ray to shade it.
+    pub far: Vec4,
+    /// Where the coarse height map lies, relative to the render origin: X and north of texel
+    /// (0, 0)'s corner, the height its texels are measured from (render Y), and columns per
+    /// texel.
+    pub heights: Vec4,
+    /// The same for the fine height map, a texel to each column.
+    pub fine_heights: Vec4,
 }
 
 /// The sky: drawn over the whole screen at the far plane, so only where nothing else is.
@@ -314,6 +334,15 @@ pub struct SkyMaterial {
 }
 
 impl Material for SkyMaterial {
+    // A triangle already in clip space: it has no place in the world to cast a shadow from.
+    fn enable_shadows() -> bool {
+        false
+    }
+
+    fn enable_prepass() -> bool {
+        false
+    }
+
     fn vertex_shader() -> ShaderRef {
         shader("sky.wgsl")
     }
@@ -347,6 +376,10 @@ fn shader(file: &str) -> ShaderRef {
     ShaderRef::Path(AssetPath::from_path_buf(path).with_source("embedded"))
 }
 
+/// Where the atmosphere is put into the materials; whatever moves the sun runs before it.
+#[derive(SystemSet, Clone, Debug, PartialEq, Eq, Hash)]
+pub struct ShadingSet;
+
 /// Registers the sky, the shared shader code and the shading tuning.
 pub struct ShadingPlugin;
 
@@ -357,7 +390,7 @@ impl Plugin for ShadingPlugin {
         app.add_plugins(MaterialPlugin::<SkyMaterial>::default())
             .init_resource::<ShadingTuning>()
             .add_systems(Startup, spawn_sky)
-            .add_systems(PostUpdate, (sync_atmosphere, show_sky, tag_recordings));
+            .add_systems(PostUpdate, ((sync_atmosphere, show_sky).in_set(ShadingSet), tag_recordings));
     }
 }
 
@@ -372,8 +405,12 @@ fn show_sky(tuning: Res<ShadingTuning>, mut sky: Query<&mut Visibility, With<Sky
 }
 
 /// Says in each perf recording which parts were off.
-fn tag_recordings(tuning: Res<ShadingTuning>, mut tags: ResMut<crate::perf::PerfTags>) {
-    let off = tuning.parts.off();
+fn tag_recordings(tuning: Res<ShadingTuning>, shadows: Res<ShadowTuning>, mut tags: ResMut<crate::perf::PerfTags>) {
+    let mut off = tuning.parts.off();
+    let shadows_off = shadows.switches.off();
+    if !shadows_off.is_empty() {
+        off += &format!("; off: {}", shadows_off.join(", "));
+    }
     if tags.0 != off {
         tags.0 = off;
     }
@@ -392,18 +429,50 @@ fn spawn_sky(mut commands: Commands, mut meshes: ResMut<Assets<Mesh>>, mut mater
     ));
 }
 
-/// Puts the current atmosphere into every material that draws with it, where it differs.
+/// The shadows' part of the atmosphere: the tuning, and where the height map lies relative to
+/// the render origin.
+pub fn shadow_atmosphere(a: &mut Atmosphere, shadows: &ShadowTuning, heights: Option<crate::heights::Maps>, origin: api::I64Vec3) {
+    let on = |b: bool| if b { 1.0 } else { 0.0 };
+    let distance = shadows.distance.max(1.0);
+    let far = shadows.switches.far && heights.is_some();
+    a.shadow = Vec4::new(distance, distance * (1.0 - shadows.fade.clamp(0.0, 1.0)), on(far), on(shadows.switches.show_cascades));
+    a.far = Vec4::new(shadows.far_reads.max(1.0), shadows.far_reach, shadows.far_softness, shadows.far_bias);
+    let place = |p: crate::heights::Placement| {
+        Vec4::new((p.corner.0 - origin.x) as f32, (p.corner.1 - origin.y) as f32, (p.base - origin.z) as f32, p.scale as f32)
+    };
+    if let Some(maps) = heights {
+        a.heights = place(maps.coarse);
+        a.fine_heights = place(maps.fine);
+    }
+}
+
+/// Puts the current atmosphere into every material that draws with it, where it differs, and
+/// the latest height map into the block materials.
+#[allow(clippy::too_many_arguments)]
 fn sync_atmosphere(
     tuning: Res<ShadingTuning>,
+    sun: Res<Sun>,
+    shadows: Res<ShadowTuning>,
+    heights: Res<Heights>,
+    origin: Res<RenderOrigin>,
     view: Res<ViewTuning>,
     mut solids: ResMut<Assets<SolidMaterial>>,
     mut skies: ResMut<Assets<SkyMaterial>>,
 ) {
-    let atmosphere = tuning.atmosphere(view.render_distance);
-    let stale: Vec<_> = solids.iter().filter(|(_, m)| m.atmosphere != atmosphere).map(|(id, _)| id).collect();
+    let mut atmosphere = sun.applied(&tuning).atmosphere(view.render_distance);
+    shadow_atmosphere(&mut atmosphere, &shadows, heights.placed, origin.cell);
+    let image = heights.image.clone();
+    let stale: Vec<_> = solids
+        .iter()
+        .filter(|(_, m)| m.atmosphere != atmosphere || image.as_ref().is_some_and(|i| *i != m.heights))
+        .map(|(id, _)| id)
+        .collect();
     for id in stale {
         if let Some(m) = solids.get_mut(id) {
             m.atmosphere = atmosphere;
+            if let Some(image) = &image {
+                m.heights = image.clone();
+            }
         }
     }
     let stale: Vec<_> = skies.iter().filter(|(_, m)| m.atmosphere != atmosphere).map(|(id, _)| id).collect();

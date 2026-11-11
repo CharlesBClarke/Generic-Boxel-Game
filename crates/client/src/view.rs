@@ -61,7 +61,7 @@ pub(crate) fn apply_render_distance(
 ) {
     let (eye, projection) = &mut *camera;
     let eye = eye.translation;
-    if let Projection::Perspective(p) = &mut **projection {
+    if let Some(p) = crate::shadows::perspective_mut(projection) {
         let far = view.render_distance + CHUNK_SIZE as f32 * 2.0;
         if (p.far - far).abs() > 0.5 {
             p.far = far;
