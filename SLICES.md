@@ -106,7 +106,7 @@ A run of small toy slices. Each one takes a single game-feel feature that doesn'
 
 #### Day and night (`toy-day-and-night`)
 
-**Stage:** Implement (plan approved and engaged 2026-11-10)
+**Stage:** Verify (implemented and tested 2026-11-10; waiting for the user to play it)
 
 **Goal:** a day that runs through dawn, day, dusk and night, with the sky and its light colored by the time of day, from the time-of-day palette in `../stylised-sky` (MIT, from Eanpa Sky by SkyeShark, MIT). No clouds. The user: "it has a nice time of day colors and we can have colored light right? no need the clouds."
 

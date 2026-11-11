@@ -21,6 +21,7 @@ pub mod mesher;
 pub mod perf;
 pub mod shading;
 pub mod shadows;
+pub mod sky;
 pub mod solid;
 pub mod sound;
 pub mod tuning;

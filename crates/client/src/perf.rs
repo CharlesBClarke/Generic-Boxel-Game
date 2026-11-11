@@ -205,8 +205,8 @@ pub(crate) fn record_perf(
                 if tags.0.is_empty() { "-" } else { &tags.0 },
                 window.physical_width(),
                 window.physical_height(),
-                sun.azimuth,
-                sun.elevation,
+                sun.sky.sun_azimuth,
+                sun.sky.sun_elevation,
                 changed_values(&[("shading", &*shading, &ShadingTuning::default()), ("shadows", &*shadows, &ShadowTuning::default())]),
             );
             let written = data_dir().and_then(|dir| {

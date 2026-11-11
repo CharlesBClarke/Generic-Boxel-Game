@@ -230,6 +230,11 @@ impl ClientWorld {
         self.shown.tick
     }
 
+    /// The time of day, as shown.
+    pub fn clock(&self) -> &sim::Clock {
+        &self.shown.clock
+    }
+
     pub fn player(&self) -> Option<&Body> {
         self.shown.player.as_ref()
     }

@@ -88,6 +88,9 @@ pub fn tuning_panel(
     let mut server: Vec<(String, Values)> = before.iter().map(|s| (s.name.clone(), Values(s.values.clone()))).collect();
     let mut unkillable = world.defs().unkillable;
     let mut brains_on = world.defs().brains_on;
+    let clock = *world.clock();
+    let mut hours = clock.hours();
+    let mut paused = clock.paused;
     let mut refill = false;
     // The client's own values, through copies so a resource is only marked changed when a
     // value moves (an ambient occlusion change remeshes every chunk).
@@ -200,6 +203,12 @@ pub fn tuning_panel(
                             refill = ui.button("Heal").clicked();
                         });
                     }
+                    if name == "time" {
+                        ui.horizontal(|ui| {
+                            ui.add(egui::Slider::new(&mut hours, 0.0..=23.99).text(clock_text(clock.hours())));
+                            ui.checkbox(&mut paused, "paused");
+                        });
+                    }
                     sliders(ui, name, values);
                     if name == "world" || name.starts_with("terrain ") {
                         ui.horizontal(|ui| {
@@ -242,7 +251,6 @@ pub fn tuning_panel(
                     ui.checkbox(&mut switches.maps, "shadow maps");
                     ui.checkbox(&mut switches.far, "far shadow");
                     ui.checkbox(&mut switches.show_cascades, "tint each map");
-                    ui.checkbox(&mut switches.sun_moves, "sun moves");
                 });
                 egui::ComboBox::from_label("edges")
                     .selected_text(shadows.filter.label())
@@ -403,6 +411,12 @@ pub fn tuning_panel(
     if brains_on != world.defs().brains_on {
         link.command(Command::BrainsOn(brains_on), &mut world);
     }
+    if hours != clock.hours() {
+        link.command(Command::SetTime(hours), &mut world);
+    }
+    if paused != clock.paused {
+        link.command(Command::PauseTime(paused), &mut world);
+    }
     if refill {
         link.command(Command::Heal, &mut world);
     }
@@ -494,6 +508,7 @@ fn heading(section: &str) -> String {
         "item_drops" => "Item drops".into(),
         "inventory" => "Inventory".into(),
         "world" => "World".into(),
+        "time" => "Time of day".into(),
         _ => match section.split_once(' ') {
             Some(("tool", name)) => format!("Tool: {name}"),
             Some(("target", name)) => format!("Target: {name}"),
@@ -519,6 +534,12 @@ fn changes(before: &[TuningSection], edited: &[(String, Values)]) -> Vec<Command
 
 /// Whether a command changes what generating the terrain makes: a generator's value, or the
 /// terrain's size. The simulation distance doesn't.
+/// The time of day as a clock reads it, such as `"17:05"`.
+fn clock_text(hours: f64) -> String {
+    let minutes = (hours.rem_euclid(24.0) * 60.0).floor() as u32;
+    format!("{:02}:{:02}", minutes / 60, minutes % 60)
+}
+
 fn shapes_terrain(command: &Command) -> bool {
     match command {
         Command::Tune { section, name, .. } => section.starts_with("terrain ") || (section == "world" && name.starts_with("terrain_")),
@@ -576,6 +597,13 @@ fn printout(tunables: &[Tunable]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_clock_reads_hours_and_minutes() {
+        assert_eq!(clock_text(0.0), "00:00");
+        assert_eq!(clock_text(17.0 + 5.5 / 60.0), "17:05");
+        assert_eq!(clock_text(23.999), "23:59");
+    }
 
     #[test]
     fn only_changed_values_are_sent() {

@@ -17,43 +17,47 @@ use crate::RenderOrigin;
 use crate::coords;
 use crate::heights::Heights;
 use crate::shadows::{ShadowTuning, Sun};
+use crate::sky::{DaySky, SkyTuning};
 use crate::solid::SolidMaterial;
 use crate::view::ViewTuning;
 
-/// The light and air, live-tunable. Colors are sRGB, each channel 0 to 1.
+/// The light and air, live-tunable. The sky's colors and the sun's come from the time of day
+/// (see [`crate::sky`]); these scale and shape them.
 #[derive(Resource, Clone, Copy, Debug, PartialEq)]
 pub struct ShadingTuning {
-    /// Which way the sun is, in degrees clockwise from north: 90 is east, 180 south.
-    pub sun_azimuth: f32,
-    /// How high the sun is, in degrees above the horizon.
-    pub sun_elevation: f32,
-    /// How bright the sun lights a face turned straight at it.
+    /// The sun's elevation at noon, in degrees. At 58, 10:00 puts the sun where it sat before
+    /// it moved (azimuth 150, about 50 up).
+    pub sun_arc: f32,
+    /// How bright the sun lights a face turned straight at it, at its highest.
     pub sun_strength: f32,
-    pub sun_color: [f32; 3],
-    /// Light from the sky on a face looking straight up, whichever way the sun is.
+    /// Light from the sky on a face looking straight up at midday, whichever way the sun is.
     pub sky_light: f32,
     /// Light from below on a face looking straight down, as if bounced off the ground.
     pub ground_light: f32,
-    /// How much the sky's light takes the sky's color: 0 is white, 1 the zenith's color.
+    /// How much the sky's light takes the sky's color (0 is white), and the ground's the
+    /// horizon's.
     pub sky_tint: f32,
-    /// The sky straight up, and at the horizon.
-    pub zenith: [f32; 3],
-    pub horizon: [f32; 3],
-    /// The sun's disc, as its radius in degrees, and the glow around it.
+    /// The sky's colors, brighter or darker than the palette.
+    pub sky_brightness: f32,
+    /// How much warmer than the palette a low sun is; 0 is the palette as it is.
+    pub warmth: f32,
+    /// The sun's disc, as its radius in degrees, and how strong the glow around it is.
     pub sun_size: f32,
     pub sun_glow: f32,
-    /// The sun's flat rays, drawn like a child draws a sun: how many; how far they reach past
-    /// the disc, in disc radii; how wide they are at the disc, as a share of the gap between
-    /// them (0.45 nearly closes it); how strongly they show.
-    pub rays: f32,
-    pub ray_length: f32,
-    pub ray_width: f32,
-    pub ray_strength: f32,
-    /// How much shorter some rays are than others (0 all the same), how much they fade toward
-    /// their tips (0 not at all), and how fast they turn, in turns a minute.
-    pub ray_variation: f32,
-    pub ray_fade: f32,
-    pub ray_spin: f32,
+    /// How many hours the moon runs behind the sun, and how high it gets.
+    pub moon_lag: f32,
+    pub moon_arc: f32,
+    /// How bright the moon lights a face turned to it, at night. It casts no shadows.
+    pub moon_strength: f32,
+    /// The moon's disc, as its radius in degrees.
+    pub moon_size: f32,
+    /// How bright the stars are.
+    pub stars: f32,
+    /// Sky light at deepest night, so the open world stays faintly readable.
+    pub night_light: f32,
+    /// Draw this hour (0 to 24) instead of the world's time, to compare looks; below 0
+    /// follows the world. The bench holds it, so every build sees the same sky.
+    pub hold_hour: f32,
     /// Where fog starts and where it's thickest, as shares of the render distance.
     pub fog_start: f32,
     pub fog_end: f32,
@@ -119,24 +123,22 @@ impl Parts {
 impl Default for ShadingTuning {
     fn default() -> Self {
         Self {
-            sun_azimuth: 150.0,
-            sun_elevation: 50.0,
+            sun_arc: 58.0,
             sun_strength: 0.6,
-            sun_color: [1.0, 0.96, 0.88],
             sky_light: 0.55,
             ground_light: 0.35,
             sky_tint: 0.3,
-            zenith: [0.33, 0.55, 0.9],
-            horizon: [0.72, 0.83, 0.95],
-            sun_size: 5.0,
-            sun_glow: 0.15,
-            rays: 12.0,
-            ray_length: 1.2,
-            ray_width: 0.25,
-            ray_strength: 0.8,
-            ray_variation: 0.4,
-            ray_fade: 0.5,
-            ray_spin: 0.0,
+            sky_brightness: 1.0,
+            warmth: 1.0,
+            sun_size: 0.6,
+            sun_glow: 1.0,
+            moon_lag: 12.0,
+            moon_arc: 48.0,
+            moon_strength: 0.15,
+            moon_size: 2.0,
+            stars: 1.0,
+            night_light: 0.05,
+            hold_hour: -1.0,
             fog_start: 0.5,
             fog_end: 1.0,
             fog: 1.0,
@@ -153,33 +155,49 @@ impl Default for ShadingTuning {
 }
 
 impl ShadingTuning {
-    /// Toward the sun, Z-up.
-    pub fn sun_direction(&self) -> Vec3 {
-        let (azimuth, elevation) = (self.sun_azimuth.to_radians(), self.sun_elevation.to_radians());
-        Vec3::new(azimuth.sin() * elevation.cos(), azimuth.cos() * elevation.cos(), elevation.sin())
+    /// What [`DaySky::at`] needs.
+    pub fn sky(&self) -> SkyTuning {
+        SkyTuning {
+            sun_arc: self.sun_arc,
+            sun_strength: self.sun_strength,
+            sky_light: self.sky_light,
+            ground_light: self.ground_light,
+            sky_tint: self.sky_tint,
+            moon_lag: self.moon_lag,
+            moon_arc: self.moon_arc,
+            moon_strength: self.moon_strength,
+            night_light: self.night_light,
+            warmth: self.warmth,
+            sky_brightness: self.sky_brightness,
+        }
     }
 
-    /// What the shaders get, with the render distance the fog is measured against.
-    pub fn atmosphere(&self, render_distance: f32) -> Atmosphere {
-        let linear = |c: [f32; 3]| Color::srgb(c[0], c[1], c[2]).to_linear().to_vec3();
-        let zenith = linear(self.zenith);
-        // The sky's light in the sky's color, kept as bright as white light would be.
-        let sky_color = Vec3::ONE.lerp(zenith / zenith.max_element().max(1e-3), self.sky_tint.clamp(0.0, 1.0));
-        let sun = coords::to_render(self.sun_direction());
+    /// The hour to draw: the held one, or the world's.
+    pub fn hour(&self, world: f64) -> f64 {
+        if self.hold_hour >= 0.0 { self.hold_hour as f64 } else { world }
+    }
+
+    /// What the shaders get for the sky at one moment, with the render distance the fog is
+    /// measured against.
+    pub fn atmosphere(&self, sky: &DaySky, render_distance: f32) -> Atmosphere {
+        let render = |v: Vec3| coords::to_render(v);
         let fog_start = self.fog_start.min(self.fog_end) * render_distance;
         let on = |b: bool| if b { 1.0 } else { 0.0 };
         Atmosphere {
-            sun_direction: sun.extend(self.sun_size.to_radians().cos()),
-            sun_color: (linear(self.sun_color) * self.sun_strength).extend(self.sun_glow),
-            sky_light: (sky_color * self.sky_light).extend(0.0),
-            ground_light: (sky_color * self.ground_light).extend(0.0),
-            zenith: zenith.extend(0.0),
-            horizon: linear(self.horizon).extend(0.0),
+            sun_direction: render(sky.sun()).extend(self.sun_size.to_radians().cos()),
+            sun_color: sky.sun_light.extend(self.sun_glow),
+            sun_hue: sky.sun_hue.extend(0.0),
+            moon_direction: render(sky.moon).extend(self.moon_size.to_radians().cos()),
+            moon_color: sky.moon_light.extend(sky.night),
+            sky_light: sky.sky_light.extend(0.0),
+            ground_light: sky.ground_light.extend(0.0),
+            zenith: sky.zenith.extend(0.0),
+            horizon: sky.horizon.extend(0.0),
+            // The stars turn once a day around the pole.
+            night: Vec4::new(sky.stars * self.stars, (sky.hours as f32 / 24.0) * std::f32::consts::TAU, 0.0, 0.0),
             fog: Vec4::new(fog_start, (self.fog_end * render_distance).max(fog_start + 1.0), self.fog, 0.0),
             edges: Vec4::new(self.crease, self.ridge, self.edge_width, 0.0),
             parts: Vec4::new(on(self.parts.edges), on(self.parts.fog), on(self.parts.sheen), on(self.parts.light)),
-            rays: Vec4::new(self.rays, self.ray_length, self.ray_width, self.ray_strength),
-            ray_shape: Vec4::new(self.ray_variation, self.ray_fade, self.ray_spin, self.sun_size.to_radians()),
             stored: Vec4::new(self.block_light, self.light_falloff, self.block_falloff, self.min_light),
             stored_on: Vec4::new(on(self.parts.stored), 0.0, 0.0, 0.0),
             shadow: Vec4::ZERO,
@@ -192,34 +210,23 @@ impl ShadingTuning {
 
 impl Tunables for ShadingTuning {
     fn tunables(&self) -> Vec<Tunable> {
-        let mut t = vec![
-            Tunable::new("sun_azimuth", self.sun_azimuth, 0.0, 360.0),
-            Tunable::new("sun_elevation", self.sun_elevation, -10.0, 90.0),
+        vec![
+            Tunable::new("hold_hour", self.hold_hour, -1.0, 24.0),
+            Tunable::new("sun_arc", self.sun_arc, 5.0, 90.0),
             Tunable::new("sun_strength", self.sun_strength, 0.0, 2.0),
-        ];
-        let color = |t: &mut Vec<Tunable>, name: &str, c: [f32; 3]| {
-            for (channel, v) in ["r", "g", "b"].iter().zip(c) {
-                t.push(Tunable::new(format!("{name}_{channel}"), v, 0.0, 1.0));
-            }
-        };
-        color(&mut t, "sun", self.sun_color);
-        t.extend([
             Tunable::new("sky_light", self.sky_light, 0.0, 2.0),
             Tunable::new("ground_light", self.ground_light, 0.0, 2.0),
             Tunable::new("sky_tint", self.sky_tint, 0.0, 1.0),
-        ]);
-        color(&mut t, "zenith", self.zenith);
-        color(&mut t, "horizon", self.horizon);
-        t.extend([
-            Tunable::new("sun_size", self.sun_size, 0.1, 10.0),
-            Tunable::new("sun_glow", self.sun_glow, 0.0, 2.0),
-            Tunable::new("rays", self.rays, 0.0, 32.0),
-            Tunable::new("ray_length", self.ray_length, 0.0, 6.0),
-            Tunable::new("ray_width", self.ray_width, 0.0, 0.45),
-            Tunable::new("ray_strength", self.ray_strength, 0.0, 1.0),
-            Tunable::new("ray_variation", self.ray_variation, 0.0, 1.0),
-            Tunable::new("ray_fade", self.ray_fade, 0.0, 1.0),
-            Tunable::new("ray_spin", self.ray_spin, -10.0, 10.0),
+            Tunable::new("sky_brightness", self.sky_brightness, 0.0, 3.0),
+            Tunable::new("warmth", self.warmth, 0.0, 2.0),
+            Tunable::new("sun_size", self.sun_size, 0.1, 5.0),
+            Tunable::new("sun_glow", self.sun_glow, 0.0, 3.0),
+            Tunable::new("moon_lag", self.moon_lag, 0.0, 24.0),
+            Tunable::new("moon_arc", self.moon_arc, 5.0, 90.0),
+            Tunable::new("moon_strength", self.moon_strength, 0.0, 1.0),
+            Tunable::new("moon_size", self.moon_size, 0.1, 5.0),
+            Tunable::new("stars", self.stars, 0.0, 3.0),
+            Tunable::new("night_light", self.night_light, 0.0, 0.5),
             Tunable::new("fog_start", self.fog_start, 0.0, 1.0),
             Tunable::new("fog_end", self.fog_end, 0.05, 1.5),
             Tunable::new("fog", self.fog, 0.0, 1.0),
@@ -230,42 +237,27 @@ impl Tunables for ShadingTuning {
             Tunable::new("light_falloff", self.light_falloff, 0.5, 4.0),
             Tunable::new("block_falloff", self.block_falloff, 0.25, 4.0),
             Tunable::new("min_light", self.min_light, 0.0, 0.3),
-        ]);
-        t
+        ]
     }
 
     fn set_tunable(&mut self, name: &str, value: f32) -> bool {
-        let channel = |name: &str, prefix: &str| -> Option<usize> {
-            ["r", "g", "b"].iter().position(|c| name.strip_prefix(prefix).and_then(|n| n.strip_prefix('_')) == Some(c))
-        };
-        if let Some(i) = channel(name, "sun") {
-            self.sun_color[i] = value;
-            return true;
-        }
-        if let Some(i) = channel(name, "zenith") {
-            self.zenith[i] = value;
-            return true;
-        }
-        if let Some(i) = channel(name, "horizon") {
-            self.horizon[i] = value;
-            return true;
-        }
         match name {
-            "sun_azimuth" => self.sun_azimuth = value,
-            "sun_elevation" => self.sun_elevation = value,
+            "hold_hour" => self.hold_hour = value,
+            "sun_arc" => self.sun_arc = value,
             "sun_strength" => self.sun_strength = value,
             "sky_light" => self.sky_light = value,
             "ground_light" => self.ground_light = value,
             "sky_tint" => self.sky_tint = value,
+            "sky_brightness" => self.sky_brightness = value,
+            "warmth" => self.warmth = value,
             "sun_size" => self.sun_size = value,
             "sun_glow" => self.sun_glow = value,
-            "rays" => self.rays = value,
-            "ray_length" => self.ray_length = value,
-            "ray_width" => self.ray_width = value,
-            "ray_strength" => self.ray_strength = value,
-            "ray_variation" => self.ray_variation = value,
-            "ray_fade" => self.ray_fade = value,
-            "ray_spin" => self.ray_spin = value,
+            "moon_lag" => self.moon_lag = value,
+            "moon_arc" => self.moon_arc = value,
+            "moon_strength" => self.moon_strength = value,
+            "moon_size" => self.moon_size = value,
+            "stars" => self.stars = value,
+            "night_light" => self.night_light = value,
             "fog_start" => self.fog_start = value,
             "fog_end" => self.fog_end = value,
             "fog" => self.fog = value,
@@ -288,24 +280,30 @@ impl Tunables for ShadingTuning {
 pub struct Atmosphere {
     /// Toward the sun; then the cosine of the sun disc's radius.
     pub sun_direction: Vec4,
-    /// The sun's light on a face turned to it; then the glow around its disc.
+    /// The sun's light on a face turned to it (zero once it's down); then how strong the glow
+    /// around its disc is.
     pub sun_color: Vec4,
+    /// The sun's hue at full brightness, for its disc and glow.
+    pub sun_hue: Vec4,
+    /// Toward the moon; then the cosine of its disc's radius.
+    pub moon_direction: Vec4,
+    /// The moon's light on a face turned to it (it casts no shadows); then how much it shows in
+    /// the sky, 0 by day to 1 by night.
+    pub moon_color: Vec4,
     /// Light on faces looking straight up, and straight down, blended between.
     pub sky_light: Vec4,
     pub ground_light: Vec4,
     /// The sky's color straight up and at the horizon.
     pub zenith: Vec4,
     pub horizon: Vec4,
+    /// The night sky: how bright the stars are, and how far they've turned (radians).
+    pub night: Vec4,
     /// Fog: starting distance, distance where it's thickest (meters), how thick there.
     pub fog: Vec4,
     /// Edges: crease darkness, ridge brightness, width in texels.
     pub edges: Vec4,
     /// Which parts are drawn, 1 or 0: edges, fog, sheen, light.
     pub parts: Vec4,
-    /// The sun's rays: how many, how far past the disc in disc radii, how wide, how strong.
-    pub rays: Vec4,
-    /// How much ray lengths vary, how much rays fade, turns a minute; the disc's radius in radians.
-    pub ray_shape: Vec4,
     /// Stored light: block light's strength, sky light's falloff power, block light's, and the
     /// least light.
     pub stored: Vec4,
@@ -468,7 +466,7 @@ fn sync_atmosphere(
     mut solids: ResMut<Assets<SolidMaterial>>,
     mut skies: ResMut<Assets<SkyMaterial>>,
 ) {
-    let mut atmosphere = sun.applied(&tuning).atmosphere(view.render_distance);
+    let mut atmosphere = tuning.atmosphere(&sun.sky, view.render_distance);
     shadow_atmosphere(&mut atmosphere, &shadows, heights.placed, origin.cell);
     let image = heights.image.clone();
     let stale: Vec<_> = solids
@@ -500,46 +498,53 @@ mod tests {
         a.distance(b) < 1e-5
     }
 
-    #[test]
-    fn the_sun_points_where_its_angles_say() {
-        let at = |azimuth, elevation| ShadingTuning { sun_azimuth: azimuth, sun_elevation: elevation, ..default() }.sun_direction();
-        assert!(near(at(0.0, 0.0), Vec3::Y), "north");
-        assert!(near(at(90.0, 0.0), Vec3::X), "east");
-        assert!(near(at(180.0, 0.0), -Vec3::Y), "south");
-        assert!(near(at(123.0, 90.0), Vec3::Z), "overhead");
-        let s = at(150.0, 50.0);
-        assert!((s.length() - 1.0).abs() < 1e-5 && (s.z - 50f32.to_radians().sin()).abs() < 1e-5);
+    fn sky(hours: f64, tuning: &ShadingTuning) -> DaySky {
+        DaySky::at(hours, &tuning.sky(), 0.0)
     }
 
     #[test]
     fn the_atmosphere_is_in_render_space_and_scales_fog_with_distance() {
-        let tuning = ShadingTuning { sun_azimuth: 90.0, sun_elevation: 0.0, fog_start: 0.5, fog_end: 1.0, ..default() };
-        let a = tuning.atmosphere(400.0);
+        let tuning = ShadingTuning { fog_start: 0.5, fog_end: 1.0, ..default() };
+        // At 6:00 the sun is on the eastern horizon.
+        let a = tuning.atmosphere(&sky(6.0, &tuning), 400.0);
         assert!(near(a.sun_direction.truncate(), coords::to_render(Vec3::X)));
         assert_eq!((a.fog.x, a.fog.y), (200.0, 400.0));
-        // White sky light with no tint, the zenith's hue with full tint, as bright either way.
-        let plain = ShadingTuning { sky_tint: 0.0, ..default() }.atmosphere(400.0);
-        assert!(near(plain.sky_light.truncate(), Vec3::splat(tuning.sky_light)));
-        let tinted = ShadingTuning { sky_tint: 1.0, ..default() }.atmosphere(400.0);
-        assert!((tinted.sky_light.truncate().max_element() - tuning.sky_light).abs() < 1e-5);
-        assert!(tinted.sky_light.z > tinted.sky_light.x, "blue, like the sky");
+        // White sky light with no tint at noon (with the sun at the palette's highest row), the
+        // zenith's hue with full tint.
+        let plain = ShadingTuning { sky_tint: 0.0, sun_arc: 70.0, ..default() };
+        let a = plain.atmosphere(&sky(12.0, &plain), 400.0);
+        assert!(near(a.sky_light.truncate(), Vec3::splat(plain.sky_light)));
+        let tinted = ShadingTuning { sky_tint: 1.0, sun_arc: 70.0, ..default() };
+        let a = tinted.atmosphere(&sky(12.0, &tinted), 400.0);
+        assert!((a.sky_light.truncate().max_element() - tinted.sky_light).abs() < 1e-5);
+        assert!(a.sky_light.z > a.sky_light.x, "blue, like the sky");
+    }
+
+    #[test]
+    fn a_held_hour_wins_over_the_worlds() {
+        let t = ShadingTuning { hold_hour: 21.5, ..default() };
+        assert_eq!(t.hour(9.0), 21.5);
+        assert_eq!(ShadingTuning::default().hour(9.0), 9.0);
+    }
+
+    #[test]
+    fn the_discs_reach_the_shaders_as_cosines() {
+        let t = ShadingTuning { sun_size: 4.0, moon_size: 2.0, ..default() };
+        let a = t.atmosphere(&sky(0.0, &t), 100.0);
+        assert!((a.sun_direction.w - 4f32.to_radians().cos()).abs() < 1e-6);
+        assert!((a.moon_direction.w - 2f32.to_radians().cos()).abs() < 1e-6);
+        // Midnight: no sun light, the moon showing.
+        assert_eq!(a.sun_color.truncate(), Vec3::ZERO);
+        assert_eq!(a.moon_color.w, 1.0);
     }
 
     #[test]
     fn switched_off_parts_are_named_for_recordings() {
         assert_eq!(Parts::default().off(), "shading all on");
         assert_eq!(Parts { fog: false, sky: false, ..default() }.off(), "shading off: fog, sky");
-        let a = ShadingTuning { parts: Parts { edges: false, ..default() }, ..default() }.atmosphere(100.0);
+        let t = ShadingTuning { parts: Parts { edges: false, ..default() }, ..default() };
+        let a = t.atmosphere(&sky(12.0, &t), 100.0);
         assert_eq!(a.parts, Vec4::new(0.0, 1.0, 1.0, 1.0));
-    }
-
-    #[test]
-    fn the_rays_reach_the_shaders_with_the_discs_radius() {
-        let t = ShadingTuning { rays: 9.0, ray_length: 2.0, ray_width: 0.3, ray_spin: 1.5, sun_size: 4.0, ..Default::default() };
-        let a = t.atmosphere(100.0);
-        assert_eq!(a.rays, Vec4::new(9.0, 2.0, 0.3, t.ray_strength));
-        assert_eq!(a.ray_shape, Vec4::new(t.ray_variation, t.ray_fade, 1.5, 4f32.to_radians()));
-        assert!((a.sun_direction.w - a.ray_shape.w.cos()).abs() < 1e-6, "the disc's edge, both ways");
     }
 
     #[test]
@@ -551,6 +556,6 @@ mod tests {
             let back = t.tunables().into_iter().find(|s| s.name == slider.name).unwrap().value;
             assert_eq!(back, value, "{}", slider.name);
         }
-        assert!(!t.set_tunable("sun_a", 1.0) && !t.set_tunable("nope", 1.0));
+        assert!(!t.set_tunable("rays", 1.0) && !t.set_tunable("nope", 1.0));
     }
 }
