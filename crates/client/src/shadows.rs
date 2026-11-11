@@ -2,7 +2,8 @@
 //! the sun, whose brightness nothing uses, only its shadow maps, read in `solid.wgsl`. They are
 //! drawn from the real triangles, so every shape casts a shadow sharp to the texel. Past the
 //! maps, a coarse shadow from a height map of the terrain (see [`crate::heights`]) takes over,
-//! so distant hills still shade valleys. Live-tunable, with a sun that can move for testing.
+//! so distant hills still shade valleys. Live-tunable. The sun follows the world's time of day
+//! (see [`crate::sky`]); once it's down the shadows stop drawing, and the moon casts none.
 
 use api::{Tunable, Tunables};
 use bevy::camera::{CameraProjection, SubCameraView};
@@ -12,6 +13,8 @@ use bevy::prelude::*;
 
 use crate::coords;
 use crate::shading::ShadingTuning;
+use crate::sky::DaySky;
+use crate::world::ClientWorld;
 
 /// How shadow edges are smoothed.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -77,31 +80,26 @@ pub struct ShadowTuning {
     pub far_reach: f32,
     pub far_softness: f32,
     pub far_bias: f32,
-    /// The moving sun: seconds for a whole day, east to west, and how low it starts and ends.
-    /// It moves in steps of `sun_step` degrees, so shadows don't crawl every frame.
-    pub day_seconds: f32,
-    pub sun_low: f32,
+    /// The sun moves in steps of this many degrees, so shadows don't crawl every frame.
     pub sun_step: f32,
     /// Switches, not saved.
     pub switches: Switches,
 }
 
-/// Parts of the shadows that can be switched off, to see what they cost, and the moving sun.
+/// Parts of the shadows that can be switched off, to see what they cost.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Switches {
     /// The shadow maps near the camera.
     pub maps: bool,
     /// The height-map shadow past them.
     pub far: bool,
-    /// The sun moves across the sky.
-    pub sun_moves: bool,
     /// Each map tinted, to see where it ends.
     pub show_cascades: bool,
 }
 
 impl Default for Switches {
     fn default() -> Self {
-        Self { maps: true, far: true, sun_moves: false, show_cascades: false }
+        Self { maps: true, far: true, show_cascades: false }
     }
 }
 
@@ -134,8 +132,6 @@ impl Default for ShadowTuning {
             far_reach: 512.0,
             far_softness: 4.0,
             far_bias: 0.5,
-            day_seconds: 120.0,
-            sun_low: 5.0,
             sun_step: 0.05,
             switches: Switches::default(),
         }
@@ -179,8 +175,6 @@ impl Tunables for ShadowTuning {
             Tunable::new("far_reach", self.far_reach, 32.0, 2048.0),
             Tunable::new("far_softness", self.far_softness, 0.0, 16.0),
             Tunable::new("far_bias", self.far_bias, 0.0, 4.0),
-            Tunable::new("day_seconds", self.day_seconds, 10.0, 1200.0),
-            Tunable::new("sun_low", self.sun_low, -10.0, 60.0),
             Tunable::new("sun_step", self.sun_step, 0.0, 2.0),
         ]
     }
@@ -199,8 +193,6 @@ impl Tunables for ShadowTuning {
             "far_reach" => self.far_reach = value,
             "far_softness" => self.far_softness = value,
             "far_bias" => self.far_bias = value,
-            "day_seconds" => self.day_seconds = value,
-            "sun_low" => self.sun_low = value,
             "sun_step" => self.sun_step = value,
             _ => return false,
         }
@@ -208,36 +200,17 @@ impl Tunables for ShadowTuning {
     }
 }
 
-/// Where the sun is now, in degrees: from the Shading sliders, or moving across the sky.
-/// Everything that draws the sun or its light reads it from here.
+/// The sky now: where the sun and moon are and the colors of the light, at the world's time of
+/// day (or the held hour). Everything that draws the sun or its light reads it from here.
 #[derive(Resource, Clone, Copy, Debug, PartialEq)]
 pub struct Sun {
-    pub azimuth: f32,
-    pub elevation: f32,
-    /// How far through the moving sun's day, 0 at sunrise to 1 at sunset.
-    pub day: f32,
+    pub sky: DaySky,
 }
 
 impl Default for Sun {
     fn default() -> Self {
-        let t = ShadingTuning::default();
-        Self { azimuth: t.sun_azimuth, elevation: t.sun_elevation, day: 0.5 }
-    }
-}
-
-impl Sun {
-    /// The sun at `day` through a day: up in the east, highest (at the Shading elevation) in the
-    /// south, down in the west, in steps of `step` degrees.
-    pub fn on_day(day: f32, highest: f32, lowest: f32, step: f32) -> (f32, f32) {
-        let azimuth = 90.0 + 180.0 * day;
-        let elevation = lowest + (highest - lowest) * (std::f32::consts::PI * day).sin();
-        let snap = |a: f32| if step > 0.0 { (a / step).round() * step } else { a };
-        (snap(azimuth), snap(elevation))
-    }
-
-    /// Shading with this sun in place of its sliders'.
-    pub fn applied(&self, shading: &ShadingTuning) -> ShadingTuning {
-        ShadingTuning { sun_azimuth: self.azimuth, sun_elevation: self.elevation, ..*shading }
+        let shading = ShadingTuning::default();
+        Self { sky: DaySky::at(sim::Clock::START_HOURS, &shading.sky(), ShadowTuning::default().sun_step) }
     }
 }
 
@@ -313,7 +286,7 @@ fn spawn_sun_light(mut commands: Commands) {
     commands.spawn((
         SunLight,
         DirectionalLight { shadows_enabled: true, ..default() },
-        sun_transform(ShadingTuning::default().sun_direction()),
+        sun_transform(Sun::default().sky.sun()),
         tuning.cascade_config(),
     ));
 }
@@ -325,15 +298,10 @@ pub fn sun_transform(toward_sun: Vec3) -> Transform {
     Transform::default().looking_to(forward, up)
 }
 
-/// Moves the sun along its day when it's moving, or holds it at the sliders.
-fn move_sun(time: Res<Time>, shading: Res<ShadingTuning>, tuning: Res<ShadowTuning>, mut sun: ResMut<Sun>) {
-    let mut next = *sun;
-    if tuning.switches.sun_moves {
-        next.day = (sun.day + time.delta_secs() / tuning.day_seconds.max(1.0)).fract();
-        (next.azimuth, next.elevation) = Sun::on_day(next.day, shading.sun_elevation, tuning.sun_low, tuning.sun_step);
-    } else {
-        (next.azimuth, next.elevation) = (shading.sun_azimuth, shading.sun_elevation);
-    }
+/// Puts the sky at the world's time of day, or the held hour.
+fn move_sun(world: Option<Res<ClientWorld>>, shading: Res<ShadingTuning>, tuning: Res<ShadowTuning>, mut sun: ResMut<Sun>) {
+    let hours = world.map_or(sim::Clock::START_HOURS, |w| w.clock().hours());
+    let next = Sun { sky: DaySky::at(shading.hour(hours), &shading.sky(), tuning.sun_step) };
     sun.set_if_neq(next);
 }
 
@@ -352,9 +320,9 @@ fn sync_sun_light(
         return;
     }
     let (light, transform, cascades) = &mut *light;
-    // No shadow below the horizon: the maps would be drawn from underneath.
-    let up = sun.applied(&shading).sun_direction().z > 0.0;
-    let on = tuning.switches.maps && shading.parts.light && up;
+    // No shadow once the sun is down: the maps would be drawn from underneath, and the moon
+    // casts none.
+    let on = tuning.switches.maps && shading.parts.light && sun.sky.sun_lights();
     if light.shadows_enabled != on {
         light.shadows_enabled = on;
     }
@@ -362,7 +330,7 @@ fn sync_sun_light(
         light.shadow_depth_bias = tuning.depth_bias;
         light.shadow_normal_bias = tuning.normal_bias;
     }
-    let placed = sun_transform(sun.applied(&shading).sun_direction());
+    let placed = sun_transform(sun.sky.sun());
     if **transform != placed {
         **transform = placed;
     }
@@ -415,30 +383,6 @@ mod tests {
         assert_eq!(t.map_size, 4096.0);
         assert_eq!(ShadowTuning { map_size: 700.0, ..default() }.map_texels(), 1024);
         assert_eq!(ShadowTuning { map_size: 100.0, ..default() }.map_texels(), 512);
-    }
-
-    #[test]
-    fn the_moving_sun_rises_east_peaks_south_and_sets_west() {
-        let (az, el) = Sun::on_day(0.0, 60.0, 5.0, 0.0);
-        assert_eq!((az, el), (90.0, 5.0));
-        let (az, el) = Sun::on_day(0.5, 60.0, 5.0, 0.0);
-        assert_eq!(az, 180.0);
-        assert!((el - 60.0).abs() < 1e-4);
-        let (az, el) = Sun::on_day(1.0, 60.0, 5.0, 0.0);
-        assert!((az - 270.0).abs() < 1e-4 && (el - 5.0).abs() < 1e-4);
-    }
-
-    #[test]
-    fn the_moving_sun_moves_in_steps() {
-        let step = 0.5;
-        for i in 0..50 {
-            let (az, el) = Sun::on_day(i as f32 / 50.0, 60.0, 5.0, step);
-            for a in [az, el] {
-                assert!(((a / step) - (a / step).round()).abs() < 1e-3, "{a}");
-            }
-        }
-        // Small moves within a step leave it where it was.
-        assert_eq!(Sun::on_day(0.3, 60.0, 5.0, step), Sun::on_day(0.3001, 60.0, 5.0, step));
     }
 
     #[test]

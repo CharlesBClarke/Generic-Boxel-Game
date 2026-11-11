@@ -10,7 +10,7 @@
 #import bevy_pbr::mesh_view_types::DIRECTIONAL_LIGHT_FLAGS_SHADOWS_ENABLED_BIT
 #import bevy_pbr::shadows::{fetch_directional_shadow, cascade_debug_visualization}
 #import bevy_pbr::view_transformations::position_world_to_clip
-#import boxel::atmosphere::{Atmosphere, sky, fog_amount, ambient_light, sun_light, sheen, edge_shade, sky_reach, block_light}
+#import boxel::atmosphere::{Atmosphere, dithered, sky, fog_amount, ambient_light, sun_light, moon_light, sheen, edge_shade, sky_reach, block_light}
 #ifdef TONEMAP_IN_SHADER
 #import bevy_core_pipeline::tonemapping::tone_mapping
 #endif
@@ -224,13 +224,19 @@ fn fragment(in: VertexOutput) -> @location(0) vec4<f32> {
     var rgb = base.rgb;
     // The sky's light reaches a face only as far as stored sky light does: none in a cave. The
     // sun's only as far as its shadows let it.
+    // The moon's light, which casts no shadows, comes in as far as the sky's does.
     let reach = sky_reach(atmosphere, in.light.a);
     var sun = 0.0;
-    if parts.w > 0.5 || parts.z > 0.5 {
+    // Once the sun is down its light is zero, and its shadows aren't looked up at all.
+    let sun_up = max(atmosphere.sun_color.r, max(atmosphere.sun_color.g, atmosphere.sun_color.b)) > 0.0;
+    if (parts.w > 0.5 || parts.z > 0.5) && sun_up {
         sun = sun_shadow(in.world_position, normal, reach);
     }
     if parts.w > 0.5 {
-        rgb *= ambient_light(atmosphere, normal) * reach + sun_light(atmosphere, normal) * sun + block_light(atmosphere, in.light.rgb);
+        rgb *= ambient_light(atmosphere, normal) * reach
+            + sun_light(atmosphere, normal) * sun
+            + moon_light(atmosphere, normal) * reach
+            + block_light(atmosphere, in.light.rgb);
     }
     if parts.x > 0.5 {
         rgb *= edge_shade(atmosphere, in.edges, in.face);
@@ -251,6 +257,9 @@ fn fragment(in: VertexOutput) -> @location(0) vec4<f32> {
     var color = vec4<f32>(rgb, base.a);
 #ifdef TONEMAP_IN_SHADER
     color = tone_mapping(color, view.color_grading);
+#ifdef DEBAND_DITHER
+    color = vec4<f32>(dithered(color.rgb, in.clip_position.xy), color.a);
+#endif
 #endif
     return color;
 }

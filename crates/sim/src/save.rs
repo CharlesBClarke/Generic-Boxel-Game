@@ -28,6 +28,8 @@ pub struct SaveData {
     pub items: Vec<SavedItem>,
     /// The player's blueprints, in the order they were made. Added in version 2.
     pub blueprints: Vec<SavedBlueprint>,
+    /// The time of day, in hours. Added in version 3; older saves have none.
+    pub hours: Option<f64>,
 }
 
 /// A blueprint by name, naming the materials and blueprints it uses.
@@ -106,7 +108,7 @@ pub struct SavedItem {
 /// The first bytes of every save.
 const MAGIC: &[u8; 8] = b"BOXELSAV";
 /// Goes up whenever the layout changes.
-pub const VERSION: u32 = 2;
+pub const VERSION: u32 = 3;
 
 impl SaveData {
     pub fn to_bytes(&self) -> Vec<u8> {
@@ -272,6 +274,13 @@ impl SaveData {
                 }
             }
         }
+        match self.hours {
+            None => w.u8(0),
+            Some(hours) => {
+                w.u8(1);
+                w.bytes(&hours.to_le_bytes());
+            }
+        }
         w.0
     }
 
@@ -388,6 +397,13 @@ impl SaveData {
                 };
                 save.blueprints.push(SavedBlueprint { name, design });
             }
+        }
+        if version >= 3 {
+            save.hours = match r.u8()? {
+                0 => None,
+                1 => Some(f64::from_le_bytes(r.array()?)),
+                kind => return Err(format!("unknown kind of time {kind}")),
+            };
         }
         if r.at != bytes.len() {
             return Err("extra bytes after the save".into());
@@ -581,6 +597,7 @@ mod tests {
                     },
                 },
             ],
+            hours: Some(17.25),
         }
     }
 
@@ -594,11 +611,21 @@ mod tests {
 
     #[test]
     fn a_version_1_save_reads_with_no_blueprints() {
-        let save = SaveData { blueprints: Vec::new(), ..sample() };
+        let save = SaveData { blueprints: Vec::new(), hours: None, ..sample() };
         let mut bytes = save.to_bytes();
-        // Version 1 ended before the blueprints' count.
-        bytes.truncate(bytes.len() - 4);
+        // Version 1 ended before the blueprints' count (and version 3's time).
+        bytes.truncate(bytes.len() - 5);
         bytes[8..12].copy_from_slice(&1u32.to_le_bytes());
+        assert_eq!(SaveData::from_bytes(&bytes), Ok(save));
+    }
+
+    #[test]
+    fn a_version_2_save_reads_with_no_time() {
+        let save = SaveData { hours: None, ..sample() };
+        let mut bytes = save.to_bytes();
+        // Version 2 ended before the time.
+        bytes.truncate(bytes.len() - 1);
+        bytes[8..12].copy_from_slice(&2u32.to_le_bytes());
         assert_eq!(SaveData::from_bytes(&bytes), Ok(save));
     }
 

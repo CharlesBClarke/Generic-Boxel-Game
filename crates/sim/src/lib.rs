@@ -4,6 +4,7 @@
 pub mod blueprint;
 pub mod blast;
 pub mod cell;
+pub mod clock;
 pub mod combat;
 pub mod crafting;
 pub mod edit;
@@ -24,6 +25,7 @@ pub mod world;
 
 pub use combat::{Blow, Slam, StepContext, Strike, Swing, SwingStage, Target, TargetHit, TargetKind, Targets, ToolId};
 pub use blast::Blast;
+pub use clock::Clock;
 pub use cell::{CellBox, CellId, CellTable, MAX_MATERIALS, MAX_OCCUPANTS, Occupant, ShareError, can_share, occupant_boxes};
 pub use blueprint::{Blueprint, BlueprintEdit, BlueprintId, BlueprintRefusal, Change, Design, Library, Variation};
 pub use crafting::{Cells, Craft, CraftPlan, CraftRefusal, Piece, Recipe, Source, Thing};

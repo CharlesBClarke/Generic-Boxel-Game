@@ -1,0 +1,21 @@
+# A day study: `tools/bench.sh --study tools/bench/day.txt`. The sky held at hours through a
+# day, to see each one's colors in the screenshots and what night saves (the shadows stop
+# drawing once the sun is down). Sets only; the world and spots are bench.txt's.
+
+[bench]
+seconds = 3
+
+[set noon]
+shading.hold_hour = 12
+[set morning]
+shading.hold_hour = 10
+[set golden]
+shading.hold_hour = 17
+[set sunset]
+shading.hold_hour = 17.8
+[set dusk]
+shading.hold_hour = 18.5
+[set night]
+shading.hold_hour = 0
+[set dawn]
+shading.hold_hour = 6.3

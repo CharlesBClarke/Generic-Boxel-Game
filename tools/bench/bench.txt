@@ -12,6 +12,9 @@ window = 1080 1080   # square: fits a portrait or a landscape screen (the user's
 # is the user's own (seed 120, from their tuning file on 2026-11-10).
 [base]
 view.render_distance = 512
+# The sky at 10:00, where the sun sat before it moved (azimuth 150, about 50 up), so builds with
+# and without the time of day draw the same light. Older builds warn and skip it.
+shading.hold_hour = 10
 world.terrain_width = 11
 world.terrain_height = 6
 world.sim_distance = 256

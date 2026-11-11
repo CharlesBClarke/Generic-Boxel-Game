@@ -10,7 +10,7 @@ use api::{
     SoundDef, TargetDef, ToolDef, Tunable, WorldPos,
 };
 use sim::{
-    Blast, BlockEdit, BlueprintId, BlueprintRefusal, Body, BlockRegistry, ChunkData, Library, CraftRefusal, GenerationStats, Inventory, Item, LookRegistry, MaterialId, PlayerHurt,
+    Blast, BlockEdit, Clock, BlueprintId, BlueprintRefusal, Body, BlockRegistry, ChunkData, Library, CraftRefusal, GenerationStats, Inventory, Item, LookRegistry, MaterialId, PlayerHurt,
     PlayerInput, Slam, Strike, Swing, Target,
 };
 
@@ -38,6 +38,10 @@ pub enum Command {
     Unkillable(bool),
     /// Off, every creature is a dummy that only moves when hit.
     BrainsOn(bool),
+    /// Sets the time of day, in hours (wrapped into 0 to 24).
+    SetTime(f64),
+    /// Stops the time of day where it is, or lets it run again.
+    PauseTime(bool),
     TeleportPlayer(WorldPos),
     /// Puts every creature back at its spot, whole.
     RespawnTargets,
@@ -160,6 +164,8 @@ pub struct TuningSection {
 pub struct Snapshot {
     /// Ticks run so far.
     pub tick: u64,
+    /// The time of day, how fast it runs and whether it's paused.
+    pub clock: Clock,
     pub player: Option<Body>,
     pub health: f32,
     /// Live creatures, broken ones excluded.

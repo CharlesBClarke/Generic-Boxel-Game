@@ -22,7 +22,6 @@ pub fn set(world: &mut World, key: &str, on: bool) -> bool {
         "shading.stored" => &mut shading.parts.stored,
         "shadows.maps" => &mut shadows.switches.maps,
         "shadows.far" => &mut shadows.switches.far,
-        "shadows.sun_moves" => &mut shadows.switches.sun_moves,
         "shadows.show_cascades" => &mut shadows.switches.show_cascades,
         "view.msaa" => &mut view.msaa,
         "view.depth_prepass" => &mut view.depth_prepass,

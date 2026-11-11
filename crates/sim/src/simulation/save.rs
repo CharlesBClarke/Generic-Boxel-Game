@@ -106,7 +106,7 @@ impl Simulation {
             })
             .collect();
         let blueprints = save_blueprints(blocks, &self.blueprints);
-        SaveData { tick: self.tick, terrain, made, chunks, player, inventory, items, blueprints }
+        SaveData { tick: self.tick, terrain, made, chunks, player, inventory, items, blueprints, hours: Some(self.clock.hours()) }
     }
 
     /// Puts the world back as `save` has it: generates the terrain with its values, makes its
@@ -116,6 +116,7 @@ impl Simulation {
     /// failing to generate the terrain fails the load.
     pub fn load(&mut self, save: &SaveData) -> Result<LoadReport, ApiError> {
         let mut report = LoadReport::default();
+        self.clock.set_hours(save.hours.unwrap_or(crate::Clock::START_HOURS));
         for (section, name, value) in &save.terrain {
             let set = match section.strip_prefix("terrain ") {
                 None => section == "world" && self.world.set_tunable(name, *value),

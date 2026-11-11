@@ -144,6 +144,7 @@ impl Server {
         let sim = &self.sim;
         Snapshot {
             tick: sim.tick(),
+            clock: *sim.clock(),
             player: sim.player().map(|p| p.body().clone()),
             health: sim.health(),
             targets: sim.targets().as_slice().to_vec(),
@@ -246,6 +247,8 @@ impl Server {
             Command::Heal => sim.set_health(f32::MAX),
             Command::Unkillable(on) => sim.set_unkillable(on),
             Command::BrainsOn(on) => sim.set_brains_on(on),
+            Command::SetTime(hours) => sim.clock_mut().set_hours(hours),
+            Command::PauseTime(paused) => sim.clock_mut().paused = paused,
             Command::TeleportPlayer(pos) => sim.teleport_player(pos),
             Command::RespawnTargets => sim.respawn_targets(),
             Command::RegenerateTerrain => {
@@ -335,6 +338,7 @@ fn sections(sim: &mut Simulation) -> Vec<TuningSection> {
         add(format!("brain {name}"), values);
     }
     add("world".into(), sim.world_settings().tunables());
+    add("time".into(), sim.clock().tunables());
     let names: Vec<String> = sim.generator_names().map(String::from).collect();
     for (i, name) in names.into_iter().enumerate() {
         let values = sim.generator_mut(i).map_or_else(Vec::new, |g| g.tunables());
@@ -358,6 +362,7 @@ fn tune(sim: &mut Simulation, section: &str, name: &str, value: f32) -> bool {
         "inventory" => set(sim.inventory_def_mut().map(|d| d as &mut dyn Tunables), name, value),
         "signals" => set(sim.signal_def_mut().map(|d| d as &mut dyn Tunables), name, value),
         "world" => sim.world_settings_mut().set_tunable(name, value),
+        "time" => sim.clock_mut().set_tunable(name, value),
         _ => {
             if let Some(tool) = section.strip_prefix("tool ") {
                 let found = sim.tools_mut().iter_mut().find(|t| t.name == tool);

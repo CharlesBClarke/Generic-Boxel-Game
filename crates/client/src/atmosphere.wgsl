@@ -6,25 +6,30 @@
 struct Atmosphere {
     // Toward the sun; then the cosine of the sun disc's radius.
     sun_direction: vec4<f32>,
-    // The sun's light on a face turned to it; then the glow around its disc.
+    // The sun's light on a face turned to it (zero once it's down); `w` unused.
     sun_color: vec4<f32>,
+    // The sun's hue at full brightness, for its disc and glow.
+    sun_hue: vec4<f32>,
+    // Toward the moon; then the cosine of its disc's radius.
+    moon_direction: vec4<f32>,
+    // The moon's light on a face turned to it; then how much it shows, 0 by day, 1 by night.
+    moon_color: vec4<f32>,
     // Light on faces looking straight up, and straight down, blended between.
     sky_light: vec4<f32>,
     ground_light: vec4<f32>,
     zenith: vec4<f32>,
+    // Then the power the zenith's color fades down into it by: lower reaches farther down.
     horizon: vec4<f32>,
+    // How bright the stars are, how far they've turned (radians), how bright the moon is drawn.
+    night: vec4<f32>,
+    // The sun's glows: the tight halo, the wider glow, the horizon glow, its power.
+    glows: vec4<f32>,
     // Starting distance, distance where it's thickest, how thick there.
     fog: vec4<f32>,
     // Crease darkness, ridge brightness, width in texels.
     edges: vec4<f32>,
     // Which parts are drawn, 1 or 0: edges, fog, sheen, light.
     parts: vec4<f32>,
-    // The sun's rays: how many, how far past the disc (in disc radii), how wide at the disc (a
-    // share of the gap between rays, up to 0.45), how strong.
-    rays: vec4<f32>,
-    // How much the rays' lengths vary, how much they fade toward their tips, how fast they turn
-    // (turns a minute), and the disc's radius in radians.
-    ray_shape: vec4<f32>,
     // Stored light: block light's strength, sky light's falloff power, block light's, and the
     // least light.
     stored: vec4<f32>,
@@ -43,64 +48,90 @@ struct Atmosphere {
     fine_heights: vec4<f32>,
 };
 
-// The sun's color at full brightness, whatever its strength.
-fn sun_hue(a: Atmosphere) -> vec3<f32> {
-    return a.sun_color.rgb / max(max(a.sun_color.r, a.sun_color.g), max(a.sun_color.b, 0.001));
-}
-
-// The sky looking along `dir` (a unit vector), with its glow around the sun but not the sun
-// itself. Fog fades to it, so far terrain melts into the sky behind it.
+// The sky looking along `dir` (a unit vector): the horizon's color blending up into the
+// zenith's, and a glow toward the sun lowest down. From the stylised-sky block (Eanpa Sky's
+// sky, MIT). Fog fades to it, so far terrain melts into the sky behind it.
 fn sky(a: Atmosphere, dir: vec3<f32>) -> vec3<f32> {
-    let up = clamp(dir.y, 0.0, 1.0);
-    let color = mix(a.horizon.rgb, a.zenith.rgb, sqrt(up));
+    let up = pow(clamp(dir.y * 1.35 + 0.02, 0.0, 1.0), a.horizon.w);
+    var color = mix(a.horizon.rgb, a.zenith.rgb, up);
     let toward = max(dot(dir, a.sun_direction.xyz), 0.0);
-    return color + sun_hue(a) * a.sun_color.w * (0.25 * pow(toward, 8.0) + 0.75 * pow(toward, 256.0));
+    color += a.sun_hue.rgb * pow(toward, a.glows.w) * 0.35 * (1.0 - up) * a.glows.z;
+    return color;
 }
 
-// A small hash of a ray's number, 0 to 1.
-fn ray_hash(i: f32) -> f32 {
-    return fract(sin(i * 12.9898 + 4.1414) * 43758.5453);
+// A small hash of a cell, 0 to 1.
+fn hash3(p: vec3<f32>) -> f32 {
+    var h = fract(p * vec3<f32>(0.1031, 0.103, 0.0973));
+    h += dot(h, h.yzx + 33.33);
+    return fract((h.x + h.y) * h.z);
 }
 
-// The sun drawn over `color` (the sky looking along `dir`): a crisp disc and flat, pointed rays
-// out from it, like a drawn sun. `time` is in seconds, for turning the rays.
-fn sun(a: Atmosphere, dir: vec3<f32>, color: vec3<f32>, time: f32) -> vec3<f32> {
-    let s = a.sun_direction.xyz;
-    // How far from the sun's middle, in radians; one pixel's worth of that, for soft edges.
-    let away = atan2(length(cross(dir, s)), dot(dir, s));
-    let pixel = max(fwidth(away), 1e-6);
-    let radius = a.ray_shape.w;
-    let hue = sun_hue(a) * 2.0;
+// The sun, moon and stars over `color` (the sky looking along `dir`), as the stylised-sky
+// block draws them: a small hot disc with a halo, a glowing moon, and a star at
+// a random point of some cells of a grid that turns once a day.
+fn sky_bodies(a: Atmosphere, dir: vec3<f32>, color: vec3<f32>) -> vec3<f32> {
     var out = color;
+    let night = a.moon_color.w;
 
-    let count = round(a.rays.x);
-    let reach = a.rays.y * radius;
-    if count >= 1.0 && reach > 0.0 && a.rays.w > 0.0 && away > radius - pixel && away < radius + reach + pixel {
-        // Which way around the sun, from a side direction across it.
-        var side = cross(s, vec3<f32>(0.0, 1.0, 0.0));
-        if length(side) < 1e-3 {
-            side = vec3<f32>(1.0, 0.0, 0.0);
-        }
-        side = normalize(side);
-        let other = cross(side, s);
-        let turns = a.ray_shape.z * time / 60.0;
-        let around = (atan2(dot(dir, other), dot(dir, side)) / 6.2831853 + turns) * count;
-        let i = floor(around);
-        let ray = (i % count + count) % count;
-        let off = abs(fract(around) - 0.5);
-        // This ray's length, then how far along it this pixel is: 0 at the disc, 1 at the tip.
-        let span = reach * (1.0 - a.ray_shape.x * ray_hash(ray));
-        let t = clamp((away - radius) / max(span, 1e-6), 0.0, 1.0);
-        // Across the ray, in radians: positive inside its wedge.
-        let width = min(a.rays.z, 0.45) * (1.0 - t);
-        let inside = (width - off) / count * 6.2831853 * sin(away);
-        let along = span + radius - away;
-        let cover = smoothstep(-pixel, pixel, inside) * smoothstep(-pixel, pixel, along);
-        let fade = 1.0 - a.ray_shape.y * t;
-        out = mix(out, hue, clamp(cover * fade * a.rays.w, 0.0, 1.0));
+    // How much of this pixel the moon covers: it hides the stars behind it.
+    let m = a.moon_direction.xyz;
+    let cos_a = dot(dir, m);
+    let edge = a.moon_direction.w;
+    var moon_cover = 0.0;
+    if m.y > -0.05 {
+        let px = max(fwidth(cos_a), 1e-7);
+        moon_cover = smoothstep(edge - px, edge + px, cos_a);
     }
 
-    return mix(out, hue, smoothstep(-pixel, pixel, radius - away));
+    // Stars, only where the sky is dark enough to show them.
+    if a.night.x > 0.002 && moon_cover < 1.0 {
+        let turn = a.night.y;
+        let d = vec3<f32>(dir.x * cos(turn) - dir.z * sin(turn), dir.y, dir.x * sin(turn) + dir.z * cos(turn)) * 190.0;
+        let f = fract(d) - 0.5;
+        let bright = smoothstep(0.93, 1.0, hash3(floor(d))) * smoothstep(0.42, 0.0, length(f));
+        out += vec3<f32>(0.85, 0.92, 1.0) * bright * bright * a.night.x * 1.8 * smoothstep(0.0, 0.12, dir.y) * (1.0 - moon_cover);
+    }
+
+    // The moon: an evenly glowing disc, no phases (it runs opposite the sun, so it would always
+    // be full), with faint, broad seas and a little darkening toward its rim so it reads as
+    // round.
+    if moon_cover > 0.0 {
+        let radius = sqrt(max(1.0 - edge * edge, 1e-8));
+        let right = normalize(vec3<f32>(m.z, 0.0, -m.x) + vec3<f32>(1e-5, 0.0, 0.0));
+        let up = cross(right, m);
+        let lx = dot(dir, right) / radius;
+        let ly = dot(dir, up) / radius;
+        let facing = sqrt(max(1.0 - lx * lx - ly * ly, 0.0));
+        let seas = 0.5 + 0.5 * sin(lx * 2.1 + 1.3) * sin(ly * 1.7 - 0.4);
+        let rim = mix(0.75, 1.0, sqrt(facing));
+        let moon = vec3<f32>(0.82, 0.86, 0.95) * mix(0.85, 1.05, seas) * rim * mix(0.5, 1.15, night) * a.night.z;
+        // The sky's own color shows a little through it by day, never the stars.
+        out = mix(out, moon + color * 0.15, moon_cover);
+    }
+
+    // The sun: a crisp disc and a tight halo, then a wider glow.
+    let s = a.sun_direction.xyz;
+    let mu = dot(dir, s);
+    let sun_edge = a.sun_direction.w;
+    let sun_px = max(fwidth(mu), 1e-7);
+    let disc = smoothstep(sun_edge - sun_px, sun_edge + sun_px, mu);
+    let toward = max(mu, 0.0);
+    out += a.sun_hue.rgb * (disc * 48.0 + pow(toward, 900.0) * 3.0 * a.glows.x + pow(toward, 60.0) * 0.22 * a.glows.y);
+    return out;
+}
+
+// A tone-mapped color with Bevy's screen-space dither added, as its own materials do: a dark
+// gradient (the night sky) spans only a few of the screen's 256 steps, and without the noise
+// those show as bands. `frag` is the pixel's position on screen.
+fn dithered(color: vec3<f32>, frag: vec2<f32>) -> vec3<f32> {
+    let x = (vec3<f32>(dot(vec2<f32>(171.0, 231.0), frag)) / vec3<f32>(103.0, 71.0, 97.0));
+    // Dithered in the screen's gamma, then back: the output texture is sRGB. A channel within
+    // half a step of black gets less noise, so it's never pushed below black and clipped:
+    // clipping only ever lifts, which would grey a dark blue sky.
+    let gamma = pow(max(color, vec3<f32>(0.0)), vec3<f32>(1.0 / 2.2));
+    let amount = min(gamma * 510.0, vec3<f32>(1.0));
+    let dither = (fract(x) - 0.5) / 255.0 * amount;
+    return pow(max(gamma + dither, vec3<f32>(0.0)), vec3<f32>(2.2));
 }
 
 // How much fog there is at `distance` meters, from 0 to the fog's thickness.
@@ -136,6 +167,11 @@ fn ambient_light(a: Atmosphere, normal: vec3<f32>) -> vec3<f32> {
 // The sun's light on a surface facing `normal` (unit), before any shadow.
 fn sun_light(a: Atmosphere, normal: vec3<f32>) -> vec3<f32> {
     return a.sun_color.rgb * max(dot(normal, a.sun_direction.xyz), 0.0);
+}
+
+// The moon's light on a surface facing `normal` (unit). It casts no shadows.
+fn moon_light(a: Atmosphere, normal: vec3<f32>) -> vec3<f32> {
+    return a.moon_color.rgb * max(dot(normal, a.moon_direction.xyz), 0.0);
 }
 
 // The sun's reflection toward the eye (Blinn-Phong), for a look with a sheen.

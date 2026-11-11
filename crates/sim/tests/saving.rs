@@ -207,3 +207,29 @@ fn what_a_missing_mod_named_is_left_out() {
     assert!(report.skipped.iter().any(|s| s.contains("gone:stuff")));
     assert!(report.skipped.iter().any(|s| s.contains("gone:hills")));
 }
+
+#[test]
+fn the_time_of_day_comes_back_from_a_save() {
+    let mut sim = generated();
+    sim.clock_mut().set_hours(20.5);
+    sim.clock_mut().paused = true;
+    let save = sim.save();
+    let mut other = generated();
+    other.load(&save).unwrap();
+    assert_eq!(other.clock().hours(), 20.5);
+    // A save from before the time was kept starts at the default hour.
+    other.load(&SaveData { hours: None, ..save }).unwrap();
+    assert_eq!(other.clock().hours(), sim::Clock::START_HOURS);
+}
+
+#[test]
+fn the_time_of_day_runs_with_the_ticks() {
+    let mut sim = base_sim();
+    sim.clock_mut().set_hours(6.0);
+    sim.clock_mut().day_seconds = 240.0;
+    // 10 seconds of a 240-second day: an hour.
+    for _ in 0..600 {
+        sim.step(&PlayerInput::default());
+    }
+    assert!((sim.clock().hours() - 7.0).abs() < 1e-6, "{}", sim.clock().hours());
+}

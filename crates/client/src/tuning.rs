@@ -24,7 +24,7 @@ use crate::tuning_file;
 use crate::ui_scale::UiScaleTuning;
 use crate::shading::ShadingTuning;
 use crate::shadows::{Filter, ShadowTuning};
-use crate::view::{ViewSwitches, ViewTuning};
+use crate::view::{ToneMapper, ViewSwitches, ViewTuning};
 use crate::world::{ClientWorld, Link};
 
 #[derive(Resource, Default)]
@@ -88,6 +88,9 @@ pub fn tuning_panel(
     let mut server: Vec<(String, Values)> = before.iter().map(|s| (s.name.clone(), Values(s.values.clone()))).collect();
     let mut unkillable = world.defs().unkillable;
     let mut brains_on = world.defs().brains_on;
+    let clock = *world.clock();
+    let mut hours = clock.hours();
+    let mut paused = clock.paused;
     let mut refill = false;
     // The client's own values, through copies so a resource is only marked changed when a
     // value moves (an ambient occlusion change remeshes every chunk).
@@ -200,6 +203,12 @@ pub fn tuning_panel(
                             refill = ui.button("Heal").clicked();
                         });
                     }
+                    if name == "time" {
+                        ui.horizontal(|ui| {
+                            ui.add(egui::Slider::new(&mut hours, 0.0..=23.99).text(clock_text(clock.hours())));
+                            ui.checkbox(&mut paused, "paused");
+                        });
+                    }
                     sliders(ui, name, values);
                     if name == "world" || name.starts_with("terrain ") {
                         ui.horizontal(|ui| {
@@ -210,7 +219,14 @@ pub fn tuning_panel(
                 }
                 ui.separator();
                 ui.heading("View");
-                sliders(ui, "view", &mut seeing);
+                egui::ComboBox::from_label("tone mapper")
+                    .selected_text(seeing.tone_mapper.label())
+                    .show_ui(ui, |ui| {
+                        for t in ToneMapper::ALL {
+                            ui.selectable_value(&mut seeing.tone_mapper, t, t.label());
+                        }
+                    });
+                sliders_except(ui, "view", &mut seeing, &["tone_mapper"]);
                 ui.horizontal(|ui| {
                     ui.checkbox(&mut drawing.msaa, "anti-aliasing (4× MSAA)");
                     ui.checkbox(&mut drawing.depth_prepass, "depth prepass");
@@ -233,7 +249,11 @@ pub fn tuning_panel(
                     ui.checkbox(&mut parts.sky, "sky");
                     ui.checkbox(&mut parts.stored, "stored light");
                 });
-                sliders(ui, "shading", &mut lighting);
+                for (title, names) in crate::shading::GROUPS {
+                    egui::CollapsingHeader::new(title).id_salt(("shading", title)).default_open(true).show(ui, |ui| {
+                        sliders_only(ui, title, &mut lighting, names);
+                    });
+                }
                 ui.separator();
                 ui.heading("Shadows");
                 ui.label("sun shadows: sharp maps near the camera, fading into a coarse height-map shadow farther out");
@@ -242,7 +262,6 @@ pub fn tuning_panel(
                     ui.checkbox(&mut switches.maps, "shadow maps");
                     ui.checkbox(&mut switches.far, "far shadow");
                     ui.checkbox(&mut switches.show_cascades, "tint each map");
-                    ui.checkbox(&mut switches.sun_moves, "sun moves");
                 });
                 egui::ComboBox::from_label("edges")
                     .selected_text(shadows.filter.label())
@@ -403,6 +422,12 @@ pub fn tuning_panel(
     if brains_on != world.defs().brains_on {
         link.command(Command::BrainsOn(brains_on), &mut world);
     }
+    if hours != clock.hours() {
+        link.command(Command::SetTime(hours), &mut world);
+    }
+    if paused != clock.paused {
+        link.command(Command::PauseTime(paused), &mut world);
+    }
     if refill {
         link.command(Command::Heal, &mut world);
     }
@@ -494,6 +519,7 @@ fn heading(section: &str) -> String {
         "item_drops" => "Item drops".into(),
         "inventory" => "Inventory".into(),
         "world" => "World".into(),
+        "time" => "Time of day".into(),
         _ => match section.split_once(' ') {
             Some(("tool", name)) => format!("Tool: {name}"),
             Some(("target", name)) => format!("Target: {name}"),
@@ -519,6 +545,12 @@ fn changes(before: &[TuningSection], edited: &[(String, Values)]) -> Vec<Command
 
 /// Whether a command changes what generating the terrain makes: a generator's value, or the
 /// terrain's size. The simulation distance doesn't.
+/// The time of day as a clock reads it, such as `"17:05"`.
+fn clock_text(hours: f64) -> String {
+    let minutes = (hours.rem_euclid(24.0) * 60.0).floor() as u32;
+    format!("{:02}:{:02}", minutes / 60, minutes % 60)
+}
+
 fn shapes_terrain(command: &Command) -> bool {
     match command {
         Command::Tune { section, name, .. } => section.starts_with("terrain ") || (section == "world" && name.starts_with("terrain_")),
@@ -568,6 +600,21 @@ fn sliders_except<T: Tunables + ?Sized>(ui: &mut egui::Ui, id: &str, target: &mu
     });
 }
 
+/// [`sliders`] for only the values named in `names`, in that order.
+fn sliders_only<T: Tunables + ?Sized>(ui: &mut egui::Ui, id: &str, target: &mut T, names: &[&str]) {
+    let all = target.tunables();
+    egui::Grid::new(id).num_columns(2).show(ui, |ui| {
+        for t in names.iter().filter_map(|n| all.iter().find(|t| t.name == *n)) {
+            let mut value = t.value;
+            ui.label(&t.name);
+            if ui.add(egui::Slider::new(&mut value, t.min..=t.max)).changed() {
+                target.set_tunable(&t.name, value);
+            }
+            ui.end_row();
+        }
+    });
+}
+
 /// Values as `name: value,` lines, ready to paste into a struct literal.
 fn printout(tunables: &[Tunable]) -> String {
     tunables.iter().map(|t| format!("{}: {:?},\n", t.name, t.value)).collect()
@@ -576,6 +623,13 @@ fn printout(tunables: &[Tunable]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_clock_reads_hours_and_minutes() {
+        assert_eq!(clock_text(0.0), "00:00");
+        assert_eq!(clock_text(17.0 + 5.5 / 60.0), "17:05");
+        assert_eq!(clock_text(23.999), "23:59");
+    }
 
     #[test]
     fn only_changed_values_are_sent() {
