@@ -25,17 +25,13 @@ use sim::{SwingStage, Target};
 use crate::animation::{self, AnimationPreview, AnimationTuning, Animator};
 use crate::drill::Drill;
 use crate::editing::{Held, Palette};
+use crate::model::{ModelMaterial, ModelMedia, ease_light, stored_light};
 use crate::world::ClientWorld;
 use crate::{RenderOrigin, coords};
 
 /// How much brighter than its texture a target is drawn at the start of a flash. The window
 /// clamps colors at white, so this washes everything but the darkest texels out to white.
 const FLASH_BRIGHTNESS: f32 = 12.0;
-/// The direction the baked shading on models is lit from, Z up.
-const LIGHT: ZVec3 = ZVec3::new(0.35, -0.5, 0.8);
-/// The darkest and brightest a model's shading goes.
-const SHADE_MIN: f32 = 0.55;
-const SHADE_MAX: f32 = 1.0;
 /// How long chunks of a broken target last, and how long they spend shrinking away at the end.
 const CHUNK_LIFE: f32 = 2.5;
 const CHUNK_FADE: f32 = 0.5;
@@ -365,7 +361,7 @@ struct TargetView {
     /// The entity that turns the model to its facing, and its turn on top of the facing.
     turn: Entity,
     turn_extra: Quat,
-    material: Handle<StandardMaterial>,
+    material: Handle<ModelMaterial>,
     rig: Option<Rig>,
     /// Render-space turn on top of its facing, from tumbling.
     tilt: Quat,
@@ -453,16 +449,13 @@ pub(crate) fn setup_media(
     }
 }
 
-/// A model as a render mesh, with shading baked into vertex colors like the world's. A model
+/// A model as a render mesh, shaded by real light when drawn (see `crate::model`). A model
 /// with a skin stays in its own Z-up space, since its bones carry it into render space; one
 /// without is turned to Y up here.
 fn model_mesh(model: &ModelDef) -> Mesh {
-    let (positions, light): (Vec<[f32; 3]>, Vec3) = match model.skin {
-        Some(_) => (model.positions.clone(), LIGHT.normalize()),
-        None => (
-            model.positions.iter().map(|&p| coords::to_render(Vec3::from_array(p)).to_array()).collect(),
-            coords::to_render(LIGHT.normalize()),
-        ),
+    let positions: Vec<[f32; 3]> = match model.skin {
+        Some(_) => model.positions.clone(),
+        None => model.positions.iter().map(|&p| coords::to_render(Vec3::from_array(p)).to_array()).collect(),
     };
     let mut mesh = Mesh::new(PrimitiveTopology::TriangleList, RenderAssetUsages::RENDER_WORLD)
         .with_inserted_attribute(Mesh::ATTRIBUTE_POSITION, positions)
@@ -473,17 +466,6 @@ fn model_mesh(model: &ModelDef) -> Mesh {
         mesh.insert_attribute(Mesh::ATTRIBUTE_JOINT_INDEX, VertexAttributeValues::Uint16x4(skin.joints.clone()));
         mesh.insert_attribute(Mesh::ATTRIBUTE_JOINT_WEIGHT, skin.weights.clone());
     }
-    let colors: Vec<[f32; 4]> = match mesh.attribute(Mesh::ATTRIBUTE_NORMAL).and_then(|n| n.as_float3()) {
-        Some(normals) => normals
-            .iter()
-            .map(|&n| {
-                let shade = SHADE_MIN + (SHADE_MAX - SHADE_MIN) * Vec3::from_array(n).dot(light).max(0.0);
-                [shade, shade, shade, 1.0]
-            })
-            .collect(),
-        None => vec![[1.0; 4]; model.positions.len()],
-    };
-    mesh.insert_attribute(Mesh::ATTRIBUTE_COLOR, colors);
     mesh
 }
 
@@ -526,7 +508,8 @@ pub(crate) fn play_strikes(
     mut drill: ResMut<Drill>,
     mut readout: ResMut<HitReadout>,
     mut meshes: ResMut<Assets<Mesh>>,
-    mut materials: ResMut<Assets<StandardMaterial>>,
+    mut materials: ResMut<Assets<ModelMaterial>>,
+    media: Res<ModelMedia>,
 ) {
     let strikes = world.take_strikes();
     for strike in strikes {
@@ -557,7 +540,7 @@ pub(crate) fn play_strikes(
                 let colors = views.models.get(&def.model).map_or(&[][..], |m| &m.colors[..]);
                 let push = view.velocity + hit.push;
                 let burst = Burst { seed: strike.tick, center: view.center, push, count: feel.chunks, speed: feel.chunk_speed, size: 0.12 };
-                burst.spawn(&mut commands, colors, &origin, &mut meshes, &mut materials);
+                burst.spawn(&mut commands, colors, &world, &origin, &mut meshes, &mut materials, &media);
             }
             continue;
         }
@@ -589,7 +572,8 @@ pub(crate) fn play_slams(
     mut kick: ResMut<ViewKick>,
     mut readout: ResMut<HitReadout>,
     mut meshes: ResMut<Assets<Mesh>>,
-    mut materials: ResMut<Assets<StandardMaterial>>,
+    mut materials: ResMut<Assets<ModelMaterial>>,
+    media: Res<ModelMedia>,
 ) {
     let slams = world.take_slams();
     for slam in slams {
@@ -601,14 +585,14 @@ pub(crate) fn play_slams(
         let wall = middle.translate(slam.into * (def.width * 0.5 + 0.1));
         if let Some(color) = block_color(&world, wall) {
             let dust = Burst { seed: slam.target ^ 0x51a4, center: wall, push: -slam.into * 2.0, count: feel.dust, speed: 2.5, size: 0.06 };
-            dust.spawn(&mut commands, &[color], &origin, &mut meshes, &mut materials);
+            dust.spawn(&mut commands, &[color], &world, &origin, &mut meshes, &mut materials, &media);
         }
         if slam.broke {
             if let Some(view) = views.views.remove(&slam.target) {
                 commands.entity(view.entity).despawn();
                 let colors = views.models.get(&def.model).map_or(&[][..], |m| &m.colors[..]);
                 let burst = Burst { seed: slam.target, center: view.center, push: -slam.into * 3.0, count: feel.chunks, speed: feel.chunk_speed, size: 0.12 };
-                burst.spawn(&mut commands, colors, &origin, &mut meshes, &mut materials);
+                burst.spawn(&mut commands, colors, &world, &origin, &mut meshes, &mut materials, &media);
             }
             continue;
         }
@@ -664,16 +648,20 @@ struct Burst {
 }
 
 impl Burst {
-    /// Spawns the chunks, each one of `colors`.
+    /// Spawns the chunks, each one of `colors`, lit by the stored light where they start.
+    #[allow(clippy::too_many_arguments)]
     fn spawn(
         &self,
         commands: &mut Commands,
         colors: &[Color],
+        world: &ClientWorld,
         origin: &RenderOrigin,
         meshes: &mut Assets<Mesh>,
-        materials: &mut Assets<StandardMaterial>,
+        materials: &mut Assets<ModelMaterial>,
+        media: &ModelMedia,
     ) {
         let cube = meshes.add(Cuboid::from_length(1.0));
+        let light = stored_light(world.universe().main(), world.blocks(), self.center);
         for i in 0..self.count.round() as u64 {
             let r = |k: u64| hash(self.seed.wrapping_mul(977) ^ (i * 8 + k));
             let dir = ZVec3::new(r(0) * 2.0 - 1.0, r(1) * 2.0 - 1.0, r(2) * 1.2 - 0.2).normalize_or(ZVec3::Z);
@@ -688,7 +676,7 @@ impl Burst {
                 size,
                 age: 0.0,
             };
-            let material = materials.add(StandardMaterial { base_color: color, unlit: true, ..default() });
+            let material = materials.add(ModelMaterial { light, ..media.material(None, color) });
             let transform = Transform::from_translation(coords::render_translation(pos, origin.cell)).with_scale(Vec3::splat(size));
             commands.spawn((Mesh3d(cube.clone()), MeshMaterial3d(material), transform, chunk));
         }
@@ -761,7 +749,8 @@ pub(crate) fn sync_targets(
     tuning: Res<AnimationTuning>,
     preview: Res<AnimationPreview>,
     mut state: ResMut<TargetViews>,
-    mut materials: ResMut<Assets<StandardMaterial>>,
+    mut materials: ResMut<Assets<ModelMaterial>>,
+    media: Res<ModelMedia>,
     mut transforms: Query<&mut Transform, (With<TargetMarker>, Without<BoneMarker>)>,
     mut bones: Query<&mut Transform, (With<BoneMarker>, Without<TargetMarker>)>,
 ) {
@@ -780,12 +769,8 @@ pub(crate) fn sync_targets(
         let now = center(target, def.height);
         let drawn = target.prev_pos.translate(target.prev_pos.delta_to(target.pos) * alpha).translate(ZVec3::Z * def.height * 0.5);
         let view = views.entry(target.id).or_insert_with(|| {
-            let material = materials.add(StandardMaterial {
-                base_color_texture: Some(model.texture.clone()),
-                unlit: true,
-                alpha_mode: AlphaMode::Mask(0.5),
-                ..default()
-            });
+            let light = stored_light(world.universe().main(), world.blocks(), drawn);
+            let material = materials.add(ModelMaterial { light, ..media.material(Some(model.texture.clone()), Color::WHITE) });
             let facing = facing(target.yaw);
             let feet = Transform::from_translation(coords::to_render(ZVec3::Z * -def.height * 0.5)).with_rotation(facing);
             let inner = commands.spawn((Transform::default(), Visibility::default(), TargetMarker)).id();
@@ -849,7 +834,7 @@ pub(crate) fn sync_targets(
                 && let Some(color) = block_color(&world, target.pos.translate(ZVec3::Z * -0.05))
             {
                 let dust = Burst { seed: target.id ^ world.tick(), center: target.pos, push: ZVec3::ZERO, count: feel.dust, speed: 2.0, size: 0.06 };
-                dust.spawn(&mut commands, &[color], &origin, &mut meshes, &mut materials);
+                dust.spawn(&mut commands, &[color], &world, &origin, &mut meshes, &mut materials, &media);
             }
         }
         view.was_on_ground = target.on_ground;
@@ -857,11 +842,17 @@ pub(crate) fn sync_targets(
         view.velocity = target.velocity;
 
         view.flash = (view.flash - real_dt).max(0.0);
-        if let Some(material) = materials.get_mut(&view.material) {
-            let bright = Vec3::ONE + view.tint * (FLASH_BRIGHTNESS - 1.0) * (view.flash / feel.flash_time.max(1e-3));
-            let wanted = Color::linear_rgb(bright.x, bright.y, bright.z);
-            if material.base_color != wanted {
-                material.base_color = wanted;
+        // Lit by the stored light at the middle of its body, eased so it doesn't step.
+        let light = stored_light(world.universe().main(), world.blocks(), drawn);
+        if let Some(material) = materials.get(&view.material) {
+            let bright = Vec3::ONE + view.tint * (FLASH_BRIGHTNESS - 1.0);
+            let flash = bright.extend(view.flash / feel.flash_time.max(1e-3));
+            let light = ease_light(material.light, light, real_dt);
+            if (material.flash != flash || material.light.distance(light) > 1e-4)
+                && let Some(material) = materials.get_mut(&view.material)
+            {
+                material.flash = flash;
+                material.light = light;
             }
         }
         if let (Some(rig), Some((skin, _))) = (&mut view.rig, &model.skin) {
@@ -919,6 +910,8 @@ pub(crate) struct WeaponState {
     whiffed: bool,
     /// The pose it's easing toward outside a swing, and its current pose there.
     pose: Option<Transform>,
+    /// The materials of its pieces, lit by the stored light where the camera is.
+    materials: Vec<Handle<ModelMaterial>>,
 }
 
 #[derive(Component)]
@@ -929,11 +922,14 @@ pub(crate) fn setup_weapon(
     mut commands: Commands,
     camera: Single<Entity, With<crate::PlayerCamera>>,
     mut meshes: ResMut<Assets<Mesh>>,
-    mut materials: ResMut<Assets<StandardMaterial>>,
+    mut materials: ResMut<Assets<ModelMaterial>>,
+    media: Res<ModelMedia>,
+    mut state: ResMut<WeaponState>,
 ) {
-    let wood = materials.add(StandardMaterial { base_color: Color::srgb(0.45, 0.3, 0.18), unlit: true, ..default() });
-    let metal = materials.add(StandardMaterial { base_color: Color::srgb(0.55, 0.57, 0.6), unlit: true, ..default() });
-    let band = materials.add(StandardMaterial { base_color: Color::srgb(0.25, 0.25, 0.28), unlit: true, ..default() });
+    let wood = materials.add(media.material(None, Color::srgb(0.45, 0.3, 0.18)));
+    let metal = materials.add(media.material(None, Color::srgb(0.55, 0.57, 0.6)));
+    let band = materials.add(media.material(None, Color::srgb(0.25, 0.25, 0.28)));
+    state.materials = vec![wood.clone(), metal.clone(), band.clone()];
     // Built along +Y from the grip, in the camera's space.
     let weapon = commands
         .spawn((Transform::default(), Visibility::Hidden, WeaponView))
@@ -944,6 +940,28 @@ pub(crate) fn setup_weapon(
         })
         .id();
     commands.entity(*camera).add_child(weapon);
+}
+
+/// Lights the held tool by the stored light where the camera is, eased so it doesn't step.
+pub(crate) fn light_weapon(
+    world: Res<ClientWorld>,
+    origin: Res<RenderOrigin>,
+    time: Res<Time>,
+    state: Res<WeaponState>,
+    camera: Single<&Transform, With<crate::PlayerCamera>>,
+    mut materials: ResMut<Assets<ModelMaterial>>,
+) {
+    let eye = WorldPos::new(origin.cell, coords::from_render(camera.translation));
+    let want = stored_light(world.universe().main(), world.blocks(), eye);
+    for handle in &state.materials {
+        let Some(now) = materials.get(handle).map(|m| m.light) else { continue };
+        let light = ease_light(now, want, time.delta_secs());
+        if now.distance(light) > 1e-4
+            && let Some(material) = materials.get_mut(handle)
+        {
+            material.light = light;
+        }
+    }
 }
 
 /// Poses the tool in camera space, from the grip: resting low on the right, cocked back in the

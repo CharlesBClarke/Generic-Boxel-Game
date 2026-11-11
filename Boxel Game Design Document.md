@@ -69,6 +69,7 @@ The project's words, used the same way in conversation, code and docs. When a ne
 | Material | What a block is made of (stone, wood, brass). Its look and properties come with it into every shape made of it. |
 | Shape | Which texels of a boxel something fills. |
 | Gadget | Anything that comes out of a crafting table, of one material or several, carried and placed as its own item. Replaces "part" (2026-11-07; the code still says part). Example: an insulated door corner, or the door it goes into. |
+| Club | The held tool: a wooden handle with a metal head, swung at cows. The user sometimes calls it "the mace" (2026-11-11); the code and docs say club. |
 | Blueprint | The plan a gadget is made from: kept in a list, not carried, editable, and makeable without crafting it. A blueprint can use other blueprints, folded under it (a door's corners under the door). |
 | Drafting | Designing a blueprint: in a view of its own, anywhere, with no table and no materials. Crafting is making gadgets from a blueprint at a table. Agreed 2026-11-07 as two separate things; drafting isn't built as its own step yet. |
 | Bundle | A gadget of several materials (up to 8), placed whole into one boxel as one occupant per material. |

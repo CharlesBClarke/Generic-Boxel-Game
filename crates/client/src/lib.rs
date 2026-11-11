@@ -18,6 +18,7 @@ pub mod heights;
 pub mod hurt;
 pub mod items;
 pub mod mesher;
+pub mod model;
 pub mod meshing;
 pub mod perf;
 pub mod shading;
@@ -76,7 +77,7 @@ pub fn run(connection: Box<dyn Connection>) {
             primary_window: Some(Window { title: "Boxel".into(), ..default() }),
             ..default()
         }))
-        .add_plugins((EguiPlugin::default(), typing::TypingPlugin, SolidPlugin, shading::ShadingPlugin, shadows::ShadowsPlugin))
+        .add_plugins((EguiPlugin::default(), typing::TypingPlugin, SolidPlugin, model::ModelPlugin, shading::ShadingPlugin, shadows::ShadowsPlugin))
         .init_resource::<heights::Heights>()
         .insert_resource(ClearColor(Color::srgb(0.55, 0.75, 0.95)))
         .insert_resource(Time::<Fixed>::from_hz(protocol::TICK_RATE))
@@ -156,7 +157,7 @@ pub fn run(connection: Box<dyn Connection>) {
                 editing::update_ghost,
                 editing::update_hidden_ghosts,
                 items::sync_items,
-                (combat::sync_targets, combat::update_chunks, combat::animate_weapon, combat::draw_hit_boxes, combat::draw_routes, combat::update_readout, hurt::update_health)
+                (combat::sync_targets, combat::update_chunks, combat::animate_weapon, combat::light_weapon, combat::draw_hit_boxes, combat::draw_routes, combat::update_readout, hurt::update_health)
                     .chain(),
                 editing::draw_region_guide,
                 drill::draw_drill,
@@ -309,6 +310,7 @@ fn spawn_chunk_meshes(
         atmosphere: default(),
         sheens: sheens.clone(),
         heights: heights.clone(),
+        light: Vec4::ZERO,
         alpha_mode,
     };
     let material = materials.add(solid(Color::WHITE, AlphaMode::Opaque));

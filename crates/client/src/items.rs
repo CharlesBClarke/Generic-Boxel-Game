@@ -1,7 +1,9 @@
 //! Drawing loose items as debris: a small copy of the block each came from, blended between
 //! ticks. In the air it tumbles about the axis it was thrown along; on landing it turns the
 //! short way onto a face so it lies flat, and squashes for a moment, as it does on each bounce.
-//! At rest it lies still. Purely a view; the simulation moves items and owns their boxes.
+//! At rest it lies still. Each item has its own copy of the blocks' material, lit by the stored
+//! light where it is (its mesh carries none), eased so it doesn't step. Purely a view; the
+//! simulation moves items and owns their boxes.
 
 use std::collections::HashMap;
 
@@ -10,6 +12,8 @@ use bevy::prelude::*;
 use sim::{BlockId, BlockRegistry, Item, Occupant};
 
 use crate::editing::ChunkMeshes;
+use crate::model::{ease_light, stored_light};
+use crate::solid::SolidMaterial;
 use crate::world::ClientWorld;
 use crate::{RenderOrigin, coords, mesher};
 
@@ -40,6 +44,8 @@ struct View {
     outer: Entity,
     inner: Entity,
     block: BlockId,
+    /// Its own material, for its own light.
+    material: Handle<SolidMaterial>,
     rotation: Quat,
     /// Render-space axis times radians a second.
     spin: Vec3,
@@ -67,6 +73,7 @@ pub(crate) fn sync_items(
     time: Res<Time>,
     chunk_meshes: Res<ChunkMeshes>,
     mut meshes: ResMut<Assets<Mesh>>,
+    mut materials: ResMut<Assets<SolidMaterial>>,
     mut state: ResMut<ItemViews>,
     mut transforms: Query<&mut Transform, With<ItemView>>,
 ) {
@@ -85,7 +92,15 @@ pub(crate) fn sync_items(
         // only exist after this system, so setting them through the query would miss the
         // first frame and draw it at the origin.
         let new = !views.contains_key(&item.id);
-        let view = views.entry(item.id).or_insert_with(|| View::new(item, Entity::PLACEHOLDER, Entity::PLACEHOLDER, blocks));
+        let center = item.prev_pos.translate(item.prev_pos.delta_to(item.pos) * alpha);
+        let light = stored_light(world.universe().main(), blocks, center);
+        let view = views.entry(item.id).or_insert_with(|| {
+            let material = match materials.get(&chunk_meshes.material).cloned() {
+                Some(shared) => materials.add(SolidMaterial { light, ..shared }),
+                None => chunk_meshes.material.clone(),
+            };
+            View::new(item, Entity::PLACEHOLDER, Entity::PLACEHOLDER, material, blocks)
+        });
         if view.block != item.block {
             // Merged into its material's own block: show that shape instead.
             view.block = item.block;
@@ -94,8 +109,15 @@ pub(crate) fn sync_items(
             commands.entity(view.inner).insert(Mesh3d(mesh.clone()));
         }
         view.update(item, dt);
+        if let Some(now) = materials.get(&view.material).map(|m| m.light) {
+            let light = ease_light(now, light, dt);
+            if now.distance(light) > 1e-4
+                && let Some(material) = materials.get_mut(&view.material)
+            {
+                material.light = light;
+            }
+        }
 
-        let center = item.prev_pos.translate(item.prev_pos.delta_to(item.pos) * alpha);
         let (since, amount) = view.squash;
         let squash = if since < SQUASH_TIME { amount * (1.0 - since / SQUASH_TIME) } else { 0.0 };
         // Drawn bigger than its box when merged, growing up from the box's bottom; squashed
@@ -107,7 +129,7 @@ pub(crate) fn sync_items(
             .with_scale(coords::to_render(ZVec3::new(1.0 + squash * 0.5, 1.0 + squash * 0.5, 1.0 - squash)).abs());
         let inner = Transform::from_rotation(view.rotation).with_scale(Vec3::splat(item.scale(def) * item.growth()));
         if new {
-            view.inner = commands.spawn((Mesh3d(mesh), MeshMaterial3d(chunk_meshes.material.clone()), inner, ItemView)).id();
+            view.inner = commands.spawn((Mesh3d(mesh), MeshMaterial3d(view.material.clone()), inner, ItemView)).id();
             view.outer = commands.spawn((outer, Visibility::default(), ItemView)).add_child(view.inner).id();
             continue;
         }
@@ -128,7 +150,7 @@ pub(crate) fn sync_items(
 }
 
 impl View {
-    fn new(item: &Item, outer: Entity, inner: Entity, blocks: &BlockRegistry) -> Self {
+    fn new(item: &Item, outer: Entity, inner: Entity, material: Handle<SolidMaterial>, blocks: &BlockRegistry) -> Self {
         // Thrown along its velocity, it tumbles forward: about the level axis across it.
         let v = item.velocity;
         let across = ZVec3::Z.cross(ZVec3::new(v.x, v.y, 0.0)).normalize_or(ZVec3::X);
@@ -136,6 +158,7 @@ impl View {
             outer,
             inner,
             block: item.block,
+            material,
             rotation: Quat::IDENTITY,
             spin: coords::to_render(across) * v.length() * TUMBLE_PER_SPEED,
             rests: rest_turns(item.block, blocks),
@@ -174,7 +197,8 @@ impl View {
 }
 
 /// A mesh of `item`'s block, unturned and centered on the middle of its shape, so it turns and
-/// scales about the middle of the box the simulation collides with.
+/// scales about the middle of the box the simulation collides with. It carries no stored light:
+/// the item's material brings that.
 fn item_mesh(item: &Item, blocks: &BlockRegistry, chunk_meshes: &ChunkMeshes) -> Mesh {
     let mut data = mesher::MeshData::default();
     let middle = ((item.bounds.min + item.bounds.max) * -0.5).to_array();
@@ -183,6 +207,7 @@ fn item_mesh(item: &Item, blocks: &BlockRegistry, chunk_meshes: &ChunkMeshes) ->
     let around = || &boxes;
     let (volumes, off) = (&chunk_meshes.volumes, &mesher::AoTuning::OFF);
     mesher::mesh_occupant(&mut data, occupant, middle, blocks, volumes, |_| false, &around, off, &mut mesher::DrawnFaces::default());
+    data.light = vec![[0; 4]; data.positions.len()];
     crate::to_bevy_mesh(data)
 }
 
@@ -251,6 +276,50 @@ mod tests {
         let [outer] = outer[..] else { panic!("one item drawn, got {}", outer.len()) };
         let want = coords::render_translation(item_pos, api::I64Vec3::ZERO);
         assert!((outer.translation - want).length() < 0.2, "drawn at {} on its first frame, not at {want}", outer.translation);
+    }
+
+    #[test]
+    fn an_item_is_lit_by_the_stored_light_where_it_lies_through_its_own_material() {
+        use crate::world::testing::{base_sim, connect, step};
+        let mut sim = base_sim();
+        sim.spawn_player().unwrap();
+        sim.teleport_player(api::WorldPos::new(api::I64Vec3::new(10, 10, 0), ZVec3::new(0.5, 0.5, 0.0)));
+        let (mut link, mut world) = connect(sim);
+        let down = -89f32.to_radians();
+        step(&mut link, &mut world, &sim::PlayerInput { pitch: down, use_pressed: true, use_held: true, ..Default::default() });
+
+        let volumes = crate::volumes::Volumes::build(world.looks(), world.blocks());
+        let mut app = App::new();
+        app.add_plugins((MinimalPlugins, AssetPlugin::default())).init_asset::<Mesh>().init_asset::<SolidMaterial>();
+        let shared = app.world_mut().resource_mut::<Assets<SolidMaterial>>().add(SolidMaterial {
+            tint: LinearRgba::WHITE,
+            volumes: Handle::default(),
+            atmosphere: default(),
+            sheens: Handle::default(),
+            heights: Handle::default(),
+            light: Vec4::ZERO,
+            alpha_mode: AlphaMode::Opaque,
+        });
+        app.insert_resource(world)
+            .init_resource::<RenderOrigin>()
+            .init_resource::<ItemViews>()
+            .insert_resource(ChunkMeshes { material: shared.clone(), volumes, entities: HashMap::new(), quads: HashMap::new(), last_meshing: None, merged: true, versions: HashMap::new() })
+            .add_systems(Update, sync_items);
+        app.update();
+
+        let world = app.world_mut();
+        let drawn: Vec<_> = world.query::<(&MeshMaterial3d<SolidMaterial>, &Mesh3d)>().iter(world).map(|(m, mesh)| (m.0.clone(), mesh.0.clone())).collect();
+        let [(material, mesh)] = &drawn[..] else { panic!("one item drawn, got {}", drawn.len()) };
+        assert_ne!(*material, shared, "the item has its own material, not the world's");
+        let client = world.resource::<ClientWorld>();
+        let item = client.items().iter().next().unwrap();
+        let want = stored_light(client.universe().main(), client.blocks(), item.pos);
+        let got = world.resource::<Assets<SolidMaterial>>().get(material).unwrap().light;
+        assert!(got.distance(want) < 0.05, "lit {got}, the light there is {want}");
+        // Its mesh adds no light of its own: no open sky in a cave.
+        let mesh = world.resource::<Assets<Mesh>>().get(mesh).unwrap();
+        let Some(bevy::mesh::VertexAttributeValues::Unorm8x4(light)) = mesh.attribute(crate::solid::ATTRIBUTE_LIGHT) else { panic!("no light attribute") };
+        assert!(light.iter().all(|l| *l == [0; 4]), "the item's mesh carries stored light");
     }
 
     #[test]

@@ -104,7 +104,19 @@ A run of small toy slices. Each one takes a single game-feel feature that doesn'
 
 ### Current toy
 
-None in progress: Smooth FPS readout closed 2026-11-11. Suggested next: Shadow speed (start with a bench run of the switches to see where the frame goes now), or plain Render scale to test whether the frame is still bound by triangles.
+**Lit models** (branch `toy-model-lighting`, from the backlog's "Shadows on cows, items and the held tool"). **Stage:** Verify (plan approved 2026-11-11; implemented and tested 2026-11-11, waiting on the play check and the quick bench).
+
+*Problem:* cows, the club and hit debris are drawn with Bevy's unlit `StandardMaterial`: they cast shadows but don't take them, and glow at night and in caves. Loose items use `SolidMaterial` (so they take sun shadows) but their mesh has no stored light, so they're lit as under open sky and glow in caves.
+
+*Plan:*
+1. Move the sun shadow (shadow maps and far shadow) out of `solid.wgsl` into a shared shader module, so blocks and models light the same way.
+2. A `ModelMaterial` (`client::model`, `model.wgsl`) for cows, the club, hit debris and slam dust: a texture (plain white plus a color for the club and debris), the flash, the stored light where it stands, the atmosphere and height map. Only the fragment shader is ours; Bevy's vertex and shadow shaders keep skinning and casting. `shading::sync_atmosphere` keeps it current. The baked vertex shading on models goes, as real light replaces it.
+3. Stored light per object, read on the CPU from the client world at a cow's body middle, the camera's boxel for the club, an item's boxel, and a debris piece's spawn spot; eased over about 0.2 s so it doesn't step per boxel.
+4. Items: `SolidMaterial` gets a `light` added to the vertex light (0 for chunks); each item gets its own material with its boxel's light, and item meshes stop baking in open sky.
+
+*Tests:* a cow under a roof gets low sky light and one in the open full; an item in a cave gets its boxel's light; the light eases, not steps; no unlit `StandardMaterial` is left on cows, the club or debris.
+
+*Done when:* cows, the club and debris darken in shadow, at night and in caves and light up near lumite; the hit flash still reads; items in caves look dark; the quick bench shows no surprise.
 
 **Waiting for a play check** (remind the user at the start of every session, and at good moments during one, until they confirm; then delete the line):
 
