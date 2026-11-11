@@ -104,30 +104,7 @@ A run of small toy slices. Each one takes a single game-feel feature that doesn'
 
 ### Current toy
 
-#### Day and night (`toy-day-and-night`)
-
-**Stage:** Verify (implemented and tested 2026-11-10; waiting for the user to play it)
-
-**Goal:** a day that runs through dawn, day, dusk and night, with the sky and its light colored by the time of day, from the time-of-day palette in `../stylised-sky` (MIT, from Eanpa Sky by SkyeShark, MIT). No clouds. The user: "it has a nice time of day colors and we can have colored light right? no need the clouds."
-
-**Plan**
-1. *Time in `sim`:* a time of day (hours, 0 to 24) the simulation advances each tick, sent to the client in snapshots and saved with the world (a save without it starts at a default hour). Day length is a server tunable, short by default (120 s) and variable ("we want it short now and long latter"); the panel can also set the time and pause it.
-2. *Palette (`client::sky`):* Eanpa's six keyframes by sun elevation (zenith, horizon, sun color and strength, star fade) and the low-sun warmth, driving the existing Atmosphere values (zenith, horizon, sun color, sky and ground light); fog follows the horizon.
-3. *Sky shader:* their gradient and sun glow, **their sun** (disc, halo, glow; the user: "their sun our sun sucks"), stars and a simple moon lit from the sun. Our rayed sun and its ray sliders go.
-4. *Night:* the moon is a dim blue light without shadows, gated by stored sky light so caves stay dark; shadow maps and the far shadow switch off once the sun has faded out. A floor of night light; lamps stand out. Sun and moon can both be up near dawn and dusk; only the sun casts shadows.
-5. *Sun:* driven by the sim's time instead of `Sun::on_day`, keeping `sun_step` so shadows don't crawl.
-6. *Tuning:* their numbers rescaled for our tone mapping; a time slider to scrub, and overall sun, sky and moon strengths.
-7. *Tests:* palette ends and blends, sun and moon arcs at given hours, both up at once, time advancing and wrapping, time saved and loaded (and missing from an old save), shadows off at night.
-8. *Credits:* both MIT licenses under `licenses/`.
-
-**Out of scope:** clouds, cloud shadows, weather, rain, lightning, the moon's sea texture, light on cows, items and the held tool.
-
-**Done when**
-1. A day runs through dawn, day, dusk and night in the ported colors.
-2. Sun and sky light take those colors, with no remesh.
-3. Night shows stars and a moon; moonlight casts no shadows and stays out of caves; lamps stand out.
-4. Time is owned by the sim, saved and loaded; day length tunable live; time can be set and paused.
-5. The quick bench runs; compare a day spot against a night spot.
+None in progress: Day and night closed 2026-11-11. Suggested next: Shadow speed (backlog; notes in `docs/notes/shadow-speed.md`), now measured against nights that draw no shadows.
 
 **Waiting for a play check** (remind the user at the start of every session, and at good moments during one, until they confirm; then delete the line):
 
@@ -143,7 +120,6 @@ A run of small toy slices. Each one takes a single game-feel feature that doesn'
 - **AO in the shader.** Added 2026-11-10, from Greedy meshing: AO is the only thing still stopping merges on open terrain; looked up by the shader instead of baked per corner, the bench terrain would go from 0.29M triangles to ~0.15M. Notes: `docs/notes/greedy-meshing.md`.
 - **Render scale.** Split from Benchmark and render scale (2026-11-10, the bench became its own toy): a render scale slider that draws the world at 50–100% of the window and stretches it up, the HUD sharp.
 - **Shadow speed.** Added 2026-11-10, from Sun shadows, after the bench: shadows add ~11 ms a frame on the Iris Xe at the bench's spots (6–7 ms without, release build). *Bench findings (2026-11-10):* it's all GPU time and follows the triangle count, not pixels, cascades or map size; one more pass over ~1M triangles costs 2.5–4.5 ms, so start by measuring fewer triangles (greedy meshing). *After Greedy meshing (2026-11-10):* the shipped frame is now 12.1 / 15.3 / 10.6 ms at recorded / overlook / lake, at 0.29M triangles. Notes: `docs/notes/shadow-speed.md`. The first idea, kept: Store the far shadow (how lit each column's top is, worked out only when the sun steps or a block changes) so a pixel makes one read instead of a walk; make the far shadow run only past the maps' range even when they're off, so each switch shows its own cost; tune cascades and map size on the bench.
-- **Day and night.** Added 2026-11-10, from Sun shadows' plan: time owned by `sim` and saved, the sun moving slowly through a day, and night itself. The moving sun's shake was let go for now as a slow sun shows it far less.
 - **Shadows on cows, items and the held tool.** Added 2026-11-10, from Sun shadows' plan: they cast but don't receive; *since Day and night (2026-11-10) cows and the club, drawn unlit, also glow at night: the user, "leave the cows for later".* moving them onto the one `SolidMaterial` like blocks would fix it (the user: "we will fix the one matrial thing there too").
 - **Colored lamps.** Added 2026-11-10, offered in Stored light, not built: red, green and blue lumite (`light = [255, 0, 0]` and so on) with a dark test room by the lab, to see colors mix. Data only (`blocks.toml`, `inventory.toml`) plus a little world building in `base`.
 - **More materials.** Added 2026-11-09, batches B and C of Experimental materials, deferred as one entry: sensor, delay, the trigger scope switch (boxel-wide or touching signals), bounce pads and falling material, plus beam tuning and setting crystals off from a distance. Notes: `docs/notes/more-materials.md`.
@@ -249,6 +225,7 @@ Bugs found in already-merged code, each fixed on its own `fix-` branch (see the 
 ### Done toys
 
 Full write-ups (plans, implementation notes, verify rounds, decisions) are in `docs/done-toys.md`. One line each, newest first:
+- **Day and night** (2026-11-11, `toy-day-and-night`). A time of day owned by the sim and saved, with Eanpa Sky's palette: dawn, day, dusk and a near-black night with stars and a glowing moon, the light on blocks taking the sky's colors. Moonlight casts no shadows, so nights draw none (half the frame time). ACES tone mapping, dithering, and the Shading sliders in groups.
 - **Greedy meshing** (2026-11-10, `toy-greedy-meshing`). Neighboring terrain faces that look alike are drawn as one bigger quad, the shader repeating looks and edge lines every boxel: 70% fewer triangles, frames 22–36% faster at the bench's spots. A merge faces checkbox in the View section.
 - **Bench** (2026-11-10, `toy-bench`). One command measures any commit's frame rate unattended, at the same spots on the same terrain, under named sets of settings, and compares builds; old commits get the bench copied in. Every toy now runs it at Verify. Its first study found the shadows' cost follows the triangle count. Also MSAA and depth prepass switches, and F9 lines that say the window size and settings.
 - **Sun shadows** (2026-11-10, `toy-sun-shadows`, frame rate deferred). Blocks cast sun shadows: sharp shadow maps near the camera (Gaussian edges, steady as the FOV widens), a height-map shadow past them so distant hills shade valleys, a moving sun for testing, all on sliders. Adds ~20 ms on the Iris Xe; a bench and shadow speed toys come next.

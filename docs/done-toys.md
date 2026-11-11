@@ -3,6 +3,62 @@
 Moved out of `SLICES.md` on 2026-11-03 so the roadmap stays short. Each toy's full write-up, newest first, as it stood when it closed. `SLICES.md` keeps a one-line summary of each.
 
 
+#### Day and night (`toy-day-and-night`)
+
+**Stage:** Done (2026-11-11)
+
+**Goal:** a day that runs through dawn, day, dusk and night, with the sky and its light colored by the time of day, from the time-of-day palette in `../stylised-sky` (MIT, from Eanpa Sky by SkyeShark, MIT). No clouds. The user: "it has a nice time of day colors and we can have colored light right? no need the clouds."
+
+**Plan**
+1. *Time in `sim`:* a time of day (hours, 0 to 24) the simulation advances each tick, sent to the client in snapshots and saved with the world (a save without it starts at a default hour). Day length is a server tunable, short by default (120 s) and variable ("we want it short now and long latter"); the panel can also set the time and pause it.
+2. *Palette (`client::sky`):* Eanpa's six keyframes by sun elevation (zenith, horizon, sun color and strength, star fade) and the low-sun warmth, driving the existing Atmosphere values (zenith, horizon, sun color, sky and ground light); fog follows the horizon.
+3. *Sky shader:* their gradient and sun glow, **their sun** (disc, halo, glow; the user: "their sun our sun sucks"), stars and a simple moon lit from the sun. Our rayed sun and its ray sliders go.
+4. *Night:* the moon is a dim blue light without shadows, gated by stored sky light so caves stay dark; shadow maps and the far shadow switch off once the sun has faded out. A floor of night light; lamps stand out. Sun and moon can both be up near dawn and dusk; only the sun casts shadows.
+5. *Sun:* driven by the sim's time instead of `Sun::on_day`, keeping `sun_step` so shadows don't crawl.
+6. *Tuning:* their numbers rescaled for our tone mapping; a time slider to scrub, and overall sun, sky and moon strengths.
+7. *Tests:* palette ends and blends, sun and moon arcs at given hours, both up at once, time advancing and wrapping, time saved and loaded (and missing from an old save), shadows off at night.
+8. *Credits:* both MIT licenses under `licenses/`.
+
+**Out of scope:** clouds, cloud shadows, weather, rain, lightning, the moon's sea texture, light on cows, items and the held tool.
+
+**Done when**
+1. A day runs through dawn, day, dusk and night in the ported colors.
+2. Sun and sky light take those colors, with no remesh.
+3. Night shows stars and a moon; moonlight casts no shadows and stays out of caves; lamps stand out.
+4. Time is owned by the sim, saved and loaded; day length tunable live; time can be set and paused.
+5. The quick bench runs; compare a day spot against a night spot.
+
+*Built:* `sim::clock` (`Clock`: hours, `day_seconds`, `paused`; a `time` tuning section; `Command::SetTime`, `Command::PauseTime`; the clock in every `Snapshot`; saves at version 3 keep the hour, older ones load at 9:00). `client::sky` holds Eanpa's palette and the sun's and moon's arcs as plain math (`DaySky::at`); `shading` turns a `DaySky` into the atmosphere; `shadows::Sun` follows the world's clock (or `hold_hour`). The sun rises in the east at 6:00, peaks in the south at noon at `sun_arc` (58°, so 10:00 is where the old fixed sun sat), sets in the west at 18:00; the moon runs `moon_lag` hours behind on a lower arc. Licenses in `licenses/`.
+
+*Changed in Verify (each engaged unless noted):*
+- The moon let stars through and had a busy sea texture ("I see stars trougth the moon, the moon has a way more defined texture then in the orginginal"): it now covers the stars, with faint broad seas.
+- Night couldn't get dark ("I set night_light to zero, moon_strength to zero and min light_light to zero and I still see detail on the floor, unlike a cave"): the port kept a quarter of noon's sky light at night. Sky light now darkens with the sky's own color, and past 10° below the horizon it is `night_light` alone.
+- Banding in the night sky: our two shaders tone-mapped but skipped Bevy's dither. Added (`atmosphere::dithered`), then made to never clip a near-black channel, as clipping greyed the dark blue ("I see less blue").
+- `sky_brightness` split into `day_sky` and `night_sky` ("I thought i would get the ablity to make night sky darker and day sky briger").
+- The day sky was "only verye blue directly up, its gray and misty to the sides": a tone mapper pick list (View), `haze` and `blue_reach`. The user picked ACES ("ACES looks better, make it the default im suprised I assume it was trashyer").
+- The sun's glows split into `sun_halo`, `sun_glow`, `horizon_glow` and `horizon_glow_size`; the horizon glow fades as the sun goes down ("the horizon_glow is so powerfull when the sun is deep under the hozison I can still see it"). `moon_brightness` added; the user turned down a moon halo ("the moon dosent need a halo, its just needs to look emisive").
+- The Shading sliders in groups: paths, sky look (lights nothing), light on blocks, lamps, fog, edges ("I want sun an moons look to be seprate for things that effect blocks").
+- The moon's phases were lit from behind ("it looks like a 2d flat color is coviring something up"); phases dropped, as a moon opposite the sun is always full. An evenly glowing disc with a slightly darker rim.
+- Proposed and not built: drawing the sun and moon at a fixed size on screen (they stretch toward the screen's edges, as everything does in a wide view); the user: "I lerned something we dont need to change that".
+- The user's picks baked as defaults: ACES, `night_sky` 0.002, `night_light` 0.02, `moon_strength` 0.07, `moon_size` 2.8, `moon_brightness` 0.8, `stars` 3, `fog_start` 0.23, plus the earlier `min_light` 0, `sun_halo` and `sun_glow` 3.
+
+*Verify (2026-11-11):* 1–3 met in play (the user tuned through the day and night: "ok I found the settings I like"). 4 met: tests, and the user: "save and load works". 5 met: quick bench, 10:00 held on both builds, `master` (eb13b0e) against `work-382b6ea`:
+
+| spot | master ms | work ms | change |
+|---|---|---|---|
+| recorded | 11.4 | 11.8 | +3% (GPU clock 1068 vs 1010 MHz) |
+| overlook | 15.6 | 16.6 | +7% |
+| lake | 10.3 | 10.5 | +2% |
+
+The overlook row is about 1 ms slower; not measured, likely per-pixel work added everywhere (two dithers, the sky's sun and moon math over that spot's large sky). Day against night on this branch (`tools/bench/day.txt`, sets `morning` and `night`): 12.5 / 17.0 / 11.3 ms at 10:00 against 6.1 / 5.9 / 5.0 ms at midnight, as the shadows stop drawing. Screenshots: day as master's but mistier (the new fog start), night near black under stars, the club glowing.
+
+*Decisions:* time of day is owned by `sim`, saved, and sent in snapshots; it changes nothing in the simulation yet. The sky's colors are Eanpa Sky's palette keyed on the sun's elevation; light on blocks takes its colors from it without remeshing. Only the sun casts shadows; moonlight is unshadowed and gated by stored sky light, and once the sun is down no shadows are drawn. ACES is the tone mapper; both of our shaders dither after it. The bench holds 10:00 (`shading.hold_hour`).
+
+*Deferred:* moon phases (a moon that drifts against the sun over days); cows, items and the held tool glowing at night (in the backlog's "Shadows on cows" entry); a mod API to read the time of day; the overlook spot's extra millisecond.
+
+*API debt:* none new; the sky is all client-side, and the time's commands are server commands like the others.
+
+
 #### Greedy meshing (`toy-greedy-meshing`)
 
 **Stage:** Done (2026-11-10)
