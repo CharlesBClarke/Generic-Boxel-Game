@@ -36,12 +36,21 @@ impl UiScaleTuning {
     }
 }
 
+/// The tuning panel's groups for [`UiScaleTuning`]'s values.
+const UI_SCALE_GROUPS: &[(&str, &[&str])] = &[
+];
+/// What each of [`UiScaleTuning`]'s values does, for the tuning panel.
+const UI_SCALE_HELP: &[(&str, &str)] = &[
+    ("size", "Your multiplier on the UI's size, on top of the window's."),
+    ("reference_height", "The window height, in logical pixels, at which the UI is drawn at its natural size; taller windows draw it bigger."),
+];
+
 impl Tunables for UiScaleTuning {
     fn tunables(&self) -> Vec<Tunable> {
-        vec![
+        api::tuning::described(vec![
             Tunable::new("size", self.size, 0.5, 1.5),
             Tunable::new("reference_height", self.reference_height, 480.0, 2160.0),
-        ]
+        ], UI_SCALE_GROUPS, UI_SCALE_HELP)
     }
 
     fn set_tunable(&mut self, name: &str, value: f32) -> bool {

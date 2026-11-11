@@ -77,10 +77,26 @@ impl SignalDef {
     }
 }
 
+/// The tuning panel's groups for [`SignalDef`]'s values.
+const SIGNAL_GROUPS: &[(&str, &[&str])] = &[
+    ("Phasing", &["grab"]),
+    ("Crystal blast", &["blast_range", "blast_strength", "blast_radius", "blast_damage", "blast_player_damage", "blast_push"]),
+];
+/// What each of [`SignalDef`]'s values does, for the tuning panel.
+const SIGNAL_HELP: &[(&str, &str)] = &[
+    ("grab", "How far hiding a phase group takes other things with it, texels: everything within this many texels of the group, edges and corners counting. 0 takes only the group."),
+    ("blast_range", "How far a crystal's beam runs, in boxels past the lens's own."),
+    ("blast_strength", "How much the beam breaks before it stops, in full blocks' worth (a slab uses up half)."),
+    ("blast_radius", "How far from the beam's middle line a body is hit, meters, past its own width."),
+    ("blast_damage", "Health a creature in the beam loses."),
+    ("blast_player_damage", "Health you lose standing in the beam."),
+    ("blast_push", "How hard a body in the beam is thrown along it, m/s (a creature's weight softens it)."),
+];
+
 impl Tunables for SignalDef {
     fn tunables(&self) -> Vec<Tunable> {
         let b = &self.blast;
-        vec![
+        crate::tuning::described(vec![
             Tunable::new("grab", self.grab, 0.0, Self::MAX_GRAB),
             Tunable::new("blast_range", b.range, 0.0, BlastDef::MAX_RANGE),
             Tunable::new("blast_strength", b.strength, 0.0, 64.0),
@@ -88,7 +104,7 @@ impl Tunables for SignalDef {
             Tunable::new("blast_damage", b.damage, 0.0, 200.0),
             Tunable::new("blast_player_damage", b.player_damage, 0.0, 20.0),
             Tunable::new("blast_push", b.push, 0.0, 60.0),
-        ]
+        ], SIGNAL_GROUPS, SIGNAL_HELP)
     }
 
     fn set_tunable(&mut self, name: &str, value: f32) -> bool {

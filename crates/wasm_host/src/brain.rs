@@ -64,7 +64,7 @@ impl Brain for WasmBrain {
 impl Tunables for WasmBrain {
     fn tunables(&self) -> Vec<Tunable> {
         let list = self.0.call(|b, s| b.boxel_api_brain().call_tunables(s));
-        list.unwrap_or_default().into_iter().map(|t| Tunable { name: t.name, value: t.value, min: t.min, max: t.max }).collect()
+        list.unwrap_or_default().into_iter().map(|t| Tunable { name: t.name, value: t.value, min: t.min, max: t.max, group: t.group, help: t.help }).collect()
     }
 
     fn set_tunable(&mut self, name: &str, value: f32) -> bool {

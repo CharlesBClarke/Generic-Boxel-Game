@@ -22,12 +22,21 @@ impl Default for WorldSettings {
     }
 }
 
+/// The tuning panel's groups for [`WorldSettings`]'s values.
+const WORLD_GROUPS: &[(&str, &[&str])] = &[
+];
+/// What each of [`WorldSettings`]'s values does, for the tuning panel.
+const WORLD_HELP: &[(&str, &str)] = &[
+    ("terrain_height", "How many 32-boxel chunks each terrain spans, bottom to top. Takes effect on Regenerate terrain."),
+    ("sim_distance", "Creatures and loose items farther than this from you hold still, meters."),
+];
+
 impl Tunables for WorldSettings {
     fn tunables(&self) -> Vec<Tunable> {
-        vec![
+        api::tuning::described(vec![
             Tunable::new("terrain_height", self.terrain_height as f32, 1.0, 32.0),
             Tunable::new("sim_distance", self.sim_distance, 16.0, 4096.0),
-        ]
+        ], WORLD_GROUPS, WORLD_HELP)
     }
 
     fn set_tunable(&mut self, name: &str, value: f32) -> bool {

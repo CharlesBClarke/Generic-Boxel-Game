@@ -175,11 +175,55 @@ impl Default for SoundTuning {
     }
 }
 
+/// The tuning panel's groups for [`SoundTuning`]'s values.
+const SOUND_GROUPS: &[(&str, &[&str])] = &[
+    ("Volumes", &["master", "movement", "blocks", "combat", "creatures", "robot"]),
+    ("Hearing in space", &["spatial", "near", "far"]),
+    ("Landings", &["land_quiet", "land_full", "land_loudness", "land_pitch_drop"]),
+    ("Steps, hits and pick-ups", &["creature_stride", "block_hit_volume", "pickup_material", "pickup_gap"]),
+    ("Servo (turning the view)", &["servo_volume", "servo_start", "servo_full", "servo_pitch_low", "servo_pitch_high", "servo_attack", "servo_release"]),
+    ("Wind (moving fast)", &["wind_volume", "wind_start", "wind_full", "wind_pitch_low", "wind_pitch_high", "wind_attack", "wind_release"]),
+];
+/// What each of [`SoundTuning`]'s values does, for the tuning panel.
+const SOUND_HELP: &[(&str, &str)] = &[
+    ("master", "Loudness of everything."),
+    ("movement", "Loudness of your steps, landings, servo and wind."),
+    ("blocks", "Loudness of breaking and placing blocks."),
+    ("combat", "Loudness of swings, hits and kills."),
+    ("creatures", "Loudness of creatures: voices, steps, slams."),
+    ("robot", "Loudness of the robot's own sounds (hurt, knock-outs)."),
+    ("spatial", "How strongly a sound pans toward the nearer ear: 0 hears everything in the middle."),
+    ("near", "Within this many meters a sound plays at full loudness."),
+    ("far", "Beyond this many meters a sound is silent; it fades evenly from near."),
+    ("land_quiet", "Landing speed below which there's no thud, m/s."),
+    ("land_full", "Landing speed from which the thud is at full loudness, m/s."),
+    ("land_loudness", "How much louder than a footstep a full landing sounds."),
+    ("land_pitch_drop", "How much lower in pitch a full landing plays, as a share."),
+    ("creature_stride", "Meters a creature walks per footstep."),
+    ("block_hit_volume", "How much louder than a footstep a swing sounds when it hits a block's surface."),
+    ("pickup_material", "How loud the picked-up material's place sound plays under a pick-up."),
+    ("pickup_gap", "The fewest seconds between pick-up sounds, so a burst doesn't pile up."),
+    ("servo_volume", "The servo whine's loudest, from servo_full."),
+    ("servo_start", "View turn speed below which the servo is silent, radians per second."),
+    ("servo_full", "View turn speed from which the servo is loudest and highest, radians per second."),
+    ("servo_pitch_low", "The servo's pitch at servo_start."),
+    ("servo_pitch_high", "The servo's pitch at servo_full."),
+    ("servo_attack", "Seconds the servo takes to fade in."),
+    ("servo_release", "Seconds the servo takes to fade out."),
+    ("wind_volume", "The wind's loudest, from wind_full."),
+    ("wind_start", "Body speed below which there's no wind, m/s."),
+    ("wind_full", "Body speed from which the wind is loudest and highest, m/s."),
+    ("wind_pitch_low", "The wind's pitch at wind_start."),
+    ("wind_pitch_high", "The wind's pitch at wind_full."),
+    ("wind_attack", "Seconds the wind takes to fade in."),
+    ("wind_release", "Seconds the wind takes to fade out."),
+];
+
 macro_rules! tunable_fields {
     ($($field:ident: $min:expr, $max:expr;)*) => {
         impl Tunables for SoundTuning {
             fn tunables(&self) -> Vec<Tunable> {
-                vec![$(Tunable::new(stringify!($field), self.$field, $min, $max)),*]
+                api::tuning::described(vec![$(Tunable::new(stringify!($field), self.$field, $min, $max)),*], SOUND_GROUPS, SOUND_HELP)
             }
 
             fn set_tunable(&mut self, name: &str, value: f32) -> bool {

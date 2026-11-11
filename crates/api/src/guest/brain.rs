@@ -148,6 +148,6 @@ impl From<BrainOutput> for wit::BrainOutput {
 
 impl From<Tunable> for wit::Tunable {
     fn from(t: Tunable) -> Self {
-        wit::Tunable { name: t.name, value: t.value, min: t.min, max: t.max }
+        wit::Tunable { name: t.name, value: t.value, min: t.min, max: t.max, group: t.group, help: t.help }
     }
 }

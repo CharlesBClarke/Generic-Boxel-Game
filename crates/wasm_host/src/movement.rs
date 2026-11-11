@@ -130,6 +130,6 @@ impl From<wit::MoveOutput> for MoveOutput {
 
 impl From<wit::Tunable> for Tunable {
     fn from(t: wit::Tunable) -> Self {
-        Tunable { name: t.name, value: t.value, min: t.min, max: t.max }
+        Tunable { name: t.name, value: t.value, min: t.min, max: t.max, group: t.group, help: t.help }
     }
 }

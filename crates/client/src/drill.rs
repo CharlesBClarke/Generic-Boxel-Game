@@ -62,9 +62,27 @@ impl Default for DrillTuning {
     }
 }
 
+/// The tuning panel's groups for [`DrillTuning`]'s values.
+const DRILL_GROUPS: &[(&str, &[&str])] = &[
+    ("Ghost", &["ghost_speed", "speed_per_point", "spawn_distance"]),
+    ("Reaching and catching", &["catch_radius", "reach_radius"]),
+    ("Hitting the ghost", &["ghost_knockback", "knock_drag", "daze_time"]),
+];
+/// What each of [`DrillTuning`]'s values does, for the tuning panel.
+const DRILL_HELP: &[(&str, &str)] = &[
+    ("ghost_speed", "The chasing ghost's speed at score 0, m/s."),
+    ("speed_per_point", "Extra ghost speed per point scored, m/s."),
+    ("spawn_distance", "How far away the ghost appears, meters."),
+    ("catch_radius", "The ghost catches you within this distance of your body's center, meters."),
+    ("reach_radius", "An objective counts as reached within this distance of your body's center, meters."),
+    ("ghost_knockback", "Speed a strike knocks the ghost back at, m/s."),
+    ("knock_drag", "How quickly the knock wears off, per second."),
+    ("daze_time", "Seconds a struck ghost stops chasing."),
+];
+
 impl Tunables for DrillTuning {
     fn tunables(&self) -> Vec<Tunable> {
-        vec![
+        api::tuning::described(vec![
             Tunable::new("ghost_speed", self.ghost_speed, 0.0, 20.0),
             Tunable::new("speed_per_point", self.speed_per_point, 0.0, 2.0),
             Tunable::new("spawn_distance", self.spawn_distance, 5.0, 150.0),
@@ -73,7 +91,7 @@ impl Tunables for DrillTuning {
             Tunable::new("ghost_knockback", self.ghost_knockback, 0.0, 60.0),
             Tunable::new("knock_drag", self.knock_drag, 0.0, 20.0),
             Tunable::new("daze_time", self.daze_time, 0.0, 3.0),
-        ]
+        ], DRILL_GROUPS, DRILL_HELP)
     }
 
     fn set_tunable(&mut self, name: &str, value: f32) -> bool {

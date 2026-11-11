@@ -27,12 +27,21 @@ impl Default for ViewTuning {
     }
 }
 
+/// The tuning panel's groups for [`ViewTuning`]'s values.
+const VIEW_GROUPS: &[(&str, &[&str])] = &[
+];
+/// What each of [`ViewTuning`]'s values does, for the tuning panel.
+const VIEW_HELP: &[(&str, &str)] = &[
+    ("render_distance", "Chunks farther than this from the camera aren't drawn, meters."),
+    ("tone_mapper", "How the frame's light is fitted to the screen. Switching rebuilds the shaders, a moment's stall."),
+];
+
 impl Tunables for ViewTuning {
     fn tunables(&self) -> Vec<Tunable> {
-        vec![
+        api::tuning::described(vec![
             Tunable::new("render_distance", self.render_distance, 32.0, 4096.0),
             Tunable::new("tone_mapper", self.tone_mapper.index() as f32, 0.0, (ToneMapper::ALL.len() - 1) as f32),
-        ]
+        ], VIEW_GROUPS, VIEW_HELP)
     }
 
     fn set_tunable(&mut self, name: &str, value: f32) -> bool {

@@ -35,14 +35,25 @@ impl CrowdDef {
     }
 }
 
+/// The tuning panel's groups for [`CrowdDef`]'s values.
+const CROWD_GROUPS: &[(&str, &[&str])] = &[
+];
+/// What each of [`CrowdDef`]'s values does, for the tuning panel.
+const CROWD_HELP: &[(&str, &str)] = &[
+    ("sight", "How far a creature sees others (and herdmates), meters, feet to feet."),
+    ("push", "How fast overlapping bodies move apart per meter of overlap, m/s: the deeper they're in each other, the harder they're pushed."),
+    ("max_push", "The fastest a pair is pushed apart, m/s, however deep the overlap."),
+    ("player_weight", "Your weight against creatures' weight in a shove: each moves by the other's share of the two."),
+];
+
 impl Tunables for CrowdDef {
     fn tunables(&self) -> Vec<Tunable> {
-        vec![
+        crate::tuning::described(vec![
             Tunable::new("sight", self.sight, 0.0, 30.0),
             Tunable::new("push", self.push, 0.0, 40.0),
             Tunable::new("max_push", self.max_push, 0.0, 10.0),
             Tunable::new("player_weight", self.player_weight, 0.1, 10.0),
-        ]
+        ], CROWD_GROUPS, CROWD_HELP)
     }
 
     fn set_tunable(&mut self, name: &str, value: f32) -> bool {

@@ -153,11 +153,62 @@ impl Default for CombatFeel {
     }
 }
 
+/// The tuning panel's groups for [`CombatFeel`]'s values.
+const COMBAT_GROUPS: &[(&str, &[&str])] = &[
+    ("Hit-stop (freeze on a hit)", &["hitstop", "hitstop_per_damage", "hitstop_max", "break_hitstop", "crit_hitstop"]),
+    ("View on a hit", &["kick", "whiff_dip", "kick_recover", "shake", "shake_time"]),
+    ("The target reacting", &["flash_time", "squash", "squash_time", "tumble", "settle", "landing_squash"]),
+    ("The tool", &["recoil", "recoil_stiffness", "whiff_follow"]),
+    ("Breaking and dust", &["chunks", "chunk_speed", "dust_speed", "dust"]),
+    ("Head hits", &["crit_pitch"]),
+    ("Wall slams", &["slam_hitstop", "slam_shake"]),
+    ("Being hurt", &["hurt_hitstop", "hurt_kick", "hurt_shake", "hurt_flash", "hurt_flash_alpha"]),
+    ("Crystal blasts", &["blast_shake", "blast_reach", "blast_time", "blast_width"]),
+];
+/// What each of [`CombatFeel`]'s values does, for the tuning panel.
+const COMBAT_HELP: &[(&str, &str)] = &[
+    ("hitstop", "Seconds the game freezes on a hit, before the per-damage part."),
+    ("hitstop_per_damage", "Extra freeze for each point of damage, seconds."),
+    ("hitstop_max", "The longest a hit's freeze gets, seconds."),
+    ("break_hitstop", "Extra freeze when the hit breaks (kills) the target, seconds."),
+    ("crit_hitstop", "Extra freeze on a head hit, seconds."),
+    ("crit_pitch", "How much higher a head hit's sound plays."),
+    ("kick", "Upward kick of the view on a hit, degrees."),
+    ("whiff_dip", "Downward dip of the view on a miss, degrees: the swing carries the robot forward."),
+    ("kick_recover", "How quickly the view's kick or dip recovers, per second."),
+    ("shake", "How far the view shakes on a hit, meters."),
+    ("shake_time", "How long the view shakes on a hit, seconds."),
+    ("flash_time", "How long a hit target flashes white, seconds."),
+    ("squash", "How much a hit squashes the target along the hit and stretches it across."),
+    ("squash_time", "How long a hit's squash lasts, seconds."),
+    ("tumble", "Tumble speed of a knocked target, radians per second for each m/s it's pushed."),
+    ("settle", "How quickly a target turns back upright on the ground, per second."),
+    ("landing_squash", "How much a landing squashes a target for each m/s it lands at."),
+    ("recoil", "How far the tool jolts back toward the camera on a hit, meters."),
+    ("recoil_stiffness", "Spring stiffness of the tool's recoil, per second squared; damped to settle in one bounce."),
+    ("whiff_follow", "How far past its strike pose a missed swing carries the tool, as a share of the swing."),
+    ("chunks", "How many chunks a broken target bursts into."),
+    ("chunk_speed", "How fast a broken target's chunks fly, m/s."),
+    ("dust_speed", "Landing speed from which a target kicks up dust, m/s."),
+    ("dust", "How many bits of dust a landing kicks up."),
+    ("slam_hitstop", "Freeze on a wall slam, seconds."),
+    ("slam_shake", "How far the view shakes on a wall slam, meters."),
+    ("hurt_hitstop", "Freeze when a creature's blow hits you, seconds."),
+    ("hurt_kick", "Jolt of the view when you're hit, degrees."),
+    ("hurt_shake", "How far the view shakes when you're hit, meters."),
+    ("hurt_flash", "How long the red flash over the screen lasts when you're hit, seconds."),
+    ("hurt_flash_alpha", "How strong the red flash starts."),
+    ("blast_shake", "How far the view shakes right beside a crystal blast, meters."),
+    ("blast_reach", "How far from a blast its shake fades to nothing, meters."),
+    ("blast_time", "How long a blast's beam shows, seconds."),
+    ("blast_width", "How wide a blast's beam is drawn, meters."),
+];
+
 macro_rules! tunable_fields {
     ($($field:ident: $min:expr, $max:expr;)*) => {
         impl Tunables for CombatFeel {
             fn tunables(&self) -> Vec<Tunable> {
-                vec![$(Tunable::new(stringify!($field), self.$field, $min, $max)),*]
+                api::tuning::described(vec![$(Tunable::new(stringify!($field), self.$field, $min, $max)),*], COMBAT_GROUPS, COMBAT_HELP)
             }
 
             fn set_tunable(&mut self, name: &str, value: f32) -> bool {

@@ -38,16 +38,32 @@ impl HealthDef {
     }
 }
 
+/// The tuning panel's groups for [`HealthDef`]'s values.
+const HEALTH_GROUPS: &[(&str, &[&str])] = &[
+    ("Health", &["health", "regen", "regen_delay"]),
+    ("Guard", &["guard_angle"]),
+    ("Falls", &["fall_speed", "fall_damage"]),
+];
+/// What each of [`HealthDef`]'s values does, for the tuning panel.
+const HEALTH_HELP: &[(&str, &str)] = &[
+    ("health", "Your health when whole. At none you're knocked out and go back to the spawn point, whole again."),
+    ("regen", "Health back per second, once regen_delay has passed since the last hit."),
+    ("regen_delay", "Seconds after a hit before health starts coming back."),
+    ("guard_angle", "How far off your look an attacker can be for a raised guard to catch its blow, radians either way."),
+    ("fall_speed", "Landing faster than this hurts, m/s. The camera's hard landing follows it too."),
+    ("fall_damage", "Health lost for each m/s of landing speed over fall_speed."),
+];
+
 impl Tunables for HealthDef {
     fn tunables(&self) -> Vec<Tunable> {
-        vec![
+        crate::tuning::described(vec![
             Tunable::new("health", self.health, 1.0, 200.0),
             Tunable::new("regen", self.regen, 0.0, 20.0),
             Tunable::new("regen_delay", self.regen_delay, 0.0, 20.0),
             Tunable::new("guard_angle", self.guard_angle, 0.0, std::f32::consts::PI),
             Tunable::new("fall_speed", self.fall_speed, 0.0, 60.0),
             Tunable::new("fall_damage", self.fall_damage, 0.0, 10.0),
-        ]
+        ], HEALTH_GROUPS, HEALTH_HELP)
     }
 
     fn set_tunable(&mut self, name: &str, value: f32) -> bool {

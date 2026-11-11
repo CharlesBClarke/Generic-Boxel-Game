@@ -272,9 +272,46 @@ fn smoothstep(edge0: f32, edge1: f32, x: f32) -> f32 {
     t * t * (3.0 - 2.0 * t)
 }
 
+/// What each of [`ShadingTuning`]'s values does, for the tuning panel.
+const SHADING_HELP: &[(&str, &str)] = &[
+    ("hold_hour", "Draw this hour (0 to 24) instead of the world's time, to compare looks; below 0 follows the world. The bench holds it."),
+    ("sun_arc", "The sun's height at noon, degrees."),
+    ("moon_lag", "How many hours the moon runs behind the sun."),
+    ("moon_arc", "The moon's height at its highest, degrees."),
+    ("day_sky", "The sky's colors by day, brighter or darker than the palette. Fog fades the far world to the sky, so it follows."),
+    ("night_sky", "The sky's colors at full night, brighter or darker than the palette; blended with day_sky through dusk."),
+    ("haze", "How pale and misty the horizon is while the sun is high: 1 is the palette's, 0 takes the zenith's blue. Sunrise and sunset keep their own."),
+    ("blue_reach", "How far down the zenith's blue reaches before it fades into the horizon's color: 1 is the palette's, higher brings the blue lower."),
+    ("sun_size", "The sun's disc, as its radius in degrees."),
+    ("sun_halo", "The tight bright ring hugging the sun's disc (about 3° across)."),
+    ("sun_glow", "The wider soft glow around the sun (about 10°)."),
+    ("horizon_glow", "The broad wash of the sun's color over the sky toward it, strongest near the horizon; fades as the sun goes down."),
+    ("horizon_glow_size", "How wide the horizon glow spreads; higher is wider."),
+    ("moon_size", "The moon's disc, as its radius in degrees."),
+    ("moon_brightness", "How bright the moon's disc is drawn. It lights nothing by this: that's moon_strength."),
+    ("stars", "How bright the stars are."),
+    ("sun_strength", "How bright the sun lights a face turned straight at it, at its highest."),
+    ("warmth", "How much warmer than the palette a low sun is; 0 is the palette as it is."),
+    ("sky_light", "Light from the sky on a face looking straight up at midday, whichever way the sun is."),
+    ("ground_light", "Light from below on a face looking straight down, as if bounced off the ground."),
+    ("sky_tint", "How much the sky's light takes the sky's color (0 is white), and the ground's the horizon's."),
+    ("moon_strength", "How bright the moon lights a face turned to it at night. It casts no shadows."),
+    ("night_light", "Sky light at deepest night, so the open world stays faintly readable."),
+    ("min_light", "Light every face gets however dark it is, so caves stay faintly readable."),
+    ("block_light", "How brightly light from lamps (stored red, green and blue light) lights a face, at full level."),
+    ("light_falloff", "How sky light fades with its stored level (the level's share to this power): above 1 dims faster in from an opening."),
+    ("block_falloff", "The same for lamp light: 1 shows it as stored, above 1 dims faster away from a lamp."),
+    ("fog_start", "Where fog starts, as a share of the render distance."),
+    ("fog_end", "Where fog is thickest, as a share of the render distance."),
+    ("fog", "How thick the fog gets at its thickest: 1 hides everything there."),
+    ("crease", "How much darker a texel right against an inside crease gets."),
+    ("ridge", "How much lighter a texel right on an outside ridge gets."),
+    ("edge_width", "How many texels wide the crease and ridge lines are, fading off across them."),
+];
+
 impl Tunables for ShadingTuning {
     fn tunables(&self) -> Vec<Tunable> {
-        vec![
+        api::tuning::described(vec![
             Tunable::new("hold_hour", self.hold_hour, -1.0, 24.0),
             Tunable::new("sun_arc", self.sun_arc, 5.0, 90.0),
             Tunable::new("sun_strength", self.sun_strength, 0.0, 2.0),
@@ -308,7 +345,7 @@ impl Tunables for ShadingTuning {
             Tunable::new("light_falloff", self.light_falloff, 0.5, 4.0),
             Tunable::new("block_falloff", self.block_falloff, 0.25, 4.0),
             Tunable::new("min_light", self.min_light, 0.0, 0.3),
-        ]
+        ], &GROUPS, SHADING_HELP)
     }
 
     fn set_tunable(&mut self, name: &str, value: f32) -> bool {
@@ -644,6 +681,7 @@ mod tests {
         for t in ShadingTuning::default().tunables() {
             let groups = GROUPS.iter().filter(|(_, names)| names.contains(&t.name.as_str())).count();
             assert_eq!(groups, 1, "{}", t.name);
+            assert!(!t.group.is_empty(), "{} carries its group", t.name);
         }
         let all: usize = GROUPS.iter().map(|(_, names)| names.len()).sum();
         assert_eq!(all, ShadingTuning::default().tunables().len(), "no group names a slider that isn't there");

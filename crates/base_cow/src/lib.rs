@@ -375,9 +375,82 @@ impl Default for CowBrain {
     }
 }
 
+/// The tuning panel's groups for [`CowBrain`]'s values.
+const COW_GROUPS: &[(&str, &[&str])] = &[
+    ("Walking", &["walk_speed", "run_speed", "turn_speed", "edge_drop", "walk_pace", "run_pace"]),
+    ("Idle life", &["idle_min", "idle_spread", "wander_min", "wander_spread", "graze_time", "graze_chance", "notice_range"]),
+    ("Herd", &["stray_range", "personal_space", "follow", "follow_spread"]),
+    ("Fear", &["flee_time", "alarm_range", "spook_time", "calm_time", "flee_health"]),
+    ("Fight or run", &["fight_share", "defend_range", "defend_chance", "courage", "injury_pull"]),
+    ("Chasing", &["anger_time", "give_up_time", "chase_range", "approach_speed"]),
+    ("Grudges and corners", &["grudge_range", "grudge_fight", "corner_range", "corner_time"]),
+    ("Head toss (up close)", &["toss_range", "toss_height", "toss_windup", "toss_recover", "toss_damage", "toss_push", "toss_lift", "toss_guarded_damage", "toss_guarded_push"]),
+    ("Charge (from far off)", &["charge_range", "charge_overshoot", "charge_windup", "charge_speed", "charge_turn", "charge_time", "charge_damage", "charge_push", "charge_lift", "charge_guarded_damage", "charge_guarded_push", "stun_time", "charge_recover"]),
+];
+/// What each of [`CowBrain`]'s values does, for the tuning panel.
+const COW_HELP: &[(&str, &str)] = &[
+    ("walk_speed", "Speed while wandering, m/s."),
+    ("run_speed", "Speed while fleeing, m/s."),
+    ("turn_speed", "How fast it turns, radians per second; fleeing turns twice as fast."),
+    ("edge_drop", "The biggest drop it walks off while wandering, meters: just over a slab walks down slab steps but stops at a full block's edge."),
+    ("walk_pace", "Speed at which the walk clip plays at its own pace, m/s; faster or slower plays it faster or slower so the feet keep up with the ground."),
+    ("run_pace", "Speed at which the run clip plays at its own pace, m/s."),
+    ("idle_min", "Seconds it stands about between doing things, at least."),
+    ("idle_spread", "Up to this many extra seconds of standing about, at random."),
+    ("wander_min", "Seconds a wander lasts, at least."),
+    ("wander_spread", "Up to this many extra seconds of wandering, at random."),
+    ("graze_time", "Seconds a graze lasts (one eat clip is 1.5)."),
+    ("graze_chance", "Share of the times it stops standing about that it grazes instead of wandering."),
+    ("notice_range", "How near you have to come, meters, for it to stop and watch you."),
+    ("stray_range", "How far from the middle of the cows it sees it can be, meters, before it wanders back."),
+    ("personal_space", "How near another cow can be, feet to feet in meters, before a wandering cow turns away."),
+    ("follow", "Share of wanders that go roughly the leader's way, and of rests that turn to grazing when the leader grazes. 0 is no leader."),
+    ("follow_spread", "How far a follower's heading strays from the leader's, radians either way."),
+    ("flee_time", "Seconds it runs after a hit."),
+    ("alarm_range", "How near an alarmed cow has to be, meters, to scare it."),
+    ("spook_time", "Seconds it runs when scared by another cow, rather than hit."),
+    ("calm_time", "Seconds after a scare in which it ignores alarms."),
+    ("flee_health", "Below this share of its health, with no other cow fighting nearby, it breaks off and runs."),
+    ("fight_share", "Share of cows that fight back when hit rather than run: the boldest ones."),
+    ("defend_range", "How near a cow in trouble (fighting, or hurt and alarmed) has to be, meters, for a cow to choose between standing up for it and running."),
+    ("defend_chance", "The chance it stands up for one, for a cow of middling boldness: twice this for the boldest, nothing for the most timid."),
+    ("courage", "Added to defend_chance for each cow it sees fighting."),
+    ("injury_pull", "Added to defend_chance for how badly the one in trouble is hurt: all of it for one at no health."),
+    ("anger_time", "Seconds after the last hit before a fighting cow calms down."),
+    ("give_up_time", "Seconds without getting closer to you before it gives up the fight (and runs)."),
+    ("chase_range", "Further off than this, level in meters, it loses interest in you."),
+    ("approach_speed", "Speed while closing in to fight, m/s."),
+    ("grudge_range", "How near you have to come, meters, for a cow holding a grudge to fight or run."),
+    ("grudge_fight", "The chance a cow holding a grudge fights rather than runs, when whole; times its share of health when hurt."),
+    ("corner_range", "Running from you with you this near, meters, for corner_time seconds, it turns and fights."),
+    ("corner_time", "Seconds you have to stay within corner_range of a fleeing cow before it turns and fights."),
+    ("toss_range", "It tosses with your feet within this level distance of its own, meters."),
+    ("toss_height", "...and no higher than this above its feet, meters. Also the most a charge allows above or below."),
+    ("toss_windup", "Seconds with the head going down before the toss: your window to dodge or guard."),
+    ("toss_recover", "Seconds catching its breath after a toss."),
+    ("toss_damage", "Health a toss takes from you."),
+    ("toss_push", "The toss's level knockback, m/s."),
+    ("toss_lift", "The toss's upward knockback, m/s."),
+    ("toss_guarded_damage", "Share of the toss's damage a facing guard lets through."),
+    ("toss_guarded_push", "Share of the toss's knockback a facing guard lets through."),
+    ("charge_range", "It charges with you at least this far, level in meters, with a clear straight run at you."),
+    ("charge_overshoot", "How far past you a charge runs before stopping, as a share of how far off you were when it started."),
+    ("charge_windup", "Seconds with its head down before the charge."),
+    ("charge_speed", "Speed while charging, m/s."),
+    ("charge_turn", "How fast a charge bends toward you, radians per second."),
+    ("charge_time", "The longest a charge runs, seconds."),
+    ("charge_damage", "Health a charge takes from you."),
+    ("charge_push", "The charge's level knockback, m/s."),
+    ("charge_lift", "The charge's upward knockback, m/s."),
+    ("charge_guarded_damage", "Share of the charge's damage a facing guard lets through."),
+    ("charge_guarded_push", "Share of the charge's knockback a facing guard lets through."),
+    ("stun_time", "Seconds stunned after charging into something (dodge a charge into a wall)."),
+    ("charge_recover", "Seconds it catches its breath after a charge."),
+];
+
 impl Tunables for CowBrain {
     fn tunables(&self) -> Vec<Tunable> {
-        vec![
+        api::tuning::described(vec![
             Tunable::new("walk_speed", self.walk_speed, 0.0, 4.0),
             Tunable::new("run_speed", self.run_speed, 0.0, 8.0),
             Tunable::new("turn_speed", self.turn_speed, 0.1, 10.0),
@@ -435,7 +508,7 @@ impl Tunables for CowBrain {
             Tunable::new("grudge_fight", self.grudge_fight, 0.0, 1.0),
             Tunable::new("corner_range", self.corner_range, 0.0, 10.0),
             Tunable::new("corner_time", self.corner_time, 0.0, 10.0),
-        ]
+        ], COW_GROUPS, COW_HELP)
     }
 
     fn set_tunable(&mut self, name: &str, value: f32) -> bool {

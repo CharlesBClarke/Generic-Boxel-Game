@@ -50,9 +50,17 @@ impl Default for Clock {
     }
 }
 
+/// The tuning panel's groups for [`Clock`]'s values.
+const CLOCK_GROUPS: &[(&str, &[&str])] = &[
+];
+/// What each of [`Clock`]'s values does, for the tuning panel.
+const CLOCK_HELP: &[(&str, &str)] = &[
+    ("day_seconds", "How many real seconds a whole day takes."),
+];
+
 impl Tunables for Clock {
     fn tunables(&self) -> Vec<Tunable> {
-        vec![Tunable::new("day_seconds", self.day_seconds, Self::SHORTEST_DAY, Self::LONGEST_DAY)]
+        api::tuning::described(vec![Tunable::new("day_seconds", self.day_seconds, Self::SHORTEST_DAY, Self::LONGEST_DAY)], CLOCK_GROUPS, CLOCK_HELP)
     }
 
     fn set_tunable(&mut self, name: &str, value: f32) -> bool {
