@@ -248,6 +248,7 @@ pub fn tuning_panel(
                     ui.checkbox(&mut parts.fog, "fog");
                     ui.checkbox(&mut parts.sky, "sky");
                     ui.checkbox(&mut parts.stored, "stored light");
+                    ui.checkbox(&mut parts.ao, "ambient occlusion");
                 });
                 for (title, names) in crate::shading::GROUPS {
                     egui::CollapsingHeader::new(title).id_salt(("shading", title)).default_open(true).show(ui, |ui| {
@@ -330,9 +331,9 @@ pub fn tuning_panel(
                 ui.heading("Ambient occlusion");
                 sliders(ui, "ao", &mut shading);
                 ui.horizontal(|ui| {
-                    let pending = shading != *ao;
+                    let pending = shading.meshing() != ao.meshing();
                     apply_ao = ui.add_enabled(pending, egui::Button::new("Apply")).clicked();
-                    ui.label(if pending { "changed: Apply remeshes every chunk" } else { "applied" });
+                    ui.label(if pending { "reach (or turning it on from 0) changed: Apply remeshes every chunk" } else { "live" });
                 });
                 ui.separator();
                 ui.heading("Chase drill");
@@ -440,8 +441,9 @@ pub fn tuning_panel(
     if camera != *feel {
         *feel = camera;
     }
-    // Saved values apply as they load; moved sliders wait for Apply.
-    if load || apply_ao {
+    // Saved values apply as they load; moved sliders apply at once unless they need a remesh,
+    // which waits for Apply.
+    if load || apply_ao || shading.meshing() == ao.meshing() {
         ao.set_if_neq(shading);
     }
     panel.ao_draft = (shading != *ao).then_some(shading);

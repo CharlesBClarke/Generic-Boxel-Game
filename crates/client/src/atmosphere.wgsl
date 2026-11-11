@@ -46,6 +46,9 @@ struct Atmosphere {
     heights: vec4<f32>,
     // The same for the fine height map, a texel to each column.
     fine_heights: vec4<f32>,
+    // Ambient occlusion: strength, how full the space must be to darken by all of it, the
+    // curve, on (1) or off (0).
+    ao: vec4<f32>,
 };
 
 // The sky looking along `dir` (a unit vector): the horizon's color blending up into the

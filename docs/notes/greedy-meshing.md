@@ -1,5 +1,7 @@
 # Greedy meshing
 
+*Both steps done: Greedy meshing (2026-11-10) and AO in the shader (2026-11-11, 273,263 → 185,080 quads on the 224 m terrain, at the ceiling of merging with AO off). Kept for the reasoning; see `docs/done-toys.md`.*
+
 *Notes for the backlog's Greedy meshing toy. From a merge count on 2026-11-10, after the Bench toy, when the user asked "LOD or greedy mesher" for the frame rate. Greedy came first: the bench found frame time follows the triangle count (`docs/notes/shadow-speed.md`), greedy cuts triangles in every pass (main, each shadow map, any prepass) near and far, and it stays inside `client::mesher`; LOD is infrastructure (after streaming, built by the server per the design doc) and only helps far terrain. Asked whether it's still worth it without shadows: yes, the main pass is the same ~1M triangles, just less to gain.*
 
 ## The count

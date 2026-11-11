@@ -50,7 +50,7 @@ use crate::controls::{Controls, DoubleTapSprint, SprintToggle, label};
 use crate::editing::{ChunkMeshes, Ghost, HiddenGhosts, Palette, PartNames};
 use crate::feel::{CameraFeel, FeelState, Motion};
 use crate::mesher::MeshData;
-use crate::solid::{ATTRIBUTE_EDGES, ATTRIBUTE_FACE, ATTRIBUTE_LIGHT, ATTRIBUTE_SOLID, SolidMaterial, SolidPlugin};
+use crate::solid::{ATTRIBUTE_AO, ATTRIBUTE_EDGES, ATTRIBUTE_FACE, ATTRIBUTE_LIGHT, ATTRIBUTE_SOLID, SolidMaterial, SolidPlugin};
 use crate::tuning::TuningPanel;
 use crate::volumes::Volumes;
 use crate::world::{ClientWorld, Link};
@@ -387,6 +387,8 @@ pub(crate) fn to_bevy_mesh(data: MeshData) -> Mesh {
     } else {
         vec![mesher::OPEN_SKY; data.positions.len()]
     };
+    // Meshes without ambient occlusion have nothing in front of them.
+    let ao = if data.ao.len() == data.positions.len() { data.ao } else { vec![[0; 4]; data.positions.len()] };
     let convert = |v: Vec<[f32; 3]>| -> Vec<[f32; 3]> {
         v.into_iter().map(|p| coords::to_render(Vec3::from_array(p)).to_array()).collect()
     };
@@ -398,6 +400,7 @@ pub(crate) fn to_bevy_mesh(data: MeshData) -> Mesh {
         .with_inserted_attribute(ATTRIBUTE_EDGES, VertexAttributeValues::Uint32x4(data.edges))
         .with_inserted_attribute(ATTRIBUTE_FACE, VertexAttributeValues::Unorm16x4(data.face))
         .with_inserted_attribute(ATTRIBUTE_LIGHT, VertexAttributeValues::Unorm8x4(light))
+        .with_inserted_attribute(ATTRIBUTE_AO, VertexAttributeValues::Uint32x4(ao))
         .with_inserted_indices(Indices::U32(data.indices))
 }
 

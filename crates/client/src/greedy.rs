@@ -1,10 +1,15 @@
 //! Greedy meshing: neighboring faces of a chunk's mesh that would look the same drawn apart
 //! become one bigger quad. Only whole boxel faces merge, on the same plane, facing the same
-//! way, with the same look, and the same color (so ambient occlusion) and light at every
-//! corner; the edges between them must be flat. A merged quad's outer edges hold one boxel's
-//! pattern, which the shader repeats every boxel along it, so each outer edge must have the
-//! same pattern all along. Its look position runs on across the boxels, and the shader wraps it
-//! every boxel, so the look repeats instead of stretching.
+//! way, with the same look, and the same color and light at every corner; the edges between
+//! them must be flat. A merged quad's outer edges hold one boxel's pattern, which the shader
+//! repeats every boxel along it, so each outer edge must have the same pattern all along. Its
+//! look position runs on across the boxels, and the shader wraps it every boxel, so the look
+//! repeats instead of stretching.
+//!
+//! Ambient occlusion doesn't stop a merge: the shader works it out for each boxel of the quad
+//! from what's in front of the quad (see [`crate::mesher::lattice_fill`]). So the faces must
+//! have the same space over them (usually empty), and each outer edge the same space past it all
+//! along; past each corner it's whatever the face at that corner has.
 
 use std::collections::HashMap;
 
@@ -53,12 +58,20 @@ fn uniform(mesh: &MeshData, q: usize) -> bool {
 }
 
 /// Whether quads `a` and `b` would look the same drawn in the same place: the same look,
-/// color and light. Their edges are checked apart.
+/// color and light, and the same space over them. Their edges are checked apart.
 fn alike(mesh: &MeshData, a: usize, b: usize) -> bool {
     let (i, j) = (4 * a, 4 * b);
+    let over = |q: usize| mesh.ao.get(q).map(|w| w.map(|c| c & 0xff));
     mesh.colors[i] == mesh.colors[j]
         && mesh.light.get(i) == mesh.light.get(j)
         && mesh.solid[i..i + 4] == mesh.solid[j..j + 4]
+        && over(i) == over(j)
+}
+
+/// How full the space past edge `k` of quad `q` is at the edge's two ends, as
+/// [`MeshData::ao`] holds it: the cube past it at corner `k`, and at corner `k + 1`.
+fn past(mesh: &MeshData, q: usize, k: usize) -> Option<(u32, u32)> {
+    mesh.ao.get(4 * q).map(|w| (w[k] >> 8 & 0xff, w[(k + 1) % 4] >> 16 & 0xff))
 }
 
 /// Merges the quads of a chunk's mesh where it can (see the module). Quads that don't merge
@@ -113,7 +126,11 @@ pub fn merge(mesh: &MeshData) -> MeshData {
                     mesh.edges[4 * at(0, h - 1)][2],
                     mesh.edges[4 * first][3],
                 ];
-                merged(mesh, first, w, h, edges, &mut out);
+                // Corner k's word from the face at that corner: over the face, it's the same
+                // as every other's; past its two edges, the same all along them.
+                let corners = [first, at(w - 1, 0), at(w - 1, h - 1), at(0, h - 1)];
+                let ao = (!mesh.ao.is_empty()).then(|| std::array::from_fn(|k| mesh.ao[4 * corners[k]][k]));
+                merged(mesh, first, w, h, edges, ao, &mut out);
             }
         }
     }
@@ -127,11 +144,13 @@ fn grow(mesh: &MeshData, cells: &HashMap<[i32; 2], usize>, used: &std::collectio
         let cell = [start[0] + du, start[1] + dv];
         cells.get(&cell).copied().filter(|&q| !used.contains(&cell) && alike(mesh, first, q))
     };
+    // An outer edge must look the same all along: its pattern, and the space past it.
     let edge = |q: usize, k: usize| mesh.edges[4 * q][k];
+    let same = |q: usize, other: usize, k: usize| edge(q, k) == edge(other, k) && past(mesh, q, k) == past(mesh, other, k);
     let mut w = 1;
     while let Some(q) = at(w, 0) {
         let before = at(w - 1, 0).expect("in the row");
-        if edge(before, 1) != FLAT || edge(q, 3) != FLAT || edge(q, 0) != edge(first, 0) || edge(q, 2) != edge(first, 2) {
+        if edge(before, 1) != FLAT || edge(q, 3) != FLAT || !same(q, first, 0) || !same(q, first, 2) {
             break;
         }
         w += 1;
@@ -145,9 +164,9 @@ fn grow(mesh: &MeshData, cells: &HashMap<[i32; 2], usize>, used: &std::collectio
             let inside_right = du + 1 < row.len();
             let ok = edge(below, 2) == FLAT
                 && edge(q, 0) == FLAT
-                && edge(q, 2) == edge(row[0], 2)
-                && if inside_left { edge(q, 3) == FLAT } else { edge(q, 3) == edge(first, 3) }
-                && if inside_right { edge(q, 1) == FLAT } else { edge(q, 1) == edge(right, 1) };
+                && same(q, row[0], 2)
+                && if inside_left { edge(q, 3) == FLAT } else { same(q, first, 3) }
+                && if inside_right { edge(q, 1) == FLAT } else { same(q, right, 1) };
             if !ok {
                 break 'rows;
             }
@@ -170,12 +189,16 @@ fn copy(from: &MeshData, q: usize, to: &mut MeshData) {
     if !from.light.is_empty() {
         to.light.extend_from_slice(&from.light[i..i + 4]);
     }
+    if !from.ao.is_empty() {
+        to.ao.extend_from_slice(&from.ao[i..i + 4]);
+    }
     to.indices.extend(from.indices[6 * q..6 * q + 6].iter().map(|&k| k - i as u32 + first));
 }
 
 /// Adds quad `first` grown `w` boxels along its edge 0 and `h` along its edge 3 backwards,
-/// with `edges` past its four sides.
-fn merged(from: &MeshData, first: usize, w: i32, h: i32, edges: [u32; 4], to: &mut MeshData) {
+/// with `edges` past its four sides and `ao` around its corners.
+#[allow(clippy::too_many_arguments)]
+fn merged(from: &MeshData, first: usize, w: i32, h: i32, edges: [u32; 4], ao: Option<[u32; 4]>, to: &mut MeshData) {
     let base = to.positions.len() as u32;
     let i = 4 * first;
     let (w, h) = (w as f32, h as f32);
@@ -204,6 +227,9 @@ fn merged(from: &MeshData, first: usize, w: i32, h: i32, edges: [u32; 4], to: &m
         if !from.light.is_empty() {
             to.light.push(from.light[i]);
         }
+        if let Some(ao) = ao {
+            to.ao.push(ao);
+        }
     }
     to.indices.extend([base, base + 1, base + 2, base, base + 2, base + 3]);
 }
@@ -211,7 +237,7 @@ fn merged(from: &MeshData, first: usize, w: i32, h: i32, edges: [u32; 4], to: &m
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::mesher::{AoTuning, FACE_SCALE, mesh_chunk};
+    use crate::mesher::{AoTuning, FACE_SCALE, ao_lit, mesh_chunk};
     use crate::volumes::Volumes;
     use api::{BlockBox, BlockDef, BoxelPos, ChunkPos, LookDef, Orientation};
     use sim::{BlockId, BlockRegistry, Grid, LookRegistry, Occupant};
@@ -244,7 +270,8 @@ mod tests {
     }
 
     /// What a pixel of a quad shows (`s`, `t`) of the way along its edge 0 and up its edge 3,
-    /// as the shader reads it: color (in 100,000ths; mixing differs in the last bits), light, the
+    /// as the shader reads it: color with ambient occlusion as the shader works it out (drawn
+    /// with the default tuning; in 100,000ths, as mixing differs in the last bits), light, the
     /// look's texel and volume, and for each edge, what's past it at this texel and how many
     /// texels away, where that's close enough to draw a line (edge lines are at most 8 wide).
     type Pixel = ([i64; 4], Option<[u8; 4]>, [i32; 4], [(u32, i32); 4]);
@@ -253,13 +280,14 @@ mod tests {
         let i = 4 * q;
         let mix = |v: [f32; 4]| v[0] * (1.0 - s) * (1.0 - t) + v[1] * s * (1.0 - t) + v[2] * s * t + v[3] * (1.0 - s) * t;
         let channel = |f: &dyn Fn(usize) -> f32| mix([f(i), f(i + 1), f(i + 2), f(i + 3)]);
-        let color = std::array::from_fn(|c| (channel(&|k| mesh.colors[k][c]) * 1e5).round() as i64);
+        let face: [f32; 4] = std::array::from_fn(|c| channel(&|k| mesh.face[k][c] as f32 / u16::MAX as f32 * FACE_SCALE));
+        let ao = mesh.ao.get(i).map_or(1.0, |w| ao_lit(w, &AoTuning::default(), face));
+        let color = std::array::from_fn(|c| (channel(&|k| mesh.colors[k][c]) * if c < 3 { ao } else { 1.0 } * 1e5).round() as i64);
         let light = (!mesh.light.is_empty()).then(|| mesh.light[i]);
         let solid: [f32; 3] = std::array::from_fn(|c| channel(&|k| mesh.solid[k][c]));
         let size = LookDef::SIZE as i32;
         let texel = [0, 1, 2].map(|c| (solid[c].floor() as i32).rem_euclid(size));
         let look = [texel[0], texel[1], texel[2], mesh.solid[i][3] as i32];
-        let face: [f32; 4] = std::array::from_fn(|c| channel(&|k| mesh.face[k][c] as f32 / u16::MAX as f32 * FACE_SCALE));
         let [u, v, w, h] = face;
         let edges = mesh.edges[i];
         let edge = |kinds: u32, along: f32, length: f32, distance: f32| {
@@ -333,22 +361,35 @@ mod tests {
     }
 
     #[test]
-    fn darkened_corners_stay_apart() {
+    fn darkened_corners_merge_as_much_as_plain_ones() {
         let (blocks, volumes, [stone, ..]) = blocks();
         let mut grid = Grid::default();
         floor(&mut grid, stone, 8);
         grid.set_block(BoxelPos::new(4, 4, 1), stone);
-        let (plain, merged) = both(&mut grid, &blocks, &volumes, &AoTuning::default());
-        // Around the block on the floor, the eight floor faces touching it are darkened at some
-        // corner, so they stay as they were; the rest of the floor still merges.
         let up = |m: &MeshData| (0..m.quad_count()).filter(|&q| m.normals[4 * q] == [0.0, 0.0, 1.0]).count();
+        // The shader darkens the floor around the block, so it merges as it would without
+        // AO, in a few rectangles: faces with a crease toward the block kept apart.
+        let (_, without) = both(&mut grid, &blocks, &volumes, &AoTuning::OFF);
+        let (plain, merged) = both(&mut grid, &blocks, &volumes, &AoTuning::default());
         assert_eq!(up(&plain), 64 - 1 + 1);
-        assert!(up(&merged) > 9 && up(&merged) < 20, "{} upward quads", up(&merged));
-        looks_the_same(&plain, &merged);
-        // Without AO the floor's top merges around the block in a few rectangles, the faces
-        // with a crease toward the block kept apart from those without.
-        let (plain, merged) = both(&mut grid, &blocks, &volumes, &AoTuning::OFF);
+        assert_eq!(up(&merged), up(&without));
         assert!(up(&merged) <= 12, "{} upward quads", up(&merged));
+        looks_the_same(&plain, &merged);
+    }
+
+    #[test]
+    fn a_floor_along_a_wall_merges_into_one_quad() {
+        let (blocks, volumes, [stone, ..]) = blocks();
+        let mut grid = Grid::default();
+        floor(&mut grid, stone, 8);
+        // A wall along the floor's north edge, and one block's corner touching it diagonally.
+        for x in 0..8 {
+            grid.set_block(BoxelPos::new(x, 8, 1), stone);
+        }
+        grid.set_block(BoxelPos::new(8, 8, 1), stone);
+        let (plain, merged) = both(&mut grid, &blocks, &volumes, &AoTuning::default());
+        let tops = (0..merged.quad_count()).filter(|&q| merged.normals[4 * q] == [0.0, 0.0, 1.0] && merged.positions[4 * q][2] == 1.0).count();
+        assert_eq!(tops, 1, "dark along the wall, light away from it, one quad");
         looks_the_same(&plain, &merged);
     }
 
