@@ -72,44 +72,105 @@ fn vertex(vertex: Vertex) -> VertexOutput {
     return out;
 }
 
-// How much of the sun reaches `position` past the shadow maps: a ray toward the sun, in steps
-// that spread out with distance, across the height map. Soft at the edges, more so farther
-// from what casts the shadow.
+// Where height map `m` lies (0 fine, 1 coarse): see `atmosphere.fine_heights`.
+fn map_place(m: i32) -> vec4<f32> {
+    if m == 0 {
+        return atmosphere.fine_heights;
+    }
+    return atmosphere.heights;
+}
+
+// Texels along each side of one map at `level`; the two sit side by side, fine on the left.
+fn map_size(level: i32) -> i32 {
+    return i32(textureDimensions(heights, level).y);
+}
+
+// The highest top in texel `cell` of map `m` at `level` of its pyramid of maximums.
+fn highest(m: i32, cell: vec2<i32>, level: i32) -> f32 {
+    return textureLoad(heights, cell + vec2<i32>(m * map_size(level), 0), level).r + map_place(m).z;
+}
+
+// Where `p` (east, north) falls in map `m`, in its texels at level 0.
+fn map_texels(m: i32, p: vec2<f32>) -> vec2<f32> {
+    let h = map_place(m);
+    return (p - h.xy) / h.w;
+}
+
+fn in_map(uv: vec2<f32>) -> bool {
+    return all(uv >= vec2<f32>(0.0)) && all(uv < vec2<f32>(f32(map_size(0))));
+}
+
+// How lit a ray point at distance `t` is by a column `top` high: soft at the edges, more so
+// farther from what casts the shadow.
+fn column_light(q: vec3<f32>, t: f32, top: f32) -> f32 {
+    let above = q.z + atmosphere.far.w - top;
+    return clamp(0.5 + above / (t * atmosphere.far.z * 0.01 + 0.001), 0.0, 1.0);
+}
+
+// How much of the sun reaches `position` past the shadow maps: a ray toward the sun across the
+// height maps, fine first, then coarse. It walks each map's pyramid of maximums: where the ray
+// clears the highest thing in a big texel it skips that whole texel and tries a bigger one;
+// where it doesn't, it looks closer, down to single columns. The point's own column is skipped,
+// so its own top doesn't shade it.
 fn far_shadow(position: vec3<f32>, normal: vec3<f32>) -> f32 {
     let to_sun = atmosphere.sun_direction.xyz;
     // The height map's terms: east, north, up.
     let dir = vec3<f32>(to_sun.x, -to_sun.z, to_sun.y);
-    if dir.z <= 0.0 {
+    if dir.z <= 0.0 || length(dir.xy) < 1e-4 {
         return 1.0;
     }
-    let h = atmosphere.heights;
-    let scale = h.w;
-    let size = vec2<i32>(textureDimensions(heights));
     let start = vec3<f32>(position.x, -position.z, position.y) + vec3<f32>(normal.x, -normal.z, normal.y) * 0.05;
-    // Start past the point's own column, so its own top doesn't shade it.
-    let flat = length(dir.xy);
-    let reach = atmosphere.far.y;
-    if flat < 1e-4 || 1.5 * scale / flat >= reach {
-        return 1.0;
-    }
-    let t0 = 1.5 * scale / flat;
-    let steps = max(i32(atmosphere.far.x), 1);
-    let soft = atmosphere.far.z * 0.01;
-    let bias = atmosphere.far.w;
-    var lit = 1.0;
-    for (var i = 0; i < steps; i++) {
-        let s = f32(i) / f32(max(steps - 1, 1));
-        let t = t0 + (reach - t0) * s * s;
-        let q = start + dir * t;
-        let texel = vec2<i32>(floor((q.xy - h.xy) / scale));
-        if any(texel < vec2<i32>(0)) || any(texel >= size) {
-            break;
+    var m = 0;
+    if !in_map(map_texels(0, start.xy)) {
+        m = 1;
+        if !in_map(map_texels(1, start.xy)) {
+            return 1.0;
         }
-        let top = textureLoad(heights, texel, 0).r + h.z;
-        let above = q.z + bias - top;
-        lit = min(lit, clamp(0.5 + above / (t * soft + 0.001), 0.0, 1.0));
-        if lit <= 0.0 {
-            break;
+    }
+    let own = vec3<i32>(vec2<i32>(floor(map_texels(m, start.xy))), m);
+    let top_level = i32(textureNumLevels(heights)) - 1;
+    let reach = atmosphere.far.y;
+    let reads = i32(atmosphere.far.x);
+    var lit = 1.0;
+    var t = 0.0;
+    var level = 0;
+    for (var i = 0; i < reads; i++) {
+        let q = start + dir * t;
+        let uv = map_texels(m, q.xy);
+        if !in_map(uv) {
+            if m == 1 || !in_map(map_texels(1, q.xy)) {
+                return lit;
+            }
+            // Off the fine map: on across the coarse one.
+            m = 1;
+            level = 0;
+            continue;
+        }
+        // The texel at this level, in level-0 texels, and where the ray leaves it.
+        let span = f32(1u << u32(level));
+        let cell = floor(uv / span);
+        let lo = cell * span;
+        let d = dir.xy / map_place(m).w;
+        let to_edge = select(uv - lo, lo + span - uv, d >= vec2<f32>(0.0)) / max(abs(d), vec2<f32>(1e-6));
+        let exit = t + min(to_edge.x, to_edge.y) + 1e-3;
+        // The ray is rising, so it's lowest where it enters.
+        let light = column_light(q, t, highest(m, vec2<i32>(cell), level));
+        if light >= 1.0 {
+            t = exit;
+            level = min(level + 1, top_level);
+        } else if level > 0 {
+            level -= 1;
+        } else {
+            if !(m == own.z && all(vec2<i32>(cell) == own.xy)) {
+                lit = min(lit, light);
+                if lit <= 0.0 {
+                    return 0.0;
+                }
+            }
+            t = exit;
+        }
+        if t >= reach {
+            return lit;
         }
     }
     return lit;

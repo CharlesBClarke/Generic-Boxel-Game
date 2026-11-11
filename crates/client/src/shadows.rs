@@ -5,7 +5,9 @@
 //! so distant hills still shade valleys. Live-tunable, with a sun that can move for testing.
 
 use api::{Tunable, Tunables};
+use bevy::camera::{CameraProjection, SubCameraView};
 use bevy::light::{CascadeShadowConfig, CascadeShadowConfigBuilder, DirectionalLightShadowMap, ShadowFilteringMethod};
+use bevy::math::Vec3A;
 use bevy::prelude::*;
 
 use crate::coords;
@@ -68,10 +70,10 @@ pub struct ShadowTuning {
     pub filter: Filter,
     /// The last share of `distance` over which the maps fade into the far shadow.
     pub fade: f32,
-    /// The far shadow: how many steps it takes toward the sun, how far it looks (meters), how
-    /// soft its edges are (higher is softer), and how far a column must rise above a ray
-    /// before it shades it, so flat ground under a low sun doesn't shade itself.
-    pub far_steps: f32,
+    /// The far shadow: at most how many height-map reads it makes toward the sun, how far it
+    /// looks (meters), how soft its edges are (higher is softer), and how far a column must
+    /// rise above a ray before it shades it, so flat ground under a low sun doesn't shade itself.
+    pub far_reads: f32,
     pub far_reach: f32,
     pub far_softness: f32,
     pub far_bias: f32,
@@ -128,7 +130,7 @@ impl Default for ShadowTuning {
             normal_bias: 1.8,
             filter: Filter::Crisp,
             fade: 0.2,
-            far_steps: 48.0,
+            far_reads: 64.0,
             far_reach: 512.0,
             far_softness: 4.0,
             far_bias: 0.5,
@@ -173,7 +175,7 @@ impl Tunables for ShadowTuning {
             Tunable::new("normal_bias", self.normal_bias, 0.0, 5.0),
             Tunable::new("filter", self.filter.index(), 0.0, (Filter::ALL.len() - 1) as f32),
             Tunable::new("fade", self.fade, 0.0, 0.5),
-            Tunable::new("far_steps", self.far_steps, 4.0, 128.0),
+            Tunable::new("far_reads", self.far_reads, 8.0, 256.0),
             Tunable::new("far_reach", self.far_reach, 32.0, 2048.0),
             Tunable::new("far_softness", self.far_softness, 0.0, 16.0),
             Tunable::new("far_bias", self.far_bias, 0.0, 4.0),
@@ -193,7 +195,7 @@ impl Tunables for ShadowTuning {
             "normal_bias" => self.normal_bias = value,
             "filter" => self.filter = Filter::from_index(value),
             "fade" => self.fade = value,
-            "far_steps" => self.far_steps = value.round(),
+            "far_reads" => self.far_reads = value.round(),
             "far_reach" => self.far_reach = value,
             "far_softness" => self.far_softness = value,
             "far_bias" => self.far_bias = value,
@@ -236,6 +238,56 @@ impl Sun {
     /// Shading with this sun in place of its sliders'.
     pub fn applied(&self, shading: &ShadingTuning) -> ShadingTuning {
         ShadingTuning { sun_azimuth: self.azimuth, sun_elevation: self.elevation, ..*shading }
+    }
+}
+
+/// The player camera's projection: a perspective drawn with the FOV it has now, but whose shadow
+/// maps Bevy sizes for `shadow_fov`. Bevy fits each shadow map around the view's corners, so a
+/// FOV that widens with speed would resize the maps' texels every frame and make shadow edges
+/// shake; a fixed shadow FOV (the widest the view gets) keeps them still.
+#[derive(Clone, Debug)]
+pub struct SteadyShadows {
+    pub view: PerspectiveProjection,
+    /// Radians.
+    pub shadow_fov: f32,
+}
+
+impl Default for SteadyShadows {
+    fn default() -> Self {
+        let view = PerspectiveProjection::default();
+        Self { shadow_fov: view.fov, view }
+    }
+}
+
+impl CameraProjection for SteadyShadows {
+    fn get_clip_from_view(&self) -> Mat4 {
+        self.view.get_clip_from_view()
+    }
+
+    fn get_clip_from_view_for_sub(&self, sub_view: &SubCameraView) -> Mat4 {
+        self.view.get_clip_from_view_for_sub(sub_view)
+    }
+
+    fn update(&mut self, width: f32, height: f32) {
+        self.view.update(width, height);
+    }
+
+    fn far(&self) -> f32 {
+        self.view.far()
+    }
+
+    /// Only Bevy's shadow maps ask for these.
+    fn get_frustum_corners(&self, z_near: f32, z_far: f32) -> [Vec3A; 8] {
+        PerspectiveProjection { fov: self.shadow_fov, ..self.view.clone() }.get_frustum_corners(z_near, z_far)
+    }
+}
+
+/// The perspective a camera draws with, whether plain or with steady shadows.
+pub fn perspective_mut(projection: &mut Projection) -> Option<&mut PerspectiveProjection> {
+    match projection {
+        Projection::Perspective(p) => Some(p),
+        Projection::Custom(c) => c.get_mut::<SteadyShadows>().map(|s| &mut s.view),
+        _ => None,
     }
 }
 
@@ -387,6 +439,24 @@ mod tests {
         }
         // Small moves within a step leave it where it was.
         assert_eq!(Sun::on_day(0.3, 60.0, 5.0, step), Sun::on_day(0.3001, 60.0, 5.0, step));
+    }
+
+    #[test]
+    fn steady_shadows_draw_with_the_view_but_size_maps_for_the_shadow_fov() {
+        let mut steady = SteadyShadows::default();
+        steady.update(1600.0, 900.0);
+        steady.view.fov = 80f32.to_radians();
+        steady.shadow_fov = 105f32.to_radians();
+        let view = steady.view.clone();
+        assert_eq!(steady.get_clip_from_view(), view.get_clip_from_view());
+        let wide = steady.get_frustum_corners(-1.0, -16.0);
+        let before = wide;
+        steady.view.fov = 95f32.to_radians();
+        assert_eq!(steady.get_frustum_corners(-1.0, -16.0), before, "speeding up doesn't move the shadow maps");
+        assert!(wide[4].length() > view.get_frustum_corners(-1.0, -16.0)[4].length());
+        let mut projection = Projection::custom(steady);
+        perspective_mut(&mut projection).unwrap().fov = 1.0;
+        assert_eq!(perspective_mut(&mut projection).unwrap().fov, 1.0);
     }
 
     #[test]

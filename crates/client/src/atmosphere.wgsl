@@ -33,12 +33,14 @@ struct Atmosphere {
     // Shadows: how far the maps reach, where they start fading into the far shadow (along the
     // view), the far shadow on (1) or off (0), maps tinted by cascade (1) or not.
     shadow: vec4<f32>,
-    // The far shadow: steps toward the sun, how far it looks, how soft, how far a column must
-    // rise above a ray to shade it.
+    // The far shadow: most height-map reads toward the sun, how far it looks, how soft, how far
+    // a column must rise above a ray to shade it.
     far: vec4<f32>,
-    // The height map, relative to the render origin: X and north of texel (0, 0)'s corner, the
-    // height its texels are measured from, columns per texel.
+    // The coarse height map, relative to the render origin: X and north of texel (0, 0)'s
+    // corner, the height its texels are measured from, columns per texel.
     heights: vec4<f32>,
+    // The same for the fine height map, a texel to each column.
+    fine_heights: vec4<f32>,
 };
 
 // The sun's color at full brightness, whatever its strength.

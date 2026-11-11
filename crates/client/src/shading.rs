@@ -185,6 +185,7 @@ impl ShadingTuning {
             shadow: Vec4::ZERO,
             far: Vec4::ZERO,
             heights: Vec4::ZERO,
+            fine_heights: Vec4::ZERO,
         }
     }
 }
@@ -314,12 +315,15 @@ pub struct Atmosphere {
     /// from the camera, along its view), the far shadow on (1) or off (0), the maps tinted by
     /// cascade (1) or not.
     pub shadow: Vec4,
-    /// The far shadow: steps toward the sun, how far it looks, how soft, how far a column must
-    /// rise above a ray to shade it.
+    /// The far shadow: most height-map reads toward the sun, how far it looks, how soft, how far
+    /// a column must rise above a ray to shade it.
     pub far: Vec4,
-    /// Where the height map lies, relative to the render origin: X and north of texel (0, 0)'s
-    /// corner, the height its texels are measured from (render Y), and columns per texel.
+    /// Where the coarse height map lies, relative to the render origin: X and north of texel
+    /// (0, 0)'s corner, the height its texels are measured from (render Y), and columns per
+    /// texel.
     pub heights: Vec4,
+    /// The same for the fine height map, a texel to each column.
+    pub fine_heights: Vec4,
 }
 
 /// The sky: drawn over the whole screen at the far plane, so only where nothing else is.
@@ -427,14 +431,18 @@ fn spawn_sky(mut commands: Commands, mut meshes: ResMut<Assets<Mesh>>, mut mater
 
 /// The shadows' part of the atmosphere: the tuning, and where the height map lies relative to
 /// the render origin.
-pub fn shadow_atmosphere(a: &mut Atmosphere, shadows: &ShadowTuning, heights: Option<crate::heights::Placement>, origin: api::I64Vec3) {
+pub fn shadow_atmosphere(a: &mut Atmosphere, shadows: &ShadowTuning, heights: Option<crate::heights::Maps>, origin: api::I64Vec3) {
     let on = |b: bool| if b { 1.0 } else { 0.0 };
     let distance = shadows.distance.max(1.0);
     let far = shadows.switches.far && heights.is_some();
     a.shadow = Vec4::new(distance, distance * (1.0 - shadows.fade.clamp(0.0, 1.0)), on(far), on(shadows.switches.show_cascades));
-    a.far = Vec4::new(shadows.far_steps.max(1.0), shadows.far_reach, shadows.far_softness, shadows.far_bias);
-    if let Some(p) = heights {
-        a.heights = Vec4::new((p.corner.0 - origin.x) as f32, (p.corner.1 - origin.y) as f32, (p.base - origin.z) as f32, p.scale as f32);
+    a.far = Vec4::new(shadows.far_reads.max(1.0), shadows.far_reach, shadows.far_softness, shadows.far_bias);
+    let place = |p: crate::heights::Placement| {
+        Vec4::new((p.corner.0 - origin.x) as f32, (p.corner.1 - origin.y) as f32, (p.base - origin.z) as f32, p.scale as f32)
+    };
+    if let Some(maps) = heights {
+        a.heights = place(maps.coarse);
+        a.fine_heights = place(maps.fine);
     }
 }
 

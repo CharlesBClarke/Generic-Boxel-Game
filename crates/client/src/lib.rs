@@ -244,7 +244,7 @@ pub(crate) struct PlayerCamera;
 struct Hud;
 
 fn setup_scene(mut commands: Commands, mut cursor: Single<&mut CursorOptions, With<PrimaryWindow>>) {
-    commands.spawn((Camera3d::default(), Transform::default(), PlayerCamera));
+    commands.spawn((Camera3d::default(), Projection::custom(shadows::SteadyShadows::default()), Transform::default(), PlayerCamera));
     commands.spawn((
         Text::new(""),
         Node { position_type: PositionType::Absolute, top: px(8), left: px(8), ..default() },
@@ -289,7 +289,7 @@ fn spawn_chunk_meshes(
     let image = images.add(solid::volume_image(&volumes));
     let sheens = images.add(solid::sheen_image(&volumes));
     // Replaced by the real height map once it's built (see `heights`).
-    let heights = images.add(heights::height_image(&[heights::NOTHING], 1));
+    let heights = images.add(heights::height_image(&[heights::NOTHING; 2], 2, 1));
     let solid = |tint: Color, alpha_mode: AlphaMode| SolidMaterial {
         tint: tint.into(),
         volumes: image.clone(),
@@ -621,8 +621,11 @@ fn update_camera(
     let limit = 89f32.to_radians();
     transform.rotation = coords::look_rotation(look.yaw, (look.pitch - feel_state.nod() + kick.pitch()).clamp(-limit, limit));
     transform.translation = coords::render_translation(eye, origin.cell) + transform.rotation * kick.shake_offset();
-    if let Projection::Perspective(perspective) = &mut **projection {
-        perspective.fov = feel_state.fov.to_radians();
+    if let Projection::Custom(custom) = &mut **projection
+        && let Some(steady) = custom.get_mut::<shadows::SteadyShadows>()
+    {
+        steady.view.fov = feel_state.fov.to_radians();
+        steady.shadow_fov = feel.fov_max.max(feel.fov).max(feel_state.fov).to_radians();
     }
 }
 
