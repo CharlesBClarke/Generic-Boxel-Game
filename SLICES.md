@@ -104,34 +104,7 @@ A run of small toy slices. Each one takes a single game-feel feature that doesn'
 
 ### Current toy
 
-**AO in the shader** (`toy-ao-in-shader`, from the backlog entry of the same name). **Stage:** Verify (plan approved 2026-11-11; built as planned, plus an "ambient occlusion" draw switch in the Shading section and the bench's `shading.ao`, for comparing on and off).
-
-*Goal:* corner AO stops blocking greedy merges, for the triangle count (bench terrain ~0.29M toward ~0.15M). Notes: `docs/notes/greedy-meshing.md`.
-
-*Plan* (approved 2026-11-11; the user: "go with what your recomending")
-- Corner AO is already the mean of four boxes in front of the face around each corner (over the face, past each of the two edges, past the corner), each in one boxel since `reach` ≤ 16. The mesher bakes those 16 fills per quad (4 corners × 4 boxes, 0–1, one byte each) into a new `Uint32x4` vertex attribute instead of a darkness in the vertex color.
-- The shader finds the pixel's boxel on the quad, sums the fills at its four corners (inside the quad, past an edge, or past a corner), applies strength, `full_at` and curve (now `Atmosphere` uniforms), and blends bilinearly across the boxel. The AO diagonal rule goes; light keeps its per-corner bake and diagonal.
-- `client::greedy`: faces merge regardless of AO when all have the same four over-face fills and each outer edge's past-edge fills are the same all along it. Strength, `full_at` and curve tune live; `reach` (and turning AO on from 0) still waits for Apply.
-- Client only; nothing around the API; no new controls. Items, ghost and pictures get zero fills.
-- Tests: a Rust copy of the shader's AO matches the old corner darkness (existing AO tests keep their meaning; a stair's inner corner added); merged meshes look the same as unmerged, AO included; a floor beside a wall merges into one quad; the bench terrain's triangle count; remesh time before and after; the quick bench.
-- Decided: `fix-greedy-sparkles` not first (the user: "we don't need to fix sparkels unless it would require more work if we do it latter"; it doesn't), so more sparkles in play are expected. The blend across a boxel changes a little (smooth instead of two triangles), judged in play. Light stays baked. Texel AO stays with the GPU boxel grid.
-
-*Done when:* (1) AO looks the same in play: wall bases, steps, the house, no seams or creases at quad edges; (2) strength, `full_at` and curve tune live, `reach` waits for Apply; (3) the bench terrain drops from ~0.29M toward ~0.15M triangles; (4) the quick bench is run, any slower row explained; (5) remesh time measured and acceptable; (6) tests pass, clippy clean.
-
-*Test and verify notes (2026-11-11)*
-- Tests: 777 pass across the workspace, clippy clean. New or changed: a lone dark corner fades evenly (replaces the diagonal test), a stair's riser foot darkens mid-boxel (and not its top at half reach), darkened corners merge as much as plain ones, a floor along a wall is one quad; the merged-looks-the-same pixel tests now include AO as the shader works it out.
-- Terrain (`time_meshing_the_terrain`, 224 m view, 3391 chunks): 273,263 merged quads before, 185,080 after (−32%); merging with AO off entirely gives 185,034, so AO no longer blocks merges. Meshing it all: unmerged 1.07 → 1.29 s, merged 1.37 → 1.42 s.
-- An edit in `house`'s most finely cut chunk (`time_edits_in_a_save`): ~41 → ~47 ms merged (four cubes measured per corner instead of one box).
-- Played by the user: "I checked them and the AO works" (the look, the live sliders with `reach` waiting for Apply, the on/off switch).
-- Quick bench (`master` c4dd088 vs work 788110c), nothing flagged slower:
-
-  | spot | A ms | B ms | change |
-  |---|---|---|---|
-  | recorded | 19.1 | 18.1 | −6% |
-  | overlook | 29.9 | 26.7 | −11% (faster) |
-  | lake | 17.2 | 16.7 | −3% |
-
-  Less than the triangle count's drop: the bench's spots draw the full 512 m view, and each pixel now works AO out (four corner sums), so part of the saving goes to the fragment shader. Screenshots match `master`'s by eye.
+None in progress: AO in the shader closed 2026-11-11. Suggested next: Shadow speed (start with a bench run of the switches to see where the frame goes now), or plain Render scale to test whether the frame is still bound by triangles; `fix-greedy-sparkles` whenever the sparkles bother.
 
 **Waiting for a play check** (remind the user at the start of every session, and at good moments during one, until they confirm; then delete the line):
 
@@ -147,8 +120,7 @@ A run of small toy slices. Each one takes a single game-feel feature that doesn'
 - **The test area on the terrain.** Added 2026-11-11, from Chunk storage: storing chunks didn't remove the 1 km clear zone around the mods' built area (`sim::stream::CLEAR_DISTANCE`), since endless terrain would still run through the test area. Options: flatten the terrain around it, set it on a plateau, or move it somewhere generated. The user had expected saved chunks to fix it ("we area going to not have this issue when we impiment saved chunks anyway").
 
 - **Greedy meshing sparkles** (a fix: `fix-greedy-sparkles`). Added 2026-11-11, found by the user after Terrain streaming: "I now notice the sparkals caused by the greedy mesher". Pixel speckles along the edges where a merged quad meets smaller ones (T-junctions: a vertex of one quad sits partway along the other's edge, and rasterizing leaves hairline gaps), predicted in `docs/notes/greedy-meshing.md`; far more visible now the terrain reaches the fog. The usual fixes: split the long edge at the T-junction vertices, or merge only into quads whose edges line up; a test can check that no quad corner lies inside another quad's edge.
-- **AO in the shader.** Added 2026-11-10, from Greedy meshing: AO is the only thing still stopping merges on open terrain; looked up by the shader instead of baked per corner, the bench terrain would go from 0.29M triangles to ~0.15M. Notes: `docs/notes/greedy-meshing.md`.
-- **Render scale.** Split from Benchmark and render scale (2026-11-10, the bench became its own toy): a render scale slider that draws the world at 50–100% of the window and stretches it up, the HUD sharp.
+- **Render scale.** Split from Benchmark and render scale (2026-11-10, the bench became its own toy): a render scale slider that draws the world at 50–100% of the window and stretches it up, the HUD sharp. *2026-11-11, after AO in the shader, the user asked about doing it for distant terrain only:* two cameras split at a distance (far ones at lower resolution, without the near shadow maps, the near ones drawn over at full size); costs a seam at the split and plumbing, and the Shadow speed bench found frame time follows triangles, not pixels, so bench plain render scale at 50% first and build the far-only split only if that helps a lot. A cheaper cousin: skip AO, edge lines and sheen in the shader past the distance where fog hides them.
 - **Shadow speed.** Added 2026-11-10, from Sun shadows, after the bench: shadows add ~11 ms a frame on the Iris Xe at the bench's spots (6–7 ms without, release build). *Bench findings (2026-11-10):* it's all GPU time and follows the triangle count, not pixels, cascades or map size; one more pass over ~1M triangles costs 2.5–4.5 ms, so start by measuring fewer triangles (greedy meshing). *After Greedy meshing (2026-11-10):* the shipped frame is now 12.1 / 15.3 / 10.6 ms at recorded / overlook / lake, at 0.29M triangles. Notes: `docs/notes/shadow-speed.md`. The first idea, kept: Store the far shadow (how lit each column's top is, worked out only when the sun steps or a block changes) so a pixel makes one read instead of a walk; make the far shadow run only past the maps' range even when they're off, so each switch shows its own cost; tune cascades and map size on the bench.
 - **Shadows on cows, items and the held tool.** Added 2026-11-10, from Sun shadows' plan: they cast but don't receive; *since Day and night (2026-11-10) cows and the club, drawn unlit, also glow at night: the user, "leave the cows for later".* moving them onto the one `SolidMaterial` like blocks would fix it (the user: "we will fix the one matrial thing there too").
 - **Colored lamps.** Added 2026-11-10, offered in Stored light, not built: red, green and blue lumite (`light = [255, 0, 0]` and so on) with a dark test room by the lab, to see colors mix. Data only (`blocks.toml`, `inventory.toml`) plus a little world building in `base`.
@@ -256,6 +228,7 @@ Bugs found in already-merged code, each fixed on its own `fix-` branch (see the 
 ### Done toys
 
 Full write-ups (plans, implementation notes, verify rounds, decisions) are in `docs/done-toys.md`. One line each, newest first:
+- **AO in the shader** (2026-11-11, `toy-ao-in-shader`). Quads carry how full the space around each corner is and the shader works out the darkness, so AO no longer stops greedy merges: 32% fewer terrain triangles (85% fewer than unmerged), frames 3–11% faster at the bench's spots; strength, `full_at` and curve tune live, and an AO on/off switch in Shading.
 - **Chunk storage** (2026-11-11, `toy-chunk-storage`, infrastructure). Edited terrain goes to region files in the world's folder when its column unloads and comes back from them, so memory stays flat; saves stay snapshots (unsaved chunks wait in `unsaved/` until F2, F8 throws them away), Save as copies them, the world autosaves every 5 minutes (tunable), old saves move their terrain over.
 - **Terrain streaming** (2026-11-11, `toy-terrain-streaming`, infrastructure). The generated terrain is endless, loaded in columns around the player out to the render distance and dropped past it, generated, lit and meshed in the background; edits wait in memory when their column unloads and are saved; startup is quick and flying keeps up. No terrain within 1 km of the mods' built area. The full 512 m view costs 19–32 ms a frame.
 - **Day and night** (2026-11-11, `toy-day-and-night`). A time of day owned by the sim and saved, with Eanpa Sky's palette: dawn, day, dusk and a near-black night with stars and a glowing moon, the light on blocks taking the sky's colors. Moonlight casts no shadows, so nights draw none (half the frame time). ACES tone mapping, dithering, and the Shading sliders in groups.
