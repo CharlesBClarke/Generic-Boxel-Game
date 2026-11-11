@@ -67,7 +67,7 @@ fn hash3(p: vec3<f32>) -> f32 {
 }
 
 // The sun, moon and stars over `color` (the sky looking along `dir`), as the stylised-sky
-// block draws them: a small hot disc with a halo, a moon lit from the sun's side, and a star at
+// block draws them: a small hot disc with a halo, a glowing moon, and a star at
 // a random point of some cells of a grid that turns once a day.
 fn sky_bodies(a: Atmosphere, dir: vec3<f32>, color: vec3<f32>) -> vec3<f32> {
     var out = color;
@@ -92,18 +92,19 @@ fn sky_bodies(a: Atmosphere, dir: vec3<f32>, color: vec3<f32>) -> vec3<f32> {
         out += vec3<f32>(0.85, 0.92, 1.0) * bright * bright * a.night.x * 1.8 * smoothstep(0.0, 0.12, dir.y) * (1.0 - moon_cover);
     }
 
-    // The moon: a disc, lit on the side toward the sun, with a faint, broad shading for seas.
+    // The moon: an evenly glowing disc, no phases (it runs opposite the sun, so it would always
+    // be full), with faint, broad seas and a little darkening toward its rim so it reads as
+    // round.
     if moon_cover > 0.0 {
         let radius = sqrt(max(1.0 - edge * edge, 1e-8));
         let right = normalize(vec3<f32>(m.z, 0.0, -m.x) + vec3<f32>(1e-5, 0.0, 0.0));
         let up = cross(right, m);
         let lx = dot(dir, right) / radius;
         let ly = dot(dir, up) / radius;
-        let nz = sqrt(max(1.0 - lx * lx - ly * ly, 0.0));
-        let n = right * lx + up * ly + m * nz;
-        let lit = max(dot(n, a.sun_direction.xyz), 0.04);
+        let facing = sqrt(max(1.0 - lx * lx - ly * ly, 0.0));
         let seas = 0.5 + 0.5 * sin(lx * 2.1 + 1.3) * sin(ly * 1.7 - 0.4);
-        let moon = vec3<f32>(0.82, 0.86, 0.95) * mix(0.85, 1.05, seas) * lit * mix(0.5, 1.15, night) * a.night.z;
+        let rim = mix(0.75, 1.0, sqrt(facing));
+        let moon = vec3<f32>(0.82, 0.86, 0.95) * mix(0.85, 1.05, seas) * rim * mix(0.5, 1.15, night) * a.night.z;
         // The sky's own color shows a little through it by day, never the stars.
         out = mix(out, moon + color * 0.15, moon_cover);
     }
