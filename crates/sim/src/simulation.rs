@@ -16,6 +16,7 @@ use crate::edit::{ChangedChunks, Repeater};
 use crate::inventory::{Inventory, capacity_units};
 use crate::items::{Collector, Items, pop_velocity};
 use crate::terrain::{GenerationStats, WorldSettings};
+use crate::clock::Clock;
 use crate::view::{GridTerrain, PlaceTarget, View, bodies_clear};
 use crate::{
     BlockId, BlockRegistry, CellBox, Grid, Hit, MaterialId, Occupant, Player, PlayerInput, LookRegistry, PushOut, Universe, can_share,
@@ -102,6 +103,8 @@ pub struct Simulation {
     /// How the last generation went.
     generation: Option<GenerationStats>,
     world: WorldSettings,
+    /// The time of day.
+    clock: Clock,
     player_def: Option<PlayerDef>,
     interaction_def: Option<InteractionDef>,
     push_out_def: Option<PushOutDef>,
@@ -396,6 +399,15 @@ impl Simulation {
         &mut self.world
     }
 
+    /// The time of day.
+    pub fn clock(&self) -> &Clock {
+        &self.clock
+    }
+
+    pub fn clock_mut(&mut self) -> &mut Clock {
+        &mut self.clock
+    }
+
     /// Registered terrain generators' names, in registration order.
     pub fn generator_names(&self) -> impl Iterator<Item = &str> {
         self.generators.iter().map(|(name, _)| name.as_str())
@@ -480,6 +492,7 @@ impl Simulation {
         self.hurt_player(input.yaw);
         self.refill_endless();
         self.settle_light();
+        self.clock.step(Self::TICK_SECONDS);
         self.tick += 1;
     }
 
