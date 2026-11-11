@@ -104,19 +104,7 @@ A run of small toy slices. Each one takes a single game-feel feature that doesn'
 
 ### Current toy
 
-**Tuning panel** (`toy-tuning-panel`). **Stage:** Verify (built and tested; waiting for the user to try it).
-
-**Goal:** the tuning panel (~230 sliders in ~25 sections stacked in one scroll) is easy to get around: the user, "the slider menu is getting compersome, tons of scrolling, can we improve it, flaten it, organize it, tool tips for what they do and search, maybe in the future a RAG system".
-
-**Plan (approved 2026-11-11)**
-- *Tabs:* a sidebar of a few broad tabs (Favourites, Player, Items and tools, Creatures, World, Light and sky, Display, Sound, Dev, and Other for sections no tab claims), one page at a time. The sidebar folds away (the user: "make sure the top level list can also be mimzied"). Server sections pick a tab by name or prefix (`tool `, `target `, `brain `, `terrain `), so mods' sections land somewhere. A tab with one section shows it without a header.
-- *Subgroups everywhere:* `api::Tunable` gets plain-text `group` and `help` (and the WIT `tunable` records too). Sections sort their values into small groups of things that touch the same thing, as Shading's are (the user: "use judgment"); Shading moves onto the same field. Sections open, groups folded, with fold-all and unfold-all.
-- *Tooltips:* hovering a slider's name shows its help, range, default and saved name. Help is encouraged, not required: a slider without it still works.
-- *Search:* a box at the top; while it has text the page is one flat list of matching sliders from every tab, tagged with tab and section, matching every word against name (underscores as spaces), section, group and help.
-- *Extras:* a dot on values that differ from their default; right-click a slider to reset it or (un)favourite it; a star per row; favourites saved at once to `tuning_favourites.txt` beside the tuning file.
-- *Unchanged:* the tuning file's format and section names; tabs are display only.
-- *Tests:* search matching; every built-in section lands in a tab other than Other; grouping keeps every value once; favourites file round trip.
-- *Later, not this toy:* a RAG "ask which slider does X" over the help text.
+None in progress: Tuning panel closed 2026-11-11. Suggested next: Shadow speed (start with a bench run of the switches to see where the frame goes now), or plain Render scale to test whether the frame is still bound by triangles; `fix-greedy-sparkles` whenever the sparkles bother.
 
 **Waiting for a play check** (remind the user at the start of every session, and at good moments during one, until they confirm; then delete the line):
 
@@ -129,6 +117,7 @@ A run of small toy slices. Each one takes a single game-feel feature that doesn'
 
 ### Toy backlog
 
+- **Ask the tuning panel.** Added 2026-11-11, from Tuning panel (the user: "maybe in the future a RAG system"): ask in words ("what makes cows give up sooner?") and get the sliders that do it, searched over the help text every value now carries. Plain search covers names and words already; this is for questions phrased unlike the help.
 - **The test area on the terrain.** Added 2026-11-11, from Chunk storage: storing chunks didn't remove the 1 km clear zone around the mods' built area (`sim::stream::CLEAR_DISTANCE`), since endless terrain would still run through the test area. Options: flatten the terrain around it, set it on a plateau, or move it somewhere generated. The user had expected saved chunks to fix it ("we area going to not have this issue when we impiment saved chunks anyway").
 
 - **Greedy meshing sparkles** (a fix: `fix-greedy-sparkles`). Added 2026-11-11, found by the user after Terrain streaming: "I now notice the sparkals caused by the greedy mesher". Pixel speckles along the edges where a merged quad meets smaller ones (T-junctions: a vertex of one quad sits partway along the other's edge, and rasterizing leaves hairline gaps), predicted in `docs/notes/greedy-meshing.md`; far more visible now the terrain reaches the fog. The usual fixes: split the long edge at the T-junction vertices, or merge only into quads whose edges line up; a test can check that no quad corner lies inside another quad's edge.
@@ -222,6 +211,7 @@ Shortcuts taken around the API, each with the toy that needed it. Paid down in s
 - **Greedy meshing** (2026-11-10, from Greedy meshing): chunk meshes merge alike faces after meshing (`client::greedy`); a merged quad's look and edge pattern repeat every boxel in the shader, so per-quad data that can't repeat per boxel must stop merges where it differs.
 - **Bench** (2026-11-10, from Bench): frame rate is compared with `tools/bench.sh`, never from memory or across days: release builds, a 1080×1080 window, the user's terrain (seed 120) at fixed flying spots, one launch per settings set, results in `~/.local/share/boxel/bench/results.txt` with a screenshot of each spot. Every toy's Verify runs `--quick master work`. Differences under about 10% at the `recorded` spot (5% at the others) are noise; a row whose GPU clocks differ is marked, as the Iris Xe is held back when the CPU is busy. The client's `bench` module stays within what `f9fbc16` had, so `tools/bench/backport.sh` can copy it into old commits; only `bench/switches.rs` may use newer code. New on/off settings worth measuring get a line there.
 - **Terrain streaming** (2026-11-11, from Terrain streaming): generated terrain is endless and loaded by the server in whole columns around each player out to that player's render distance (plus 32 m, dropped 32 m past it); the client asks for its distance and is told what loads and unloads. Columns are generated and lit apart on workers and joined at their seams, which must equal lighting everything together. Edited chunks of dropped columns stay in memory and are saved; nothing simulates over ground still loading. No terrain is made within 1 km of chunks the mods built. New world state that lives in terrain columns must say what happens when its column unloads.
+- **Tuning values** (2026-11-11, from Tuning panel): every `api::Tunable` may carry a `group` (values that touch the same thing, shown under one folded header) and `help` (a sentence for the tooltip and search), plain strings across the WIT boundary too. New tunable values should come with both, kept in `*_GROUPS` and `*_HELP` tables beside `tunables()` via `api::tuning::described`; help is encouraged, never required. New sections need a tab in `client::tuning_layout::Tab::of` and a heading, or they land in Other.
 - **Signature feature:** not decided yet. Choose it once the block interaction and crafting toys have been played, and record the choice and why in the design doc.
 
 ### Fixes
@@ -240,6 +230,7 @@ Bugs found in already-merged code, each fixed on its own `fix-` branch (see the 
 ### Done toys
 
 Full write-ups (plans, implementation notes, verify rounds, decisions) are in `docs/done-toys.md`. One line each, newest first:
+- **Tuning panel** (2026-11-11, `toy-tuning-panel`). The tuning panel gets a foldable sidebar of tabs, every section's values in small folded groups, help on all ~230 sliders (hover), search across everything, favourites, a dot on changed values and right-click reset. `Tunable` carries `group` and `help`.
 - **AO in the shader** (2026-11-11, `toy-ao-in-shader`). Quads carry how full the space around each corner is and the shader works out the darkness, so AO no longer stops greedy merges: 32% fewer terrain triangles (85% fewer than unmerged), frames 3–11% faster at the bench's spots; strength, `full_at` and curve tune live, and an AO on/off switch in Shading.
 - **Chunk storage** (2026-11-11, `toy-chunk-storage`, infrastructure). Edited terrain goes to region files in the world's folder when its column unloads and comes back from them, so memory stays flat; saves stay snapshots (unsaved chunks wait in `unsaved/` until F2, F8 throws them away), Save as copies them, the world autosaves every 5 minutes (tunable), old saves move their terrain over.
 - **Terrain streaming** (2026-11-11, `toy-terrain-streaming`, infrastructure). The generated terrain is endless, loaded in columns around the player out to the render distance and dropped past it, generated, lit and meshed in the background; edits wait in memory when their column unloads and are saved; startup is quick and flying keeps up. No terrain within 1 km of the mods' built area. The full 512 m view costs 19–32 ms a frame.

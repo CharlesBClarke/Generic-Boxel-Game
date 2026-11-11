@@ -3,6 +3,34 @@
 Moved out of `SLICES.md` on 2026-11-03 so the roadmap stays short. Each toy's full write-up, newest first, as it stood when it closed. `SLICES.md` keeps a one-line summary of each.
 
 
+#### Tuning panel (`toy-tuning-panel`)
+
+Asked for by the user. **Stage:** Done (2026-11-11). Verified: the user tried it ("it works I like it all"). Built as planned, except the plan's "Items and tools" tab became two, Combat (tools, combat feel) and Building and items (breaking and placing, inventory, item drops).
+
+*Goal:* the tuning panel (~230 sliders in ~25 sections stacked in one scroll) is easy to get around: the user, "the slider menu is getting compersome, tons of scrolling, can we improve it, flaten it, organize it, tool tips for what they do and search, maybe in the future a RAG system".
+
+*Plan* (approved 2026-11-11; the user on subgroups: "use judgment", on extras: "yes thats a good Idea", on help: "encuraged")
+- *Tabs:* a sidebar of a few broad tabs (Favourites, Player, Items and tools, Creatures, World, Light and sky, Display, Sound, Dev, and Other for sections no tab claims), one page at a time. The sidebar folds away (the user: "make sure the top level list can also be mimzied"). Server sections pick a tab by name or prefix (`tool `, `target `, `brain `, `terrain `), so mods' sections land somewhere. A tab with one section shows it without a header.
+- *Subgroups everywhere:* `api::Tunable` gets plain-text `group` and `help` (and the WIT `tunable` records too). Sections sort their values into small groups of things that touch the same thing, as Shading's are (the user: "use judgment"); Shading moves onto the same field. Sections open, groups folded, with fold-all and unfold-all.
+- *Tooltips:* hovering a slider's name shows its help, range, default and saved name. Help is encouraged, not required: a slider without it still works.
+- *Search:* a box at the top; while it has text the page is one flat list of matching sliders from every tab, tagged with tab and section, matching every word against name (underscores as spaces), section, group and help.
+- *Extras:* a dot on values that differ from their default; right-click a slider to reset it or (un)favourite it; a star per row; favourites saved at once to `tuning_favourites.txt` beside the tuning file.
+- *Unchanged:* the tuning file's format and section names; tabs are display only.
+- *Tests:* search matching; every built-in section lands in a tab other than Other; grouping keeps every value once; favourites file round trip.
+- *Later, not this toy:* a RAG "ask which slider does X" over the help text.
+
+*Built*
+- `api::Tunable` gained `group` and `help` with builders, plus `api::tuning::{group, help, described}`; each section keeps `*_GROUPS` and `*_HELP` tables beside its `tunables()`. The WIT `tunable` records in `brain.wit` and `movement.wit` carry both, so wasm brains and controllers describe their own values.
+- Help written for every built-in value (movement, interaction, push-out, crowd, health, items, inventory, signals, tool, target, cow brain, world, time, terrain, saving, and the client's combat feel, camera, animation, AO, view, UI scale, shading, shadows, drill, sound). Groups for every section with more than a handful; Shading's `GROUPS` now feeds the field.
+- `client::tuning_layout` (new): `Tab` and `Tab::of`, headings, search matching, tooltip text, the changed test, and `Favourites` with its file. Tabs: Favourites, Player, Combat, Building and items, Creatures, World, Light and sky, Display, Sound, Dev, Other.
+- `client::tuning`: the window is now a top bar (☰ to fold the sidebar, search, Fold all, Unfold all), sidebar and page; sections open, groups folded with a count and a dot when something inside changed; flat lists for search and favourites with headings that jump to the tab. Special controls (tone mapper, shadow filter, switches, sound pick lists, Apply) stay on their section's page; they aren't searchable.
+
+*Verify:* the user tried it in game and liked all of it. Tests: 5 new in `tuning_layout` (tabs for every built-in section, search, tooltip, changed, favourites file round trip), one in `api::tuning`, Shading's group test now checks the field; workspace tests pass, clippy clean. *Quick bench skipped* (a deviation, the user asked to close straight away): the change is UI only, the panel draws nothing while closed, and `tunables()` runs only when the server sends its definitions (startup and on a change), never per frame.
+
+*Deferred:* asking in words (RAG) is the backlog's "Ask the tuning panel". The sidebar's folded state and tab aren't kept between runs.
+
+*API:* no debt. `Tunable` grew two fields (a change to the WIT records); see the Phase 2 decision "Tuning values".
+
 #### AO in the shader (`toy-ao-in-shader`)
 
 From the backlog entry of the same name. **Stage:** Done (2026-11-11). Verified: the user played it ("I checked them and the AO works") and accepted the remesh cost ("yes for now"). Built as planned, plus an "ambient occlusion" draw switch in the Shading section and the bench's `shading.ao`, for comparing on and off.
