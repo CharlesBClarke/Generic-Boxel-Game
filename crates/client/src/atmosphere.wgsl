@@ -24,7 +24,8 @@ struct Atmosphere {
     night: vec4<f32>,
     // The sun's glows: the tight halo, the wider glow, the horizon glow, its power.
     glows: vec4<f32>,
-    // Starting distance, distance where it's thickest, how thick there.
+    // Starting distance, distance where it's thickest, how thick there; then how soft the
+    // sky's horizon is (see `sky`).
     fog: vec4<f32>,
     // Crease darkness, ridge brightness, width in texels.
     edges: vec4<f32>,
@@ -54,8 +55,24 @@ struct Atmosphere {
 // The sky looking along `dir` (a unit vector): the horizon's color blending up into the
 // zenith's, and a glow toward the sun lowest down. From the stylised-sky block (Eanpa Sky's
 // sky, MIT). Fog fades to it, so far terrain melts into the sky behind it.
+//
+// Below the horizon it keeps the color it has at the horizon. The gradient itself starts a
+// little lower and climbs steeply, so cut off there it would leave a hard line between the
+// blue just above and flat haze below; fogged land takes the sky's color, so the line would
+// show through far hills. Within `a.fog.w` of the horizon the two join on a curve, so there's
+// no corner either; above that the sky is as it was.
 fn sky(a: Atmosphere, dir: vec3<f32>) -> vec3<f32> {
-    let up = pow(clamp(dir.y * 1.35 + 0.02, 0.0, 1.0), a.horizon.w);
+    let x = dir.y * 1.35 + 0.02;
+    // Where the horizon is on the gradient.
+    let level = 0.02;
+    let k = a.fog.w;
+    var height = max(x, level);
+    if k > 0.0 && abs(x - level) < k {
+        let t = x - level + k;
+        height = level + t * t / (4.0 * k);
+    }
+    height = min(height, 1.0);
+    let up = pow(height, a.horizon.w);
     var color = mix(a.horizon.rgb, a.zenith.rgb, up);
     let toward = max(dot(dir, a.sun_direction.xyz), 0.0);
     color += a.sun_hue.rgb * pow(toward, a.glows.w) * 0.35 * (1.0 - up) * a.glows.z;

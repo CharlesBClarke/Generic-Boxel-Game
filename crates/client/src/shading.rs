@@ -48,6 +48,10 @@ pub struct ShadingTuning {
     /// How far down the zenith's blue reaches before it fades into the horizon's color: 1 is
     /// the palette's, higher brings the blue lower.
     pub blue_reach: f32,
+    /// Below the horizon the sky keeps its color at the horizon (so fogged land below eye
+    /// level has no line through it); this is how many degrees around the horizon the two
+    /// join on a curve instead of at a corner.
+    pub horizon_blur: f32,
     /// How much warmer than the palette a low sun is; 0 is the palette as it is.
     pub warmth: f32,
     /// The sun's disc, as its radius in degrees.
@@ -154,6 +158,7 @@ impl Default for ShadingTuning {
             night_sky: 0.002,
             haze: 1.0,
             blue_reach: 1.0,
+            horizon_blur: 2.0,
             warmth: 1.0,
             sun_size: 0.6,
             sun_halo: 3.0,
@@ -233,7 +238,14 @@ impl ShadingTuning {
                 self.horizon_glow * smoothstep(-10.0, 0.0, sky.sun_elevation),
                 6.0 / self.horizon_glow_size.max(0.05),
             ),
-            fog: Vec4::new(fog_start, (self.fog_end * render_distance).max(fog_start + 1.0), self.fog, 0.0),
+            // The blur as half the band's width, in the sky gradient's units (see `sky` in
+            // `atmosphere.wgsl`).
+            fog: Vec4::new(
+                fog_start,
+                (self.fog_end * render_distance).max(fog_start + 1.0),
+                self.fog,
+                (self.horizon_blur.to_radians() * 1.35 * 0.5).max(0.0),
+            ),
             edges: Vec4::new(self.crease, self.ridge, self.edge_width, 0.0),
             parts: Vec4::new(on(self.parts.edges), on(self.parts.fog), on(self.parts.sheen), on(self.parts.light)),
             stored: Vec4::new(self.block_light, self.light_falloff, self.block_falloff, self.min_light),
@@ -254,7 +266,7 @@ pub const GROUPS: [(&str, &[&str]); 6] = [
     (
         "Sky look: the sky, sun, moon and stars as drawn (lights nothing)",
         &[
-            "day_sky", "night_sky", "haze", "blue_reach", "sun_size", "sun_halo", "sun_glow", "horizon_glow",
+            "day_sky", "night_sky", "haze", "blue_reach", "horizon_blur", "sun_size", "sun_halo", "sun_glow", "horizon_glow",
             "horizon_glow_size", "moon_size", "moon_brightness", "stars",
         ],
     ),
@@ -282,6 +294,7 @@ const SHADING_HELP: &[(&str, &str)] = &[
     ("night_sky", "The sky's colors at full night, brighter or darker than the palette; blended with day_sky through dusk."),
     ("haze", "How pale and misty the horizon is while the sun is high: 1 is the palette's, 0 takes the zenith's blue. Sunrise and sunset keep their own."),
     ("blue_reach", "How far down the zenith's blue reaches before it fades into the horizon's color: 1 is the palette's, higher brings the blue lower."),
+    ("horizon_blur", "Below the horizon the sky (and the fog on far land) keeps its color at the horizon; this is how many degrees around the horizon the two join softly instead of at a corner."),
     ("sun_size", "The sun's disc, as its radius in degrees."),
     ("sun_halo", "The tight bright ring hugging the sun's disc (about 3° across)."),
     ("sun_glow", "The wider soft glow around the sun (about 10°)."),
@@ -322,6 +335,7 @@ impl Tunables for ShadingTuning {
             Tunable::new("night_sky", self.night_sky, 0.0, 3.0),
             Tunable::new("haze", self.haze, 0.0, 1.0),
             Tunable::new("blue_reach", self.blue_reach, 0.25, 4.0),
+            Tunable::new("horizon_blur", self.horizon_blur, 0.0, 10.0),
             Tunable::new("warmth", self.warmth, 0.0, 2.0),
             Tunable::new("sun_size", self.sun_size, 0.1, 5.0),
             Tunable::new("sun_halo", self.sun_halo, 0.0, 6.0),
@@ -360,6 +374,7 @@ impl Tunables for ShadingTuning {
             "night_sky" => self.night_sky = value,
             "haze" => self.haze = value,
             "blue_reach" => self.blue_reach = value,
+            "horizon_blur" => self.horizon_blur = value,
             "warmth" => self.warmth = value,
             "sun_size" => self.sun_size = value,
             "sun_halo" => self.sun_halo = value,
@@ -647,6 +662,15 @@ mod tests {
         let a = tinted.atmosphere(&sky(12.0, &tinted), 400.0);
         assert!((a.sky_light.truncate().max_element() - tinted.sky_light).abs() < 1e-5);
         assert!(a.sky_light.z > a.sky_light.x, "blue, like the sky");
+    }
+
+    #[test]
+    fn the_horizon_blur_reaches_the_sky_as_half_its_band() {
+        let t = ShadingTuning { horizon_blur: 4.0, ..default() };
+        let a = t.atmosphere(&sky(12.0, &t), 100.0);
+        assert!((a.fog.w - 4f32.to_radians() * 1.35 * 0.5).abs() < 1e-6);
+        let sharp = ShadingTuning { horizon_blur: 0.0, ..default() };
+        assert_eq!(sharp.atmosphere(&sky(12.0, &sharp), 100.0).fog.w, 0.0, "no blur: the sky as it was");
     }
 
     #[test]
