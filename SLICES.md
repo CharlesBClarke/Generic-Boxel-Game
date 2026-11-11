@@ -104,11 +104,7 @@ A run of small toy slices. Each one takes a single game-feel feature that doesn'
 
 ### Current toy
 
-**Smooth FPS readout** (`toy-smooth-fps`, started 2026-11-11). **Stage:** Verify. The user: "I want the fps reader to be smooth I cant read it well". The HUD showed `1 / this frame's time`, changing every frame.
-- Plan: a small counter in `client` adds up frames and their time and refreshes the shown number every 0.5 s with the average, plus the average frame time in ms (`142 fps (7.0 ms)`). No sim or API change, no new controls.
-- Test: unit tests on the counter (steady frames give the exact rate; the number holds between refreshes). Verify: the user reads it in play; quick bench.
-- Done when: the fps number is steady enough to read and still follows real changes within about a second.
-- Alongside it: `fix-typing-moves-player` (typing in the tuning search box moved the player), committed and merged into this branch for one play check; merges into `master` once the user confirms.
+None in progress: Smooth FPS readout closed 2026-11-11. Suggested next: Shadow speed (start with a bench run of the switches to see where the frame goes now), or plain Render scale to test whether the frame is still bound by triangles; `fix-greedy-sparkles` whenever the sparkles bother.
 
 **Waiting for a play check** (remind the user at the start of every session, and at good moments during one, until they confirm; then delete the line):
 
@@ -236,6 +232,7 @@ Bugs found in already-merged code, each fixed on its own `fix-` branch (see the 
 ### Done toys
 
 Full write-ups (plans, implementation notes, verify rounds, decisions) are in `docs/done-toys.md`. One line each, newest first:
+- **Smooth FPS readout** (2026-11-11, `toy-smooth-fps`). The HUD's fps is a half-second average with the frame time in ms, so it holds still long enough to read. Bench skipped at the user's say (HUD text only).
 - **Tuning panel** (2026-11-11, `toy-tuning-panel`). The tuning panel gets a foldable sidebar of tabs, every section's values in small folded groups, help on all ~230 sliders (hover), search across everything, favourites, a dot on changed values and right-click reset. `Tunable` carries `group` and `help`.
 - **AO in the shader** (2026-11-11, `toy-ao-in-shader`). Quads carry how full the space around each corner is and the shader works out the darkness, so AO no longer stops greedy merges: 32% fewer terrain triangles (85% fewer than unmerged), frames 3–11% faster at the bench's spots; strength, `full_at` and curve tune live, and an AO on/off switch in Shading.
 - **Chunk storage** (2026-11-11, `toy-chunk-storage`, infrastructure). Edited terrain goes to region files in the world's folder when its column unloads and comes back from them, so memory stays flat; saves stay snapshots (unsaved chunks wait in `unsaved/` until F2, F8 throws them away), Save as copies them, the world autosaves every 5 minutes (tunable), old saves move their terrain over.

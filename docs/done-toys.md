@@ -3,6 +3,22 @@
 Moved out of `SLICES.md` on 2026-11-03 so the roadmap stays short. Each toy's full write-up, newest first, as it stood when it closed. `SLICES.md` keeps a one-line summary of each.
 
 
+#### Smooth FPS readout (`toy-smooth-fps`)
+
+Asked for by the user. **Stage:** Done (2026-11-11). Verified: the user tried it ("good job it works both"). Built as planned.
+
+*Goal:* the user, "I want the fps reader to be smooth I cant read it well". The HUD showed `1 / this frame's time`, changing every frame.
+
+*Plan:* a small counter in `client` adds up frames and their time and refreshes the shown number every 0.5 s with the average, plus the average frame time in ms (`142 fps (7.0 ms)`). No sim or API change, no new controls.
+
+*Built:* `client::perf::FpsMeter`, kept as a `Local` in the HUD system; it shows `--` until its first half second. Unit tests: steady frames give the exact rate and ms; the shown number holds between refreshes and then takes in every frame since.
+
+*Verify:* the fps is readable in play (user). Done when "steady enough to read and still follows real changes within about a second": met. The quick bench was **skipped** at the user's say ("skip"): the change is one line of HUD text.
+
+*Alongside:* `fix-typing-moves-player` (typing in a text box also played), checked in the same play run and merged on its own; see Fixes in `SLICES.md`.
+
+*Decisions, deferred, API debt:* none.
+
 #### Tuning panel (`toy-tuning-panel`)
 
 Asked for by the user. **Stage:** Done (2026-11-11). Verified: the user tried it ("it works I like it all"). Built as planned, except the plan's "Items and tools" tab became two, Combat (tools, combat feel) and Building and items (breaking and placing, inventory, item drops).
