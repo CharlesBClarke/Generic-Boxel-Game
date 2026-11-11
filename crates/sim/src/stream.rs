@@ -103,8 +103,9 @@ struct Workers {
 
 impl Workers {
     fn start() -> Self {
-        // One core is left for the game itself.
-        let count = std::thread::available_parallelism().map_or(1, |n| n.get()).saturating_sub(1).max(1);
+        // Half the cores, less one: the game, its renderer and the client's background meshing
+        // want the rest.
+        let count = (std::thread::available_parallelism().map_or(2, |n| n.get()) / 2).saturating_sub(1).max(1);
         let (jobs, inbox) = channel::<Job>();
         let (outbox, done) = channel::<Done>();
         let inbox = Arc::new(Mutex::new(inbox));
@@ -163,6 +164,8 @@ pub struct Stream {
     loaded: HashSet<Column>,
     /// Asked of the workers and not back yet.
     in_flight: HashSet<Column>,
+    /// Back from the workers and not brought in yet, oldest first.
+    ready: std::collections::VecDeque<Done>,
     /// Columns within the radius, nearest first, as last worked out.
     wanted: Vec<Column>,
     /// What `wanted` was worked out for: the player's column, the radius and the epoch.
@@ -204,6 +207,7 @@ impl Stream {
             height: crate::WorldSettings::default().terrain_height,
             loaded: HashSet::new(),
             in_flight: HashSet::new(),
+            ready: std::collections::VecDeque::new(),
             wanted: Vec::new(),
             wanted_for: None,
             kept: HashMap::new(),
@@ -288,6 +292,7 @@ impl Stream {
         self.epoch += 1;
         self.height = height;
         self.in_flight.clear();
+        self.ready.clear();
         self.wanted_for = None;
         self.stats = StreamStats { columns: self.loaded.len(), ..StreamStats::default() };
         self.error = None;
@@ -354,9 +359,9 @@ impl Stream {
         self.wanted.iter().take_while(|c| c.distance(pos) <= meters).any(|c| !self.loaded.contains(c))
     }
 
-    /// Whether any column is on its way from the workers.
+    /// Whether any column is on its way from the workers, or back and not brought in.
     pub fn busy(&self) -> bool {
-        !self.in_flight.is_empty()
+        !self.in_flight.is_empty() || !self.ready.is_empty()
     }
 
     /// Asks the workers for wanted columns that aren't loaded or on their way, nearest first,
@@ -387,9 +392,29 @@ impl Stream {
         }
     }
 
+    /// The next generated column to bring in, with ones from an older epoch or no longer
+    /// wanted thrown away. Waits for one if `wait` and any are on their way.
+    pub(crate) fn next_finished(&mut self, wait: bool) -> Option<Done> {
+        if self.ready.is_empty() {
+            let came = self.finished(wait && !self.busy_ready());
+            self.ready.extend(came);
+        }
+        // The player may have moved on since it came back.
+        while let Some(done) = self.ready.pop_front() {
+            if self.wanted.contains(&done.column) && !self.loaded.contains(&done.column) {
+                return Some(done);
+            }
+        }
+        None
+    }
+
+    fn busy_ready(&self) -> bool {
+        !self.ready.is_empty()
+    }
+
     /// Generated columns that came back, with ones from an older epoch or no longer wanted
     /// thrown away. Waits for at least one if `wait` and any are on their way.
-    pub(crate) fn finished(&mut self, wait: bool) -> Vec<Done> {
+    fn finished(&mut self, wait: bool) -> Vec<Done> {
         let Some(workers) = &self.workers else { return Vec::new() };
         let mut out: Vec<Done> = Vec::new();
         if wait && !self.in_flight.is_empty() {

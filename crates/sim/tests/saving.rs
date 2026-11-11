@@ -141,6 +141,7 @@ fn a_world_comes_back_the_same_in_a_new_game() {
     odd.set(3, 4, 5, true);
     other.shaped_block(material(&other, base::STONE), &odd).unwrap();
     let report = other.load(&SaveData::from_bytes(&bytes).unwrap()).unwrap();
+    other.stream_all();
     assert_eq!(report.skipped, Vec::<String>::new());
 
     assert_same_world(&sim, &other);

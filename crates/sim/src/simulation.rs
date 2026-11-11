@@ -363,14 +363,14 @@ impl Simulation {
         loop {
             self.stream.request(&generators, &self.terrains, &self.blocks);
             let waiting = wait.is_some_and(|r| self.stream.missing_within(center, r));
-            let done = self.stream.finished(waiting);
-            if done.is_empty() {
+            let Some(done) = self.stream.next_finished(waiting) else {
                 if waiting && self.stream.error.is_none() && self.stream.busy() {
                     continue;
                 }
                 break;
-            }
-            self.bring_in(done);
+            };
+            // A column at a time, so a tick takes in only what its budget allows.
+            self.bring_in(vec![done]);
             if !waiting && start.elapsed().as_secs_f32() > Self::STREAM_BUDGET {
                 break;
             }

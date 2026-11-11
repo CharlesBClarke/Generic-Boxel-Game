@@ -134,7 +134,22 @@ impl Grid {
         let cells = match chunk.map(|c| &c.cells) {
             None => Layer::Uniform(local(CellId::EMPTY)),
             Some(Layer::Uniform(id)) => Layer::Uniform(local(*id)),
-            Some(Layer::Dense(ids)) => Layer::Dense(ids.iter().map(|&id| local(id)).collect()),
+            Some(Layer::Dense(ids)) => {
+                // Runs of one cell are the rule, so the last answer is kept at hand.
+                let mut last: Option<(CellId, u16)> = None;
+                Layer::Dense(
+                    ids.iter()
+                        .map(|&id| match last {
+                            Some((seen, i)) if seen == id => i,
+                            _ => {
+                                let i = local(id);
+                                last = Some((id, i));
+                                i
+                            }
+                        })
+                        .collect(),
+                )
+            }
         };
         let light = chunk.map_or(Layer::Uniform(Light::SKY), |c| c.light.clone());
         ChunkData { pos, lists, cells, light }
