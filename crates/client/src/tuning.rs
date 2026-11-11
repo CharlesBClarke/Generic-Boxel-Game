@@ -249,7 +249,11 @@ pub fn tuning_panel(
                     ui.checkbox(&mut parts.sky, "sky");
                     ui.checkbox(&mut parts.stored, "stored light");
                 });
-                sliders(ui, "shading", &mut lighting);
+                for (title, names) in crate::shading::GROUPS {
+                    egui::CollapsingHeader::new(title).id_salt(("shading", title)).default_open(true).show(ui, |ui| {
+                        sliders_only(ui, title, &mut lighting, names);
+                    });
+                }
                 ui.separator();
                 ui.heading("Shadows");
                 ui.label("sun shadows: sharp maps near the camera, fading into a coarse height-map shadow farther out");
@@ -586,6 +590,21 @@ fn sliders<T: Tunables + ?Sized>(ui: &mut egui::Ui, id: &str, target: &mut T) {
 fn sliders_except<T: Tunables + ?Sized>(ui: &mut egui::Ui, id: &str, target: &mut T, skip: &[&str]) {
     egui::Grid::new(id).num_columns(2).show(ui, |ui| {
         for t in target.tunables().into_iter().filter(|t| !skip.contains(&t.name.as_str())) {
+            let mut value = t.value;
+            ui.label(&t.name);
+            if ui.add(egui::Slider::new(&mut value, t.min..=t.max)).changed() {
+                target.set_tunable(&t.name, value);
+            }
+            ui.end_row();
+        }
+    });
+}
+
+/// [`sliders`] for only the values named in `names`, in that order.
+fn sliders_only<T: Tunables + ?Sized>(ui: &mut egui::Ui, id: &str, target: &mut T, names: &[&str]) {
+    let all = target.tunables();
+    egui::Grid::new(id).num_columns(2).show(ui, |ui| {
+        for t in names.iter().filter_map(|n| all.iter().find(|t| t.name == *n)) {
             let mut value = t.value;
             ui.label(&t.name);
             if ui.add(egui::Slider::new(&mut value, t.min..=t.max)).changed() {

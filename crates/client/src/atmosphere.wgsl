@@ -6,7 +6,7 @@
 struct Atmosphere {
     // Toward the sun; then the cosine of the sun disc's radius.
     sun_direction: vec4<f32>,
-    // The sun's light on a face turned to it (zero once it's down); then the glow's strength.
+    // The sun's light on a face turned to it (zero once it's down); `w` unused.
     sun_color: vec4<f32>,
     // The sun's hue at full brightness, for its disc and glow.
     sun_hue: vec4<f32>,
@@ -20,8 +20,10 @@ struct Atmosphere {
     zenith: vec4<f32>,
     // Then the power the zenith's color fades down into it by: lower reaches farther down.
     horizon: vec4<f32>,
-    // How bright the stars are, and how far they've turned (radians).
+    // How bright the stars are, how far they've turned (radians), how bright the moon is drawn.
     night: vec4<f32>,
+    // The sun's glows: the tight halo, the wider glow, the horizon glow, its power.
+    glows: vec4<f32>,
     // Starting distance, distance where it's thickest, how thick there.
     fog: vec4<f32>,
     // Crease darkness, ridge brightness, width in texels.
@@ -53,7 +55,7 @@ fn sky(a: Atmosphere, dir: vec3<f32>) -> vec3<f32> {
     let up = pow(clamp(dir.y * 1.35 + 0.02, 0.0, 1.0), a.horizon.w);
     var color = mix(a.horizon.rgb, a.zenith.rgb, up);
     let toward = max(dot(dir, a.sun_direction.xyz), 0.0);
-    color += a.sun_hue.rgb * pow(toward, 6.0) * 0.35 * (1.0 - up) * a.sun_color.w;
+    color += a.sun_hue.rgb * pow(toward, a.glows.w) * 0.35 * (1.0 - up) * a.glows.z;
     return color;
 }
 
@@ -101,7 +103,7 @@ fn sky_bodies(a: Atmosphere, dir: vec3<f32>, color: vec3<f32>) -> vec3<f32> {
         let n = right * lx + up * ly + m * nz;
         let lit = max(dot(n, a.sun_direction.xyz), 0.04);
         let seas = 0.5 + 0.5 * sin(lx * 2.1 + 1.3) * sin(ly * 1.7 - 0.4);
-        let moon = vec3<f32>(0.82, 0.86, 0.95) * mix(0.85, 1.05, seas) * lit * mix(0.5, 1.15, night);
+        let moon = vec3<f32>(0.82, 0.86, 0.95) * mix(0.85, 1.05, seas) * lit * mix(0.5, 1.15, night) * a.night.z;
         // The sky's own color shows a little through it by day, never the stars.
         out = mix(out, moon + color * 0.15, moon_cover);
     }
@@ -112,9 +114,8 @@ fn sky_bodies(a: Atmosphere, dir: vec3<f32>, color: vec3<f32>) -> vec3<f32> {
     let sun_edge = a.sun_direction.w;
     let sun_px = max(fwidth(mu), 1e-7);
     let disc = smoothstep(sun_edge - sun_px, sun_edge + sun_px, mu);
-    let glow = a.sun_color.w;
     let toward = max(mu, 0.0);
-    out += a.sun_hue.rgb * (disc * 48.0 + (pow(toward, 900.0) * 3.0 + pow(toward, 60.0) * 0.22) * glow);
+    out += a.sun_hue.rgb * (disc * 48.0 + pow(toward, 900.0) * 3.0 * a.glows.x + pow(toward, 60.0) * 0.22 * a.glows.y);
     return out;
 }
 

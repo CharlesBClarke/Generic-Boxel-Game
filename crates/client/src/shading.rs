@@ -49,16 +49,26 @@ pub struct ShadingTuning {
     pub blue_reach: f32,
     /// How much warmer than the palette a low sun is; 0 is the palette as it is.
     pub warmth: f32,
-    /// The sun's disc, as its radius in degrees, and how strong the glow around it is.
+    /// The sun's disc, as its radius in degrees.
     pub sun_size: f32,
+    /// The glows around the sun: the tight bright ring hugging the disc (about 3° across), and
+    /// the wider soft glow (about 10°).
+    pub sun_halo: f32,
     pub sun_glow: f32,
+    /// The broad wash of the sun's color over the sky toward it, strongest near the horizon,
+    /// and how wide it spreads (higher is wider). It fades as the sun goes down, gone at full
+    /// night.
+    pub horizon_glow: f32,
+    pub horizon_glow_size: f32,
     /// How many hours the moon runs behind the sun, and how high it gets.
     pub moon_lag: f32,
     pub moon_arc: f32,
     /// How bright the moon lights a face turned to it, at night. It casts no shadows.
     pub moon_strength: f32,
-    /// The moon's disc, as its radius in degrees.
+    /// The moon's disc, as its radius in degrees, and how bright it's drawn (it lights nothing
+    /// by this: that's `moon_strength`).
     pub moon_size: f32,
+    pub moon_brightness: f32,
     /// How bright the stars are.
     pub stars: f32,
     /// Sky light at deepest night, so the open world stays faintly readable.
@@ -142,11 +152,15 @@ impl Default for ShadingTuning {
             blue_reach: 1.0,
             warmth: 1.0,
             sun_size: 0.6,
+            sun_halo: 3.0,
             sun_glow: 3.0,
+            horizon_glow: 1.0,
+            horizon_glow_size: 0.6,
             moon_lag: 12.0,
             moon_arc: 48.0,
             moon_strength: 0.001,
             moon_size: 2.0,
+            moon_brightness: 3.0,
             stars: 1.0,
             night_light: 0.006,
             hold_hour: -1.0,
@@ -198,7 +212,7 @@ impl ShadingTuning {
         let on = |b: bool| if b { 1.0 } else { 0.0 };
         Atmosphere {
             sun_direction: render(sky.sun()).extend(self.sun_size.to_radians().cos()),
-            sun_color: sky.sun_light.extend(self.sun_glow),
+            sun_color: sky.sun_light.extend(0.0),
             sun_hue: sky.sun_hue.extend(0.0),
             moon_direction: render(sky.moon).extend(self.moon_size.to_radians().cos()),
             moon_color: sky.moon_light.extend(sky.night),
@@ -208,7 +222,13 @@ impl ShadingTuning {
             // The gradient's power: the palette's 0.82, lower as the blue reaches farther down.
             horizon: sky.horizon.extend(0.82 / self.blue_reach.max(0.01)),
             // The stars turn once a day around the pole.
-            night: Vec4::new(sky.stars * self.stars, (sky.hours as f32 / 24.0) * std::f32::consts::TAU, 0.0, 0.0),
+            night: Vec4::new(sky.stars * self.stars, (sky.hours as f32 / 24.0) * std::f32::consts::TAU, self.moon_brightness, 0.0),
+            glows: Vec4::new(
+                self.sun_halo,
+                self.sun_glow,
+                self.horizon_glow * smoothstep(-10.0, 0.0, sky.sun_elevation),
+                6.0 / self.horizon_glow_size.max(0.05),
+            ),
             fog: Vec4::new(fog_start, (self.fog_end * render_distance).max(fog_start + 1.0), self.fog, 0.0),
             edges: Vec4::new(self.crease, self.ridge, self.edge_width, 0.0),
             parts: Vec4::new(on(self.parts.edges), on(self.parts.fog), on(self.parts.sheen), on(self.parts.light)),
@@ -220,6 +240,31 @@ impl ShadingTuning {
             fine_heights: Vec4::ZERO,
         }
     }
+}
+
+/// The Shading section's sliders in groups, for the panel: what's drawn in the sky apart from
+/// what lights the blocks. Every slider is in exactly one.
+pub const GROUPS: [(&str, &[&str]); 6] = [
+    ("Time and paths: where the sun and moon are", &["hold_hour", "sun_arc", "moon_lag", "moon_arc"]),
+    (
+        "Sky look: the sky, sun, moon and stars as drawn (lights nothing)",
+        &[
+            "day_sky", "night_sky", "haze", "blue_reach", "sun_size", "sun_halo", "sun_glow", "horizon_glow",
+            "horizon_glow_size", "moon_size", "moon_brightness", "stars",
+        ],
+    ),
+    (
+        "Light on blocks: sun, moon and sky",
+        &["sun_strength", "warmth", "sky_light", "ground_light", "sky_tint", "moon_strength", "night_light", "min_light"],
+    ),
+    ("Light on blocks: lamps (stored light)", &["block_light", "light_falloff", "block_falloff"]),
+    ("Fog (fades the far world into the sky)", &["fog_start", "fog_end", "fog"]),
+    ("Edges along creases and ridges", &["crease", "ridge", "edge_width"]),
+];
+
+fn smoothstep(edge0: f32, edge1: f32, x: f32) -> f32 {
+    let t = ((x - edge0) / (edge1 - edge0)).clamp(0.0, 1.0);
+    t * t * (3.0 - 2.0 * t)
 }
 
 impl Tunables for ShadingTuning {
@@ -237,11 +282,15 @@ impl Tunables for ShadingTuning {
             Tunable::new("blue_reach", self.blue_reach, 0.25, 4.0),
             Tunable::new("warmth", self.warmth, 0.0, 2.0),
             Tunable::new("sun_size", self.sun_size, 0.1, 5.0),
-            Tunable::new("sun_glow", self.sun_glow, 0.0, 3.0),
+            Tunable::new("sun_halo", self.sun_halo, 0.0, 6.0),
+            Tunable::new("sun_glow", self.sun_glow, 0.0, 6.0),
+            Tunable::new("horizon_glow", self.horizon_glow, 0.0, 6.0),
+            Tunable::new("horizon_glow_size", self.horizon_glow_size, 0.1, 3.0),
             Tunable::new("moon_lag", self.moon_lag, 0.0, 24.0),
             Tunable::new("moon_arc", self.moon_arc, 5.0, 90.0),
             Tunable::new("moon_strength", self.moon_strength, 0.0, 1.0),
             Tunable::new("moon_size", self.moon_size, 0.1, 5.0),
+            Tunable::new("moon_brightness", self.moon_brightness, 0.0, 10.0),
             Tunable::new("stars", self.stars, 0.0, 3.0),
             Tunable::new("night_light", self.night_light, 0.0, 0.5),
             Tunable::new("fog_start", self.fog_start, 0.0, 1.0),
@@ -271,11 +320,15 @@ impl Tunables for ShadingTuning {
             "blue_reach" => self.blue_reach = value,
             "warmth" => self.warmth = value,
             "sun_size" => self.sun_size = value,
+            "sun_halo" => self.sun_halo = value,
             "sun_glow" => self.sun_glow = value,
+            "horizon_glow" => self.horizon_glow = value,
+            "horizon_glow_size" => self.horizon_glow_size = value,
             "moon_lag" => self.moon_lag = value,
             "moon_arc" => self.moon_arc = value,
             "moon_strength" => self.moon_strength = value,
             "moon_size" => self.moon_size = value,
+            "moon_brightness" => self.moon_brightness = value,
             "stars" => self.stars = value,
             "night_light" => self.night_light = value,
             "fog_start" => self.fog_start = value,
@@ -300,8 +353,7 @@ impl Tunables for ShadingTuning {
 pub struct Atmosphere {
     /// Toward the sun; then the cosine of the sun disc's radius.
     pub sun_direction: Vec4,
-    /// The sun's light on a face turned to it (zero once it's down); then how strong the glow
-    /// around its disc is.
+    /// The sun's light on a face turned to it (zero once it's down); `w` unused.
     pub sun_color: Vec4,
     /// The sun's hue at full brightness, for its disc and glow.
     pub sun_hue: Vec4,
@@ -317,8 +369,12 @@ pub struct Atmosphere {
     /// (a power: lower brings the zenith's color farther down).
     pub zenith: Vec4,
     pub horizon: Vec4,
-    /// The night sky: how bright the stars are, and how far they've turned (radians).
+    /// The night sky: how bright the stars are, how far they've turned (radians), and how bright
+    /// the moon is drawn.
     pub night: Vec4,
+    /// The sun's glows: the tight halo, the wider glow, the horizon glow (already faded by how
+    /// far down the sun is), and the horizon glow's power (higher is tighter).
+    pub glows: Vec4,
     /// Fog: starting distance, distance where it's thickest (meters), how thick there.
     pub fog: Vec4,
     /// Edges: crease darkness, ridge brightness, width in texels.
@@ -566,6 +622,25 @@ mod tests {
         let t = ShadingTuning { parts: Parts { edges: false, ..default() }, ..default() };
         let a = t.atmosphere(&sky(12.0, &t), 100.0);
         assert_eq!(a.parts, Vec4::new(0.0, 1.0, 1.0, 1.0));
+    }
+
+    #[test]
+    fn every_slider_is_in_exactly_one_group() {
+        for t in ShadingTuning::default().tunables() {
+            let groups = GROUPS.iter().filter(|(_, names)| names.contains(&t.name.as_str())).count();
+            assert_eq!(groups, 1, "{}", t.name);
+        }
+        let all: usize = GROUPS.iter().map(|(_, names)| names.len()).sum();
+        assert_eq!(all, ShadingTuning::default().tunables().len(), "no group names a slider that isn't there");
+    }
+
+    #[test]
+    fn the_horizon_glow_fades_as_the_sun_goes_down() {
+        let t = ShadingTuning::default();
+        let glow = |hours| t.atmosphere(&sky(hours, &t), 100.0).glows.z;
+        assert_eq!(glow(12.0), t.horizon_glow);
+        assert!(glow(18.05) > 0.0 && glow(18.05) < t.horizon_glow);
+        assert_eq!(glow(0.0), 0.0);
     }
 
     #[test]

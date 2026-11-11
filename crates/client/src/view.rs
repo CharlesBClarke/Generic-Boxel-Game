@@ -22,7 +22,7 @@ pub struct ViewTuning {
 
 impl Default for ViewTuning {
     fn default() -> Self {
-        Self { render_distance: 512.0, tone_mapper: ToneMapper::TonyMcMapface }
+        Self { render_distance: 512.0, tone_mapper: ToneMapper::Aces }
     }
 }
 
@@ -51,7 +51,7 @@ pub enum ToneMapper {
     /// Bevy's default: keeps hues, but pulls bright colors toward white.
     TonyMcMapface,
     /// The film industry's curve, fitted; what the stylised-sky demo used. More contrast and
-    /// color in bright skies.
+    /// color in bright skies. The game's default (the user's pick, 2026-11-10).
     Aces,
     AgX,
     BlenderFilmic,
@@ -76,8 +76,8 @@ impl ToneMapper {
 
     pub fn label(self) -> &'static str {
         match self {
-            ToneMapper::TonyMcMapface => "Tony McMapface (Bevy's default)",
-            ToneMapper::Aces => "ACES (the sky demo's)",
+            ToneMapper::TonyMcMapface => "Tony McMapface (Bevy's own default)",
+            ToneMapper::Aces => "ACES (the default)",
             ToneMapper::AgX => "AgX",
             ToneMapper::BlenderFilmic => "Blender Filmic",
             ToneMapper::Reinhard => "Reinhard",
@@ -231,6 +231,7 @@ mod tests {
         }
         assert_eq!(ToneMapper::from_index(99.0), ToneMapper::None);
         assert_eq!(ToneMapper::from_index(-3.0), ToneMapper::TonyMcMapface);
+        assert_eq!(ViewTuning::default().tone_mapper, ToneMapper::Aces);
     }
     use api::{ChunkPos, I64Vec3, WorldPos};
 
