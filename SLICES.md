@@ -104,7 +104,19 @@ A run of small toy slices. Each one takes a single game-feel feature that doesn'
 
 ### Current toy
 
-None in progress: Chunk storage closed 2026-11-11. Suggested next: `fix-greedy-sparkles` (backlog, a small fix), then AO in the shader or Shadow speed; or, toward a server on another machine, a dedicated server seam (headless server program, serialization, QUIC on the LAN).
+**AO in the shader** (`toy-ao-in-shader`, from the backlog entry of the same name). **Stage:** Implement (plan approved 2026-11-11).
+
+*Goal:* corner AO stops blocking greedy merges, for the triangle count (bench terrain ~0.29M toward ~0.15M). Notes: `docs/notes/greedy-meshing.md`.
+
+*Plan* (approved 2026-11-11; the user: "go with what your recomending")
+- Corner AO is already the mean of four boxes in front of the face around each corner (over the face, past each of the two edges, past the corner), each in one boxel since `reach` ≤ 16. The mesher bakes those 16 fills per quad (4 corners × 4 boxes, 0–1, one byte each) into a new `Uint32x4` vertex attribute instead of a darkness in the vertex color.
+- The shader finds the pixel's boxel on the quad, sums the fills at its four corners (inside the quad, past an edge, or past a corner), applies strength, `full_at` and curve (now `Atmosphere` uniforms), and blends bilinearly across the boxel. The AO diagonal rule goes; light keeps its per-corner bake and diagonal.
+- `client::greedy`: faces merge regardless of AO when all have the same four over-face fills and each outer edge's past-edge fills are the same all along it. Strength, `full_at` and curve tune live; `reach` (and turning AO on from 0) still waits for Apply.
+- Client only; nothing around the API; no new controls. Items, ghost and pictures get zero fills.
+- Tests: a Rust copy of the shader's AO matches the old corner darkness (existing AO tests keep their meaning; a stair's inner corner added); merged meshes look the same as unmerged, AO included; a floor beside a wall merges into one quad; the bench terrain's triangle count; remesh time before and after; the quick bench.
+- Decided: `fix-greedy-sparkles` not first (the user: "we don't need to fix sparkels unless it would require more work if we do it latter"; it doesn't), so more sparkles in play are expected. The blend across a boxel changes a little (smooth instead of two triangles), judged in play. Light stays baked. Texel AO stays with the GPU boxel grid.
+
+*Done when:* (1) AO looks the same in play: wall bases, steps, the house, no seams or creases at quad edges; (2) strength, `full_at` and curve tune live, `reach` waits for Apply; (3) the bench terrain drops from ~0.29M toward ~0.15M triangles; (4) the quick bench is run, any slower row explained; (5) remesh time measured and acceptable; (6) tests pass, clippy clean.
 
 **Waiting for a play check** (remind the user at the start of every session, and at good moments during one, until they confirm; then delete the line):
 
