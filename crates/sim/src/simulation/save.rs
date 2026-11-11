@@ -26,10 +26,58 @@ impl LoadReport {
 }
 
 impl Simulation {
-    /// The world as it stands, to save: the terrain's values, the blocks made while the game
-    /// ran, the chunks loading can't make again, the player, what they carry and the loose
-    /// items. Creatures aren't saved.
-    pub fn save(&self) -> SaveData {
+    /// Saves the world as it stands: hands the edited terrain loaded now to the chunk store
+    /// (see [`crate::store`]) and makes everything stored the saved chunks, then returns the
+    /// rest to write (see [`Simulation::snapshot`]). Fails if the store couldn't keep the
+    /// chunks.
+    pub fn save(&self) -> Result<SaveData, String> {
+        self.store_loaded_edits();
+        self.stream.store().commit()?;
+        Ok(self.snapshot())
+    }
+
+    /// Saves the world as it stands into `store`, a new place, and keeps chunks there from now
+    /// on; the old store is left as last saved. Returns the rest to write, as
+    /// [`Simulation::save`] does.
+    pub fn save_as(&mut self, store: std::sync::Arc<dyn crate::ChunkStore>) -> Result<SaveData, String> {
+        self.store_loaded_edits();
+        let old = std::sync::Arc::clone(self.stream.store());
+        crate::store::copy(old.as_ref(), store.as_ref())?;
+        old.discard()?;
+        self.stream.set_store(store);
+        Ok(self.snapshot())
+    }
+
+    /// Keeps chunks in `store` from now on, as when another world is opened. Load a save next:
+    /// what's loaded now came from the old one.
+    pub fn set_chunk_store(&mut self, store: std::sync::Arc<dyn crate::ChunkStore>) {
+        self.stream.set_store(store);
+    }
+
+    /// Where edited terrain goes while unloaded.
+    pub fn chunk_store(&self) -> &std::sync::Arc<dyn crate::ChunkStore> {
+        self.stream.store()
+    }
+
+    /// Puts the edited terrain loaded now in the store's unsaved layer.
+    fn store_loaded_edits(&self) {
+        let grid = self.universe.main();
+        let edited = self.changed.edited();
+        let mut positions: Vec<ChunkPos> = edited.iter().copied().filter(|&pos| self.is_terrain(pos) && grid.chunk(pos).is_some()).collect();
+        positions.sort_by_key(|p| p.0.to_array());
+        let chunks: Vec<(ChunkPos, Vec<u8>)> =
+            positions.into_iter().map(|pos| (pos, name_chunk(&self.blocks, &grid.export_chunk(pos)).to_bytes())).collect();
+        if !chunks.is_empty() {
+            self.stream.store().put(chunks);
+        }
+    }
+
+    /// The world as it stands but for its edited terrain, which lives in the chunk store: the
+    /// terrain's values, the blocks made while the game ran, the chunks outside the terrain,
+    /// the player, what they carry and the loose items. Creatures aren't saved. Touches no
+    /// store, so it can be taken any time (the server keeps one from before any terrain, to
+    /// start fresh worlds from).
+    pub fn snapshot(&self) -> SaveData {
         let blocks = &self.blocks;
         let name = |id| blocks.get(id).map_or(String::new(), |def| def.name.clone());
         let mut terrain: Vec<(String, String, f32)> =
@@ -67,27 +115,14 @@ impl Simulation {
         }
 
         let grid = self.universe.main();
-        let edited = self.changed.edited();
-        // Built chunks, edited terrain loaded now, and edited terrain dropped by streaming.
-        let mut chunks: Vec<ChunkData> = grid
+        // Built chunks: the edited terrain is in the store.
+        let mut chunks: Vec<SavedChunk> = grid
             .chunks()
             .map(|(pos, _)| pos)
-            .filter(|&pos| !self.is_terrain(pos) || edited.contains(&pos))
-            .map(|pos| grid.export_chunk(pos))
-            .chain(self.stream.kept().cloned())
+            .filter(|&pos| !self.is_terrain(pos))
+            .map(|pos| name_chunk(blocks, &grid.export_chunk(pos)))
             .collect();
         chunks.sort_by_key(|c| c.pos.0.to_array());
-        let chunks = chunks
-            .into_iter()
-            .map(|data| {
-                let lists = data
-                    .lists
-                    .iter()
-                    .map(|list| list.iter().map(|o| (name(o.block), o.orientation)).collect())
-                    .collect();
-                SavedChunk { pos: data.pos, lists, cells: data.cells }
-            })
-            .collect();
 
         let player = self.player.as_ref().map(|p| SavedPlayer {
             pos: p.pos(),
@@ -112,13 +147,16 @@ impl Simulation {
         SaveData { tick: self.tick, terrain, made, chunks, player, inventory, items, blueprints, hours: Some(self.clock.hours()) }
     }
 
-    /// Puts the world back as `save` has it: generates the terrain with its values, makes its
-    /// blocks again, replaces every chunk the terrain doesn't cover and the edited ones it does,
-    /// and puts back the player, what they carry and the loose items. Creatures start fresh at
-    /// their spots. Anything a missing mod named is left out and listed in the report; only
-    /// failing to generate the terrain fails the load.
+    /// Puts the world back as `save` has it: throws away the chunk store's unsaved chunks (so
+    /// edited terrain comes back as last saved), generates the terrain with its values, makes
+    /// its blocks again, replaces every chunk the terrain doesn't cover, and puts back the
+    /// player, what they carry and the loose items. Creatures start fresh at their spots. A save
+    /// from before version 4 holds its edited terrain itself, which goes to the store. Anything
+    /// a missing mod named is left out and listed in the report; only failing to generate the
+    /// terrain or to reach the store fails the load.
     pub fn load(&mut self, save: &SaveData) -> Result<LoadReport, ApiError> {
         let mut report = LoadReport::default();
+        self.stream.store().discard().map_err(ApiError::Storage)?;
         self.clock.set_hours(save.hours.unwrap_or(crate::Clock::START_HOURS));
         for (section, name, value) in &save.terrain {
             let set = match section.strip_prefix("terrain ") {
@@ -149,34 +187,25 @@ impl Simulation {
             self.changed.mark_chunk(pos);
         }
         self.light_settled = false;
+        let mut older = Vec::new();
         for chunk in &save.chunks {
-            let lists = chunk
-                .lists
-                .iter()
-                .map(|list| {
-                    list.iter()
-                        .filter_map(|(name, orientation)| match self.blocks.id(name) {
-                            Some(id) => Some(Occupant::turned(id, *orientation)),
-                            None => {
-                                report.skip(format!("block {name}"));
-                                None
-                            }
-                        })
-                        .collect()
-                })
-                .collect();
-            let data = ChunkData { pos: chunk.pos, lists, cells: chunk.cells.clone(), light: Layer::Uniform(Light::SKY) };
             if self.is_terrain_place(chunk.pos) {
-                // Edited terrain comes back when its column streams in.
-                self.stream.keep(data);
+                // From an older save: edited terrain goes to the store, and comes back from it
+                // when its column streams in.
+                older.push((chunk.pos, chunk.to_bytes()));
                 continue;
             }
+            let data = unname_chunk(&self.blocks, chunk, &mut report);
             let grid = self.universe.main_mut();
             grid.import_chunk(&data);
             // Its neighbors' border faces may have changed too.
             for side in [I64Vec3::ZERO, I64Vec3::X, I64Vec3::NEG_X, I64Vec3::Y, I64Vec3::NEG_Y, I64Vec3::Z, I64Vec3::NEG_Z] {
                 self.changed.mark_chunk(ChunkPos(chunk.pos.0 + side));
             }
+        }
+
+        if !older.is_empty() {
+            self.stream.store().put(older);
         }
 
         if let (Some(player), Some(saved)) = (self.player.as_mut(), &save.player) {
@@ -248,6 +277,34 @@ impl Simulation {
     pub fn edited_chunks(&self) -> &HashSet<ChunkPos> {
         self.changed.edited()
     }
+}
+
+/// `data` with its blocks named.
+pub(crate) fn name_chunk(blocks: &BlockRegistry, data: &ChunkData) -> SavedChunk {
+    let name = |id| blocks.get(id).map_or(String::new(), |def| def.name.clone());
+    let lists = data.lists.iter().map(|list| list.iter().map(|o| (name(o.block), o.orientation)).collect()).collect();
+    SavedChunk { pos: data.pos, lists, cells: data.cells.clone() }
+}
+
+/// `chunk` with its names looked up, unlit. A name no mod registers is left out of its
+/// boxels, and listed in `report`.
+pub(crate) fn unname_chunk(blocks: &BlockRegistry, chunk: &SavedChunk, report: &mut LoadReport) -> ChunkData {
+    let lists = chunk
+        .lists
+        .iter()
+        .map(|list| {
+            list.iter()
+                .filter_map(|(name, orientation)| match blocks.id(name) {
+                    Some(id) => Some(Occupant::turned(id, *orientation)),
+                    None => {
+                        report.skip(format!("block {name}"));
+                        None
+                    }
+                })
+                .collect()
+        })
+        .collect();
+    ChunkData { pos: chunk.pos, lists, cells: chunk.cells.clone(), light: Layer::Uniform(Light::SKY) }
 }
 
 /// `library` by name.

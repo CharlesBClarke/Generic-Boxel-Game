@@ -87,8 +87,9 @@ fn light_comes_back_the_same_after_a_reload() {
     let mut sim = small_world();
     stand(&mut sim, 1, 2);
     open_shutter(&mut sim);
-    let save = sim.save();
+    let save = sim.save().unwrap();
     let mut other = small_world();
+    other.set_chunk_store(std::sync::Arc::clone(sim.chunk_store()));
     other.load(&save).unwrap();
     let (a, b) = (sim.universe().main(), other.universe().main());
     let mut chunks = 0;

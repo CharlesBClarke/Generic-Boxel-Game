@@ -244,7 +244,7 @@ fn an_endless_material_is_topped_back_up_after_placing_and_after_a_load() {
     assert_eq!(sim.inventory().amount(stone), endless, "placing used some, and it came back");
 
     // A save that carries none, like one written before the material was endless.
-    let mut save = sim.save();
+    let mut save = sim.save().unwrap();
     save.inventory.clear();
     sim.load(&save).unwrap();
     assert_eq!(sim.inventory().amount(stone), endless, "a load tops it up too");

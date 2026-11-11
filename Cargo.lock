@@ -5390,6 +5390,7 @@ dependencies = [
  "base_movement",
  "data_mods",
  "glam",
+ "ruzstd",
 ]
 
 [[package]]

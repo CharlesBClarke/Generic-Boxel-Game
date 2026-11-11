@@ -19,8 +19,9 @@ pub struct SaveData {
     /// Blocks made while the game ran, in the order they were made, so each one's ingredients
     /// come before it.
     pub made: Vec<Made>,
-    /// Chunks that differ from what loading makes: every chunk outside the generated terrain,
-    /// and the generated chunks that were edited.
+    /// Chunks that differ from what loading makes and aren't in the chunk store: every chunk
+    /// outside the generated terrain. Saves before version 4 also hold the generated chunks
+    /// that were edited, which now go to the store (see [`crate::store`]).
     pub chunks: Vec<SavedChunk>,
     pub player: Option<SavedPlayer>,
     /// What the player carries: each material or gadget by name, with how much.
@@ -84,6 +85,71 @@ pub struct SavedChunk {
     pub cells: Layer<u16>,
 }
 
+/// The first bytes of every stored chunk.
+const CHUNK_MAGIC: &[u8; 4] = b"BXCH";
+/// Goes up whenever a stored chunk's layout changes.
+const CHUNK_VERSION: u8 = 1;
+/// The most a stored chunk may unpack to: far more than any real one (a chunk of every boxel
+/// different), so a damaged one can't fill memory.
+const CHUNK_UNPACKED_MAX: u64 = 16 << 20;
+
+impl SavedChunk {
+    /// The chunk on its own, as stored apart from the world's file (see [`crate::store`]): its
+    /// lists naming their blocks, and its cells in runs, packed with zstd. No light: it's worked
+    /// out again when the chunk loads.
+    pub fn to_bytes(&self) -> Vec<u8> {
+        let mut w = Writer::default();
+        w.ivec(self.pos.0);
+        w.len(self.lists.len());
+        for list in &self.lists {
+            w.len(list.len());
+            for (name, orientation) in list {
+                w.str(name);
+                w.orientation(*orientation);
+            }
+        }
+        w.cells(&self.cells);
+        let mut out = Vec::with_capacity(w.0.len() / 4 + 16);
+        out.extend_from_slice(CHUNK_MAGIC);
+        out.push(CHUNK_VERSION);
+        ruzstd::encoding::compress(&w.0[..], &mut out, ruzstd::encoding::CompressionLevel::Fastest);
+        out
+    }
+
+    pub fn from_bytes(bytes: &[u8]) -> Result<SavedChunk, String> {
+        use std::io::Read;
+        let Some(packed) = bytes.strip_prefix(CHUNK_MAGIC) else { return Err("not a stored chunk".into()) };
+        let Some((&version, packed)) = packed.split_first() else { return Err("a stored chunk with no version".into()) };
+        if version != CHUNK_VERSION {
+            return Err(format!("a stored chunk from version {version}; this game reads version {CHUNK_VERSION}"));
+        }
+        let decoder = ruzstd::decoding::StreamingDecoder::new(packed).map_err(|e| format!("a stored chunk that won't unpack: {e}"))?;
+        let mut unpacked = Vec::new();
+        decoder
+            .take(CHUNK_UNPACKED_MAX + 1)
+            .read_to_end(&mut unpacked)
+            .map_err(|e| format!("a stored chunk that won't unpack: {e}"))?;
+        if unpacked.len() as u64 > CHUNK_UNPACKED_MAX {
+            return Err("a stored chunk too big to be real".into());
+        }
+        let mut r = Reader { bytes: &unpacked, at: 0 };
+        let pos = ChunkPos(r.ivec()?);
+        let mut lists = Vec::new();
+        for _ in 0..r.len()? {
+            let mut list = Vec::new();
+            for _ in 0..r.len()? {
+                list.push((r.str()?, r.orientation()?));
+            }
+            lists.push(list);
+        }
+        let cells = r.cells(lists.len(), pos)?;
+        if r.at != unpacked.len() {
+            return Err(format!("extra bytes after stored chunk {pos:?}"));
+        }
+        Ok(SavedChunk { pos, lists, cells })
+    }
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub struct SavedPlayer {
     pub pos: WorldPos,
@@ -107,8 +173,10 @@ pub struct SavedItem {
 
 /// The first bytes of every save.
 const MAGIC: &[u8; 8] = b"BOXELSAV";
-/// Goes up whenever the layout changes.
-pub const VERSION: u32 = 3;
+/// Goes up whenever the layout changes. Version 4 kept the layout but moved edited terrain out
+/// of the file into the chunk store (see [`crate::store`]), so a version 4 save holds only the
+/// chunks outside the terrain; older ones hold edited terrain too.
+pub const VERSION: u32 = 4;
 
 impl SaveData {
     pub fn to_bytes(&self) -> Vec<u8> {
@@ -173,28 +241,7 @@ impl SaveData {
                     w.orientation(*orientation);
                 }
             }
-            match &chunk.cells {
-                Layer::Uniform(i) => {
-                    w.u8(0);
-                    w.u16(*i);
-                }
-                Layer::Dense(values) => {
-                    // Runs of the same list, since most of a chunk is a few big runs.
-                    w.u8(1);
-                    let mut runs: Vec<(u16, u32)> = Vec::new();
-                    for &v in values.iter() {
-                        match runs.last_mut() {
-                            Some((last, n)) if *last == v => *n += 1,
-                            _ => runs.push((v, 1)),
-                        }
-                    }
-                    w.len(runs.len());
-                    for (v, n) in runs {
-                        w.u16(v);
-                        w.u32(n);
-                    }
-                }
-            }
+            w.cells(&chunk.cells);
         }
         match &self.player {
             None => w.u8(0),
@@ -322,28 +369,7 @@ impl SaveData {
                 }
                 lists.push(list);
             }
-            let in_range = |i: u16| match (i as usize) < lists.len() {
-                true => Ok(i),
-                false => Err(format!("a cell list out of range in chunk {pos:?}")),
-            };
-            let cells = match r.u8()? {
-                0 => Layer::Uniform(in_range(r.u16()?)?),
-                1 => {
-                    let mut values = Vec::with_capacity(CHUNK_VOLUME);
-                    for _ in 0..r.len()? {
-                        let (v, n) = (in_range(r.u16()?)?, r.u32()? as usize);
-                        if values.len() + n > CHUNK_VOLUME {
-                            return Err(format!("too many cells in chunk {pos:?}"));
-                        }
-                        values.extend(std::iter::repeat_n(v, n));
-                    }
-                    if values.len() != CHUNK_VOLUME {
-                        return Err(format!("too few cells in chunk {pos:?}"));
-                    }
-                    Layer::Dense(values.into_boxed_slice())
-                }
-                kind => return Err(format!("unknown kind of cell layer {kind}")),
-            };
+            let cells = r.cells(lists.len(), pos)?;
             save.chunks.push(SavedChunk { pos, lists, cells });
         }
         save.player = match r.u8()? {
@@ -465,6 +491,30 @@ impl Writer {
             self.u16(row);
         }
     }
+    fn cells(&mut self, cells: &Layer<u16>) {
+        match cells {
+            Layer::Uniform(i) => {
+                self.u8(0);
+                self.u16(*i);
+            }
+            Layer::Dense(values) => {
+                // Runs of the same list, since most of a chunk is a few big runs.
+                self.u8(1);
+                let mut runs: Vec<(u16, u32)> = Vec::new();
+                for &v in values.iter() {
+                    match runs.last_mut() {
+                        Some((last, n)) if *last == v => *n += 1,
+                        _ => runs.push((v, 1)),
+                    }
+                }
+                self.len(runs.len());
+                for (v, n) in runs {
+                    self.u16(v);
+                    self.u32(n);
+                }
+            }
+        }
+    }
 }
 
 struct Reader<'a> {
@@ -524,6 +574,31 @@ impl Reader<'_> {
             *row = self.u16()?;
         }
         Ok(ShapeGrid::from_rows(rows))
+    }
+    /// A chunk's cells, each an index below `lists`.
+    fn cells(&mut self, lists: usize, pos: ChunkPos) -> Result<Layer<u16>, String> {
+        let in_range = |i: u16| match (i as usize) < lists {
+            true => Ok(i),
+            false => Err(format!("a cell list out of range in chunk {pos:?}")),
+        };
+        Ok(match self.u8()? {
+            0 => Layer::Uniform(in_range(self.u16()?)?),
+            1 => {
+                let mut values = Vec::with_capacity(CHUNK_VOLUME);
+                for _ in 0..self.len()? {
+                    let (v, n) = (in_range(self.u16()?)?, self.u32()? as usize);
+                    if values.len() + n > CHUNK_VOLUME {
+                        return Err(format!("too many cells in chunk {pos:?}"));
+                    }
+                    values.extend(std::iter::repeat_n(v, n));
+                }
+                if values.len() != CHUNK_VOLUME {
+                    return Err(format!("too few cells in chunk {pos:?}"));
+                }
+                Layer::Dense(values.into_boxed_slice())
+            }
+            kind => return Err(format!("unknown kind of cell layer {kind}")),
+        })
     }
 }
 
@@ -627,6 +702,38 @@ mod tests {
         bytes.truncate(bytes.len() - 1);
         bytes[8..12].copy_from_slice(&2u32.to_le_bytes());
         assert_eq!(SaveData::from_bytes(&bytes), Ok(save));
+    }
+
+    #[test]
+    fn a_stored_chunk_reads_back_the_same_and_packs_small() {
+        for chunk in sample().chunks {
+            let bytes = chunk.to_bytes();
+            assert_eq!(SavedChunk::from_bytes(&bytes), Ok(chunk));
+        }
+        // A chunk of runs, as terrain is: ground, then air.
+        let cells: Vec<u16> = (0..CHUNK_VOLUME).map(|i| (i < CHUNK_VOLUME / 3) as u16).collect();
+        let lists = vec![vec![], vec![("base:stone".into(), Orientation::IDENTITY)]];
+        let chunk = SavedChunk { pos: ChunkPos::new(1, 2, 3), lists, cells: Layer::Dense(cells.into_boxed_slice()) };
+        let bytes = chunk.to_bytes();
+        assert!(bytes.len() < 100, "{} bytes", bytes.len());
+        assert_eq!(SavedChunk::from_bytes(&bytes), Ok(chunk));
+    }
+
+    #[test]
+    fn a_damaged_stored_chunk_is_refused() {
+        let bytes = sample().chunks[0].to_bytes();
+        assert!(SavedChunk::from_bytes(b"BXCH").is_err());
+        assert!(SavedChunk::from_bytes(b"nope and more").is_err());
+        for cut in [3, 5, bytes.len() / 2, bytes.len() - 1] {
+            assert!(SavedChunk::from_bytes(&bytes[..cut]).is_err(), "cut at {cut}");
+        }
+        let mut newer = bytes.clone();
+        newer[4] = 9;
+        assert!(SavedChunk::from_bytes(&newer).unwrap_err().contains("version 9"));
+        let mut flipped = bytes;
+        let last = flipped.len() - 6;
+        flipped[last] ^= 0xff;
+        assert!(SavedChunk::from_bytes(&flipped).is_err(), "a changed byte is caught");
     }
 
     #[test]

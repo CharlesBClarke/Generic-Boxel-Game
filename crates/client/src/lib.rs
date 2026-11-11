@@ -180,7 +180,8 @@ fn world_notes(mut world: ResMut<ClientWorld>, mut look: ResMut<Look>, mut reado
     }
     for note in world.take_world_notes() {
         readout.show(match note {
-            WorldNote::Saved { name } => format!("WORLD {name} SAVED"),
+            WorldNote::Saved { name, auto: false } => format!("WORLD {name} SAVED"),
+            WorldNote::Saved { name, auto: true } => format!("WORLD {name} AUTOSAVED"),
             WorldNote::Loaded { name, fresh: true, .. } => format!("NEW WORLD {name}"),
             WorldNote::Loaded { name, skipped, .. } if skipped.is_empty() => format!("WORLD {name} LOADED"),
             WorldNote::Loaded { name, skipped, .. } => {
@@ -205,7 +206,7 @@ fn save_on_exit(mut exits: MessageReader<AppExit>, mut link: ResMut<Link>, mut w
     link.command(Command::SaveWorld, &mut world);
     for note in world.take_world_notes() {
         match note {
-            WorldNote::Saved { name } => info!("world {name} saved"),
+            WorldNote::Saved { name, .. } => info!("world {name} saved"),
             WorldNote::Failed(why) => error!("saving the world on quitting: {why}"),
             WorldNote::Loaded { .. } => {}
         }

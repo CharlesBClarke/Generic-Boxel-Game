@@ -48,6 +48,8 @@ pub enum ApiError {
     InvalidDef(String),
     /// A block can't share the boxel with what's already there.
     CannotShare(String),
+    /// The engine couldn't read or write where the world keeps its chunks.
+    Storage(String),
 }
 
 impl fmt::Display for ApiError {
@@ -75,6 +77,7 @@ impl fmt::Display for ApiError {
             ApiError::DuplicateSignalDef => write!(f, "a signal definition is already registered"),
             ApiError::InvalidDef(why) => write!(f, "invalid definition: {why}"),
             ApiError::CannotShare(why) => write!(f, "can't add the block: {why}"),
+            ApiError::Storage(why) => write!(f, "the world's stored chunks: {why}"),
         }
     }
 }

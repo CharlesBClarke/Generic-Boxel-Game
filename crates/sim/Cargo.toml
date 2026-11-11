@@ -8,6 +8,8 @@ publish.workspace = true
 [dependencies]
 api.workspace = true
 glam.workspace = true
+# Packs stored chunks (zstd, in plain Rust).
+ruzstd.workspace = true
 
 [dev-dependencies]
 base.workspace = true

@@ -275,13 +275,15 @@ fn saving_then_loading_puts_the_world_back_and_the_copy_follows() {
     let dir = std::env::temp_dir().join(format!("boxel-server-test-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     let file = WorldFile::in_folder(&dir, "test").unwrap();
-    let mut server = Server::new(small_world()).with_world(file.clone(), false);
+    let mut sim = small_world();
+    sim.set_chunk_store(std::sync::Arc::new(file.chunk_files()));
+    let mut server = Server::new(sim).with_world(file.clone(), false);
     let mut copy = Copy { universe: Universe::default(), blocks: 0 };
     copy.apply(&ServerMsg::Welcome(Box::new(server.welcome())));
 
     let load = || ClientMsg::Command(Command::LoadWorld);
     assert!(matches!(note(server.handle(load())), WorldNote::Failed(_)), "nothing saved yet");
-    assert_eq!(note(server.handle(ClientMsg::Command(Command::SaveWorld))), WorldNote::Saved { name: "test".into() });
+    assert_eq!(note(server.handle(ClientMsg::Command(Command::SaveWorld))), WorldNote::Saved { name: "test".into(), auto: false });
     let mut saved = base_sim();
     saved.load(&file.read().unwrap().unwrap()).unwrap();
     assert!(same_by_name(&saved, server.simulation()));
@@ -344,13 +346,14 @@ fn worlds_are_saved_as_opened_and_started_fresh() {
     let mut sim = base_sim();
     sim.set_view_distance(32.0);
     sim.world_settings_mut().terrain_height = 16;
-    let fresh = sim.save();
+    let fresh = sim.snapshot();
+    sim.set_chunk_store(std::sync::Arc::new(file.chunk_files()));
     sim.generate_terrain().unwrap();
     let mut server = Server::new(sim).with_world(file.clone(), false).with_fresh(fresh);
     let cmd = |c| ClientMsg::Command(c);
 
     edit(&mut server, 120);
-    assert_eq!(note(server.handle(cmd(Command::SaveWorldAs("second".into())))), WorldNote::Saved { name: "second".into() });
+    assert_eq!(note(server.handle(cmd(Command::SaveWorldAs("second".into())))), WorldNote::Saved { name: "second".into(), auto: false });
     assert_eq!(worlds(&mut server), ["second"], "the first was never saved");
     let mut edited = base_sim();
     edited.load(&file.sibling("second").unwrap().read().unwrap().unwrap()).unwrap();
@@ -518,4 +521,126 @@ fn a_failed_reload_keeps_the_old_sounds() {
 
     let mut server = Server::new(base_sim());
     assert!(reload(&mut server).is_err(), "no source to read from");
+}
+
+/// The base game keeping little terrain loaded, its edited terrain in `file`'s folder.
+fn game_on(file: &WorldFile) -> Simulation {
+    let mut sim = base_sim();
+    sim.set_view_distance(32.0);
+    sim.world_settings_mut().terrain_height = 16;
+    sim.set_chunk_store(std::sync::Arc::new(file.chunk_files()));
+    sim
+}
+
+/// Digs out the block under the player at `(x, y)` from the terrain's center. Returns it.
+fn dig(sim: &mut Simulation, x: i64, y: i64) -> BoxelPos {
+    let ground = base::terrain::Hills::default().ground(x, y);
+    sim.teleport_player(WorldPos::at_boxel(base::TERRAIN_CENTER.offset(I64Vec3::new(x, y, ground))));
+    sim.stream_all();
+    for _ in 0..30 {
+        sim.step(&PlayerInput::default());
+    }
+    let below = BoxelPos(sim.player().unwrap().pos().cell() - I64Vec3::Z);
+    assert!(!sim.universe().main().cell(below).is_empty(), "standing on the ground");
+    sim.step(&PlayerInput { pitch: -89.0f32.to_radians(), use_pressed: true, use_held: true, ..Default::default() });
+    assert!(sim.universe().main().cell(below).is_empty(), "dug out");
+    below
+}
+
+/// Whether a new game on `file`'s world, standing over `hole`, finds it dug out.
+fn dug_in_saved(file: &WorldFile, hole: BoxelPos) -> bool {
+    let mut sim = game_on(file);
+    sim.load(&file.read().unwrap().unwrap()).unwrap();
+    sim.teleport_player(WorldPos::at_boxel(hole.offset(I64Vec3::new(0, 0, 3))));
+    sim.stream_all();
+    sim.universe().main().cell(hole).is_empty()
+}
+
+fn files_in(dir: &std::path::Path) -> usize {
+    std::fs::read_dir(dir).map_or(0, |d| d.count())
+}
+
+#[test]
+fn edited_terrain_goes_to_the_world_folder_and_comes_back_in_a_new_game() {
+    let dir = std::env::temp_dir().join(format!("boxel-server-stored-test-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    let file = WorldFile::in_folder(&dir, "stored").unwrap();
+    let mut sim = game_on(&file);
+    sim.generate_terrain().unwrap();
+    let hole = dig(&mut sim, 5, 7);
+    // Flown away from, the hole's column unloads and the chunk goes to disk, unsaved.
+    sim.teleport_player(WorldPos::at_boxel(base::TERRAIN_CENTER.offset(I64Vec3::new(600, 0, 200))));
+    sim.player_mut().unwrap().set_flying(true);
+    sim.stream_all();
+    assert!(sim.universe().main().chunk(hole.split().0).is_none(), "unloaded");
+    let mut server = Server::new(sim).with_world(file.clone(), false);
+    // Written by the store's own thread, soon after.
+    let unsaved = dir.join("stored").join("unsaved");
+    let start = std::time::Instant::now();
+    while files_in(&unsaved) == 0 && start.elapsed().as_secs() < 5 {
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    assert!(files_in(&unsaved) > 0, "written out unsaved");
+
+    assert_eq!(note(server.handle(ClientMsg::Command(Command::SaveWorld))), WorldNote::Saved { name: "stored".into(), auto: false });
+    assert_eq!(files_in(&dir.join("stored").join("unsaved")), 0, "saved, the unsaved ones move over");
+    assert!(files_in(&dir.join("stored").join("chunks")) > 0);
+    drop(server);
+    assert!(dug_in_saved(&file, hole), "a new game finds the hole");
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
+#[test]
+fn save_as_copies_the_stored_terrain_and_leaves_the_old_world_as_last_saved() {
+    let dir = std::env::temp_dir().join(format!("boxel-server-save-as-test-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    let file = WorldFile::in_folder(&dir, "a").unwrap();
+    let mut sim = game_on(&file);
+    sim.generate_terrain().unwrap();
+    let first = dig(&mut sim, 5, 7);
+    let mut server = Server::new(sim).with_world(file.clone(), false);
+    note(server.handle(ClientMsg::Command(Command::SaveWorld)));
+    drop(server);
+
+    // Back in it: a second hole, then saved as b.
+    let mut sim = game_on(&file);
+    sim.load(&file.read().unwrap().unwrap()).unwrap();
+    let second = dig(&mut sim, 90, -60);
+    let mut server = Server::new(sim).with_world(file.clone(), true);
+    assert_eq!(note(server.handle(ClientMsg::Command(Command::SaveWorldAs("b".into())))), WorldNote::Saved { name: "b".into(), auto: false });
+    drop(server);
+
+    let b = file.sibling("b").unwrap();
+    assert!(dug_in_saved(&b, first) && dug_in_saved(&b, second), "b has both holes");
+    assert!(dug_in_saved(&file, first), "a keeps its saved hole");
+    assert!(!dug_in_saved(&file, second), "but not the one dug after");
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
+#[test]
+fn the_world_saves_itself_now_and_then() {
+    let dir = std::env::temp_dir().join(format!("boxel-server-autosave-test-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    let file = WorldFile::in_folder(&dir, "auto").unwrap();
+    let mut server = Server::new(game_on(&file)).with_world(file.clone(), false);
+    let tune = ClientMsg::Command(Command::Tune { section: "saving".into(), name: "autosave_minutes".into(), value: 0.001 });
+    server.handle(tune);
+    let mut saved = Vec::new();
+    for _ in 0..20 {
+        for msg in server.handle(input(PlayerInput::default())) {
+            if let ServerMsg::World(note) = msg {
+                saved.push(note);
+            }
+        }
+    }
+    // 0.001 minutes is 3.6 ticks: every 3rd tick.
+    assert_eq!(saved.len(), 6, "{saved:?}");
+    assert!(saved.iter().all(|n| *n == WorldNote::Saved { name: "auto".into(), auto: true }));
+    assert!(file.read().unwrap().is_some());
+    server.handle(ClientMsg::Command(Command::Tune { section: "saving".into(), name: "autosave_minutes".into(), value: 0.0 }));
+    for _ in 0..20 {
+        let msgs = server.handle(input(PlayerInput::default()));
+        assert!(!msgs.iter().any(|m| matches!(m, ServerMsg::World(_))), "none when off");
+    }
+    std::fs::remove_dir_all(&dir).unwrap();
 }
