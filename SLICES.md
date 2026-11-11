@@ -104,26 +104,7 @@ A run of small toy slices. Each one takes a single game-feel feature that doesn'
 
 ### Current toy
 
-#### Chunk storage (`toy-chunk-storage`)
-
-*Infrastructure: world generation stage 3.* **Stage:** Verify
-
-*Goal:* edited chunks of unloaded columns go to disk instead of staying in memory, so memory stays flat however far you go and however much you edit; the world saves itself now and then. *Order note:* no toy needs this yet; taken at the user's request (2026-11-11), ahead of the suggested `fix-greedy-sparkles`, and as the groundwork for a dedicated server on another machine (the user: "if we split the server can we move the server to a other machine?").
-
-*Plan (approved 2026-11-11; the user's answers: edited chunks only, saves stay snapshots, clear zone stays, autosave yes):*
-- *Chunk bytes* (`sim`): one chunk as self-contained bytes, its occupant lists by block name and run-length cells, zstd-compressed; no light (worked out again). Meant to become the network's chunk format later; a trained dictionary waits for real chunks.
-- *Store* (`sim`): a `ChunkStore` trait (read a chunk, write chunks), so `sim` still does no file access. A column's worker asks the store before generating: a stored chunk replaces the generated one, then the column is lit. Unloading hands edited chunks to the store; `Stream.kept` goes.
-- *Region files* (`server::worlds`): `<world>/chunks/` holds region files of 16×16×16 chunks, each rewritten whole (`.part` then rename) on a background writer thread. Saves stay snapshots: chunks unloaded since the last save go to `<world>/unsaved/`; saving merges them into `chunks/`, F8 and opening another world throw them away, Save as copies the merged chunks.
-- *`world.bin`*: player, items, made blocks, blueprints, terrain values, time of day; no chunks. Version bumped; an old save still loads and its chunks move into the store on the next save.
-- *Autosave*: every 5 minutes while playing, tunable.
-- *Only edited chunks are stored* (the user, on storing all: worth it once generating a chunk gets costly; easy to switch later, as stored chunks already beat generated ones).
-- *Tests:* chunk bytes round trip and refuse damage; an edited chunk unloads, leaves memory and comes back from disk the same, light included; reload, Save as and Open behave as before; an old save loads and moves its chunks; a damaged region file stops the load instead of being saved over; save and load through the server; autosave fires.
-- *Done when:* (1) editing in many places while flying far, memory stays flat; (2) edits survive leaving, coming back, quitting and restarting; (3) F8, Save as and Open work as before; (4) an old world loads; (5) tests and clippy clean, quick bench no surprises.
-- *Out of scope:* LOD, saving creatures, the format on the network, dictionary training, removing the 1 km clear zone (storing chunks alone doesn't: the endless terrain would still run through the test area; logged in the backlog).
-- *Changed during Implement:* `world.bin` still holds the chunks outside the terrain (the test areas): they're always loaded, so only streamed terrain goes to the store. A save's version went to 4 with the layout unchanged, so older builds refuse a save whose terrain they'd miss.
-- *Implementation notes:* `sim::store` (`ChunkStore`, `MemoryStore`, `copy`, and `check_store`, the rules every store is tested against); `SavedChunk::to_bytes`/`from_bytes` (names inline, runs, zstd through `ruzstd`, plain Rust at its fastest level, about zstd's level 1, the same format the C library reads); `Stream.kept` replaced by the store, the terrain threads read stored chunks and the game thread names their blocks (blocks made while playing are newer than the threads' registry); `Simulation::save` now commits the store and returns `Result`, `save_as` copies into a new store, `snapshot` touches no store; `load` discards unsaved chunks first (so a crash's leftovers go too) and moves an old save's terrain into the store. `server::chunk_files::ChunkFiles`: region files, a writer thread, region indexes cached; `ApiError::Storage`. Server: `saving` tuning section with `autosave_minutes` (default 5, 0 for none), the note says AUTOSAVED; Save as onto the world's own name is a plain save; opening a never-saved world clears any chunks left in its folder.
-- *Measured:* packing a chunk takes about 0.1 ms for terrain-like runs, 2.5 ms for the worst case (every boxel a different run); copies of the user's five worlds load, move their edited terrain into region files (1, 3 and 31 chunks), save in 5–7 ms and load again.
-- *Tests:* 775 pass across the workspace (10 ignored, the timing harnesses), clippy clean. New: stored chunk bytes (2), the store rules on memory and on files (3), region places, files reopened, many puts leaving memory, a damaged region refused and not saved over (4); sim: a stored chunk leaves memory and comes back with the same light, loading undoes edits unloaded since the save, regenerating drops stored edits until a load, an old save's terrain moves into the store; server: edited terrain to the folder and back in a new game, Save as copies and leaves the old world as last saved, autosave fires and stops at 0.
+None in progress: Chunk storage closed 2026-11-11. Suggested next: `fix-greedy-sparkles` (backlog, a small fix), then AO in the shader or Shadow speed; or, toward a server on another machine, a dedicated server seam (headless server program, serialization, QUIC on the LAN).
 
 **Waiting for a play check** (remind the user at the start of every session, and at good moments during one, until they confirm; then delete the line):
 
@@ -187,7 +168,7 @@ Ideas that come up while playing get added here.
 ### Infrastructure (added when a toy needs it)
 
 - ~~Saving and loading, with block names in the save~~ Done (Saving, 2026-11-07), see Done toys. Creatures aren't saved yet.
-- World generation. *The generator is done (Generated terrain, 2026-11-05); streaming is done (Terrain streaming, 2026-11-11). Next: saving unloaded edits to disk and LOD, as they start to hurt.* Staging and the creatures-on-terrain checklist. Notes: `docs/notes/world-generation.md`.
+- World generation. *The generator is done (Generated terrain, 2026-11-05); streaming is done (Terrain streaming, 2026-11-11). Unloaded edits are stored on disk (Chunk storage, 2026-11-11). Next: LOD, as it starts to hurt.* Staging and the creatures-on-terrain checklist. Notes: `docs/notes/world-generation.md`.
 - LOD, once world generation exists
 - ~~Meshing off the main thread~~ Done for streamed terrain (Terrain streaming, 2026-11-11): arriving columns are meshed in the background. Edits still remesh on the main thread, at once; an edit beside a finely cut chunk still takes ~55 ms in the dev build.
 
@@ -248,6 +229,7 @@ Bugs found in already-merged code, each fixed on its own `fix-` branch (see the 
 ### Done toys
 
 Full write-ups (plans, implementation notes, verify rounds, decisions) are in `docs/done-toys.md`. One line each, newest first:
+- **Chunk storage** (2026-11-11, `toy-chunk-storage`, infrastructure). Edited terrain goes to region files in the world's folder when its column unloads and comes back from them, so memory stays flat; saves stay snapshots (unsaved chunks wait in `unsaved/` until F2, F8 throws them away), Save as copies them, the world autosaves every 5 minutes (tunable), old saves move their terrain over.
 - **Terrain streaming** (2026-11-11, `toy-terrain-streaming`, infrastructure). The generated terrain is endless, loaded in columns around the player out to the render distance and dropped past it, generated, lit and meshed in the background; edits wait in memory when their column unloads and are saved; startup is quick and flying keeps up. No terrain within 1 km of the mods' built area. The full 512 m view costs 19–32 ms a frame.
 - **Day and night** (2026-11-11, `toy-day-and-night`). A time of day owned by the sim and saved, with Eanpa Sky's palette: dawn, day, dusk and a near-black night with stars and a glowing moon, the light on blocks taking the sky's colors. Moonlight casts no shadows, so nights draw none (half the frame time). ACES tone mapping, dithering, and the Shading sliders in groups.
 - **Greedy meshing** (2026-11-10, `toy-greedy-meshing`). Neighboring terrain faces that look alike are drawn as one bigger quad, the shader repeating looks and edge lines every boxel: 70% fewer triangles, frames 22–36% faster at the bench's spots. A merge faces checkbox in the View section.
