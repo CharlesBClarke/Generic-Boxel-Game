@@ -48,9 +48,9 @@ pub struct ShadingTuning {
     /// How far down the zenith's blue reaches before it fades into the horizon's color: 1 is
     /// the palette's, higher brings the blue lower.
     pub blue_reach: f32,
-    /// How many degrees around the horizon the zenith's color eases out into the horizon's,
-    /// instead of stopping at a sharp line. Fog fades far land into the sky, so a sharp line
-    /// there shows through it.
+    /// Below the horizon the sky keeps its color at the horizon (so fogged land below eye
+    /// level has no line through it); this is how many degrees around the horizon the two
+    /// join on a curve instead of at a corner.
     pub horizon_blur: f32,
     /// How much warmer than the palette a low sun is; 0 is the palette as it is.
     pub warmth: f32,
@@ -158,7 +158,7 @@ impl Default for ShadingTuning {
             night_sky: 0.002,
             haze: 1.0,
             blue_reach: 1.0,
-            horizon_blur: 4.0,
+            horizon_blur: 2.0,
             warmth: 1.0,
             sun_size: 0.6,
             sun_halo: 3.0,
@@ -294,7 +294,7 @@ const SHADING_HELP: &[(&str, &str)] = &[
     ("night_sky", "The sky's colors at full night, brighter or darker than the palette; blended with day_sky through dusk."),
     ("haze", "How pale and misty the horizon is while the sun is high: 1 is the palette's, 0 takes the zenith's blue. Sunrise and sunset keep their own."),
     ("blue_reach", "How far down the zenith's blue reaches before it fades into the horizon's color: 1 is the palette's, higher brings the blue lower."),
-    ("horizon_blur", "How many degrees around the horizon the sky's blue eases into the horizon's color instead of stopping at a sharp line, which would show through the fog on far land."),
+    ("horizon_blur", "Below the horizon the sky (and the fog on far land) keeps its color at the horizon; this is how many degrees around the horizon the two join softly instead of at a corner."),
     ("sun_size", "The sun's disc, as its radius in degrees."),
     ("sun_halo", "The tight bright ring hugging the sun's disc (about 3° across)."),
     ("sun_glow", "The wider soft glow around the sun (about 10°)."),
@@ -335,7 +335,7 @@ impl Tunables for ShadingTuning {
             Tunable::new("night_sky", self.night_sky, 0.0, 3.0),
             Tunable::new("haze", self.haze, 0.0, 1.0),
             Tunable::new("blue_reach", self.blue_reach, 0.25, 4.0),
-            Tunable::new("horizon_blur", self.horizon_blur, 0.0, 20.0),
+            Tunable::new("horizon_blur", self.horizon_blur, 0.0, 10.0),
             Tunable::new("warmth", self.warmth, 0.0, 2.0),
             Tunable::new("sun_size", self.sun_size, 0.1, 5.0),
             Tunable::new("sun_halo", self.sun_halo, 0.0, 6.0),
