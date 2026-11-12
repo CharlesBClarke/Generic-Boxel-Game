@@ -104,6 +104,16 @@ pub struct ShadingTuning {
     pub block_falloff: f32,
     /// Light every face gets however dark it is, so caves stay faintly readable.
     pub min_light: f32,
+    /// Where each octave of generated detail (noise from the world position, grain) starts
+    /// fading toward its average and where it's gone, in its blobs per pixel: a blob shrunk to
+    /// 1 / this of a pixel. The finer octave goes first.
+    pub noise_fade_start: f32,
+    pub noise_fade_end: f32,
+    /// The most reads spread along a face seen at a glance (anisotropic filtering): more keeps
+    /// far ground sharp, at a cost only there.
+    pub anisotropy: f32,
+    /// How strong the grain drawn over planks is, times its recipe's strength.
+    pub grain: f32,
     /// Which parts are drawn, to measure what each costs. Not saved.
     pub parts: Parts,
 }
@@ -122,11 +132,15 @@ pub struct Parts {
     pub stored: bool,
     /// Ambient occlusion: off, nothing darkens corners (without remeshing, unlike its strength).
     pub ao: bool,
+    /// Generated detail: off, looks show their baked cubes, repeating every block.
+    pub detail: bool,
+    /// Mip levels: off, far faces read their looks texel by texel, and shimmer.
+    pub mips: bool,
 }
 
 impl Default for Parts {
     fn default() -> Self {
-        Self { edges: true, fog: true, sheen: true, light: true, sky: true, stored: true, ao: true }
+        Self { edges: true, fog: true, sheen: true, light: true, sky: true, stored: true, ao: true, detail: true, mips: true }
     }
 }
 
@@ -141,6 +155,8 @@ impl Parts {
             ("sky", self.sky),
             ("stored light", self.stored),
             ("ambient occlusion", self.ao),
+            ("generated detail", self.detail),
+            ("mipmaps", self.mips),
         ];
         let off: Vec<&str> = all.iter().filter(|(_, on)| !on).map(|(name, _)| *name).collect();
         if off.is_empty() { "shading all on".into() } else { format!("shading off: {}", off.join(", ")) }
@@ -184,6 +200,10 @@ impl Default for ShadingTuning {
             light_falloff: 1.4,
             block_falloff: 1.0,
             min_light: 0.0,
+            noise_fade_start: 0.3,
+            noise_fade_end: 0.7,
+            anisotropy: 4.0,
+            grain: 1.0,
             parts: Parts::default(),
         }
     }
@@ -256,13 +276,19 @@ impl ShadingTuning {
             heights: Vec4::ZERO,
             fine_heights: Vec4::ZERO,
             ao: Vec4::ZERO,
+            looks: Vec4::new(
+                self.noise_fade_start.max(0.01),
+                self.noise_fade_end.max(self.noise_fade_start + 0.01),
+                self.grain,
+                on(self.parts.detail) + 2.0 * on(self.parts.mips) + 4.0 * self.anisotropy.round().clamp(1.0, 16.0),
+            ),
         }
     }
 }
 
 /// The Shading section's sliders in groups, for the panel: what's drawn in the sky apart from
 /// what lights the blocks. Every slider is in exactly one.
-pub const GROUPS: [(&str, &[&str]); 6] = [
+pub const GROUPS: [(&str, &[&str]); 7] = [
     ("Time and paths: where the sun and moon are", &["hold_hour", "sun_arc", "moon_lag", "moon_arc"]),
     (
         "Sky look: the sky, sun, moon and stars as drawn (lights nothing)",
@@ -278,6 +304,7 @@ pub const GROUPS: [(&str, &[&str]); 6] = [
     ("Light on blocks: lamps (stored light)", &["block_light", "light_falloff", "block_falloff"]),
     ("Fog (fades the far world into the sky)", &["fog_start", "fog_end", "fog"]),
     ("Edges along creases and ridges", &["crease", "ridge", "edge_width"]),
+    ("Looks: generated detail and distance filtering", &["noise_fade_start", "noise_fade_end", "anisotropy", "grain"]),
 ];
 
 fn smoothstep(edge0: f32, edge1: f32, x: f32) -> f32 {
@@ -321,6 +348,10 @@ const SHADING_HELP: &[(&str, &str)] = &[
     ("crease", "How much darker a texel right against an inside crease gets."),
     ("ridge", "How much lighter a texel right on an outside ridge gets."),
     ("edge_width", "How many texels wide the crease and ridge lines are, fading off across them."),
+    ("noise_fade_start", "Where each octave of generated detail (noise from the world position, wood grain) starts fading toward its average, in blobs per pixel: lower fades it nearer. The finer octave goes first."),
+    ("noise_fade_end", "Where each octave of generated detail is gone, in blobs per pixel."),
+    ("anisotropy", "The most reads spread along a face seen at a glance, like anisotropic filtering: more keeps far ground sharp, at a cost only there."),
+    ("grain", "How strong the grain over planks is, times its recipe's strength: 0 shows only the baked rows."),
 ];
 
 impl Tunables for ShadingTuning {
@@ -360,6 +391,10 @@ impl Tunables for ShadingTuning {
             Tunable::new("light_falloff", self.light_falloff, 0.5, 4.0),
             Tunable::new("block_falloff", self.block_falloff, 0.25, 4.0),
             Tunable::new("min_light", self.min_light, 0.0, 0.3),
+            Tunable::new("noise_fade_start", self.noise_fade_start, 0.05, 2.0),
+            Tunable::new("noise_fade_end", self.noise_fade_end, 0.1, 4.0),
+            Tunable::new("anisotropy", self.anisotropy, 1.0, 16.0),
+            Tunable::new("grain", self.grain, 0.0, 4.0),
         ], &GROUPS, SHADING_HELP)
     }
 
@@ -399,6 +434,10 @@ impl Tunables for ShadingTuning {
             "light_falloff" => self.light_falloff = value,
             "block_falloff" => self.block_falloff = value,
             "min_light" => self.min_light = value,
+            "noise_fade_start" => self.noise_fade_start = value,
+            "noise_fade_end" => self.noise_fade_end = value,
+            "anisotropy" => self.anisotropy = value,
+            "grain" => self.grain = value,
             _ => return false,
         }
         true
@@ -460,6 +499,10 @@ pub struct Atmosphere {
     /// Ambient occlusion (see [`crate::mesher::AoTuning`]): strength, how full the space must
     /// be to darken by all of it, the curve, and on (1) or off (0).
     pub ao: Vec4,
+    /// Looks (see `solid.wgsl`): where each octave of generated detail starts fading and where
+    /// it's gone (blobs per pixel), the grain's strength, and a number: 1 for generated detail,
+    /// plus 2 for mip levels, plus 4 times the most reads along a face seen at a glance.
+    pub looks: Vec4,
 }
 
 /// The sky: drawn over the whole screen at the far plane, so only where nothing else is.
@@ -615,14 +658,20 @@ fn sync_atmosphere(
     atmosphere.ao = ao_atmosphere(&ao, tuning.parts.ao);
     shadow_atmosphere(&mut atmosphere, &shadows, heights.placed, origin.cell);
     let image = heights.image.clone();
+    // Meshes in the world read generated detail from where they are; the rest keep theirs.
+    let place = crate::solid::in_world(origin.cell);
+    let placed = |m: &SolidMaterial| m.place.w == 0 || m.place == place;
     let stale: Vec<_> = solids
         .iter()
-        .filter(|(_, m)| m.atmosphere != atmosphere || image.as_ref().is_some_and(|i| *i != m.heights))
+        .filter(|(_, m)| m.atmosphere != atmosphere || !placed(m) || image.as_ref().is_some_and(|i| *i != m.heights))
         .map(|(id, _)| id)
         .collect();
     for id in stale {
         if let Some(m) = solids.get_mut(id) {
             m.atmosphere = atmosphere;
+            if m.place.w == 1 {
+                m.place = place;
+            }
             if let Some(image) = &image {
                 m.heights = image.clone();
             }

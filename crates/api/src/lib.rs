@@ -16,6 +16,7 @@ pub mod health;
 pub mod guest;
 pub mod interaction;
 pub mod item;
+pub mod look;
 pub mod media;
 pub mod modding;
 pub mod orientation;

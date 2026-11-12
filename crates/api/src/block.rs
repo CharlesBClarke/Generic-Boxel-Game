@@ -241,6 +241,10 @@ pub struct LookDef {
     /// How brightly it lights itself, ignoring the sun, the sky and shade: 0 for none, 1 shows
     /// its own colors at full strength in the dark, above 1 brighter still. Lights nothing else.
     pub glow: f32,
+    /// What it generates as it's drawn, over or instead of the cube, from the world position:
+    /// see [`crate::look`]. A look that turns generates nothing, as its texels aren't where
+    /// they stand in the world.
+    pub detail: crate::look::LookDetail,
 }
 
 /// How a look shines (Blinn-Phong): how bright the highlight gets, and how tight it is.

@@ -19,6 +19,7 @@ base.workspace = true
 data_mods.workspace = true
 base_movement.workspace = true
 base_cow.workspace = true
+wgpu.workspace = true
 
 [features]
 # Records how long every system takes, for chasing hitches. See `trace` in crates/game.

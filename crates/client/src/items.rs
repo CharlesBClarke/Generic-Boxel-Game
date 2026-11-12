@@ -96,7 +96,8 @@ pub(crate) fn sync_items(
         let light = stored_light(world.universe().main(), blocks, center);
         let view = views.entry(item.id).or_insert_with(|| {
             let material = match materials.get(&chunk_meshes.material).cloned() {
-                Some(shared) => materials.add(SolidMaterial { light, ..shared }),
+                // A loose item tumbles, so it reads generated detail as if at the world's middle.
+                Some(shared) => materials.add(SolidMaterial { light, place: crate::solid::AWAY, ..shared }),
                 None => chunk_meshes.material.clone(),
             };
             View::new(item, Entity::PLACEHOLDER, Entity::PLACEHOLDER, material, blocks)
@@ -293,11 +294,13 @@ mod tests {
         app.add_plugins((MinimalPlugins, AssetPlugin::default())).init_asset::<Mesh>().init_asset::<SolidMaterial>();
         let shared = app.world_mut().resource_mut::<Assets<SolidMaterial>>().add(SolidMaterial {
             tint: LinearRgba::WHITE,
-            volumes: Handle::default(),
+            looks: Handle::default(),
             atmosphere: default(),
             sheens: Handle::default(),
             heights: Handle::default(),
             light: Vec4::ZERO,
+            place: UVec4::ZERO,
+            generated: Handle::default(),
             alpha_mode: AlphaMode::Opaque,
         });
         app.insert_resource(world)

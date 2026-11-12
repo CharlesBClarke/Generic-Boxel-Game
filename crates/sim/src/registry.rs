@@ -453,6 +453,7 @@ impl LookRegistry {
                 def.rgba.len()
             )));
         }
+        def.detail.check().map_err(|e| ApiError::InvalidDef(format!("look {:?}: {e}", def.name)))?;
         self.by_name.insert(def.name.clone(), self.defs.len());
         self.defs.push(def);
         Ok(())
@@ -618,7 +619,7 @@ mod tests {
     }
 
     fn look(name: &str) -> LookDef {
-        LookDef { name: name.into(), turns: false, rgba: vec![255; LookDef::VOLUME * 4], sheen: None, glow: 0.0 }
+        LookDef { name: name.into(), turns: false, rgba: vec![255; LookDef::VOLUME * 4], sheen: None, glow: 0.0, detail: Default::default() }
     }
 
     #[test]
@@ -631,6 +632,8 @@ mod tests {
         assert_eq!(reg.register(look("stone")), Err(ApiError::InvalidName("stone".into())));
         let short = LookDef { rgba: vec![0; 7], ..look("test:short") };
         assert!(matches!(reg.register(short), Err(ApiError::InvalidDef(_))));
+        let detail = api::look::LookDetail { texels: vec![1; 3], ..Default::default() };
+        assert!(matches!(reg.register(LookDef { detail, ..look("test:odd") }), Err(ApiError::InvalidDef(_))));
     }
 
     #[test]

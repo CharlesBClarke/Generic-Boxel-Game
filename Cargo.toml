@@ -41,6 +41,8 @@ bevy = { version = "0.18.1", default-features = false, features = [
     "default_app", "default_platform", "2d_bevy_render", "3d_bevy_render", "ui", "scene", "picking",
 ] }
 bevy_egui = "0.39.1"
+# Tests only: runs shader functions on the GPU against their Rust versions. The version Bevy 0.18 uses.
+wgpu = { version = "27.0.1", default-features = false, features = ["wgsl", "vulkan"] }
 # Sound: a mixer with tracks, spatial sound and effects, so muffling and reverb can come later.
 # 0.10 for now: later versions use a newer cpal than Bevy 0.18's, and only one may link ALSA.
 kira = { version = "0.10.8", default-features = false, features = ["cpal", "ogg", "wav"] }
