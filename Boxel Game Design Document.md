@@ -75,7 +75,10 @@ The project's words, used the same way in conversation, code and docs. When a ne
 | Bundle | A gadget of several materials (up to 8), placed whole into one boxel as one occupant per material. |
 | Piece | One occupant of a bundle, or part of an occupant cut by hiding. |
 | Look | How a material is drawn: a 16×16×16 volume of colors, one per texel, so any cut shows what's inside, plus detail it generates from where each texel is in the world (noise, wood grain), so it doesn't repeat from block to block. |
-| Property | Something a material does, wherever a piece of it is: trigger, conductor, phase, starts hidden. |
+| Property | Something a material does, wherever a piece of it is: trigger, conductor, phase, starts hidden, fuse, lens, storage, mender. |
+| Storage | A material that keeps loose items touching it, in its boxel, as amounts of their materials (in texels). Touching storage pieces of one material are one bin. The base game's is cachite. |
+| Mender | A material that remembers what was last in every texel within its reach, and on a signal puts back what's gone, paid for from storage the signal reached. The base game's is mendite. Agreed 2026-11-11: texels, not whole pieces (the user: "every texle rembers it neigbors"). |
+| Record | What a boxel keeps beside its occupants: what its storage holds and what menders remember of it. Kept with the boxel's chunk. |
 | Signal | What a trigger sends: it reaches the trigger's boxel and on through conductors, and what's there answers. |
 | Phase group | Phase pieces of one material touching face to face; a signal flips them between shown and hidden together. |
 | Grab | How far hiding a phase group takes other things with it, in texels (1 by default). Not to be confused with reach. |
@@ -153,6 +156,7 @@ Connected blocks such as wires, pipes and cables form graph networks rather than
 - **Parallel per network.** Separate networks solve independently on different cores.
 - **Cheap to render.** Wires look up their network's value in the shader, so a lever lights the whole line without remeshing chunks.
 - **Open choices:** whether values are on/off or numbers (and how inputs combine), and whether a wire can carry several channels.
+- **What a signal does, in order (2026-11-11, Mending):** every phase group it reaches flips (shows before hides), then every mender group it reaches mends, from the world as the flip left it. Each is all or nothing on its own.
 - **Built so far (2026-11-06, Material behavior):** a much simpler stand-in. A conductor (copper) carries a signal from a trigger through face-touching boxels holding it, found by a flood fill when the signal is sent, with no stored networks and no values: a signal is a single pulse that flips what it reaches.
 
 ## World model

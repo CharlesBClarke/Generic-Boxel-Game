@@ -104,7 +104,7 @@ A run of small toy slices. Each one takes a single game-feel feature that doesn'
 
 ### Current toy
 
-**Mending** (`toy-mending`, storage and mender materials). **Stage:** Verify (2026-11-11). The glitches the user wants to get to (each a `fix-` branch off `master`) wait until after it.
+**Mending** (`toy-mending`, storage and mender materials). **Stage:** Close (2026-11-12), waiting on the quick bench before merging. The glitches the user wants to get to (each a `fix-` branch off `master`) wait until after it.
 
 The user's ask: "storage which can get materials in somehow, and can be used by another material where every texle rembers it neigbors and if it detects a trigger it will pull the material needed and replace any of its rembered neibors that are now gone." Their answers: texels only (not whole pieces), "detects a trigger" means a signal, materials go in as loose items, just these two materials (the More materials entry stays), ghosts of what would come back ("I guess"), names cachite and mendite.
 
@@ -125,7 +125,19 @@ The user's ask: "storage which can get materials in somehow, and can be used by 
 
 *Verify round 1 (2026-11-11):* the user built a texel gun (blue against green) beside a line of mendite, "hopping the mendite would beable to replace the gun when it anlyates", but the brass said nothing to mend. Bug in this toy: menders remembered at the end of the tick, after crystals touching on placement had already used each other up, so they were never remembered. Now records are brought up to date right after placing and signals, before crystals react (test: `crystals_that_fire_the_moment_they_touch_are_remembered_and_mended`; a mended gun fires again). Also the user: "why is brass saing nothing to mend it dosent mend anything": the trigger's hint now only speaks when something would come back or can't.
 
-*Tests:* 11 unit tests in `sim::mend` (memory in both orders, last-in-it, exact put-back and pay, whole when the reach covers it, joining what's left, all or nothing, unreached storage, forgetting, orphaned storage, items' materials, touching), `sim/tests/mending.rs` (the lab end to end with save and load; breaking the bin loses nothing), a version 4 save test, and the base world's lists. `cargo test --workspace` passes; clippy clean.
+*Verify round 2 (2026-11-12):* the user asked which goes first when mendite touches phasite (phase flips first, then menders mend; kept: "no its good just needed to know"), then "ok its good". Done when: (1) met, played and tested; (2) met, tested; (3) save and load met, tested; flying away and back not played (the lab never unloads), left as a low-priority play check; (4) met, the user saw the ghosts.
+
+*Tests:* 11 unit tests in `sim::mend` (memory in both orders, last-in-it, exact put-back and pay, whole when the reach covers it, joining what's left, all or nothing, unreached storage, forgetting, orphaned storage, items' materials, touching), `sim/tests/mending.rs` (the lab end to end with save and load; breaking the bin loses nothing; a gun that fires as it's placed is remembered and mended, and fires again), a version 4 save test, and the base world's lists. `cargo test --workspace` passes; clippy clean.
+
+*Decisions:* records kept with chunks for per-boxel state; each texel remembers what was last in it; storage, menders and phase act in touching groups; mending is all or nothing and runs after phase flips (see Phase 2 decisions and the design doc's Signal networks and Terminology).
+
+*Deferred:*
+- The lever's hint works out the mend before the same signal's phase flip, so when phasite near a mender flips it can say "mends N texels" for texels the flip brings back free. Fix if it misleads in play: work the flip out first in the preview.
+- Flying away and back with a mender on the terrain (records through the chunk store) is tested only at the chunk-format level.
+- The ghost mesh rebuilds from a cloned block registry on every chunk change near the player; cost not measured.
+- The More materials backlog entry (sensor, delay, scope switch, bounce, falls) stays as it was.
+
+*API debt:* none new; `storage` and `mender` join the Fixed block properties line.
 
 **Waiting for a play check** (remind the user at the start of every session, and at good moments during one, until they confirm; then delete the line):
 - Generated detail: far ground doesn't shimmer in motion with MSAA off (try the 30 fps profile); grass tops stay green far away.
@@ -134,6 +146,7 @@ The user's ask: "storage which can get materials in somehow, and can be used by 
 **Low-priority play checks** (don't remind every session; check only when a toy makes it convenient, such as one that puts the player among moving cows; delete the line once seen):
 - Cow herd (1): a cow shoved well away from the herd walks back to it on its own.
 - Cow herd (3): a moving cow that runs into the player pushes them back, with no jitter or sticking.
+- Mending (3): a mender on the generated terrain keeps its memory and its bin's contents after flying far enough for its column to unload and back.
 - Sound (5): sounds pan as you turn and fade with distance. Hard to judge with cows mooing rarely; check once something makes a steady or on-demand sound.
 
 - Cow pathfinding (low priority, 2026-11-06): the user called the toy "really good" without going through the five course checks one by one; note any that misbehave: cows through the pen's gap and up its terraces, up the mesa's steps, a charge baited off the mesa's cliff (landing hurt), waiting below the pillar (orange route), climbing hills on the generated terrain.
@@ -237,6 +250,7 @@ Shortcuts taken around the API, each with the toy that needed it. Paid down in s
 - **Bench** (2026-11-10, from Bench): frame rate is compared with `tools/bench.sh`, never from memory or across days: release builds, a 1080×1080 window, the user's terrain (seed 120) at fixed flying spots, one launch per settings set, results in `~/.local/share/boxel/bench/results.txt` with a screenshot of each spot. Every toy's Verify runs `--quick master work`. Differences under about 10% at the `recorded` spot (5% at the others) are noise; a row whose GPU clocks differ is marked, as the Iris Xe is held back when the CPU is busy. The client's `bench` module stays within what `f9fbc16` had, so `tools/bench/backport.sh` can copy it into old commits; only `bench/switches.rs` may use newer code. New on/off settings worth measuring get a line there.
 - **Terrain streaming** (2026-11-11, from Terrain streaming): generated terrain is endless and loaded by the server in whole columns around each player out to that player's render distance (plus 32 m, dropped 32 m past it); the client asks for its distance and is told what loads and unloads. Columns are generated and lit apart on workers and joined at their seams, which must equal lighting everything together. Edited chunks of dropped columns stay in memory and are saved; nothing simulates over ground still loading. No terrain is made within 1 km of chunks the mods built. New world state that lives in terrain columns must say what happens when its column unloads.
 - **Tuning values** (2026-11-11, from Tuning panel): every `api::Tunable` may carry a `group` (values that touch the same thing, shown under one folded header) and `help` (a sentence for the tooltip and search), plain strings across the WIT boundary too. New tunable values should come with both, kept in `*_GROUPS` and `*_HELP` tables beside `tunables()` via `api::tuning::described`; help is encouraged, never required. New sections need a tab in `client::tuning_layout::Tab::of` and a heading, or they land in Other.
+- **Storage and menders** (2026-11-11, from Mending): per-boxel state that isn't occupants lives in **records** kept with each chunk (`sim::mend::Record`), so saves, the chunk store and clients carry it; new per-boxel state goes there too. Each texel within a mender's reach remembers what was last in it, as the piece it was cut from; what comes back is a cut part joining what's left. Storage, menders and phase all act in touching groups. Mending is all or nothing (short storage, something in the way, over `mend_limit`), paid a texel of material a texel, and runs after phase flips in the same signal. Records are brought up to date after placing and signals and again at the end of the tick, so nothing used up in the tick it appears goes unremembered.
 - **Signature feature:** not decided yet. Choose it once the block interaction and crafting toys have been played, and record the choice and why in the design doc.
 
 ### Fixes
