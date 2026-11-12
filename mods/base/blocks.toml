@@ -28,6 +28,11 @@
 #              "lens": when a fuse piece touches it, both are used up and a blast fires from
 #                      the fuse through the lens (see SignalDef's blast in the base mod).
 #                      A blast reaching a lens sets it off too, firing on the same way.
+#              "storage": a loose item touching it goes into its boxel, as the materials it's
+#                         made of; breaking the boxel's last storage piece drops it all
+#              "mender": remembers the texels within its reach (a texel by default); a signal
+#                        puts back the ones that are gone, paid for from the storage the
+#                        same signal reached, all or nothing
 #
 # Every block here is a full block: shapes aren't listed, they're crafted. A crafting table
 # (see crafting.toml) turns a pattern of a material into a part of any shape, and the test
@@ -142,6 +147,16 @@ noise = { colors = [[52, 96, 210], [70, 120, 232], [96, 150, 246]], scale = 2, s
 sheen = { strength = 0.6, sharpness = 48 }
 glow = 0.35
 noise = { colors = [[60, 190, 80], [84, 214, 100], [120, 236, 130]], scale = 2, seed = 18 }
+
+# Make-believe (2026-11-11, names are placeholders): cachite keeps what touches it, a dark slate
+# with pale flecks; mendite puts back what's gone around it, a glassy rose.
+[looks.cachite]
+sheen = { strength = 0.2, sharpness = 16 }
+noise = { colors = [[58, 62, 74], [64, 68, 80], [70, 74, 86], [150, 156, 170]], scale = 1, seed = 20 }
+
+[looks.mendite]
+sheen = { strength = 0.45, sharpness = 32 }
+noise = { colors = [[204, 112, 128], [214, 124, 140], [224, 138, 152]], scale = 4, seed = 21 }
 
 # Dark boards under a light top, so the table reads as a work surface.
 [looks.crafting_table]
@@ -261,3 +276,17 @@ name = "green_crystal"
 sounds = { step = "step_concrete", broken = "blast_laser", placed = "place_ice" }
 look = "green_crystal"
 properties = ["lens"]
+
+# Make-believe (2026-11-11): storage and a mender. A bin of cachite catches loose items; a signal
+# reaching mendite puts back what's gone around it, paid for from the cachite it reached.
+[[block]]
+name = "cachite"
+sounds = { step = "step_concrete", broken = "break_stone", placed = "place" }
+look = "cachite"
+properties = ["storage"]
+
+[[block]]
+name = "mendite"
+sounds = { step = "step_concrete", broken = "break_ice", placed = "place_ice" }
+look = "mendite"
+properties = ["mender"]

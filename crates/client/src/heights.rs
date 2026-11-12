@@ -314,7 +314,7 @@ mod tests {
 
     fn fill_chunk(grid: &mut Grid, c: I64Vec3, id: BlockId) {
         let lists = vec![Vec::new(), vec![sim::Occupant::new(id)]];
-        grid.import_chunk(&sim::ChunkData { pos: ChunkPos(c), lists, cells: Layer::Uniform(1), light: Layer::Uniform(sim::Light::DARK) });
+        grid.import_chunk(&sim::ChunkData { pos: ChunkPos(c), lists, cells: Layer::Uniform(1), light: Layer::Uniform(sim::Light::DARK), records: Vec::new() });
     }
 
     fn heights_of(grid: &Grid, blocks: &BlockRegistry) -> Heights {

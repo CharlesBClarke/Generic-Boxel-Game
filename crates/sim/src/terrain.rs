@@ -122,7 +122,7 @@ pub fn to_chunk(pos: ChunkPos, fill: &ChunkFill, blocks: &BlockRegistry) -> Resu
         Layer::Dense(fill.cells.clone().into_boxed_slice())
     };
     // Light is worked out once the whole terrain is in (see `crate::light`).
-    Ok(ChunkData { pos, lists, cells, light: Layer::Uniform(crate::Light::SKY) })
+    Ok(ChunkData { pos, lists, cells, light: Layer::Uniform(crate::Light::SKY), records: Vec::new() })
 }
 
 #[cfg(test)]

@@ -83,12 +83,26 @@ pub struct SavedChunk {
     pub lists: Vec<Vec<(String, Orientation)>>,
     /// Each boxel's list, as an index into `lists`.
     pub cells: Layer<u16>,
+    /// The boxels with records (storage and memory, see [`crate::mend::Record`]). Added in chunk
+    /// version 2 and save version 5.
+    pub records: Vec<SavedRecord>,
+}
+
+/// A boxel's record by name.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct SavedRecord {
+    /// The boxel's index in its chunk.
+    pub index: u16,
+    /// What its storage holds: each material by name, with how much.
+    pub stored: Vec<(String, u32)>,
+    /// What menders remember of it: each piece's block by name, how it's turned, and its texels.
+    pub memory: Vec<(String, Orientation, ShapeGrid)>,
 }
 
 /// The first bytes of every stored chunk.
 const CHUNK_MAGIC: &[u8; 4] = b"BXCH";
-/// Goes up whenever a stored chunk's layout changes.
-const CHUNK_VERSION: u8 = 1;
+/// Goes up whenever a stored chunk's layout changes. Version 2 added records.
+const CHUNK_VERSION: u8 = 2;
 /// The most a stored chunk may unpack to: far more than any real one (a chunk of every boxel
 /// different), so a damaged one can't fill memory.
 const CHUNK_UNPACKED_MAX: u64 = 16 << 20;
@@ -109,6 +123,7 @@ impl SavedChunk {
             }
         }
         w.cells(&self.cells);
+        w.records(&self.records);
         let mut out = Vec::with_capacity(w.0.len() / 4 + 16);
         out.extend_from_slice(CHUNK_MAGIC);
         out.push(CHUNK_VERSION);
@@ -120,7 +135,7 @@ impl SavedChunk {
         use std::io::Read;
         let Some(packed) = bytes.strip_prefix(CHUNK_MAGIC) else { return Err("not a stored chunk".into()) };
         let Some((&version, packed)) = packed.split_first() else { return Err("a stored chunk with no version".into()) };
-        if version != CHUNK_VERSION {
+        if !(1..=CHUNK_VERSION).contains(&version) {
             return Err(format!("a stored chunk from version {version}; this game reads version {CHUNK_VERSION}"));
         }
         let decoder = ruzstd::decoding::StreamingDecoder::new(packed).map_err(|e| format!("a stored chunk that won't unpack: {e}"))?;
@@ -143,10 +158,11 @@ impl SavedChunk {
             lists.push(list);
         }
         let cells = r.cells(lists.len(), pos)?;
+        let records = if version >= 2 { r.records()? } else { Vec::new() };
         if r.at != unpacked.len() {
             return Err(format!("extra bytes after stored chunk {pos:?}"));
         }
-        Ok(SavedChunk { pos, lists, cells })
+        Ok(SavedChunk { pos, lists, cells, records })
     }
 }
 
@@ -175,14 +191,21 @@ pub struct SavedItem {
 const MAGIC: &[u8; 8] = b"BOXELSAV";
 /// Goes up whenever the layout changes. Version 4 kept the layout but moved edited terrain out
 /// of the file into the chunk store (see [`crate::store`]), so a version 4 save holds only the
-/// chunks outside the terrain; older ones hold edited terrain too.
-pub const VERSION: u32 = 4;
+/// chunks outside the terrain; older ones hold edited terrain too. Version 5 added each chunk's
+/// records.
+pub const VERSION: u32 = 5;
 
 impl SaveData {
     pub fn to_bytes(&self) -> Vec<u8> {
+        self.to_bytes_as(VERSION)
+    }
+
+    /// The bytes as `version` wrote them, as far as records go (older versions had none), for
+    /// testing reading old saves. Fields added later are still written; tests cut them off.
+    pub fn to_bytes_as(&self, version: u32) -> Vec<u8> {
         let mut w = Writer::default();
         w.bytes(MAGIC);
-        w.u32(VERSION);
+        w.u32(version);
         w.u64(self.tick);
         w.len(self.terrain.len());
         for (section, name, value) in &self.terrain {
@@ -242,6 +265,9 @@ impl SaveData {
                 }
             }
             w.cells(&chunk.cells);
+            if version >= 5 {
+                w.records(&chunk.records);
+            }
         }
         match &self.player {
             None => w.u8(0),
@@ -370,7 +396,8 @@ impl SaveData {
                 lists.push(list);
             }
             let cells = r.cells(lists.len(), pos)?;
-            save.chunks.push(SavedChunk { pos, lists, cells });
+            let records = if version >= 5 { r.records()? } else { Vec::new() };
+            save.chunks.push(SavedChunk { pos, lists, cells, records });
         }
         save.player = match r.u8()? {
             0 => None,
@@ -491,6 +518,23 @@ impl Writer {
             self.u16(row);
         }
     }
+    fn records(&mut self, records: &[SavedRecord]) {
+        self.len(records.len());
+        for record in records {
+            self.u16(record.index);
+            self.len(record.stored.len());
+            for (name, amount) in &record.stored {
+                self.str(name);
+                self.u32(*amount);
+            }
+            self.len(record.memory.len());
+            for (name, orientation, shape) in &record.memory {
+                self.str(name);
+                self.orientation(*orientation);
+                self.shape(shape);
+            }
+        }
+    }
     fn cells(&mut self, cells: &Layer<u16>) {
         match cells {
             Layer::Uniform(i) => {
@@ -575,6 +619,24 @@ impl Reader<'_> {
         }
         Ok(ShapeGrid::from_rows(rows))
     }
+    fn records(&mut self) -> Result<Vec<SavedRecord>, String> {
+        let mut out = Vec::new();
+        for _ in 0..self.len()? {
+            let index = self.u16()?;
+            if index as usize >= CHUNK_VOLUME {
+                return Err(format!("a record for boxel {index}, past the chunk's end"));
+            }
+            let mut record = SavedRecord { index, ..SavedRecord::default() };
+            for _ in 0..self.len()? {
+                record.stored.push((self.str()?, self.u32()?));
+            }
+            for _ in 0..self.len()? {
+                record.memory.push((self.str()?, self.orientation()?, self.shape()?));
+            }
+            out.push(record);
+        }
+        Ok(out)
+    }
     /// A chunk's cells, each an index below `lists`.
     fn cells(&mut self, lists: usize, pos: ChunkPos) -> Result<Layer<u16>, String> {
         let in_range = |i: u16| match (i as usize) < lists {
@@ -619,15 +681,20 @@ mod tests {
             made: vec![
                 Made::Shaped { material: "base:wood".into(), shape: shape.clone() },
                 Made::Bundle { pieces: vec![("base:wood".into(), shape.clone()), ("base:stone".into(), ShapeGrid::FULL)] },
-                Made::Derived { from: "base:wood".into(), orientation: Orientation::quarter_turns(2, 1), shape, hidden: true },
+                Made::Derived { from: "base:wood".into(), orientation: Orientation::quarter_turns(2, 1), shape: shape.clone(), hidden: true },
             ],
             chunks: vec![
                 SavedChunk {
                     pos: ChunkPos::new(-3, 4, 0),
                     lists: vec![vec![], vec![("base:stone".into(), Orientation::IDENTITY), ("base:wood".into(), Orientation::z_along(0))]],
                     cells: Layer::Dense(dense.into_boxed_slice()),
+                    records: vec![SavedRecord {
+                        index: 5,
+                        stored: vec![("base:stone".into(), 300)],
+                        memory: vec![("base:wood".into(), Orientation::z_along(0), shape.clone())],
+                    }],
                 },
-                SavedChunk { pos: ChunkPos::new(0, 0, 9), lists: vec![vec![("base:dirt".into(), Orientation::IDENTITY)]], cells: Layer::Uniform(0) },
+                SavedChunk { pos: ChunkPos::new(0, 0, 9), lists: vec![vec![("base:dirt".into(), Orientation::IDENTITY)]], cells: Layer::Uniform(0), records: Vec::new() },
             ],
             player: Some(SavedPlayer {
                 pos: WorldPos::new(I64Vec3::new(-5_000_000_000, 7, 2), Vec3::new(0.25, 0.5, 0.75)),
@@ -676,6 +743,19 @@ mod tests {
         }
     }
 
+    fn without_records(mut save: SaveData) -> SaveData {
+        for chunk in &mut save.chunks {
+            chunk.records.clear();
+        }
+        save
+    }
+
+    #[test]
+    fn a_version_4_save_reads_with_no_records() {
+        let save = without_records(sample());
+        assert_eq!(SaveData::from_bytes(&sample().to_bytes_as(4)), Ok(save));
+    }
+
     #[test]
     fn a_save_reads_back_the_same() {
         let save = sample();
@@ -686,21 +766,19 @@ mod tests {
 
     #[test]
     fn a_version_1_save_reads_with_no_blueprints() {
-        let save = SaveData { blueprints: Vec::new(), hours: None, ..sample() };
-        let mut bytes = save.to_bytes();
+        let save = SaveData { blueprints: Vec::new(), hours: None, ..without_records(sample()) };
+        let mut bytes = save.to_bytes_as(1);
         // Version 1 ended before the blueprints' count (and version 3's time).
         bytes.truncate(bytes.len() - 5);
-        bytes[8..12].copy_from_slice(&1u32.to_le_bytes());
         assert_eq!(SaveData::from_bytes(&bytes), Ok(save));
     }
 
     #[test]
     fn a_version_2_save_reads_with_no_time() {
-        let save = SaveData { hours: None, ..sample() };
-        let mut bytes = save.to_bytes();
+        let save = SaveData { hours: None, ..without_records(sample()) };
+        let mut bytes = save.to_bytes_as(2);
         // Version 2 ended before the time.
         bytes.truncate(bytes.len() - 1);
-        bytes[8..12].copy_from_slice(&2u32.to_le_bytes());
         assert_eq!(SaveData::from_bytes(&bytes), Ok(save));
     }
 
@@ -713,7 +791,7 @@ mod tests {
         // A chunk of runs, as terrain is: ground, then air.
         let cells: Vec<u16> = (0..CHUNK_VOLUME).map(|i| (i < CHUNK_VOLUME / 3) as u16).collect();
         let lists = vec![vec![], vec![("base:stone".into(), Orientation::IDENTITY)]];
-        let chunk = SavedChunk { pos: ChunkPos::new(1, 2, 3), lists, cells: Layer::Dense(cells.into_boxed_slice()) };
+        let chunk = SavedChunk { pos: ChunkPos::new(1, 2, 3), lists, cells: Layer::Dense(cells.into_boxed_slice()), records: Vec::new() };
         let bytes = chunk.to_bytes();
         assert!(bytes.len() < 100, "{} bytes", bytes.len());
         assert_eq!(SavedChunk::from_bytes(&bytes), Ok(chunk));

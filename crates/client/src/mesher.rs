@@ -1170,7 +1170,7 @@ mod tests {
     /// Fills the chunk at `c` with `id` all through, stored as one value as generated terrain is.
     fn fill_chunk(grid: &mut Grid, c: I64Vec3, id: BlockId) {
         let lists = vec![Vec::new(), vec![Occupant::new(id)]];
-        grid.import_chunk(&sim::ChunkData { pos: ChunkPos(c), lists, cells: sim::Layer::Uniform(1), light: sim::Layer::Uniform(sim::Light::DARK) });
+        grid.import_chunk(&sim::ChunkData { pos: ChunkPos(c), lists, cells: sim::Layer::Uniform(1), light: sim::Layer::Uniform(sim::Light::DARK), records: Vec::new() });
     }
 
     #[test]

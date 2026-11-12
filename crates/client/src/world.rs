@@ -196,6 +196,7 @@ impl ClientWorld {
             inventory: &self.shown.inventory,
             inventory_def: defs.inventory.as_ref(),
             blueprints: &self.blueprints,
+            signals: defs.signals.as_ref(),
         }
     }
 

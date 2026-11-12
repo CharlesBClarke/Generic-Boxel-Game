@@ -250,6 +250,9 @@ impl Simulation {
             })?;
         }
         sim.stream.set_built(sim.universe.main());
+        sim.remember_all();
+        // Built with the world, so not an edit.
+        sim.changed = ChangedChunks::default();
         Ok(sim)
     }
 
@@ -689,6 +692,8 @@ impl Simulation {
                 inventory.add(drop.material, drop.amount, capacity);
             }
         }
+        self.store_items();
+        self.update_records();
         self.hurt_player(input.yaw);
         self.refill_endless();
         self.settle_light();
@@ -718,6 +723,7 @@ impl Simulation {
             inventory: &self.inventory,
             inventory_def: self.inventory_def.as_ref(),
             blueprints: &self.blueprints,
+            signals: self.signal_def.as_ref(),
         }
     }
 
@@ -816,10 +822,15 @@ impl Simulation {
             let boxes: Vec<CellBox> = shape.to_boxes().into_iter().map(CellBox::from_block_box).collect();
             bodies_clear(None, targets.as_slice(), target_defs, pos, &boxes)
         };
-        let Ok(undo) = crate::signal::signal(self.universe.main_mut(), &mut self.blocks, &reached, def.grab_texels(), &clear)
-        else {
-            return;
-        };
+        if let Ok(undo) = crate::signal::signal(self.universe.main_mut(), &mut self.blocks, &reached, def.grab_texels(), &clear) {
+            self.keep_signaled(undo);
+        }
+        self.mend(&reached, &def);
+    }
+
+    /// Keeps what a signal changed if the player can be pushed out of what came back, and
+    /// otherwise puts it all back as it was.
+    fn keep_signaled(&mut self, undo: crate::signal::Undo) -> bool {
         let changed = undo.changed();
         match self.push_out_of(&changed) {
             Ok(push) => {
@@ -827,9 +838,86 @@ impl Simulation {
                     player.apply_push_out(push, def.strength);
                 }
                 self.mark_signaled(&changed);
+                true
             }
-            Err(()) => undo.undo(self.universe.main_mut()),
+            Err(()) => {
+                undo.undo(self.universe.main_mut());
+                false
+            }
         }
+    }
+
+    /// Mends the mender groups with a piece in the boxels a signal reached, paid for from the
+    /// storage it reached (see [`crate::mend`]); all or nothing.
+    fn mend(&mut self, reached: &[BoxelPos], def: &SignalDef) {
+        let (targets, target_defs) = (&self.targets, &self.target_defs);
+        let clear = |pos: BoxelPos, shape: &ShapeGrid| {
+            let boxes: Vec<CellBox> = shape.to_boxes().into_iter().map(CellBox::from_block_box).collect();
+            bodies_clear(None, targets.as_slice(), target_defs, pos, &boxes)
+        };
+        let grid = self.universe.main();
+        let Ok(mend) = crate::mend::plan(grid, &self.blocks, reached, def.mend_texels(), def.mend_limit, &clear) else {
+            return;
+        };
+        if mend.texels == 0 {
+            return;
+        }
+        let mut undo = crate::signal::Undo::default();
+        if crate::mend::apply(self.universe.main_mut(), &mut self.blocks, &mend, &mut undo).is_err() {
+            undo.undo(self.universe.main_mut());
+            return;
+        }
+        if self.keep_signaled(undo) {
+            for pos in crate::mend::pay(self.universe.main_mut(), &mend) {
+                self.changed.mark_record(pos);
+            }
+        }
+    }
+
+    /// Puts loose items touching a storage piece into its boxel (see [`crate::mend`]).
+    fn store_items(&mut self) {
+        let Some(def) = &self.item_drop_def else {
+            return;
+        };
+        let (grid, blocks) = (self.universe.main(), &self.blocks);
+        let stored = self.items.take_where(|item| crate::mend::storage_touching(grid, blocks, item.pos, item.extent(def)));
+        for (item, pos) in stored {
+            let materials = crate::mend::materials_of(&self.blocks, item.drop);
+            crate::mend::store(self.universe.main_mut(), pos, &materials);
+            self.changed.mark_record(pos);
+        }
+    }
+
+    /// Brings records up to date with the boxels changed since last time: what menders remember,
+    /// and storage left with no storage piece, which drops what it held.
+    fn update_records(&mut self) {
+        let changed = self.changed.take_for_records();
+        if changed.is_empty() {
+            return;
+        }
+        self.remember(&changed);
+        let orphans = crate::mend::orphaned(self.universe.main_mut(), &self.blocks, &changed);
+        for (pos, stored) in orphans {
+            self.changed.mark_record(pos);
+            for (material, amount) in stored {
+                let drop = crate::Drop { material, amount };
+                self.spawn_drop(pos, drop, self.blocks.material_block(material), &[CellBox::FULL]);
+            }
+        }
+    }
+
+    /// What menders remember, brought up to date after the boxels in `changed` changed.
+    fn remember(&mut self, changed: &[BoxelPos]) {
+        let reach = self.signal_def.as_ref().map_or(0, SignalDef::mend_texels);
+        for pos in crate::mend::remember(self.universe.main_mut(), &self.blocks, changed, reach) {
+            self.changed.mark_record(pos);
+        }
+    }
+
+    /// Every mender remembers what's around it now, as after the world is built or loaded.
+    pub(crate) fn remember_all(&mut self) {
+        let menders = crate::mend::holding(self.universe.main(), &self.blocks, api::Property::Mender);
+        self.remember(&menders);
     }
 
     /// Sets off crystals touching in or beside the boxels changed since last time, and fires

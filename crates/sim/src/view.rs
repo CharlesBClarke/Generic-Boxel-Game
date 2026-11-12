@@ -55,6 +55,7 @@ pub struct View<'a> {
     pub inventory_def: Option<&'a InventoryDef>,
     /// The player's blueprints.
     pub blueprints: &'a crate::Library,
+    pub signals: Option<&'a api::SignalDef>,
 }
 
 impl View<'_> {
@@ -167,6 +168,26 @@ impl View<'_> {
     }
 
     /// Whether no body at all overlaps solid `boxes` at `pos`: nothing is pushed aside.
+    /// What a signal to the boxel at `pos` would mend (see [`crate::mend`]), as the simulation
+    /// would work it out. `None` without a signal definition. The player isn't counted as in the
+    /// way: they're pushed out.
+    pub fn mend_plan(&self, pos: BoxelPos) -> Option<Result<crate::Mend, crate::MendRefusal>> {
+        let def = self.signals?;
+        let reached = crate::signal::reached(self.grid, self.blocks, pos, def.conduct_limit);
+        let clear = |pos: BoxelPos, shape: &api::ShapeGrid| {
+            let boxes: Vec<CellBox> = shape.to_boxes().into_iter().map(CellBox::from_block_box).collect();
+            bodies_clear(None, self.targets, self.target_defs, pos, &boxes)
+        };
+        Some(crate::mend::plan(self.grid, self.blocks, &reached, def.mend_texels(), def.mend_limit, &clear))
+    }
+
+    /// What a signal reaching only the boxel at `pos` would find for its menders to put back,
+    /// payable or not (see [`crate::mend::survey`]). `None` without a signal definition.
+    pub fn mend_survey(&self, pos: BoxelPos) -> Option<crate::Mend> {
+        let def = self.signals?;
+        Some(crate::mend::survey(self.grid, self.blocks, &[pos], def.mend_texels(), &|_, _| true).0)
+    }
+
     pub fn bodies_clear(&self, pos: BoxelPos, boxes: &[CellBox]) -> bool {
         bodies_clear(self.player, self.targets, self.target_defs, pos, boxes)
     }
