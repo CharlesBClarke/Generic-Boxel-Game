@@ -104,40 +104,7 @@ A run of small toy slices. Each one takes a single game-feel feature that doesn'
 
 ### Current toy
 
-**Mending** (`toy-mending`, storage and mender materials). **Stage:** Close (2026-11-12), waiting on the quick bench before merging. The glitches the user wants to get to (each a `fix-` branch off `master`) wait until after it.
-
-The user's ask: "storage which can get materials in somehow, and can be used by another material where every texle rembers it neigbors and if it detects a trigger it will pull the material needed and replace any of its rembered neibors that are now gone." Their answers: texels only (not whole pieces), "detects a trigger" means a signal, materials go in as loose items, just these two materials (the More materials entry stays), ghosts of what would come back ("I guess"), names cachite and mendite.
-
-*Plan (approved 2026-11-11):*
-- **Cachite** (`storage`): a loose item touching a piece goes into its boxel, as the materials it's made of (a part as its material, a bundle as its pieces'), in texels. The hint shows what it holds. Breaking a boxel's last storage piece drops it all.
-- **Mendite** (`mender`): "a mender remembers every texel within a texel of it; a signal reaching it puts back any of those that are gone, paid for from the storage the same signal reached." Edges and corners count (like the grab), reach a tunable (`mend_reach`, 1, at most 16). Each texel remembers what was last in it: the piece (as the occupant it was cut from). It remembers what's around it when placed and anything placed near it later; when a mender piece goes, what only it reached is forgotten. What comes back is a cut part of its piece, joining what's left of it (a whole piece once all of it is back). All or nothing: short storage, something solid or a creature in the way, or more than `mend_limit` texels puts back nothing, and the hint says why. The player is pushed out as with phase signals.
-- **Ghosts:** holding mendite shows the missing texels near you, see-through rose.
-- **State:** sparse per-boxel records kept with each chunk (`sim::mend::Record`: stored amounts, memory), so saves, the chunk store and the client copy carry them. Chunk format 2, save format 5; older ones read with no records.
-- **API:** `Property::Storage`, `Property::Mender`, `SignalDef::mend_reach` and `mend_limit` (group "Mending", with help). Adds to the Fixed block properties debt line, no new shortcut.
-- **Lab:** behind the crystal gun's two stone blocks, mendite remembers their skins; the floor under them is a cachite bin; a lever west of the mendite, wired by copper corners, mends. Both materials endless.
-- **Done when:** (1) the gun's blast breaks the stone, the bin catches it, the lever puts back exactly the texels that touched the mendite, and the bin goes down by that many; (2) a short bin changes nothing and the hint says what's short; (3) memory and contents survive save and load and flying away and back; (4) holding mendite shows the missing texels.
-
-*Implementation notes:*
-- Two small changes from the plan while building, both in its spirit: storage pays by **storage groups** (cachite pieces of one material touching face to face), like phase and mender groups, so the lab's bin of 12 blocks pays as one when the signal reaches any of it; and a mender's group (touching mendite) mends together.
-- A signal now does both: phase groups flip (as before), then menders mend, each all or nothing on its own. A blocked phase flip no longer stops the rest of the signal.
-- `sim::mend` holds the rules; `Simulation::update_records` runs once a tick over the boxels changed (remembering, and dropping orphaned storage); `View::mend_plan` and `mend_survey` let the client's hint say what a lever would do and what a mender remembers. The ghosts are meshed from a copy of the block registry, since the parts aren't registered yet.
-- With the default reach of 1, the lab's mend puts back a one-texel stone skin on the mendite (256 texels a block). Slide `mend_reach` to 16 (Signals tab, Mending) and whole blocks beside mendite come back.
-
-*Verify round 1 (2026-11-11):* the user built a texel gun (blue against green) beside a line of mendite, "hopping the mendite would beable to replace the gun when it anlyates", but the brass said nothing to mend. Bug in this toy: menders remembered at the end of the tick, after crystals touching on placement had already used each other up, so they were never remembered. Now records are brought up to date right after placing and signals, before crystals react (test: `crystals_that_fire_the_moment_they_touch_are_remembered_and_mended`; a mended gun fires again). Also the user: "why is brass saing nothing to mend it dosent mend anything": the trigger's hint now only speaks when something would come back or can't.
-
-*Verify round 2 (2026-11-12):* the user asked which goes first when mendite touches phasite (phase flips first, then menders mend; kept: "no its good just needed to know"), then "ok its good". Done when: (1) met, played and tested; (2) met, tested; (3) save and load met, tested; flying away and back not played (the lab never unloads), left as a low-priority play check; (4) met, the user saw the ghosts.
-
-*Tests:* 11 unit tests in `sim::mend` (memory in both orders, last-in-it, exact put-back and pay, whole when the reach covers it, joining what's left, all or nothing, unreached storage, forgetting, orphaned storage, items' materials, touching), `sim/tests/mending.rs` (the lab end to end with save and load; breaking the bin loses nothing; a gun that fires as it's placed is remembered and mended, and fires again), a version 4 save test, and the base world's lists. `cargo test --workspace` passes; clippy clean.
-
-*Decisions:* records kept with chunks for per-boxel state; each texel remembers what was last in it; storage, menders and phase act in touching groups; mending is all or nothing and runs after phase flips (see Phase 2 decisions and the design doc's Signal networks and Terminology).
-
-*Deferred:*
-- The lever's hint works out the mend before the same signal's phase flip, so when phasite near a mender flips it can say "mends N texels" for texels the flip brings back free. Fix if it misleads in play: work the flip out first in the preview.
-- Flying away and back with a mender on the terrain (records through the chunk store) is tested only at the chunk-format level.
-- The ghost mesh rebuilds from a cloned block registry on every chunk change near the player; cost not measured.
-- The More materials backlog entry (sensor, delay, scope switch, bounce, falls) stays as it was.
-
-*API debt:* none new; `storage` and `mender` join the Fixed block properties line.
+None in progress: Mending closed 2026-11-12. Next: the glitches the user wants to get to (each a `fix-` branch off `master`).
 
 **Waiting for a play check** (remind the user at the start of every session, and at good moments during one, until they confirm; then delete the line):
 - Generated detail: far ground doesn't shimmer in motion with MSAA off (try the 30 fps profile); grass tops stay green far away.
@@ -273,6 +240,7 @@ Bugs found in already-merged code, each fixed on its own `fix-` branch (see the 
 ### Done toys
 
 Full write-ups (plans, implementation notes, verify rounds, decisions) are in `docs/done-toys.md`. One line each, newest first:
+- **Mending** (2026-11-12, `toy-mending`). Cachite keeps loose items that touch it; mendite remembers what was last in every texel within its reach (a texel, tunable) and on a signal puts back what's gone, paid from the cachite the signal reached, all or nothing. Records kept with chunks (saved, stored, sent); hint text and rose ghosts of what would come back; a mender and bin behind the lab's gun. Bench unchanged.
 - **Generated detail** (2026-11-11, `toy-generated-detail`). Noise looks (dirt, stone, grass, ice, metals, crystals) come from the world position, so fields never repeat; wood is boards of one color with grain that runs on across blocks; looks are read as face slices with mips and anisotropic reads, noise fading octave by octave, so far ground keeps its detail without shimmer. Shading → Looks sliders; costs 2–6 ms at the bench's spots (a fix is in the backlog).
 - **Shadow speed: settings** (2026-11-11, `toy-shadow-speed`). No code: a 720p settings study on the bench and 30 / 60 fps profiles for the Iris Xe (`~/.config/boxel/profiles/`); MSAA off is the big cut (~11 ms). Found the algorithmic fixes to try next (notes). The Shadow speed backlog entry stays for them.
 - **Lit models** (2026-11-11, `toy-model-lighting`). Cows, the club and hit debris are lit like blocks (sun shadows, sky, moon, block light, fog) through a `ModelMaterial` sharing the blocks' shadow shader, so they no longer glow at night or in caves; loose items carry the stored light where they lie. Bench +2–7% (the club now lit).
