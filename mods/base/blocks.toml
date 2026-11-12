@@ -97,7 +97,7 @@ sheen = { strength = 0.6, sharpness = 48 }
 noise = { colors = [[158, 198, 234], [172, 210, 241], [188, 221, 247]], scale = 4, seed = 5 }
 
 [looks.wood]
-planks = { width = 4, colors = [[163, 125, 78], [170, 131, 82], [177, 136, 86], [184, 142, 90]], thickness = 2, shade = 0.15, cross = true, seed = 6 }
+planks = { width = 4, colors = [[174, 134, 84]], thickness = 2, shade = 0.15, cross = true, seed = 6, grain = { scale = [12, 1, 1], strength = 0.2, seed = 3 } }
 
 [looks.log]
 turns = true
@@ -145,7 +145,7 @@ noise = { colors = [[60, 190, 80], [84, 214, 100], [120, 236, 130]], scale = 2, 
 
 # Dark boards under a light top, so the table reads as a work surface.
 [looks.crafting_table]
-planks = { width = 4, colors = [[114, 80, 47], [118, 83, 49], [122, 86, 51], [126, 88, 53]], thickness = 2, shade = 0.07, cross = true, seed = 9 }
+planks = { width = 4, colors = [[114, 80, 47], [118, 83, 49], [122, 86, 51], [126, 88, 53]], thickness = 2, shade = 0.07, cross = true, seed = 9, grain = { scale = [12, 1, 1], strength = 0.1, seed = 19 } }
 top = { colors = [[200, 166, 117], [196, 162, 113]], depth = 2, ragged = 0, scale = 2, seed = 10 }
 
 [[block]]

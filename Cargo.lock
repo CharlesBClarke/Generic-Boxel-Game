@@ -2028,6 +2028,7 @@ dependencies = [
  "protocol",
  "server",
  "sim",
+ "wgpu",
 ]
 
 [[package]]

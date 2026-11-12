@@ -9,6 +9,7 @@
 //! a whole face of mortar looks broken, not built.
 
 use api::LookDef;
+use api::look::{Grain, LookDetail, NoiseLayer, detail_byte, hash, pick, smooth, unit};
 use serde::Deserialize;
 use std::collections::{HashMap, HashSet};
 
@@ -127,6 +128,20 @@ struct Planks {
     cross: bool,
     #[serde(default)]
     seed: u32,
+    /// Grain drawn over the boards from where they are in the world, so it differs from block
+    /// to block.
+    grain: Option<GrainRecipe>,
+}
+
+/// Streaks along each board: see [`api::look::Grain`].
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct GrainRecipe {
+    /// Texels across one streak along the board, across it and through it.
+    scale: [f32; 3],
+    strength: f32,
+    #[serde(default)]
+    seed: u32,
 }
 
 /// Growth rings around the Z axis, inside a shell of bark.
@@ -242,6 +257,52 @@ impl Recipe {
             t.fill(&mut texels)?;
         }
         Ok(texels.iter().flat_map(|&[r, g, b]| [r, g, b, 255]).collect())
+    }
+
+    /// What the look generates as it's drawn: its noise (the base and the top cover) from the
+    /// world position, and grain over planks. Nothing for a look that turns, as its texels
+    /// aren't where they stand in the world. Call after [`Recipe::generate`] has checked it.
+    pub fn detail(&self) -> Result<LookDetail, String> {
+        if self.turns {
+            return Ok(LookDetail::default());
+        }
+        let layer = |colors: &[[u8; 3]], scale: Scale, seed: u32| -> Result<NoiseLayer, String> {
+            if colors.len() > api::look::MAX_COLORS {
+                return Err(format!("noise takes at most {} colors, not {}", api::look::MAX_COLORS, colors.len()));
+            }
+            Ok(NoiseLayer { colors: colors.to_vec(), scale: scale.axes(), seed })
+        };
+        let mut detail = LookDetail::default();
+        let mut texels = vec![0u8; LookDef::VOLUME];
+        if let Some(n) = &self.noise {
+            detail.noise.push(layer(&n.colors, n.scale, n.seed)?);
+            texels.fill(detail_byte(1, 0, 0));
+        }
+        if let Some(p) = &self.planks
+            && let Some(g) = &p.grain
+        {
+            check_fraction("grain strength", g.strength)?;
+            if g.scale.iter().any(|s| !(s.is_finite() && *s >= 1.0)) {
+                return Err(format!("grain scale must be at least 1, not {:?}", g.scale));
+            }
+            detail.grain = Some(Grain { scale: g.scale, strength: g.strength, seed: g.seed });
+            texels = p.grain_bytes();
+        }
+        if let Some(t) = &self.top {
+            detail.noise.push(layer(&t.colors, t.scale, t.seed)?);
+            let n = detail.noise.len() as u8;
+            for (texel, covered) in texels.iter_mut().zip(t.covers()?) {
+                if covered {
+                    *texel = detail_byte(n, 0, 0);
+                }
+            }
+        }
+        if texels.iter().any(|&b| b != 0) {
+            detail.texels = texels;
+        } else {
+            detail = LookDetail::default();
+        }
+        Ok(detail)
     }
 }
 
@@ -470,9 +531,34 @@ impl Planks {
             return Err("crossed planks need an even number of layers, so they repeat".into());
         }
         check_fraction("planks shade", self.shade)?;
+        let layout = self.layout(thickness);
+        let ids: Vec<u32> = layout.iter().map(|&(id, ..)| id).collect();
+        // Four shade steps, from `shade` darker to `shade` lighter, so neighbors always differ
+        // by at least two thirds of it: a board touches the boards beside it and those across
+        // the layers above and below, so three steps aren't always enough.
+        let steps = if self.shade > 0.0 { 4 } else { 1 };
+        let step = distinct(&ids, steps, self.seed).ok_or("planks boards can't be kept apart by shade")?;
+        for (i, _) in positions() {
+            let (id, [across, up], a, _) = layout[i];
+            texels[i] = match (id, self.seam) {
+                (MORTAR, Some(seam)) => seam,
+                (id, _) => {
+                    let tint = if steps == 1 { 0.0 } else { step[&id] as f32 / (steps - 1) as f32 * 2.0 - 1.0 };
+                    shade(self.grain(id, across, up, a), 1.0 + self.shade * tint)
+                }
+            };
+        }
+        Ok(())
+    }
+}
+
+impl Planks {
+    /// Each texel's board (or `MORTAR` on a seam), its row of grain (across the board, then up
+    /// it), how far along the board it is, and which way the board runs: 0 along X, 1 along Y.
+    fn layout(&self, thickness: usize) -> Vec<(u32, [usize; 2], usize, usize)> {
         // Each texel's board (or `MORTAR` on a seam), its row of grain
         // (across the board, then up it) and how far along the board it is.
-        let layout: Vec<(u32, [usize; 2], usize)> = positions()
+        positions()
             .map(|(_, [x, y, z])| {
                 // Seams keep half a board in from the block's sides.
                 let az = (z + thickness / 2) % SIZE;
@@ -493,30 +579,28 @@ impl Planks {
                 };
                 let seam = ac.is_multiple_of(self.width) || az.is_multiple_of(thickness) || joint == Some(a);
                 let id = if seam && self.seam.is_some() { MORTAR } else { ((layer * SIZE + board) * 2 + piece) as u32 };
-                (id, [ac % self.width, az % thickness], a)
+                (id, [ac % self.width, az % thickness], a, along)
             })
-            .collect();
-        let ids: Vec<u32> = layout.iter().map(|&(id, ..)| id).collect();
-        // Four shade steps, from `shade` darker to `shade` lighter, so neighbors always differ
-        // by at least two thirds of it: a board touches the boards beside it and those across
-        // the layers above and below, so three steps aren't always enough.
-        let steps = if self.shade > 0.0 { 4 } else { 1 };
-        let step = distinct(&ids, steps, self.seed).ok_or("planks boards can't be kept apart by shade")?;
-        for (i, _) in positions() {
-            let (id, [across, up], a) = layout[i];
-            texels[i] = match (id, self.seam) {
-                (MORTAR, Some(seam)) => seam,
-                (id, _) => {
-                    let tint = if steps == 1 { 0.0 } else { step[&id] as f32 / (steps - 1) as f32 * 2.0 - 1.0 };
-                    shade(self.grain(id, across, up, a), 1.0 + self.shade * tint)
-                }
-            };
-        }
-        Ok(())
+            .collect()
     }
-}
 
-impl Planks {
+    /// The grain direction and board of each texel, as detail bytes without a noise layer.
+    fn grain_bytes(&self) -> Vec<u8> {
+        let thickness = self.thickness.unwrap_or(self.width);
+        self.layout(thickness)
+            .into_iter()
+            .map(|(id, _, _, along)| {
+                if id == MORTAR {
+                    0
+                } else {
+                    let direction = if along == 0 { api::look::GRAIN_X } else { api::look::GRAIN_Y };
+                    // Boards side by side differ by 2, so they never share a number.
+                    detail_byte(0, direction, (id % 16) as u8)
+                }
+            })
+            .collect()
+    }
+
     /// The grain color of a board's row of texels, `a` texels along it. Rows take turns
     /// between the colors at even places in `colors` and those at odd ones, so rows beside
     /// and above each other never match.
@@ -567,23 +651,26 @@ impl Top {
             return Err(format!("top depth must be at least 1, and depth plus ragged at most {SIZE}"));
         }
         let field = Field::new(self.scale, self.seed)?;
-        // The edge's raggedness varies across the top only.
-        let edge = Field::new(Scale::All(3.0), self.seed ^ 0x70b5)?;
-        for (i, [x, y, z]) in positions() {
-            let extra = (edge.at([x, y, 0]) * (self.ragged + 1) as f32) as usize;
-            if z >= SIZE - (self.depth + extra.min(self.ragged)) {
-                texels[i] = pick(&self.colors, field.at([x, y, z]));
+        let covers = self.covers()?;
+        for (i, p) in positions() {
+            if covers[i] {
+                texels[i] = pick(&self.colors, field.at(p));
             }
         }
         Ok(())
     }
-}
 
-/// One of `colors` for a noise value from 0 to 1. Smooth noise bunches around the middle, so
-/// the value is stretched first to give the outer colors a fair share.
-fn pick(colors: &[[u8; 3]], value: f32) -> [u8; 3] {
-    let stretched = ((value - 0.5) * 1.8 + 0.5).clamp(0.0, 0.9999);
-    colors[(stretched * colors.len() as f32) as usize]
+    /// Which texels it covers.
+    fn covers(&self) -> Result<Vec<bool>, String> {
+        // The edge's raggedness varies across the top only.
+        let edge = Field::new(Scale::All(3.0), self.seed ^ 0x70b5)?;
+        Ok(positions()
+            .map(|(_, [x, y, z])| {
+                let extra = (edge.at([x, y, 0]) * (self.ragged + 1) as f32) as usize;
+                z >= SIZE - (self.depth + extra.min(self.ragged))
+            })
+            .collect())
+    }
 }
 
 fn shade(color: [u8; 3], by: f32) -> [u8; 3] {
@@ -628,27 +715,6 @@ impl Field {
         }
         sum
     }
-}
-
-fn smooth(t: f32) -> f32 {
-    t * t * (3.0 - 2.0 * t)
-}
-
-/// A well-mixed number for a lattice point.
-fn hash(p: [u32; 3], seed: u32) -> u32 {
-    let mut h = seed.wrapping_mul(0x9e37_79b9) ^ p[0].wrapping_mul(0x85eb_ca6b);
-    h ^= p[1].wrapping_mul(0xc2b2_ae35).rotate_left(11);
-    h ^= p[2].wrapping_mul(0x27d4_eb2f).rotate_left(22);
-    h ^= h >> 16;
-    h = h.wrapping_mul(0x7feb_352d);
-    h ^= h >> 15;
-    h = h.wrapping_mul(0x846c_a68b);
-    h ^ (h >> 16)
-}
-
-/// A hash as a number from 0 to just below 1.
-fn unit(h: u32) -> f32 {
-    (h >> 8) as f32 / (1u32 << 24) as f32
 }
 
 #[cfg(test)]
@@ -1085,5 +1151,70 @@ mod tests {
         assert!(err("planks = { width = 4, colors = [[1, 1, 1]], shade = 2 }").contains("shade"));
         assert!(err("noise = { colors = [[1, 1, 1]] }\ntop = { colors = [[1, 1, 1]], depth = 0 }").contains("depth"));
         assert!(toml::from_str::<Recipe>("noise = { colours = [[1, 1, 1]] }").is_err(), "unknown fields are errors");
+    }
+
+    #[test]
+    fn noise_looks_generate_their_noise_everywhere() {
+        let d = recipe(STONE).detail().unwrap();
+        assert_eq!(d.noise.len(), 1);
+        assert_eq!(d.noise[0].colors.len(), 3);
+        assert_eq!(d.noise[0].scale, [3.0; 3]);
+        assert_eq!(d.texels, vec![detail_byte(1, 0, 0); LookDef::VOLUME]);
+        assert_eq!(d.grain, None);
+    }
+
+    #[test]
+    fn a_top_takes_its_own_noise_layer_where_it_covers() {
+        let r = recipe(&format!("{STONE}\ntop = {{ colors = [[60, 140, 40], [70, 150, 50]], depth = 2, ragged = 2, seed = 3 }}"));
+        let (v, d) = (r.generate().unwrap(), r.detail().unwrap());
+        assert_eq!(d.noise.len(), 2);
+        for (i, [x, y, z]) in positions() {
+            let [r, g, _] = texel(&v, x, y, z);
+            let green = g > r + 30;
+            let layer = api::look::detail_layer(d.texels[i]);
+            assert_eq!(layer, if green { 2 } else { 1 }, "texel {x} {y} {z}");
+        }
+    }
+
+    #[test]
+    fn grain_follows_each_board() {
+        let r = recipe(
+            "planks = { width = 4, thickness = 2, colors = [[1, 1, 1], [2, 2, 2]], cross = true, \
+             grain = { scale = [12, 1, 1], strength = 0.1, seed = 3 } }",
+        );
+        let d = r.detail().unwrap();
+        assert!(d.noise.is_empty());
+        assert_eq!(d.grain.map(|g| g.strength), Some(0.1));
+        let at = |x, y, z| d.texels[LookDef::index(x, y, z)];
+        use api::look::{GRAIN_X, GRAIN_Y, detail_board, detail_grain};
+        // Layers alternate X and Y, two texels thick, the first starting a texel down.
+        assert_eq!(detail_grain(at(5, 5, 0)), detail_grain(at(5, 5, 15)));
+        let (low, high) = (detail_grain(at(5, 5, 1)), detail_grain(at(5, 5, 3)));
+        assert_ne!(low, high);
+        assert!([low, high].contains(&GRAIN_X) && [low, high].contains(&GRAIN_Y));
+        // Within a board the number holds; across boards it changes.
+        let z = if low == GRAIN_X { 1 } else { 3 };
+        assert_eq!(detail_board(at(0, 3, z)), detail_board(at(15, 3, z)), "along the board");
+        assert_ne!(detail_board(at(4, 3, z)), detail_board(at(4, 1, z)), "across boards");
+        // No grain recipe, no detail.
+        assert_eq!(recipe("planks = { width = 4, colors = [[1, 1, 1]] }").detail().unwrap(), LookDetail::default());
+    }
+
+    #[test]
+    fn looks_that_turn_generate_nothing() {
+        let r = recipe("turns = true\nrings = { colors = [[1, 1, 1]], spacing = 2, bark = [[2, 2, 2]] }");
+        assert_eq!(r.detail().unwrap(), LookDetail::default());
+        let turned_noise = recipe(&format!("turns = true\n{STONE}"));
+        assert_eq!(turned_noise.detail().unwrap(), LookDetail::default());
+    }
+
+    #[test]
+    fn bad_detail_says_what_is_wrong() {
+        let err = |toml: &str| recipe(toml).detail().unwrap_err();
+        let nine = ["[1, 1, 1]"; 9].join(", ");
+        assert!(err(&format!("noise = {{ colors = [{nine}] }}")).contains("at most 8"));
+        let grain = |g: &str| format!("planks = {{ width = 4, colors = [[1, 1, 1]], grain = {{ {g} }} }}");
+        assert!(err(&grain("scale = [12, 1, 1], strength = 0.9")).contains("strength"));
+        assert!(err(&grain("scale = [12, 0, 1], strength = 0.1")).contains("scale"));
     }
 }

@@ -1,7 +1,9 @@
-//! Stacks every registered look into one 3D image, so all chunks draw with one material.
-//! Plain texels; turning it into a Bevy image happens elsewhere.
+//! Stacks every registered look into one image, so all chunks draw with one material: the
+//! volumes one after another, and the same texels cut into face slices with mip levels (see
+//! [`Volumes::atlas`]). Plain texels; turning them into Bevy images happens elsewhere.
 
 use api::LookDef;
+use api::look::{LookDetail, srgb_to_linear};
 use sim::{BlockId, BlockRegistry, LookRegistry};
 
 /// Every look's volume, stacked along Z, one after another. The first is plain white, for
@@ -17,6 +19,8 @@ pub struct Volumes {
     /// Which volume each block uses and whether its look turns with it, by block ID; `None`
     /// for blocks without a look.
     of_block: Vec<Option<(u32, bool)>>,
+    /// What each volume generates as it's drawn, by volume; nothing for the white one.
+    pub details: Vec<LookDetail>,
     /// Each look's volume and whether it turns, by name, for blocks registered later.
     by_look: std::collections::HashMap<String, (u32, bool)>,
 }
@@ -30,13 +34,15 @@ impl Volumes {
         let mut rgba = vec![255; LookDef::VOLUME * 4];
         let mut by_look = std::collections::HashMap::new();
         let mut sheens = vec![[0.0, 1.0, 0.0]];
+        let mut details = vec![LookDetail::default()];
         for (i, look) in looks.iter().enumerate() {
+            details.push(look.detail.clone());
             rgba.extend_from_slice(&look.rgba);
             by_look.insert(look.name.clone(), (i as u32 + 1, look.turns));
             let [s, k] = look.sheen.map_or([0.0, 1.0], |s| [s.strength, s.sharpness]);
             sheens.push([s, k, look.glow]);
         }
-        let mut volumes = Volumes { count: looks.iter().count() as u32 + 1, rgba, sheens, of_block: vec![None], by_look };
+        let mut volumes = Volumes { count: looks.iter().count() as u32 + 1, rgba, sheens, details, of_block: vec![None], by_look };
         volumes.sync(blocks);
         volumes
     }
@@ -57,19 +63,127 @@ impl Volumes {
         self.of_block.get(id.index()).copied().flatten().map(|(volume, _)| volume)
     }
 
+    /// The face-slice image's size at level 0: [`Volumes::atlas`].
+    pub fn atlas_size(&self) -> [u32; 2] {
+        let size = LookDef::SIZE as u32;
+        [size * size, self.count * 3 * size]
+    }
+
+    /// The looks cut into face slices, every mip level one after another from level 0, four
+    /// bytes a pixel, rows of [`Volumes::atlas_size`]'s width (halved each level). Volume `v`'s
+    /// texels at depth `d` along axis `a` (the faces facing along `a` show them) are the 16×16
+    /// tile in column `d`, row `3v + a`, laid out across the face's other two axes in order:
+    /// pixel `(t[(a + 1) % 3], t[(a + 2) % 3])` of the tile is texel `t`. Each level averages
+    /// two by two pixels of the one before, in linear light, so a tile shrinks within itself
+    /// and never takes color from the next, and a face's texels never mix with the layers under
+    /// them. Level 0's alpha holds each texel's detail byte (see [`api::look::LookDetail`]).
+    pub fn atlas(&self) -> Vec<u8> {
+        let size = LookDef::SIZE;
+        let [width, height] = self.atlas_size().map(|n| n as usize);
+        let mut level = vec![0u8; width * height * 4];
+        for v in 0..self.count as usize {
+            let detail = &self.details[v].texels;
+            for a in 0..3 {
+                let (u, w) = ((a + 1) % 3, (a + 2) % 3);
+                for i in 0..LookDef::VOLUME {
+                    let t = [i % size, i / size % size, i / (size * size)];
+                    let x = t[a] * size + t[u];
+                    let y = (3 * v + a) * size + t[w];
+                    let from = 4 * (v * LookDef::VOLUME + i);
+                    let to = 4 * (y * width + x);
+                    level[to..to + 3].copy_from_slice(&self.rgba[from..from + 3]);
+                    level[to + 3] = detail.get(i).copied().unwrap_or(0);
+                }
+            }
+        }
+        let mut all = level.clone();
+        let (mut w, mut h) = (width, height);
+        for _ in 1..LEVELS {
+            let (nw, nh) = (w / 2, h / 2);
+            let mut next = vec![255u8; nw * nh * 4];
+            for y in 0..nh {
+                for x in 0..nw {
+                    for c in 0..3 {
+                        let sum: f32 = [(0, 0), (1, 0), (0, 1), (1, 1)]
+                            .iter()
+                            .map(|&(dx, dy)| srgb_to_linear(level[4 * ((2 * y + dy) * w + 2 * x + dx) + c]))
+                            .sum();
+                        next[4 * (y * nw + x) + c] = linear_to_srgb(sum / 4.0);
+                    }
+                }
+            }
+            all.extend_from_slice(&next);
+            (level, w, h) = (next, nw, nh);
+        }
+        all
+    }
+
     /// Whether a block's look turns with it.
     pub fn turns(&self, id: BlockId) -> bool {
         self.of_block.get(id.index()).copied().flatten().is_some_and(|(_, turns)| turns)
     }
 }
 
+/// Mip levels of [`Volumes::atlas`]: down to one pixel a slice.
+pub const LEVELS: u32 = 5;
+
+fn linear_to_srgb(c: f32) -> u8 {
+    let s = if c <= 0.003_130_8 { c * 12.92 } else { 1.055 * c.powf(1.0 / 2.4) - 0.055 };
+    (s * 255.0).round().clamp(0.0, 255.0) as u8
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn slices_hold_each_face_layer_and_shrink_within_themselves() {
+        let mut looks = LookRegistry::default();
+        // A look whose texels say where they are: red is x, green y, blue z (times 16).
+        let rgba: Vec<u8> = (0..LookDef::VOLUME)
+            .flat_map(|i| [(i % 16 * 16) as u8, (i / 16 % 16 * 16) as u8, (i / 256 * 16) as u8, 255])
+            .collect();
+        let detail = LookDetail { texels: (0..LookDef::VOLUME).map(|i| ((i % 7) << 4) as u8).collect(), ..Default::default() };
+        looks.register(LookDef { name: "test:where".into(), turns: false, rgba, sheen: None, glow: 0.0, detail }).unwrap();
+        looks.register(look("test:red", [255, 0, 0, 255], false)).unwrap();
+        let volumes = Volumes::build(&looks, &BlockRegistry::default());
+        let [width, height] = volumes.atlas_size().map(|n| n as usize);
+        assert_eq!([width, height], [256, 3 * 3 * 16]);
+        let atlas = volumes.atlas();
+        let total: usize = (0..LEVELS).map(|k| (width >> k) * (height >> k) * 4).sum();
+        assert_eq!(atlas.len(), total);
+        let px = |x: usize, y: usize| &atlas[4 * (y * width + x)..4 * (y * width + x) + 4];
+        // Faces along Y (axis 1) at depth 9: across them run Z, then X.
+        let (v, a, d) = (1, 1, 9);
+        let (u, w) = (5, 3); // t[2] = 5, t[0] = 3
+        let p = px(d * 16 + u, (3 * v + a) * 16 + w);
+        assert_eq!(&p[..3], [3 * 16, 9 * 16, 5 * 16], "texel (3, 9, 5)");
+        assert_eq!(p[3], ((LookDef::index(3, 9, 5) % 7) << 4) as u8, "its detail byte in alpha");
+        // Every level of the red look's tiles is red: nothing bleeds in from its neighbors.
+        let mut start = 0;
+        for k in 0..LEVELS as usize {
+            let (lw, lh) = (width >> k, height >> k);
+            let tile = 16 >> k;
+            for y in 2 * 3 * tile..lh {
+                for x in 0..lw {
+                    let at = start + 4 * (y * lw + x);
+                    assert_eq!(&atlas[at..at + 3], [255, 0, 0], "level {k} at {x} {y}");
+                }
+            }
+            start += lw * lh * 4;
+        }
+        // Level 1 averages two by two across the face, in linear light, and keeps the depth:
+        // faces along Z at depth 4, texels x and y from 0 to 1.
+        let level1 = width * height * 4;
+        // Volume 1's row of slices facing along Z (row 3 + 2), column 4, at half size.
+        let at = level1 + 4 * ((3 + 2) * 8 * (width / 2) + 4 * 8);
+        let mean = |a: u8, b: u8| linear_to_srgb((srgb_to_linear(a) + srgb_to_linear(b)) / 2.0);
+        assert_eq!(&atlas[at..at + 3], [mean(0, 16), mean(0, 16), 4 * 16]);
+    }
     use api::BlockDef;
 
     fn look(name: &str, color: [u8; 4], turns: bool) -> LookDef {
-        LookDef { name: name.into(), turns, rgba: color.repeat(LookDef::VOLUME), sheen: None, glow: 0.0 }
+        LookDef { name: name.into(), turns, rgba: color.repeat(LookDef::VOLUME), sheen: None, glow: 0.0, detail: Default::default() }
     }
 
     #[test]

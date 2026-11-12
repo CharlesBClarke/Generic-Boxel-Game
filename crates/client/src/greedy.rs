@@ -361,7 +361,7 @@ mod tests {
         let slab = blocks.register(BlockDef::new("test:slab", true, [128, 128, 128]).with_shape(vec![BlockBox::new([0, 0, 0], [16, 16, 8])])).unwrap();
         let log = blocks.register(BlockDef::new("test:log", true, [0; 3]).with_look("test:log")).unwrap();
         let mut looks = LookRegistry::default();
-        looks.register(LookDef { name: "test:log".into(), turns: true, rgba: vec![200; LookDef::VOLUME * 4], sheen: None, glow: 0.0 }).unwrap();
+        looks.register(LookDef { name: "test:log".into(), turns: true, rgba: vec![200; LookDef::VOLUME * 4], sheen: None, glow: 0.0, detail: Default::default() }).unwrap();
         let volumes = Volumes::build(&looks, &blocks);
         (blocks, volumes, [stone, slab, log])
     }
@@ -678,8 +678,74 @@ mod tests {
     }
 
     #[test]
+    fn the_shader_finds_each_texels_place_in_the_world() {
+        // `solid.wgsl` works out a texel's world position as the boxel's corner, which is the
+        // fragment's position less its place in the look (rounded), times 16, plus the look
+        // position floored. Across every quad of looks that don't turn, merged or not, that
+        // must be the texel the point lies in, a half texel behind the face.
+        let (blocks, volumes, [stone, slab, log]) = blocks();
+        let mut grid = Grid::default();
+        floor(&mut grid, stone, 6);
+        for x in 0..4 {
+            grid.set_block(BoxelPos::new(x, 2, 1), slab);
+            // Slabs stood on end, a turned shape whose look stays with the world.
+            grid.set_cell(BoxelPos::new(x, 4, 1), &[Occupant::turned(slab, Orientation::z_along(0))]);
+        }
+        grid.set_block(BoxelPos::new(5, 5, 1), stone);
+        grid.set_cell(BoxelPos::new(0, 0, 1), &[Occupant::turned(log, Orientation::z_along(0))]);
+        let log_volume = volumes.of(log).unwrap() as f32;
+        let (plain, merged) = both(&mut grid, &blocks, &volumes, &AoTuning::OFF);
+        let mut checked = 0;
+        for mesh in [&plain, &merged] {
+            for q in 0..mesh.quad_count() {
+                let i = 4 * q;
+                if mesh.solid[i][3] == log_volume {
+                    continue;
+                }
+                let n = mesh.normals[i];
+                for (s, t) in [(0.1, 0.1), (0.5, 0.5), (0.93, 0.27), (0.4, 0.97)] {
+                    let mix = |f: &dyn Fn(usize) -> f32| {
+                        f(i) * (1.0 - s) * (1.0 - t) + f(i + 1) * s * (1.0 - t) + f(i + 2) * s * t + f(i + 3) * (1.0 - s) * t
+                    };
+                    let pos: [f32; 3] = std::array::from_fn(|c| mix(&|k| mesh.positions[k][c]));
+                    let solid: [f32; 3] = std::array::from_fn(|c| mix(&|k| mesh.solid[k][c]));
+                    let shader: [i64; 3] =
+                        std::array::from_fn(|c| (pos[c] - solid[c] / 16.0).round() as i64 * 16 + solid[c].floor() as i64);
+                    let behind: [f32; 3] = std::array::from_fn(|c| pos[c] * 16.0 - n[c] * 0.5);
+                    // Right on a texel's edge either side is fine; float error picks one.
+                    if behind.iter().any(|b| (b - b.round()).abs() < 1e-3) {
+                        continue;
+                    }
+                    let truth = behind.map(|b| b.floor() as i64);
+                    assert_eq!(shader, truth, "quad {q} at {pos:?}, look {solid:?}");
+                    checked += 1;
+                }
+            }
+        }
+        assert!(checked > 100, "{checked}");
+    }
+
+    #[test]
+    fn the_block_shader_imports_every_look_noise_function_it_calls() {
+        // A missing import only shows when the game builds its pipelines; catch it here.
+        let shader = include_str!("solid.wgsl");
+        let import = shader.lines().find(|l| l.starts_with("#import boxel::look_noise::")).expect("an import");
+        for line in include_str!("look_noise.wgsl").lines() {
+            let Some(name) = line.strip_prefix("fn ").and_then(|l| l.split('(').next()) else { continue };
+            let called = shader.lines().filter(|l| !l.starts_with("#import")).any(|l| l.contains(&format!("{name}(")));
+            if called {
+                assert!(import.contains(name), "solid.wgsl calls {name} without importing it");
+            }
+        }
+    }
+
+    #[test]
     fn the_shader_knows_the_face_scale() {
         let shader = include_str!("solid.wgsl");
         assert!(shader.contains(&format!("const FACE_SCALE: f32 = {FACE_SCALE:.1};")), "solid.wgsl's FACE_SCALE should be {FACE_SCALE}");
+        let levels = crate::volumes::LEVELS;
+        assert!(shader.contains(&format!("const LEVELS: i32 = {levels};")), "solid.wgsl's LEVELS should be {levels}");
+        assert!(shader.contains(&format!("array<vec4<f32>, {}>", api::look::MAX_COLORS)), "noise colors");
+        assert!(shader.contains(&format!("array<Noise, {}>", api::look::MAX_LAYERS)), "noise layers");
     }
 }

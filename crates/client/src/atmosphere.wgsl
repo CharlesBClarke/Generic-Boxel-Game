@@ -50,6 +50,10 @@ struct Atmosphere {
     // Ambient occlusion: strength, how full the space must be to darken by all of it, the
     // curve, on (1) or off (0).
     ao: vec4<f32>,
+    // Looks: where each octave of generated detail starts fading and where it's gone (blobs
+    // per pixel), the grain's strength, and 1 for generated detail plus 2 for mip levels plus
+    // 4 times the most reads along a face seen at a glance.
+    looks: vec4<f32>,
 };
 
 // The sky looking along `dir` (a unit vector): the horizon's color blending up into the

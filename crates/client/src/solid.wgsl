@@ -1,6 +1,11 @@
-// Solid looks: each fragment takes the texel of its block's look volume that it sits in. The
-// mesher has already moved every face's sample position half a texel inside the block, so a
-// face shows the outermost layer it cuts through. Ambient occlusion is worked out here from how
+// Solid looks: each fragment takes the texel of its block's look that it sits in. The mesher
+// has already moved every face's sample position half a texel inside the block, so a face
+// shows the outermost layer it cuts through. Texels are read from the look's face slices (see
+// `client::volumes::Volumes::atlas`): exact up close, blended between mip levels as they
+// shrink on screen, with a few reads along faces seen at a glance (anisotropic filtering).
+// Where the look generates detail (see `api::look`), the texel's color comes from noise on
+// its world position instead, or grain shades it, each octave fading toward its average as
+// its blobs shrink to about a pixel. Ambient occlusion is worked out here from how
 // full the space in front of the quad is around its corners (see `client::mesher::ao_lit`,
 // which this matches). Then light and air (see `client::shading`):
 // the lines along the quad's creases and ridges, the sun and sky, a sheen if the look has one,
@@ -12,6 +17,7 @@
 #import bevy_pbr::view_transformations::position_world_to_clip
 #import boxel::sun::{atmosphere, lit, has_maps, view_depth}
 #import boxel::atmosphere::{dithered, sky, fog_amount, sheen, edge_shade}
+#import boxel::look_noise::{value_fading, octave_fades, pick, grain_factor}
 #ifdef TONEMAP_IN_SHADER
 #import bevy_core_pipeline::tonemapping::tone_mapping
 #endif
@@ -22,12 +28,35 @@ const SIZE: i32 = 16;
 const FACE_SCALE: f32 = 512.0;
 
 @group(#{MATERIAL_BIND_GROUP}) @binding(0) var<uniform> tint: vec4<f32>;
-// Every look stacked along Z, one SIZE-deep volume after another.
-@group(#{MATERIAL_BIND_GROUP}) @binding(1) var volumes: texture_3d<f32>;
+// Every look's face slices, with mip levels: see `client::volumes::Volumes::atlas`.
+@group(#{MATERIAL_BIND_GROUP}) @binding(1) var looks: texture_2d<f32>;
 // Each volume's sheen and glow, one texel per volume: strength, sharpness, glow.
 @group(#{MATERIAL_BIND_GROUP}) @binding(3) var sheens: texture_2d<f32>;
 // Stored light added to every vertex's, 0 to 1: a loose item's, as its mesh carries none.
 @group(#{MATERIAL_BIND_GROUP}) @binding(5) var<uniform> light: vec4<f32>;
+// The render origin's cell in world texels as the noise takes them, then 1 for meshes where
+// they stand in the world: see `client::solid::SolidMaterial::place`.
+@group(#{MATERIAL_BIND_GROUP}) @binding(6) var<uniform> place: vec4<u32>;
+// What each look generates, by volume: see `client::solid::LookGpu`.
+@group(#{MATERIAL_BIND_GROUP}) @binding(7) var<storage, read> generated: array<Generated>;
+
+// Mip levels of the face slices; matches `client::volumes::LEVELS`.
+const LEVELS: i32 = 5;
+
+struct Noise {
+    colors: array<vec4<f32>, 8>,
+    average: vec4<f32>,
+    // In sixteenths of a texel, then how many colors.
+    scale: vec4<u32>,
+    seed: vec4<u32>,
+};
+
+struct Generated {
+    noise: array<Noise, 3>,
+    // Along, across and through the board, then the seed.
+    grain_scale: vec4<u32>,
+    grain: vec4<f32>,
+};
 
 struct Vertex {
     @builtin(instance_index) instance_index: u32,
@@ -133,13 +162,125 @@ fn ao_lit(ao: vec4<u32>, face: vec4<f32>) -> f32 {
 }
 
 
-@fragment
-fn fragment(in: VertexOutput) -> @location(0) vec4<f32> {
+// Texel `texel` of `volume`'s slice facing along `axis`, at mip level `level`.
+fn slice_texel(volume: i32, axis: i32, texel: vec3<i32>, level: i32) -> vec4<f32> {
+    let pixel = vec2<i32>(
+        texel[axis] * SIZE + texel[(axis + 1) % 3],
+        (volume * 3 + axis) * SIZE + texel[(axis + 2) % 3],
+    );
+    return textureLoad(looks, pixel >> vec2<u32>(u32(level)), level);
+}
+
+// `volume`'s texel `texel` (wrapped into the look) blended between mip levels at `lod`.
+fn mip_texel(volume: i32, axis: i32, texel: vec3<i32>, lod: f32) -> vec3<f32> {
+    let low = i32(floor(lod));
+    let high = min(low + 1, LEVELS - 1);
+    let a = slice_texel(volume, axis, texel, low).rgb;
+    let b = slice_texel(volume, axis, texel, high).rgb;
+    return mix(a, b, lod - f32(low));
+}
+
+fn wrap(cell: vec3<i32>) -> vec3<i32> {
+    return ((cell % SIZE) + SIZE) % SIZE;
+}
+
+// The look's color at a fragment: see the top of this file.
+fn look_color(in: VertexOutput, volume: i32) -> vec3<f32> {
+    let solid = in.solid.xyz;
+    // Across a face the look position changes on its two axes but not along the normal.
+    let dx = dpdx(solid);
+    let dy = dpdy(solid);
+    let change = abs(dx) + abs(dy);
+    var axis = 0;
+    if change.y < change.x && change.y <= change.z {
+        axis = 1;
+    } else if change.z < change.x && change.z < change.y {
+        axis = 2;
+    }
+    let u = (axis + 1) % 3;
+    let w = (axis + 2) % 3;
+    // A pixel's footprint on the face, in texels: long across ground seen at a glance and
+    // short the other way. Like anisotropic filtering, detail goes by the short way, with a
+    // few reads spread along the long way so it doesn't shimmer.
+    let along_x = vec2<f32>(dx[u], dx[w]);
+    let along_y = vec2<f32>(dy[u], dy[w]);
+    let lx = length(along_x);
+    let ly = length(along_y);
+    let longest = max(lx, ly);
+    let flags = u32(atmosphere.looks.w);
+    let detail_on = (flags & 1u) != 0u;
+    let mips_on = (flags & 2u) != 0u;
+    let most = f32(max(flags >> 2u, 1u));
+    let reads = clamp(ceil(longest / max(min(lx, ly), 1e-6)), 1.0, most);
+    let footprint = longest / reads;
+
     // A merged quad's look position runs on across its boxels (see `client::greedy`): wrapped,
     // the look repeats every boxel.
-    let texel = ((vec3<i32>(floor(in.solid.xyz)) % SIZE) + SIZE) % SIZE;
+    let cell = vec3<i32>(floor(solid));
+    let exact = slice_texel(volume, axis, wrap(cell), 0);
+    var far = exact.rgb;
+    if mips_on && footprint > 1.0 {
+        let lod = min(log2(footprint), f32(LEVELS - 1));
+        let spread = select(along_y, along_x, lx >= ly);
+        let n = i32(reads);
+        var sum = vec3<f32>(0.0);
+        for (var i = 0; i < n; i++) {
+            let o = spread * ((f32(i) + 0.5) / f32(n) - 0.5);
+            var at = solid;
+            at[u] += o.x;
+            at[w] += o.y;
+            sum += mip_texel(volume, axis, wrap(vec3<i32>(floor(at))), lod);
+        }
+        far = sum / f32(n);
+    }
+    let detail = u32(round(exact.a * 255.0));
+    if !detail_on || detail == 0u {
+        return far;
+    }
+    // Read only what's needed straight from the table: copying a look's whole entry out
+    // (hundreds of bytes) spills on small GPUs and cost more than the noise itself.
+    let layer = detail & 3u;
+    let grain = (detail >> 2u) & 3u;
+    let start = atmosphere.looks.x;
+    let end = atmosphere.looks.y;
+    // The texel's place in the world: the boxel's corner is the fragment's position less its
+    // place in the look, rounded (exact, as faces lie on texels); for meshes away from the
+    // world, the world's middle.
+    var corner = vec3<i32>(0);
+    if place.w == 1u {
+        let at = vec3<f32>(in.world_position.x, -in.world_position.z, in.world_position.y);
+        corner = vec3<i32>(round(at - solid / f32(SIZE)));
+    }
+    let p = place.xyz + bitcast<vec3<u32>>(corner * SIZE + cell);
+    if layer > 0u {
+        let scale = generated[volume].noise[layer - 1u].scale;
+        let average = generated[volume].noise[layer - 1u].average.rgb;
+        let fades = octave_fades(scale.xyz, footprint, start, end);
+        if fades.x >= 1.0 {
+            return average;
+        }
+        let seed = generated[volume].noise[layer - 1u].seed.x;
+        let at = pick(value_fading(scale.xyz, seed, p, fades.y), scale.w);
+        let near = generated[volume].noise[layer - 1u].colors[at].rgb;
+        return mix(near, average, fades.x);
+    }
+    var color = far;
+    if grain > 0u {
+        let g = generated[volume].grain_scale;
+        let fades = octave_fades(g.xyz, footprint, start, end);
+        if fades.x < 1.0 {
+            let strength = generated[volume].grain.x * atmosphere.looks.z;
+            let factor = grain_factor(g.xyz, g.w, strength, grain, detail >> 4u, p, fades.y);
+            color *= mix(factor, 1.0, fades.x);
+        }
+    }
+    return color;
+}
+
+@fragment
+fn fragment(in: VertexOutput) -> @location(0) vec4<f32> {
     let volume = i32(round(in.solid.w));
-    let own = textureLoad(volumes, texel + vec3<i32>(0, 0, volume * SIZE), 0) * tint;
+    let own = vec4<f32>(look_color(in, volume), 1.0) * tint;
     var base = own * in.color;
     if atmosphere.ao.w > 0.5 && any(in.ao != vec4<u32>(0u)) {
         base = vec4<f32>(base.rgb * ao_lit(in.ao, in.face), base.a);

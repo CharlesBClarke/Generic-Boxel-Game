@@ -295,22 +295,26 @@ fn spawn_chunk_meshes(
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<SolidMaterial>>,
     mut images: ResMut<Assets<Image>>,
+    mut buffers: ResMut<Assets<bevy::render::storage::ShaderStorageBuffer>>,
     ao: Res<mesher::AoTuning>,
     view: Res<view::ViewSwitches>,
 ) {
     let volumes = Volumes::build(world.looks(), world.blocks());
-    let image = images.add(solid::volume_image(&volumes));
+    let image = images.add(solid::atlas_image(&volumes));
+    let generated = buffers.add(solid::look_buffer(&volumes));
     let sheens = images.add(solid::sheen_image(&volumes));
     // Replaced by the real height map once it's built (see `heights`).
     let heights = images.add(heights::height_image(&[heights::NOTHING; 2], 2, 1));
     let solid = |tint: Color, alpha_mode: AlphaMode| SolidMaterial {
         tint: tint.into(),
-        volumes: image.clone(),
+        looks: image.clone(),
         // Filled in by `shading` before the first frame is drawn.
         atmosphere: default(),
         sheens: sheens.clone(),
         heights: heights.clone(),
         light: Vec4::ZERO,
+        place: solid::in_world(origin.cell),
+        generated: generated.clone(),
         alpha_mode,
     };
     let material = materials.add(solid(Color::WHITE, AlphaMode::Opaque));
