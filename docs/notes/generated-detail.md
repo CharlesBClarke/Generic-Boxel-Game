@@ -8,3 +8,5 @@ Moved from the `SLICES.md` backlog on 2026-11-03; the backlog keeps a short pitc
 3. *Large-scale patch tint*: one more noise layer many meters across (a slightly darker or redder patch of ground), so a big field isn't evenly speckled everywhere.
 
 **Mipmaps and distance filtering** (added 2026-11-05, from Shading, at the user's request; they expected mipmaps in Shading). Looks are read texel-exact (`textureLoad`), so far faces can shimmer and show moiré. Baked looks (bricks, planks) can take ordinary mip levels of the look volumes; looks generated in the shader can't be mipmapped, so their fine noise should fade toward its average color with distance (or with the screen-space size of a texel). Design both together in this toy.
+
+*2026-11-11, from Shadow speed:* both new frame-rate profiles turn MSAA off (it cost ~11 ms at 720p), so distant shimmer shows more; this toy's anti-aliasing matters more now.

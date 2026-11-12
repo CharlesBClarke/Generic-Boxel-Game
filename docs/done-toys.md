@@ -3,6 +3,23 @@
 Moved out of `SLICES.md` on 2026-11-03 so the roadmap stays short. Each toy's full write-up, newest first, as it stood when it closed. `SLICES.md` keeps a one-line summary of each.
 
 
+#### Shadow speed: settings (`toy-shadow-speed`)
+
+From the backlog's Shadow speed entry, turned into a settings search by the user: "maybe for this pc lets do a space serch for the biggest settings and try and make a 30fps, and 60fps profile", then "just find good settings", "shadows and distence are more important", "try and remove things evenly, make taste desisons", resolution "you pick". **Stage:** Done (2026-11-11). No code changed (so no quick bench); the code ideas stay in the Shadow speed backlog entry.
+
+*Plan:* at 1280×720 (half the user's 2560×1440 monitor each way, what a later 50% render scale draws), a study changing one setting at a time from shipped (`tools/bench/settings.txt`), then candidate 30 and 60 fps profiles; pass when the slowest of the bench's three spots averages ≥ 33 / 66 fps. Shadows and distance kept longest. One warning, then every run unattended (the user: "please dont wait to warn me bettwen each test").
+
+*Built:* the study (23 sets, 20 min), two rounds of candidates and two confirm runs (throttling down to ~840 MHz made single runs noisy, so finalists ran twice, alternating). Tables in `docs/notes/shadow-speed.md`, "Settings study at 720p". Profiles in `~/.config/boxel/profiles/` (machine-specific, outside the repo):
+- **30 fps:** MSAA off, edges off, render 576 m, shadow maps 256 m, soft filter. Slowest spot 39–40 fps, 1% low 33–34.
+- **60 fps:** MSAA, AO, sheen and edges off, render 384 m, shadow maps 64 m at 1024, soft filter, far shadow kept. Slowest spot 75–83 fps, 1% low 50–62. (AO kept at 320 m: 68–69.)
+The 60 fps profile's values are in the user's tuning file (the old file backed up for the session only).
+
+*Verify:* the user played it: "it was running at like 80fps normaly". The target was the slowest spot's average, with 10% headroom; the 1% lows still dip under 60 in the heaviest views.
+
+*Decisions:* MSAA off is the big cut (~11 ms at 720p, about what the far shadow costs) and suits the blocky look; long, soft shadow maps are nearly free at 720p; AO goes before distance. Edges off cost the user nothing (their crease, ridge and edge width were already 0).
+
+*Deferred:* a profile picker in game, and saving the panel's checkboxes (MSAA, AO, edges, sheen), which reset every start: backlog "Graphics profiles in game". The algorithmic fixes (GPU time per pass, a shadow-only mesh, storing the far shadow, occlusion culling, border splits at real corners, LOD, cached shadow maps after a moving bench path): `docs/notes/shadow-speed.md`. Mipmaps were already in "Generated detail in looks"; MSAA off makes them matter more.
+
 #### Lit models (`toy-model-lighting`)
 
 From the backlog's "Shadows on cows, items and the held tool" (the user: "can we now fix the cow rendering, and loose items and the mace"; the mace is the club, kept as "club", now in the Terminology table). **Stage:** Done (2026-11-11). Verified: the user played all five checks ("the cows lighting work, club too, the hit flash looks good aat night"; items: "yes"; debris at night: "yes I can see noting"). Built as planned; the user also picked including hit debris and slam dust.

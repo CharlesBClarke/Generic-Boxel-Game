@@ -50,3 +50,60 @@ Drawing (a later run, a little warmer: shipped 18.6, none 7.1):
 5. **LOD** for far terrain is the design doc's long-term answer to the triangle count and is infrastructure of its own.
 
 *The user, 2026-11-10, asked "do you get the sense there is major room for improvent on this machine?"; the planner's answer was yes, a guess of shadows at 3–5 ms instead of about 10, unproven.*
+
+## Settings study at 720p (2026-11-11)
+
+*The user: "lets do a space serch for the biggest settings and try and make a 30fps, and 60fps profile", then "shadows and distence are more important", resolution "you pick". Benched at 1280×720 (half the user's 2560×1440 monitor each way, what a 50% render scale would draw), release, at `e789e36`. Rerun: `tools/bench.sh --study tools/bench/settings.txt` (about 20 min). The bench's three spots; ms is the mean of them, worst fps is the slowest spot's average.*
+
+A landscape 720p window draws more chunks than the square 1080×1080 bench (a wider view), so shipped is slower here (30 ms) despite fewer pixels.
+
+| Set (one change from shipped) | mean ms | vs shipped | worst fps |
+|---|---|---|---|
+| shipped (512 m, maps 128 m ×3 2048 crisp, far shadow, 4× MSAA) | 30.3 | | 26.0 |
+| no shadows | 10.6 | −19.7 | 72.9 |
+| shadow maps off | 22.7 | −7.6 | 31.3 |
+| far shadow off | 19.8 | −10.5 | 47.5 |
+| MSAA off | 19.4 | −10.9 | 47.9 |
+| AO off / edges off / sheen off | 26.7 / 29.1 / 29.6 | −3.6 / −1.2 / −0.8 | |
+| render 192 / 256 / 384 / 768 | 9.2 / 13.5 / 22.1 / 39.6 | −21.2 / −16.8 / −8.2 / +9.3 | 82 / 62 / 37 / 21 |
+| map distance 48 / 64 / 256 | 24.7 / 25.7 / 30.7 | −5.6 / −4.7 / +0.3 | |
+| cascades 2 / 4 | 29.3 / 32.4 | −1.0 / +2.1 | |
+| map size 1024 / 4096 | 28.3 / 37.0 | −2.0 / +6.7 | |
+| soft filter | 30.5 | +0.1 | |
+| far reach 256 / 1024 | 29.6 / 32.9 | −0.7 / +2.6 | |
+| shipped again (drift) | 30.6 | +0.3 | |
+
+What it says:
+- **MSAA and the far shadow cost about the same, ~11 ms each.** Together off wasn't measured; with 4× MSAA every shaded edge pixel runs more fragment work, which may be why MSAA costs this much. MSAA off is the cheapest big cut, and matters least for this game's blocky look.
+- **Map distance 256 and the soft filter are nearly free** at 720p: the shadow maps cost more by their size (4096: +6.7) than by their reach.
+- **Render distance is the other big lever** (triangles: 768 m draws 3.7M).
+- Throttling was heavy in later runs (GPU at 840–900 MHz, "throttled 100%"), so candidates were confirmed twice each, alternating.
+
+### The profiles
+
+In `~/.config/boxel/profiles/` (machine-specific, outside the repo). MSAA, edges, sheen and AO are tuning-panel checkboxes, not saved in the tuning file, so they're unticked by hand each run.
+
+| Profile | Settings (changes from shipped) | worst fps (two runs) | 1% low |
+|---|---|---|---|
+| **30 fps** | MSAA off, edges off, render 576 m, map distance 256 m, soft filter | 40.0 / 38.9 | 34 / 33 |
+| **60 fps** | MSAA off, edges/sheen/AO off, render 384 m, map distance 64 m, map 1024, soft filter (far shadow kept) | 82.6 / 75.5 | 62 / 50 |
+| 60 fps, AO kept | as above but AO on, render 320 m | 69.0 / 67.8 | 59 / 58 |
+| rejected: 60 fps with AO at 384 m | | 68.2 / 62.5 | |
+
+Edges are off in both because the user's tuning already has crease, ridge and edge width at 0. The 60 fps profile keeps the far shadow and gives up AO before distance, per the user's priorities; fog closes in at 384 m and hides the far mountains.
+
+## Algorithmic fixes to consider (2026-11-11)
+
+*Discussed after the settings study. The user: "Do you think we need more opimizations because the game is so bare looking, we will need trees, bushes, water", "I don't want to opimize for photo takeing", "Is there any operntunity to get down and dirty in our core systems for alg inporvemts". Guesses at the size of each, none measured; in the planner's suggested order.*
+
+1. **GPU time per pass.** Bevy's render diagnostics time the main pass, each cascade and the far shadow separately; put them in the bench's lines so every lead below is a measurement, not an inference from frame totals. About a day.
+2. **A shadow-only mesh.** Shadow maps need depth only, so their mesh can merge faces across blocks, light and AO (which the visible mesh can't), skip the T-junction splits, and probably keep only sun-facing faces. Could cut every shadow pass's triangles several-fold; the planner's best payoff for the work, and trees' leaves would cast through it from the start.
+3. **Store the far shadow** (lead 3 above): one read per pixel instead of a walk, updated when the sun steps or a block changes. Far shadow off saved 10.5 ms at 720p with everything else shipped.
+4. **Occlusion culling.** Hills hide whole valleys at the overlook, yet every chunk in range is drawn, and drawn again into the shadow maps. A flood fill through chunks the camera can see into (the usual boxel-engine way) or Bevy's GPU occlusion culling. Medium to big in hills, nothing on flat ground.
+5. **Border splits only at real corners** (from `fix-greedy-sparkles`): mesh a chunk after its neighbors so its border edges split only where a neighbor's corner is. Up to ~4 ms back.
+6. **Overdraw**: sort opaque chunks near to far. Lowest; the depth prepass result says hidden surfaces aren't the main cost.
+7. **LOD** for far terrain: the biggest for long views (triangles grow with distance squared without it), and the most infrastructure; it also makes every shadow redraw cheaper.
+
+**Cached shadow maps** (asked about): redraw a cascade only when the sun steps, a block in it changes, or the camera crosses its grid step (cascades snapped to a coarse world grid and fitted to a circle around the camera, so turning never redraws); moving things (cows, items, the club) drawn each frame over a cached terrain-only copy. The user's point: in normal play "isnt that going to be almost evry frame". Answer: the near cascade yes, but it's cheap; the far ones, which hold most triangles, would step every second or two at walking speed. Needs our own shadow pass (Bevy redraws every frame), so after LOD and the shadow-only mesh.
+
+**The bench needs a moving case first.** It stands still at three spots, which would flatter any caching. Before building caching (or judging streaming), add a fly path at walking and sprinting speed.

@@ -1,0 +1,63 @@
+# A settings study at 720p: `tools/bench.sh --study tools/bench/settings.txt`. Each set changes
+# one setting from shipped, so each row says what that one setting costs at 1280×720 (half the
+# user's 2560×1440 monitor each way, what a 50% render scale would draw). Made for picking 30 fps
+# and 60 fps profiles (Shadow speed, 2026-11-11). `shipped` first and `shipped_again` last show
+# drift (heat). About 50 s a set.
+
+[bench]
+window = 1280 720
+
+[set shipped]
+
+# Whole parts.
+[set no_shadows]
+shadows.maps = 0
+shadows.far = 0
+[set maps_off]
+shadows.maps = 0
+[set far_off]
+shadows.far = 0
+[set msaa_off]
+view.msaa = 0
+[set ao_off]
+shading.ao = 0
+[set edges_off]
+shading.edges = 0
+[set sheen_off]
+shading.sheen = 0
+
+# How far the world is drawn.
+[set render_192]
+view.render_distance = 192
+[set render_256]
+view.render_distance = 256
+[set render_384]
+view.render_distance = 384
+[set render_768]
+view.render_distance = 768
+
+# The shadow maps.
+[set distance_48]
+shadows.distance = 48
+[set distance_64]
+shadows.distance = 64
+[set distance_256]
+shadows.distance = 256
+[set cascades_2]
+shadows.cascades = 2
+[set cascades_4]
+shadows.cascades = 4
+[set map_1024]
+shadows.map_size = 1024
+[set map_4096]
+shadows.map_size = 4096
+[set filter_soft]
+shadows.filter = 1
+
+# The far shadow's reach.
+[set far_reach_256]
+shadows.far_reach = 256
+[set far_reach_1024]
+shadows.far_reach = 1024
+
+[set shipped_again]
