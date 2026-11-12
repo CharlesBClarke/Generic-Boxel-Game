@@ -292,6 +292,7 @@ pub(crate) fn stream_meshes(
                 continue;
             }
             hidden.dirty = true;
+            hidden.changes += 1;
             chunk_meshes.put(&mut commands, &mut meshes, &mut handles, pos, data, origin.cell);
         }
     }

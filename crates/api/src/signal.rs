@@ -1,5 +1,5 @@
-//! Signals: how far a phase material's hiding grabs, how far a wire carries, and what a crystal
-//! blast does.
+//! Signals: how far a phase material's hiding grabs, how far a wire carries, what a crystal
+//! blast does, and how far a mender remembers.
 
 use crate::{Tunable, Tunables};
 
@@ -14,6 +14,12 @@ pub struct SignalDef {
     pub conduct_limit: u32,
     /// What a crystal blast does (see [`crate::Property::Lens`]).
     pub blast: BlastDef,
+    /// How far a mender remembers, in texels, rounded: every texel within this many of a
+    /// mender piece, edges and corners counting (see [`crate::Property::Mender`]). 0 remembers
+    /// only the mender itself.
+    pub mend_reach: f32,
+    /// The most texels one signal puts back; a mend needing more puts back nothing.
+    pub mend_limit: u32,
 }
 
 /// What a crystal blast does: a straight beam from the lens, one boxel wide.
@@ -59,6 +65,9 @@ impl BlastDef {
 impl SignalDef {
     /// The farthest grab, in texels.
     pub const MAX_GRAB: f32 = 4.0;
+    /// The farthest a mender remembers, in texels: a boxel, so what it remembers is always in
+    /// its own boxel or one beside it.
+    pub const MAX_MEND_REACH: f32 = 16.0;
 
     /// Checks the values make sense.
     pub fn validate(&self) -> Result<(), String> {
@@ -68,7 +77,15 @@ impl SignalDef {
         if self.conduct_limit == 0 {
             return Err("conduct_limit must be at least 1".into());
         }
+        if !(self.mend_reach.is_finite() && (0.0..=Self::MAX_MEND_REACH).contains(&self.mend_reach)) {
+            return Err(format!("mend_reach must be 0 to {}, got {}", Self::MAX_MEND_REACH, self.mend_reach));
+        }
         self.blast.validate()
+    }
+
+    /// The mend reach in whole texels.
+    pub fn mend_texels(&self) -> i32 {
+        (self.mend_reach.round() as i32).clamp(0, Self::MAX_MEND_REACH as i32)
     }
 
     /// The grab in whole texels.
@@ -80,11 +97,14 @@ impl SignalDef {
 /// The tuning panel's groups for [`SignalDef`]'s values.
 const SIGNAL_GROUPS: &[(&str, &[&str])] = &[
     ("Phasing", &["grab"]),
+    ("Mending", &["mend_reach", "mend_limit"]),
     ("Crystal blast", &["blast_range", "blast_strength", "blast_radius", "blast_damage", "blast_player_damage", "blast_push"]),
 ];
 /// What each of [`SignalDef`]'s values does, for the tuning panel.
 const SIGNAL_HELP: &[(&str, &str)] = &[
     ("grab", "How far hiding a phase group takes other things with it, texels: everything within this many texels of the group, edges and corners counting. 0 takes only the group."),
+    ("mend_reach", "How far a mender remembers, texels: every texel within this many of a mender piece, edges and corners counting. 0 remembers only the mender itself."),
+    ("mend_limit", "The most texels one signal puts back (4096 is a full block); a mend needing more puts back nothing."),
     ("blast_range", "How far a crystal's beam runs, in boxels past the lens's own."),
     ("blast_strength", "How much the beam breaks before it stops, in full blocks' worth (a slab uses up half)."),
     ("blast_radius", "How far from the beam's middle line a body is hit, meters, past its own width."),
@@ -98,6 +118,8 @@ impl Tunables for SignalDef {
         let b = &self.blast;
         crate::tuning::described(vec![
             Tunable::new("grab", self.grab, 0.0, Self::MAX_GRAB),
+            Tunable::new("mend_reach", self.mend_reach, 0.0, Self::MAX_MEND_REACH),
+            Tunable::new("mend_limit", self.mend_limit as f32, 0.0, 65536.0),
             Tunable::new("blast_range", b.range, 0.0, BlastDef::MAX_RANGE),
             Tunable::new("blast_strength", b.strength, 0.0, 64.0),
             Tunable::new("blast_radius", b.radius, 0.0, 4.0),
@@ -110,6 +132,8 @@ impl Tunables for SignalDef {
     fn set_tunable(&mut self, name: &str, value: f32) -> bool {
         match name {
             "grab" => self.grab = value.clamp(0.0, Self::MAX_GRAB),
+            "mend_reach" => self.mend_reach = value.clamp(0.0, Self::MAX_MEND_REACH),
+            "mend_limit" => self.mend_limit = value.clamp(0.0, 1e7).round() as u32,
             "blast_range" => self.blast.range = value.clamp(0.0, BlastDef::MAX_RANGE),
             "blast_strength" => self.blast.strength = value.max(0.0),
             "blast_radius" => self.blast.radius = value.max(0.0),

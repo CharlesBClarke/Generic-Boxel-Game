@@ -150,6 +150,7 @@ pub struct Defs {
     pub item_drops: Option<ItemDropDef>,
     pub inventory: Option<InventoryDef>,
     pub crafting: Option<CraftingDef>,
+    pub signals: Option<api::SignalDef>,
     /// By [`sim::TargetKind`] index.
     pub targets: Vec<TargetDef>,
     /// By [`sim::ToolId`] index.

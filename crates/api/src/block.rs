@@ -64,6 +64,13 @@ pub enum Property {
     /// fires from the fuse through the lens, along the face they touch on (one beam per
     /// direction they touch in). A blast reaching a lens sets it off too, firing on the same way.
     Lens,
+    /// Holds materials: a loose item touching a piece of it goes into its boxel, as the
+    /// materials it's made of. Breaking a boxel's last storage piece drops what it holds.
+    Storage,
+    /// Remembers every texel within its reach (see `SignalDef::mend_reach`): what was last in
+    /// each. A signal to a boxel holding a piece of it puts back every remembered texel of its
+    /// group that's gone, paid for from the storage the same signal reached; all or nothing.
+    Mender,
 }
 
 impl Property {
@@ -76,12 +83,22 @@ impl Property {
             Property::StartsHidden => "starts_hidden",
             Property::Fuse => "fuse",
             Property::Lens => "lens",
+            Property::Storage => "storage",
+            Property::Mender => "mender",
         }
     }
 
     /// Every property, for listing them.
-    pub const ALL: [Property; 6] =
-        [Property::Trigger, Property::Conductor, Property::Phase, Property::StartsHidden, Property::Fuse, Property::Lens];
+    pub const ALL: [Property; 8] = [
+        Property::Trigger,
+        Property::Conductor,
+        Property::Phase,
+        Property::StartsHidden,
+        Property::Fuse,
+        Property::Lens,
+        Property::Storage,
+        Property::Mender,
+    ];
 
     /// The property named `name` in data files.
     pub fn from_name(name: &str) -> Option<Property> {

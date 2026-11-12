@@ -40,16 +40,18 @@ impl Repeater {
 
 /// Chunks whose blocks changed, plus neighbors whose border faces the change affects; and,
 /// kept separately for saving, the chunks edited since they were last made from scratch; and,
-/// for what reacts to changes nearby, the boxels changed; and, for relighting, the boxels
-/// changed again, kept apart as reactions take theirs during the tick.
+/// for what reacts to changes nearby, the boxels changed; and, for relighting and for records
+/// (see [`crate::mend`]), the boxels changed again, each kept apart as reactions take theirs
+/// during the tick.
 #[derive(Debug, Default)]
-pub struct ChangedChunks(HashSet<ChunkPos>, HashSet<ChunkPos>, Vec<BoxelPos>, Vec<BoxelPos>);
+pub struct ChangedChunks(HashSet<ChunkPos>, HashSet<ChunkPos>, Vec<BoxelPos>, Vec<BoxelPos>, Vec<BoxelPos>);
 
 impl ChangedChunks {
     /// Records a change to the boxel at `pos`. Its chunk counts as edited.
     pub fn mark(&mut self, pos: BoxelPos) {
         self.2.push(pos);
         self.3.push(pos);
+        self.4.push(pos);
         let (chunk, local) = pos.split();
         self.0.insert(chunk);
         self.1.insert(chunk);
@@ -65,6 +67,20 @@ impl ChangedChunks {
             }
             self.0.insert(ChunkPos(chunk.0 + I64Vec3::from_array(side)));
         }
+    }
+
+    /// Records a change to the record of the boxel at `pos` alone (see [`crate::mend`]): its
+    /// chunk counts as changed and edited, so it's sent and saved, but nothing reacts to it.
+    pub fn mark_record(&mut self, pos: BoxelPos) {
+        let chunk = pos.chunk();
+        self.0.insert(chunk);
+        self.1.insert(chunk);
+    }
+
+    /// Every boxel marked since the last call to this, for bringing records up to date; apart
+    /// from [`ChangedChunks::take_boxels`].
+    pub fn take_for_records(&mut self) -> Vec<BoxelPos> {
+        std::mem::take(&mut self.4)
     }
 
     /// Records a change to a whole chunk, such as one generated again. Its neighbors aren't

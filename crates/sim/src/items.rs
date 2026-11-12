@@ -140,6 +140,19 @@ impl Items {
         self.list.iter()
     }
 
+    /// Takes out every item `f` gives somewhere for, with where.
+    pub fn take_where<T>(&mut self, mut f: impl FnMut(&Item) -> Option<T>) -> Vec<(Item, T)> {
+        let mut out = Vec::new();
+        self.list.retain(|item| match f(item) {
+            Some(t) => {
+                out.push((item.clone(), t));
+                false
+            }
+            None => true,
+        });
+        out
+    }
+
     /// Takes every item away. IDs carry on from where they were, so none is reused.
     pub fn clear(&mut self) {
         self.list.clear();

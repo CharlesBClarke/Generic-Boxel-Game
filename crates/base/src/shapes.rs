@@ -4,7 +4,7 @@
 use api::crafting::heights;
 use api::{BlockBox, Layer, Orientation, ShapeGrid, Stacks, craft_shape};
 
-use crate::{ANTIPHASITE, BLUE_CRYSTAL, BRASS, COPPER, PHASITE};
+use crate::{ANTIPHASITE, BLUE_CRYSTAL, BRASS, CACHITE, COPPER, MENDITE, PHASITE};
 
 fn craft(stacks: &Stacks) -> ShapeGrid {
     craft_shape(stacks, false).expect("the base game's stacks make shapes")
@@ -87,6 +87,20 @@ pub fn crystal_trigger() -> Vec<(&'static str, ShapeGrid)> {
         (ANTIPHASITE, cube([12, 0, 0], [15, 16, 16])),
         (BLUE_CRYSTAL, cube([15, 0, 0], [16, 16, 16])),
     ]
+}
+
+/// A mendite block with a copper block a quarter across in its bottom north-west corner, so a
+/// lever beside it reaches it.
+pub fn mender_tap() -> Vec<(&'static str, ShapeGrid)> {
+    let tap = cube([0, 12, 0], [4, 16, 4]);
+    vec![(MENDITE, ShapeGrid::FULL.minus(&tap)), (COPPER, tap)]
+}
+
+/// A cachite block with a copper block a quarter across in its top north-west corner, under a
+/// [`mender_tap`]'s, so the same signal reaches the bin.
+pub fn bin_tap() -> Vec<(&'static str, ShapeGrid)> {
+    let tap = cube([0, 12, 12], [4, 16, 16]);
+    vec![(CACHITE, ShapeGrid::FULL.minus(&tap)), (COPPER, tap)]
 }
 
 /// A copper wire a quarter across, lying on the floor along X against the +Y side.

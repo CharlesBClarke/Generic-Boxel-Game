@@ -62,6 +62,8 @@ fn base_blocks_come_from_its_data_files() {
         base::LUMITE,
         base::BLUE_CRYSTAL,
         base::GREEN_CRYSTAL,
+        base::CACHITE,
+        base::MENDITE,
     ];
     assert_eq!(names[..listed.len()], listed);
     let mut crafted = vec![
@@ -75,6 +77,8 @@ fn base_blocks_come_from_its_data_files() {
     crafted.extend(base::shapes::door_lower());
     crafted.extend(base::shapes::shutter());
     crafted.extend(base::shapes::crystal_trigger());
+    crafted.extend(base::shapes::bin_tap());
+    crafted.extend(base::shapes::mender_tap());
     let made = |id| blocks.bundle_of(id).is_some() || blocks.derived(id).is_some();
     let shapes: Vec<_> = blocks.iter().skip(listed.len()).filter(|(id, _)| !made(*id)).collect();
     assert_eq!(shapes.len(), crafted.len(), "no other shapes: {names:?}");
@@ -115,6 +119,7 @@ fn base_blocks_come_from_its_data_files() {
             "base:blue_crystal",
             "base:brass",
             "base:brick",
+            "base:cachite",
             "base:copper",
             "base:crafting_table",
             "base:dirt",
@@ -125,6 +130,7 @@ fn base_blocks_come_from_its_data_files() {
             "base:iron",
             "base:log",
             "base:lumite",
+            "base:mendite",
             "base:phasite",
             "base:stone",
             "base:wood"
@@ -138,6 +144,8 @@ fn base_blocks_come_from_its_data_files() {
     assert_eq!(def(base::ANTIPHASITE).properties, [Property::Phase, Property::StartsHidden]);
     assert_eq!(def(base::BLUE_CRYSTAL).properties, [Property::Fuse]);
     assert_eq!(def(base::GREEN_CRYSTAL).properties, [Property::Lens]);
+    assert_eq!(def(base::CACHITE).properties, [Property::Storage]);
+    assert_eq!(def(base::MENDITE).properties, [Property::Mender]);
     assert!(def(base::LUMITE).properties.is_empty());
     let glow = |look: &str| sim.looks().get(look).unwrap().glow;
     assert!(glow("base:lumite") >= 1.0, "lumite lights itself");

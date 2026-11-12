@@ -337,8 +337,7 @@ fn a_save_from_before_the_store_moves_its_terrain_into_it() {
     // A version 3 save held the edited terrain chunk itself.
     let bytes = sim.chunk_store().read(dug).unwrap().unwrap();
     save.chunks.push(sim::save::SavedChunk::from_bytes(&bytes).unwrap());
-    let mut old = save.to_bytes();
-    old[8..12].copy_from_slice(&3u32.to_le_bytes());
+    let old = save.to_bytes_as(3);
 
     let mut other = base_sim();
     other.load(&SaveData::from_bytes(&old).unwrap()).unwrap();

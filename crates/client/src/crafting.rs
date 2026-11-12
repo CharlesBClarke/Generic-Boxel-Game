@@ -300,8 +300,51 @@ fn aimed_properties(world: &ClientWorld, look: &Look, key: &str) -> Option<Strin
     let occupant = *world.universe().main().cell(hit.pos).get(hit.occupant)?;
     let def = blocks.get(occupant.block).filter(|def| !def.properties.is_empty())?;
     let material = blocks.made_of(occupant.block).map_or(def.name.as_str(), |m| blocks.material_name(m));
-    let words: Vec<String> = def.properties.iter().map(|&p| property_words(p, key)).collect();
+    let mut words: Vec<String> = def.properties.iter().map(|&p| property_words(p, key)).collect();
+    if !blocks.is_hidden(occupant.block) {
+        words.extend(mend_words(world, hit.pos, def));
+    }
     Some(format!("{}: {}", short(material), words.join("; ")))
+}
+
+/// How much of a material, in texels, for the hint: `300 stone texels`.
+fn texels_of(world: &ClientWorld, material: sim::MaterialId, n: u32) -> String {
+    format!("{n} {} texel{}", short(world.blocks().material_name(material)), if n == 1 { "" } else { "s" })
+}
+
+/// What storage and menders have to say about the boxel at `pos`, for a piece of `def`: what a
+/// storage boxel holds, what a mender remembers and what of it is gone, and what working a
+/// trigger would mend or why it can't.
+fn mend_words(world: &ClientWorld, pos: BoxelPos, def: &api::BlockDef) -> Vec<String> {
+    use api::Property;
+    let view = world.view();
+    let mut out = Vec::new();
+    if def.has(Property::Storage) {
+        let stored = world.universe().main().record(pos).map(|r| r.stored.clone()).unwrap_or_default();
+        let list: Vec<String> = stored.iter().map(|&(m, n)| texels_of(world, m, n)).collect();
+        out.push(if list.is_empty() { "empty".into() } else { format!("holds {}", list.join(", ")) });
+    }
+    if def.has(Property::Mender)
+        && let Some(survey) = view.mend_survey(pos)
+    {
+        out.push(format!("remembers {} texels, {} gone", survey.remembered, survey.texels));
+    }
+    if def.has(Property::Trigger)
+        && let Some(plan) = view.mend_plan(pos)
+    {
+        use sim::MendRefusal::*;
+        match plan {
+            Ok(m) if m.texels > 0 => out.push(format!("mends {} texels", m.texels)),
+            Ok(_) => {}
+            Err(Short(short)) => {
+                let list: Vec<String> = short.iter().map(|&(m, n)| texels_of(world, m, n)).collect();
+                out.push(format!("can't mend: short {}", list.join(", ")));
+            }
+            Err(Blocked) => out.push("can't mend: something is in the way".into()),
+            Err(TooMuch { texels, limit }) => out.push(format!("can't mend: {texels} texels, more than {limit} at once")),
+        }
+    }
+    out
 }
 
 /// What a property does, in a few words for the crosshair hint.
@@ -314,6 +357,8 @@ pub fn property_words(property: api::Property, key: &str) -> String {
         StartsHidden => "starts hidden".into(),
         Fuse => "blasts through a lens it touches".into(),
         Lens => "blasts when a fuse touches it".into(),
+        Storage => "keeps loose items that touch it".into(),
+        Mender => "a signal puts back what's gone around it, from storage".into(),
     }
 }
 

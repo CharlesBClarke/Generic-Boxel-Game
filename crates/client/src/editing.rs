@@ -100,6 +100,11 @@ impl Palette {
         world.blocks().get(self.selected(world)).is_some_and(|d| d.has(api::Property::Phase))
     }
 
+    /// Whether the player sees what menders would put back: holding a mender material.
+    pub fn sees_missing(&self, world: &ClientWorld) -> bool {
+        world.blocks().get(self.selected(world)).is_some_and(|d| d.has(api::Property::Mender))
+    }
+
     /// The occupant breaking would remove looking along `look`, seeing hidden pieces when
     /// holding a phase material.
     pub(crate) fn aimed(&self, world: &ClientWorld, look: &Look) -> Option<sim::Hit> {
@@ -445,6 +450,9 @@ pub(crate) struct HiddenGhosts {
     pub around: Option<ChunkPos>,
     /// Blocks changed since it was built.
     pub dirty: bool,
+    /// Goes up whenever blocks change, for other meshes built from the blocks near the player
+    /// (see [`MendGhosts`]).
+    pub changes: u64,
 }
 
 /// How far from the player hidden pieces are shown, in boxels.
@@ -499,6 +507,103 @@ pub(crate) fn update_hidden_ghosts(
     *transform = crate::chunk_transform(chunk, origin.cell);
 }
 
+/// See-through copies of what menders near the player remember that's gone, the texels a
+/// signal would put back, shown while they hold a mender material.
+#[derive(Resource)]
+pub(crate) struct MendGhosts {
+    pub entity: Entity,
+    /// The chunk the mesh was built around, and [`HiddenGhosts::changes`] then, while shown.
+    pub built: Option<(ChunkPos, u64)>,
+}
+
+/// Shows what menders near the player would put back while they hold a mender material,
+/// rebuilding the mesh when blocks change or the player reaches another chunk.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn update_mend_ghosts(
+    world: Res<ClientWorld>,
+    palette: Res<Palette>,
+    origin: Res<RenderOrigin>,
+    chunk_meshes: Res<ChunkMeshes>,
+    hidden: Res<HiddenGhosts>,
+    mut ghosts: ResMut<MendGhosts>,
+    mut meshes: ResMut<Assets<Mesh>>,
+    mut parts: Query<(&mut Mesh3d, &mut Transform, &mut Visibility)>,
+) {
+    let Ok((mut mesh, mut transform, mut visibility)) = parts.get_mut(ghosts.entity) else {
+        return;
+    };
+    let (Some(player), true) = (world.player(), palette.sees_missing(&world)) else {
+        visibility.set_if_neq(Visibility::Hidden);
+        ghosts.built = None;
+        return;
+    };
+    let center = player.pos().boxel();
+    let chunk = center.chunk();
+    if ghosts.built != Some((chunk, hidden.changes)) {
+        let grid = world.universe().main();
+        // The parts that would come back aren't registered yet, so they're made in a copy.
+        let mut blocks = world.blocks().clone();
+        let anchor = chunk.origin();
+        let mut data = mesher::MeshData::default();
+        let r = HIDDEN_RANGE;
+        for (pos, from, missing) in missing_near(grid, &blocks, center, r) {
+            let Ok(id) = blocks.derive(from, &missing, false) else {
+                continue;
+            };
+            let o = Occupant::new(id);
+            let boxes = mesher::alone(o, &blocks);
+            let around = || &boxes;
+            let at = (pos.0 - anchor.0).as_vec3().to_array();
+            let (volumes, off) = (&chunk_meshes.volumes, &mesher::AoTuning::OFF);
+            mesher::mesh_occupant(&mut data, o, at, &blocks, volumes, |_| false, &around, off, &mut mesher::DrawnFaces::default());
+        }
+        mesh.0 = meshes.add(crate::to_bevy_mesh(data));
+        ghosts.built = Some((chunk, hidden.changes));
+    }
+    visibility.set_if_neq(Visibility::Visible);
+    *transform = crate::chunk_transform(chunk, origin.cell);
+}
+
+/// What menders remember within `r` boxels of `center` that's gone: each boxel, the piece
+/// remembered there, and its texels that are gone.
+fn missing_near(grid: &sim::Grid, blocks: &BlockRegistry, center: api::BoxelPos, r: i64) -> Vec<(api::BoxelPos, Occupant, api::ShapeGrid)> {
+    let mut out = Vec::new();
+    let reach = (r + api::CHUNK_SIZE - 1) / api::CHUNK_SIZE;
+    let c = center.chunk().0;
+    for dz in -reach..=reach {
+        for dy in -reach..=reach {
+            for dx in -reach..=reach {
+                let at = ChunkPos(c + api::I64Vec3::new(dx, dy, dz));
+                let Some(chunk) = grid.chunk(at) else {
+                    continue;
+                };
+                for (&index, record) in &chunk.records {
+                    let pos = at.boxel(api::LocalPos::from_index(index as usize));
+                    let d = pos.0 - center.0;
+                    if d.x.abs() > r || d.y.abs() > r || d.z.abs() > r {
+                        continue;
+                    }
+                    let cell = grid.cell(pos);
+                    for (from, shape) in &record.memory {
+                        let mut have = api::ShapeGrid::EMPTY;
+                        for &o in cell {
+                            let (f, s) = blocks.origin(o);
+                            if f == *from {
+                                have = have.union(&s);
+                            }
+                        }
+                        let missing = shape.minus(&have);
+                        if !missing.is_empty() {
+                            out.push((pos, *from, missing));
+                        }
+                    }
+                }
+            }
+        }
+    }
+    out
+}
+
 /// Remeshing at least this many chunks at once is timed for the readout.
 const BIG_REMESH: usize = 64;
 
@@ -529,7 +634,10 @@ pub(crate) fn remesh_changed_chunks(
         chunk_meshes.merged = view.merge_faces;
         changed = grid.chunks().map(|(pos, _)| pos).collect();
     }
-    hidden.dirty |= !changed.is_empty();
+    if !changed.is_empty() {
+        hidden.dirty = true;
+        hidden.changes += 1;
+    }
     let start = std::time::Instant::now();
     let meshed = mesher::mesh_chunks(grid, &changed, world.blocks(), &chunk_meshes.volumes, &ao, view.merge_faces);
     if changed.len() >= BIG_REMESH {
@@ -816,7 +924,7 @@ mod tests {
         // test area's crafted shapes.
         let carried = [
             base::BRICK, base::WOOD, base::BRASS, base::IRON, base::COPPER, base::PHASITE, base::ANTIPHASITE, base::LUMITE,
-            base::BLUE_CRYSTAL, base::GREEN_CRYSTAL,
+            base::BLUE_CRYSTAL, base::GREEN_CRYSTAL, base::CACHITE, base::MENDITE,
         ];
         let start = carried.map(material);
         assert_eq!(entries(&sim), [&[Entry::Tool(club)][..], &start].concat());

@@ -386,6 +386,7 @@ impl Server {
             item_drops: sim.item_drop_def().cloned(),
             inventory: sim.inventory_def().cloned(),
             crafting: sim.crafting_def().cloned(),
+            signals: sim.signal_def().cloned(),
             targets: sim.target_defs().to_vec(),
             tools: sim.tools().to_vec(),
             tuning,

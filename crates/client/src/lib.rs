@@ -50,7 +50,7 @@ use protocol::{ClientMsg, Command, Connection, WorldNote};
 use sim::PlayerInput;
 
 use crate::controls::{Controls, DoubleTapSprint, SprintToggle, label};
-use crate::editing::{ChunkMeshes, Ghost, HiddenGhosts, Palette, PartNames};
+use crate::editing::{ChunkMeshes, Ghost, HiddenGhosts, MendGhosts, Palette, PartNames};
 use crate::feel::{CameraFeel, FeelState, Motion};
 use crate::mesher::MeshData;
 use crate::solid::{ATTRIBUTE_AO, ATTRIBUTE_EDGES, ATTRIBUTE_FACE, ATTRIBUTE_LIGHT, ATTRIBUTE_SOLID, SolidMaterial, SolidPlugin};
@@ -155,7 +155,7 @@ pub fn run(connection: Box<dyn Connection>) {
                 (update_camera, sync_chunk_transforms, view::apply_render_distance, sound::play_sounds).chain(),
                 editing::draw_outline,
                 editing::update_ghost,
-                editing::update_hidden_ghosts,
+                (editing::update_hidden_ghosts, editing::update_mend_ghosts),
                 items::sync_items,
                 (combat::sync_targets, combat::update_chunks, combat::animate_weapon, combat::light_weapon, combat::draw_hit_boxes, combat::draw_routes, combat::update_readout, hurt::update_health)
                     .chain(),
@@ -347,8 +347,22 @@ fn spawn_chunk_meshes(
             .id(),
         around: None,
         dirty: false,
+        changes: 0,
     };
     commands.insert_resource(hidden);
+    let mend_ghosts = MendGhosts {
+        entity: commands
+            .spawn((
+                Mesh3d(meshes.add(to_bevy_mesh(MeshData::default()))),
+                MeshMaterial3d(materials.add(ghost_material(Color::srgba(1.0, 0.55, 0.65, 0.45)))),
+                Transform::default(),
+                Visibility::Hidden,
+                NotShadowCaster,
+            ))
+            .id(),
+        built: None,
+    };
+    commands.insert_resource(mend_ghosts);
     let grid = world.universe().main();
     let mut entities = std::collections::HashMap::new();
     let mut quads = std::collections::HashMap::new();

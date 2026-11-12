@@ -6,6 +6,7 @@ use std::collections::HashMap;
 use api::{BoxelPos, CHUNK_VOLUME, ChunkPos};
 
 use crate::cell::{CellId, CellTable, Occupant};
+use crate::mend::Record;
 use crate::{BlockId, Layer, Light};
 
 /// Identifies a grid. The main world is one grid among many; sub-grids and pocket
@@ -25,12 +26,15 @@ pub struct Chunk {
     /// How much light reaches each boxel (see [`crate::light`]). Worked out from the cells, so
     /// never saved.
     pub light: Layer<Light>,
+    /// What the few boxels with storage or a mender's memory keep (see [`crate::mend`]), by
+    /// their index in the chunk.
+    pub records: HashMap<u16, Record>,
 }
 
 impl Chunk {
     /// Nothing in it, lit by the open sky like a missing chunk.
     pub fn empty() -> Self {
-        Self { cells: Layer::Uniform(CellId::EMPTY), light: Layer::Uniform(Light::SKY) }
+        Self { cells: Layer::Uniform(CellId::EMPTY), light: Layer::Uniform(Light::SKY), records: HashMap::new() }
     }
 }
 
@@ -46,6 +50,8 @@ pub struct ChunkData {
     /// Each boxel's light. A grid that works its light out itself, as a simulation does, makes
     /// it again; a client keeps what it's sent.
     pub light: Layer<Light>,
+    /// Each boxel's record that has one, by its index in the chunk, in index order.
+    pub records: Vec<(u16, Record)>,
 }
 
 /// A volume of boxels made of chunks. Missing chunks read as empty, under the open sky.
@@ -87,6 +93,25 @@ impl Grid {
     pub fn light(&self, pos: BoxelPos) -> Light {
         let (chunk, local) = pos.split();
         self.chunk(chunk).map_or(Light::SKY, |c| c.light.get(local))
+    }
+
+    /// The record of the boxel at `pos`, if it has one.
+    pub fn record(&self, pos: BoxelPos) -> Option<&Record> {
+        let (chunk, local) = pos.split();
+        self.chunk(chunk)?.records.get(&(local.index() as u16))
+    }
+
+    /// Replaces the record of the boxel at `pos`; an empty one is taken away.
+    pub fn set_record(&mut self, pos: BoxelPos, record: Record) {
+        let (chunk, local) = pos.split();
+        let key = local.index() as u16;
+        if record.is_empty() {
+            if let Some(&slot) = self.slots.get(&chunk) {
+                self.chunks[slot].records.remove(&key);
+            }
+            return;
+        }
+        self.chunk_or_empty(chunk).records.insert(key, record);
     }
 
     /// The chunk at `pos`, made empty if it's missing.
@@ -152,7 +177,9 @@ impl Grid {
             }
         };
         let light = chunk.map_or(Layer::Uniform(Light::SKY), |c| c.light.clone());
-        ChunkData { pos, lists, cells, light }
+        let mut records: Vec<(u16, Record)> = chunk.map_or(Vec::new(), |c| c.records.iter().map(|(&i, r)| (i, r.clone())).collect());
+        records.sort_by_key(|(i, _)| *i);
+        ChunkData { pos, lists, cells, light, records }
     }
 
     /// Replaces the chunk at `data.pos` with `data`, its light included.
@@ -165,7 +192,8 @@ impl Grid {
                 Layer::Dense(values.iter().map(|&i| ids[i as usize]).collect())
             }
         };
-        *self.chunk_or_empty(data.pos) = Chunk { cells, light: data.light.clone() };
+        let records = data.records.iter().cloned().collect();
+        *self.chunk_or_empty(data.pos) = Chunk { cells, light: data.light.clone(), records };
     }
 
     /// Drops the chunk at `pos`, leaving it empty.

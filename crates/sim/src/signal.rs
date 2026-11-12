@@ -58,7 +58,7 @@ pub fn has(grid: &Grid, blocks: &BlockRegistry, pos: BoxelPos, property: Propert
     grid.cell(pos).iter().any(|&o| !blocks.is_hidden(o.block) && has_property(blocks, o, property))
 }
 
-fn has_property(blocks: &BlockRegistry, o: Occupant, property: Property) -> bool {
+pub(crate) fn has_property(blocks: &BlockRegistry, o: Occupant, property: Property) -> bool {
     blocks.get(o.block).is_some_and(|d| d.has(property))
 }
 
@@ -70,13 +70,18 @@ pub struct Piece {
 }
 
 /// The texels a piece fills in its boxel.
-fn texels(blocks: &BlockRegistry, o: Occupant) -> ShapeGrid {
+pub(crate) fn texels(blocks: &BlockRegistry, o: Occupant) -> ShapeGrid {
     blocks.origin(o).1
 }
 
 /// The phase group of `start`: every phase piece of the same material, shown or hidden, joined
 /// to it through pieces touching face to face, across boxels too. `start` first.
 pub fn group(grid: &Grid, blocks: &BlockRegistry, start: Piece) -> Vec<Piece> {
+    group_with(grid, blocks, start, Property::Phase)
+}
+
+/// Like [`group`], for pieces with `property` instead of phase.
+pub fn group_with(grid: &Grid, blocks: &BlockRegistry, start: Piece, property: Property) -> Vec<Piece> {
     let material = blocks.made_of(start.occupant.block);
     let mut out = vec![start];
     let mut seen = HashSet::from([start]);
@@ -90,7 +95,7 @@ pub fn group(grid: &Grid, blocks: &BlockRegistry, start: Piece) -> Vec<Piece> {
                 if out.len() >= MAX_GROUP || seen.contains(&q) {
                     continue;
                 }
-                if !has_property(blocks, o, Property::Phase) || blocks.made_of(o.block) != material {
+                if !has_property(blocks, o, property) || blocks.made_of(o.block) != material {
                     continue;
                 }
                 if touches(&a, &texels(blocks, o), side) {
@@ -230,7 +235,7 @@ pub struct Undo(HashMap<BoxelPos, Vec<Occupant>>);
 
 impl Undo {
     /// Keeps the boxel at `pos` as it is now, unless it's kept already.
-    fn save(&mut self, grid: &Grid, pos: BoxelPos) {
+    pub(crate) fn save(&mut self, grid: &Grid, pos: BoxelPos) {
         self.0.entry(pos).or_insert_with(|| grid.cell(pos).to_vec());
     }
 
@@ -445,7 +450,7 @@ fn show_part(
 }
 
 /// The occupant for the part of `from` filling `shape`: `from` itself when shown and whole.
-fn part(blocks: &mut BlockRegistry, from: Occupant, shape: &ShapeGrid, hidden: bool) -> Option<Occupant> {
+pub(crate) fn part(blocks: &mut BlockRegistry, from: Occupant, shape: &ShapeGrid, hidden: bool) -> Option<Occupant> {
     if !hidden && *shape == blocks.shape(from.block).turned(from.orientation) {
         return Some(from);
     }
@@ -454,7 +459,7 @@ fn part(blocks: &mut BlockRegistry, from: Occupant, shape: &ShapeGrid, hidden: b
 
 /// Joins the parts of one piece in a boxel: shown parts of the same piece become one (the
 /// piece itself once whole), and hidden parts likewise, each where the first of them was.
-fn join(cell: &mut Vec<Occupant>, blocks: &mut BlockRegistry) {
+pub(crate) fn join(cell: &mut Vec<Occupant>, blocks: &mut BlockRegistry) {
     let mut out: Vec<Occupant> = Vec::with_capacity(cell.len());
     for o in cell.drain(..) {
         let Some(d) = blocks.derived(o.block).cloned() else {

@@ -6,7 +6,7 @@ use std::collections::HashSet;
 use api::{ApiError, ChunkPos, I64Vec3, Tunables};
 
 use super::Simulation;
-use crate::save::{Made, SaveData, SavedBlueprint, SavedChange, SavedChunk, SavedDesign, SavedItem, SavedPlayer, SavedThing};
+use crate::save::{Made, SaveData, SavedBlueprint, SavedChange, SavedChunk, SavedDesign, SavedItem, SavedPlayer, SavedRecord, SavedThing};
 use crate::{Blueprint, BlockRegistry, Cells, Change, ChunkData, Design, Drop, Inventory, Layer, Library, Light, Occupant, Piece, Recipe, Thing};
 
 /// What a load couldn't bring back. Nothing here stops a load: a block from a mod that's gone
@@ -207,6 +207,8 @@ impl Simulation {
         if !older.is_empty() {
             self.stream.store().put(older);
         }
+        // A save from before records has none; one with them keeps what it remembered.
+        self.remember_all();
 
         if let (Some(player), Some(saved)) = (self.player.as_mut(), &save.player) {
             player.teleport(saved.pos);
@@ -283,7 +285,16 @@ impl Simulation {
 pub(crate) fn name_chunk(blocks: &BlockRegistry, data: &ChunkData) -> SavedChunk {
     let name = |id| blocks.get(id).map_or(String::new(), |def| def.name.clone());
     let lists = data.lists.iter().map(|list| list.iter().map(|o| (name(o.block), o.orientation)).collect()).collect();
-    SavedChunk { pos: data.pos, lists, cells: data.cells.clone() }
+    let records = data
+        .records
+        .iter()
+        .map(|(index, r)| SavedRecord {
+            index: *index,
+            stored: r.stored.iter().map(|&(m, a)| (blocks.material_name(m).to_owned(), a)).collect(),
+            memory: r.memory.iter().map(|(o, s)| (name(o.block), o.orientation, s.clone())).collect(),
+        })
+        .collect();
+    SavedChunk { pos: data.pos, lists, cells: data.cells.clone(), records }
 }
 
 /// `chunk` with its names looked up, unlit. A name no mod registers is left out of its
@@ -304,7 +315,28 @@ pub(crate) fn unname_chunk(blocks: &BlockRegistry, chunk: &SavedChunk, report: &
                 .collect()
         })
         .collect();
-    ChunkData { pos: chunk.pos, lists, cells: chunk.cells.clone(), light: Layer::Uniform(Light::SKY) }
+    let records = chunk
+        .records
+        .iter()
+        .map(|r| {
+            let mut record = crate::Record::default();
+            for (name, amount) in &r.stored {
+                match blocks.material(name) {
+                    Some(m) => record.add(m, *amount),
+                    None => report.skip(format!("stored {name}")),
+                }
+            }
+            for (name, orientation, shape) in &r.memory {
+                match blocks.id(name) {
+                    Some(id) => record.memory.push((Occupant::turned(id, *orientation), shape.clone())),
+                    None => report.skip(format!("remembered block {name}")),
+                }
+            }
+            (r.index, record)
+        })
+        .filter(|(_, r)| !r.is_empty())
+        .collect();
+    ChunkData { pos: chunk.pos, lists, cells: chunk.cells.clone(), light: Layer::Uniform(Light::SKY), records }
 }
 
 /// `library` by name.
