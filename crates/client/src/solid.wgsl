@@ -81,12 +81,19 @@ struct VertexOutput {
     // Centroid: with MSAA a pixel on a quad's edge is shaded where it's covered, so the look
     // position stays on the quad and its wrap (see `fragment`) never reaches the next boxel's.
     @location(1) @interpolate(perspective, centroid) solid: vec4<f32>,
-    @location(2) world_position: vec3<f32>,
+    // The rest that change across a quad are centroid too: shaded at a pixel's middle, off the
+    // triangle, they'd run past its corners' values, and stored light below 0 turns to NaN in
+    // `pow` (black and colored specks where a lamp's light ends).
+    @location(2) @interpolate(perspective, centroid) world_position: vec3<f32>,
     @location(3) world_normal: vec3<f32>,
     @location(4) @interpolate(flat) edges: vec4<u32>,
-    @location(5) face: vec4<f32>,
-    @location(6) light: vec4<f32>,
+    @location(5) @interpolate(perspective, centroid) face: vec4<f32>,
+    @location(6) @interpolate(perspective, centroid) light: vec4<f32>,
     @location(7) @interpolate(flat) ao: vec4<u32>,
+    // The look position again, not centroid, for how it changes across the screen: centroid
+    // points jump about within pixels on a triangle's edge, so their differences there are
+    // wrong, picked the wrong slice or mip level and drew dashes along quads' diagonals.
+    @location(8) solid_smooth: vec3<f32>,
 };
 
 @vertex
@@ -99,6 +106,7 @@ fn vertex(vertex: Vertex) -> VertexOutput {
     out.world_normal = mesh_normal_local_to_world(vertex.normal, vertex.instance_index);
     out.color = vertex.color;
     out.solid = vertex.solid;
+    out.solid_smooth = vertex.solid.xyz;
     out.edges = vertex.edges;
     out.face = vertex.face * FACE_SCALE;
     out.light = vertex.light;
@@ -188,8 +196,8 @@ fn wrap(cell: vec3<i32>) -> vec3<i32> {
 fn look_color(in: VertexOutput, volume: i32) -> vec3<f32> {
     let solid = in.solid.xyz;
     // Across a face the look position changes on its two axes but not along the normal.
-    let dx = dpdx(solid);
-    let dy = dpdy(solid);
+    let dx = dpdx(in.solid_smooth);
+    let dy = dpdy(in.solid_smooth);
     let change = abs(dx) + abs(dy);
     var axis = 0;
     if change.y < change.x && change.y <= change.z {
@@ -295,7 +303,7 @@ fn fragment(in: VertexOutput) -> @location(0) vec4<f32> {
     let parts = atmosphere.parts;
     var rgb = base.rgb;
     // An item's own stored light comes in through `light`; the world's meshes carry theirs.
-    let l = lit(in.world_position, normal, min(in.light + light, vec4<f32>(1.0)));
+    let l = lit(in.world_position, normal, clamp(in.light + light, vec4<f32>(0.0), vec4<f32>(1.0)));
     let sun = l.sun;
     if parts.w > 0.5 {
         rgb *= l.light;

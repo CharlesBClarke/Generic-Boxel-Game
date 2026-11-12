@@ -170,7 +170,7 @@ fn sky_reach(a: Atmosphere, stored_sky: f32) -> f32 {
     if a.stored_on.x < 0.5 {
         return 1.0;
     }
-    return pow(stored_sky, a.stored.y);
+    return pow(max(stored_sky, 0.0), a.stored.y);
 }
 
 // Light from blocks that give light, from the face's stored red, green and blue (0 to 1), plus
@@ -179,7 +179,7 @@ fn block_light(a: Atmosphere, stored_rgb: vec3<f32>) -> vec3<f32> {
     if a.stored_on.x < 0.5 {
         return vec3<f32>(0.0);
     }
-    return pow(stored_rgb, vec3<f32>(a.stored.z)) * a.stored.x + vec3<f32>(a.stored.w);
+    return pow(max(stored_rgb, vec3<f32>(0.0)), vec3<f32>(a.stored.z)) * a.stored.x + vec3<f32>(a.stored.w);
 }
 
 // Light from the sky and ground on a surface facing `normal` (unit): the sky's above, the

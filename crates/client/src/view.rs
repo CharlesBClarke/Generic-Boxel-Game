@@ -130,8 +130,9 @@ pub(crate) fn apply_tone_mapper(view: Res<ViewTuning>, mut cameras: Query<&mut T
 /// `switches`); not saved.
 #[derive(Resource, Clone, Copy, Debug, PartialEq)]
 pub struct ViewSwitches {
-    /// 4× multisample anti-aliasing, Bevy's default; off, edges are jagged but each pixel is
-    /// shaded once however many triangles touch it.
+    /// 4× multisample anti-aliasing. Off by default (Bevy's is on): it cost ~11 ms at 720p on
+    /// the Iris Xe and matters little for the blocky look; off, edges are jagged but each pixel
+    /// is shaded once however many triangles touch it.
     pub msaa: bool,
     /// Depth drawn first in a pass of its own, so the main pass shades only what ends up seen.
     pub depth_prepass: bool,
@@ -142,7 +143,7 @@ pub struct ViewSwitches {
 
 impl Default for ViewSwitches {
     fn default() -> Self {
-        Self { msaa: true, depth_prepass: false, merge_faces: true }
+        Self { msaa: false, depth_prepass: false, merge_faces: true }
     }
 }
 
@@ -150,8 +151,8 @@ impl ViewSwitches {
     /// What differs from the default, for a perf recording; empty if nothing does.
     pub fn changed(&self) -> Vec<&'static str> {
         let mut out = Vec::new();
-        if !self.msaa {
-            out.push("msaa off");
+        if self.msaa {
+            out.push("msaa on");
         }
         if self.depth_prepass {
             out.push("depth prepass");
