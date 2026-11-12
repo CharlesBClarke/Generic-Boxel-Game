@@ -123,3 +123,44 @@ fn breaking_the_bin_loses_none_of_what_it_held() {
         assert_eq!(loose_stone(&sim), before, "none lost breaking {pos:?}");
     }
 }
+
+/// Places `block` against the `point` of boxel `cell`'s face, aiming from where the player stands.
+fn place(sim: &mut Simulation, cell: BoxelPos, point: [f32; 3], block: sim::BlockId) {
+    let to = sim.player().unwrap().eye().delta_to(WorldPos::new(cell.0, Vec3::from_array(point)));
+    let (yaw, pitch) = (to.y.atan2(to.x), to.z.atan2(to.truncate().length()));
+    assert_eq!(sim.target(yaw, pitch).expect("in reach").pos, cell, "aimed at the right boxel");
+    sim.step(&PlayerInput { yaw, pitch, alt_pressed: true, alt_held: true, place_block: block, ..Default::default() });
+    sim.step(&PlayerInput::default());
+}
+
+#[test]
+fn crystals_that_fire_the_moment_they_touch_are_remembered_and_mended() {
+    let mut sim = base_sim();
+    let blocks = sim.blocks();
+    let (mendite, blue) = (blocks.id(base::MENDITE).unwrap(), blocks.id(base::BLUE_CRYSTAL).unwrap());
+    // Mendite on the bin's east end, beside where a blue crystal will go against the second lens.
+    stand(&mut sim, 9, -1);
+    place(&mut sim, lab(10, 2, -1), [0.5, 0.5, 1.0], mendite);
+    assert!(!cell(&sim, lab(10, 2, 0)).is_empty(), "the mendite went down");
+    sim.take_blasts();
+    place(&mut sim, lab(11, 1, 0), [0.0, 0.5, 0.5], blue);
+    assert_eq!(sim.take_blasts().len(), 1, "fired as it touched");
+    assert!(cell(&sim, lab(10, 1, 0)).is_empty() && cell(&sim, lab(11, 1, 0)).is_empty(), "both used up");
+    let grid = sim.universe().main();
+    let remembered = |pos| grid.record(pos).map_or(0, |r: &sim::Record| r.remembered());
+    assert_eq!(remembered(lab(10, 1, 0)), 16 * 16, "the blue's skin against the mendite");
+    assert!(remembered(lab(11, 1, 0)) > 0, "the green's edge, corner to corner");
+
+    // With crystal in the bin, the lever mends them, and they fire again.
+    let (b, g) = (sim.blocks().material(base::BLUE_CRYSTAL).unwrap(), sim.blocks().material(base::GREEN_CRYSTAL).unwrap());
+    let over = WorldPos::new(lab(10, 0, 0).0, Vec3::new(0.5, 0.5, 0.3));
+    stand(&mut sim, 0, -8);
+    sim.spawn_item(b, 4096, over);
+    sim.spawn_item(g, 4096, over);
+    wait(&mut sim, 60);
+    stand(&mut sim, 7, 0);
+    let plan = sim.view().mend_plan(lab(7, 2, 0)).unwrap();
+    assert!(plan.as_ref().is_ok_and(|m| m.texels > 0), "{plan:?}");
+    interact(&mut sim, lab(7, 2, 0), [0.5, 0.0, 0.5]);
+    assert_eq!(sim.take_blasts().len(), 1, "mended, they touched and fired again");
+}

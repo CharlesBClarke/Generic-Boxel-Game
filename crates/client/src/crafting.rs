@@ -335,7 +335,6 @@ fn mend_words(world: &ClientWorld, pos: BoxelPos, def: &api::BlockDef) -> Vec<St
         use sim::MendRefusal::*;
         match plan {
             Ok(m) if m.texels > 0 => out.push(format!("mends {} texels", m.texels)),
-            Ok(m) if m.remembered > 0 => out.push("nothing to mend".into()),
             Ok(_) => {}
             Err(Short(short)) => {
                 let list: Vec<String> = short.iter().map(|&(m, n)| texels_of(world, m, n)).collect();

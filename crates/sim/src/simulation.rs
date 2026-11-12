@@ -633,6 +633,8 @@ impl Simulation {
         }
         self.edit_blocks(input);
         self.interact(input);
+        // Menders remember what was placed or came back before crystals can use it up.
+        self.update_records();
         self.react();
         self.use_tool(input);
         self.throw(input);
