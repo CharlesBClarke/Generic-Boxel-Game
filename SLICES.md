@@ -104,7 +104,48 @@ A run of small toy slices. Each one takes a single game-feel feature that doesn'
 
 ### Current toy
 
-*None in progress.* Next, picked 2026-11-12: Loading by cube (under Infrastructure, with notes from Far terrain). Plan it in a new session.
+**Loading by cube** (infrastructure, `toy-loading-by-cube`). **Stage:** Verify (2026-11-12; built and tested, waiting for the bench's go and the user's play). Pitch and notes under Infrastructure.
+
+**Goal:** terrain loads by chunk in every direction, with no height limit, lit correctly and solid all the way down.
+
+**Plan** (approved 2026-11-12)
+- **Split:** this toy is loading, light and no height limit. The octree, picking levels by size on screen and the fill score follow as the next toy, Far terrain by cube.
+- **"Solid"** (the user confirmed the reading): stone goes down forever, and unloaded chunks below the tops are dark walls for light, so no sky leaks into a deep shaft. Faces against missing chunks are still drawn, as before.
+- **Tops map** (`sim::tops`): for every X and Y, the Z of the highest boxel that stops falling light (covers its top or bottom face), from a new required `api::Generator::tops` plus edits. A column can say "nothing here". Where edits differ from the generator the difference is saved (format bump). Each column's tops are versioned, so a chunk lit on a worker while an edit moved them is lit again when it joins.
+- **Light** (`sim::light`): a missing chunk is open sky above the tops and a dark wall below. Chunks are lit alone on workers and joined at their faces.
+- **Streaming** (`sim::stream`): by chunk within a sphere of the load distance, nearest first in 3D, taking a list of centers (one player for now, shaped for several). `terrain_height` and `rows` go; old saves and tuning files naming it load quietly. A body holds still while its chunk, or the one under it, is still to come.
+- **One terrain per grid:** a second `add_terrain` is an error; layers by depth are the generator's business, other worlds are other grids.
+- **Client:** the server sends each column's tops with its chunks and when an edit changes them; a chunk waits for its 26 neighbours (or a second) before meshing; the far-shadow height map reads the sent tops; render distance hides by 3D distance.
+- **Far terrain adapter** (temporary, in the API debt list): far columns take their height range from the tops; a full-detail column is ready when the chunks holding its surface are loaded and meshed, else far terrain shows there; underground chunks always draw.
+- **Tests:** tops match the generator's fill, move with place and break, survive save, load and unload; chunks lit apart and joined equal lighting together on a rough 3D world with overhangs; a deep shaft stays dark beside missing chunks; a roof whose chunks are unloaded still shades; the sphere is wanted nearest first and dropped past the margin; edited chunks come back from the store; a body waits over an unloaded chunk; tops reach the client before the chunks that need them.
+
+**Changed from the plan while building** (2026-11-12)
+- *Faces against ground that isn't loaded aren't drawn.* The plan kept them ("as before"); the user's answer to which was "sure", taken as the simpler one with the bench to judge. The streaming harness judged first: the rock at the edge of the loaded sphere was most of the meshing (flying 30 m/s for 20 s: 14.8 s of mesher thread time, 3,115 meshes with faces; with unloaded ground counted as solid 6.0 s and 1,414). So a missing chunk's boxels at or under their column's top count as full blocks in the mesher (`FullBoxels`, `buried`). Wrong only where air under the tops isn't loaded (under a floating island, in a cave), at the edge of what's loaded.
+- *Tops live in the chunk store*, under a chunk row no chunk uses, not in `world.bin`: they follow saves, loads and Regenerate with the edited chunks, and the terrain threads read them. Save version 6 (same layout) so older builds refuse the world rather than misread its store.
+- *Teleporting only lifts the player out of loaded ground.* Somewhere unloaded may be a tunnel; if it turns out to be rock the player comes out on top when it loads.
+- *Far terrain's stand-in* draws a full-detail column when the chunks in its surface rows (the rows most of its tops are in, leaving out the lowest and highest hundredth) are loaded and meshed. Known limit until Far terrain by cube: a pit or tower more than about 250 m deep or tall that takes up over a hundredth of a 32 m column is drawn coarse at its far end.
+
+**Verify notes** (2026-11-12)
+- Tests: the whole workspace passes; clippy clean. New: `sim/tests/cubes.rs` (a sealed room 1 km down loads and is dark, an endless shaft is lit through chunks that aren't loaded, a roof that isn't loaded shades, loading 5 km up, a body waits over an unloaded chunk, one terrain a world), light unit tests (chunks lit alone and joined equal lighting together at every step, tops follow placing and breaking), tops through unload, save, load and Regenerate, the server sending tops before the chunks under them, the per-chunk background mesher.
+- Headless timing (release, `meshing::stream_timing`): the default sphere is 3,072 chunks (4,070 before); flying 30 m/s the server tick averages 1.7 ms (worst 7.3 ms), joining 0.46 s over 20 s.
+- Bench (2026-11-13, `--quick master work`, set `shipped`, 512 m of full detail, after the fix below):
+
+  | spot | master ms | work ms | change | master 1% | work 1% |
+  |---|---|---|---|---|---|
+  | recorded | 22.4 | 23.7 | +6% | 36.0 | 38.8 |
+  | overlook | 24.6 | 25.6 | +4% | 37.6 | 37.0 |
+  | lake | 20.6 | 20.7 | +0% | 43.2 | 44.4 |
+
+  All within noise (10% at `recorded`, 5% elsewhere); GPU clocks matched, nothing throttled. Triangles about the same (4.11M against 4.15M at `recorded`), chunks drawn fewer (2,307 against 3,463: no full columns of air and buried rock). `tools/bench/bench.txt` still sets `world.terrain_height = 6` for older builds; this branch ignores it, so the screenshots differ where master's peaks are cut flat at 96 m and this branch's come to points (criterion 2, seen at `overlook`).
+- *Fixed during Verify:* the first bench run measured `recorded` while still loading (it hit the 90 s timeout: 1% low 10.4 fps, GPU throttled to 710 MHz, no screenshot). The 512 m sphere is ~20,600 chunks, against ~5,400 in master's 6-tall columns there, and `Stream` scanned the whole wanted list twice for every chunk brought in. It now keeps a cursor past the loaded ones: 512 m loads headless in 5.5 s (was 18.7 s), 256 m in 1.0 s. `sim/tests/terrain.rs` has `time_the_bench_terrain` beside `time_the_full_terrain`.
+- Play checks: waiting for the user.
+
+**Done when**
+1. You can dig or fall well past 256 m down and fly above the old ceiling, with terrain loading around you in every direction.
+2. Mountains are no longer cut flat at the old height.
+3. Underground is dark: no sky light leaks at the edge of what's loaded, in a deep shaft or a cave you dig.
+4. Flying high, the ground below stays drawn (as far terrain) with no holes.
+5. Frame rate and loading are no worse than master on the bench.
 
 **Waiting for a play check** (remind the user at the start of every session, and at good moments during one, until they confirm; then delete the line):
 - None right now.

@@ -12,7 +12,6 @@ fn base_sim() -> Simulation {
     let mods: [&dyn Mod; 4] = [&data, &base::BaseMod, &base_cow::BaseCowMod, &base_movement::BaseMovementMod];
     let mut sim = Simulation::with_mods(&mods).expect("base mod loads");
     sim.spawn_player().expect("base registers a player");
-    sim.world_settings_mut().terrain_height = 16;
     sim.set_view_distance(32.0, 0.0);
     sim
 }
@@ -98,7 +97,9 @@ fn dig_terrain(sim: &mut Simulation) -> ChunkPos {
     below.split().0
 }
 
-/// The same boxels, by block name and turn, in both worlds; every chunk either has.
+/// The same boxels, by block name and turn, in both worlds: every built chunk either has, and
+/// every chunk of terrain both have loaded (which chunks are, at the edge of the load distance,
+/// depends on where the player came from).
 fn assert_same_world(a: &Simulation, b: &Simulation) {
     let chunks = |s: &Simulation| s.universe().main().chunks().map(|(p, _)| p.0.to_array()).collect::<BTreeSet<_>>();
     let all: BTreeSet<_> = chunks(a).union(&chunks(b)).copied().collect();
@@ -106,14 +107,33 @@ fn assert_same_world(a: &Simulation, b: &Simulation) {
         let cell = s.universe().main().cell(pos);
         cell.iter().map(|o| (s.blocks().get(o.block).unwrap().name.clone(), o.orientation)).collect::<Vec<_>>()
     };
+    let mut terrain = 0;
     for c in all {
         let chunk = ChunkPos(I64Vec3::from_array(c));
+        if a.is_terrain_place(chunk) {
+            if !(a.is_terrain(chunk) && b.is_terrain(chunk)) {
+                continue;
+            }
+            terrain += 1;
+        }
         for i in 0..CHUNK_VOLUME {
             let pos = BoxelPos(chunk.0 * api::CHUNK_SIZE + LocalPos::from_index(i).to_ivec());
             let (x, y) = (named(a, pos), named(b, pos));
             assert_eq!(x, y, "at {pos:?}");
         }
     }
+    let loaded = a.stream_stats().chunks.min(b.stream_stats().chunks);
+    assert!(terrain * 10 >= loaded * 8, "most of the terrain is loaded in both: {terrain} of {loaded}");
+    // And the same tops over every column both know, edits' marks on them included.
+    let (ours, theirs) = (&a.universe().main().tops, &b.universe().main().tops);
+    let mut columns = 0;
+    for (at, tops) in ours.columns() {
+        if let Some(other) = theirs.column(at.0, at.1) {
+            columns += 1;
+            assert!(tops == other, "tops over column {at:?}");
+        }
+    }
+    assert!(terrain == 0 || columns > 0, "some columns' tops are known in both");
 }
 
 fn inventory_by_name(sim: &Simulation) -> Vec<(String, u32)> {
@@ -187,7 +207,7 @@ fn loading_undoes_what_changed_since_the_save() {
 #[test]
 fn the_terrain_comes_back_with_the_values_it_was_saved_with() {
     let mut sim = base_sim();
-    sim.world_settings_mut().terrain_height = 12;
+    sim.world_settings_mut().sim_distance = 123.0;
     let seed = sim.generator_names().position(|n| n == base::terrain::HILLS).unwrap();
     assert!(sim.tune_generator(seed, "seed", 9.0));
     dig_terrain(&mut sim);
@@ -195,10 +215,11 @@ fn the_terrain_comes_back_with_the_values_it_was_saved_with() {
     let mut other = base_sim();
     other.set_chunk_store(std::sync::Arc::clone(sim.chunk_store()));
     other.load(&save).unwrap();
-    assert_eq!(other.world_settings().terrain_height, 12);
+    assert_eq!(other.world_settings().sim_distance, 123.0);
     assert!(other.generator_tunables(seed).iter().any(|t| t.name == "seed" && t.value == 9.0));
     other.stream_all();
-    assert_eq!(other.stream_stats().columns, sim.stream_stats().columns, "loaded around where the player was saved");
+    let here = other.player().unwrap().pos().boxel().chunk();
+    assert!(other.is_terrain(here) && other.stream_stats().waiting == 0, "loaded around where the player was saved");
     assert_same_world(&sim, &other);
 }
 
@@ -310,6 +331,7 @@ fn loading_undoes_edits_unloaded_since_the_save() {
     sim.teleport_player(here);
     sim.stream_all();
     assert!(!sim.universe().main().cell(below).is_empty(), "the hole dug since the save is gone");
+    assert_eq!(sim.universe().main().tops.top(below.0.x, below.0.y), Some(below.0.z), "and its mark on the tops with it");
     assert!(sim.chunk_store().read(first).unwrap().is_some(), "the saved one stays");
 }
 
@@ -326,6 +348,7 @@ fn regenerating_drops_stored_edits_until_a_load_brings_them_back() {
     sim.load(&save).unwrap();
     sim.stream_all();
     assert!(sim.universe().main().cell(below).is_empty(), "back as saved");
+    assert_eq!(sim.universe().main().tops.top(below.0.x, below.0.y), Some(below.0.z - 1), "the tops too");
 }
 
 #[test]

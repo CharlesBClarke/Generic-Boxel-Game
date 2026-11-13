@@ -15,7 +15,7 @@ use crate::crafting::{Craft, CraftPlan, CraftRefusal};
 use crate::edit::{ChangedChunks, Repeater};
 use crate::inventory::{Inventory, capacity_units};
 use crate::items::{Collector, Items, pop_velocity};
-use crate::stream::{Column, SharedGenerator, Stream, StreamStats};
+use crate::stream::{SharedGenerator, Stream, StreamStats};
 use crate::terrain::WorldSettings;
 use crate::clock::Clock;
 use crate::view::{GridTerrain, PlaceTarget, View, bodies_clear};
@@ -25,6 +25,9 @@ use crate::{
 };
 
 pub(crate) mod save;
+mod tops;
+
+pub use tops::TopsNews;
 
 pub use save::LoadReport;
 
@@ -98,11 +101,20 @@ pub struct Simulation {
     /// Terrain generators by name, in registration order, shared with the threads that
     /// generate terrain.
     generators: Vec<(String, SharedGenerator)>,
-    /// Where generated terrain goes, as the mods placed it.
+    /// Where generated terrain goes, as the mods placed it: one at most, since terrain goes on
+    /// forever every way. Layers by depth are a generator's own business, and other worlds are
+    /// other grids.
     terrains: Vec<TerrainDef>,
-    /// Which columns of terrain are loaded around the player, and the rest of streaming.
+    /// Which chunks of terrain are loaded around the player, and the rest of streaming.
     stream: Stream,
-    /// Coarse terrain past the loaded columns, for the view to reach far.
+    /// Chunk columns whose tops (see [`crate::tops`]) edits have moved since they were last
+    /// put in the chunk store.
+    tops_dirty: HashSet<(i64, i64)>,
+    /// Chunk columns whose tops are new or changed, and ones dropped, since
+    /// [`Simulation::take_tops`] last asked.
+    tops_set: HashSet<(i64, i64)>,
+    tops_dropped: Vec<(i64, i64)>,
+    /// Coarse terrain past the loaded chunks, for the view to reach far.
     far: crate::far::Far,
     world: WorldSettings,
     /// The time of day.
@@ -302,9 +314,9 @@ impl Simulation {
         add_controller(&mut self.controllers, name, controller)
     }
 
-    /// Makes the terrain again from scratch with its current tuning: every column is dropped
+    /// Makes the terrain again from scratch with its current tuning: every chunk is dropped
     /// (edits in them are lost, stored ones too, until a load brings back the last save) and
-    /// the columns around the player load again, those within [`Simulation::NEAR`] before this
+    /// the chunks around the player load again, those within [`Simulation::NEAR`] before this
     /// returns and the rest over the next ticks. Fails if generating failed.
     pub fn generate_terrain(&mut self) -> Result<StreamStats, ApiError> {
         self.stream.store().forget().map_err(ApiError::Storage)?;
@@ -321,29 +333,25 @@ impl Simulation {
     /// [`Simulation::load`]'s callers wait for: the ground underfoot and a little around it.
     pub const NEAR: f32 = 48.0;
 
-    /// Seconds a tick may spend bringing generated columns in, beyond the first.
+    /// Seconds a tick may spend bringing generated chunks in, beyond the first.
     const STREAM_BUDGET: f32 = 0.004;
 
-    /// Drops every column of terrain and forgets the edits loaded in it, so it's made again
-    /// (from scratch, or from the store) as it streams back in.
+    /// Drops every chunk of terrain and forgets the edits loaded in it and every column's tops,
+    /// so it's made again (from scratch, or from the store) as it streams back in.
     fn drop_terrain(&mut self) {
-        let height = self.world.terrain_height;
-        let rows: Vec<_> = self.terrains.iter().map(|def| crate::stream::rows(def, self.stream.height())).collect();
-        for column in self.stream.reset(height) {
-            let grid = self.universe.main_mut();
-            let chunks: Vec<ChunkPos> = column.chunks(rows[column.terrain].clone()).collect();
-            for &pos in &chunks {
-                grid.remove_chunk(pos);
-                self.changed.forget_edits(pos);
-            }
-            self.stream.drop_column(column, chunks.into_iter());
+        for pos in self.stream.reset() {
+            self.universe.main_mut().remove_chunk(pos);
+            self.changed.forget_edits(pos);
+            self.stream.drop_chunk(pos);
         }
+        self.forget_tops();
         self.far.reset();
     }
 
-    /// Where terrain loads around: the player, or the spawn point without one.
-    fn stream_center(&self) -> WorldPos {
-        self.player.as_ref().map_or(self.spawn, |p| p.pos())
+    /// Where terrain loads around: each player, or the spawn point without one. One player
+    /// for now.
+    fn stream_centers(&self) -> Vec<WorldPos> {
+        vec![self.player.as_ref().map_or(self.spawn, |p| p.pos())]
     }
 
     /// Sets how far a client's view reaches: full detail out to `detail` meters (terrain is
@@ -365,50 +373,48 @@ impl Simulation {
         self.stream.radius
     }
 
-    /// Streams the terrain one step: drops columns left far behind, asks for the nearest ones
+    /// Streams the terrain one step: drops chunks left far behind, asks for the nearest ones
     /// missing, and brings in what has been generated, within a budget. With `wait`, keeps
-    /// going until every wanted column within that many meters is in.
+    /// going until every wanted chunk within that many meters is in.
     pub fn stream_terrain(&mut self, wait: Option<f32>) {
         let start = std::time::Instant::now();
-        self.stream.follow_height(self.world.terrain_height);
-        let center = self.stream_center();
-        for column in self.stream.too_far(center) {
-            self.drop_column(column);
+        let Some((generator, terrain)) = self.terrain() else { return };
+        let mut centers = self.stream_centers();
+        for pos in self.stream.too_far(&centers) {
+            self.drop_chunk(pos);
         }
-        self.stream.wanted(center, self.terrains.len());
-        let generators: Vec<SharedGenerator> = self.generators_for_terrains();
+        self.prune_tops(&centers);
         loop {
-            self.stream.request(&generators, &self.terrains, &self.blocks);
-            let waiting = wait.is_some_and(|r| self.stream.missing_within(center, r));
+            // Again each time round: a body lifted out of ground that came in has moved.
+            centers = self.stream_centers();
+            self.stream.wanted(&centers);
+            self.stream.request(&generator, &terrain, &self.blocks, &self.universe.main().tops);
+            let waiting = wait.is_some_and(|r| self.stream.missing_within(r));
             let Some(done) = self.stream.next_finished(waiting) else {
                 if waiting && self.stream.error.is_none() && self.stream.busy() {
                     continue;
                 }
                 break;
             };
-            // A column at a time, so a tick takes in only what its budget allows.
-            self.bring_in(vec![done]);
+            self.bring_in(done);
             if !waiting && start.elapsed().as_secs_f32() > Self::STREAM_BUDGET {
                 break;
             }
         }
-        self.stream.request(&generators, &self.terrains, &self.blocks);
-        self.stream_far(&generators, false);
+        self.stream.request(&generator, &terrain, &self.blocks, &self.universe.main().tops);
+        self.stream_far(&generator, false);
     }
 
     /// Far terrain one step, or until every wanted far column is in with `wait`.
-    fn stream_far(&mut self, generators: &[SharedGenerator], wait: bool) {
+    fn stream_far(&mut self, generator: &SharedGenerator, wait: bool) {
         if self.terrains.is_empty() {
             return;
         }
-        let height = self.stream.height();
-        let rows: Vec<_> = self.terrains.iter().map(|def| crate::stream::rows(def, height)).collect();
         let around = crate::far::Around {
-            pos: self.stream_center(),
+            pos: self.stream_centers()[0],
             terrains: &self.terrains,
-            generators,
+            generators: std::slice::from_ref(generator),
             blocks: &self.blocks,
-            rows: &rows,
             edited: self.changed.edited(),
             grid: self.universe.main(),
         };
@@ -421,15 +427,16 @@ impl Simulation {
         }
     }
 
-    /// Loads every column within the load distance before returning, for tests and tools.
+    /// Loads every chunk within the load distance before returning, for tests and tools.
     pub fn stream_all(&mut self) {
         self.stream_terrain(Some(self.stream.radius));
     }
 
     /// Builds every far column wanted around the player before returning, for tests and tools.
     pub fn far_all(&mut self) {
-        let generators = self.generators_for_terrains();
-        self.stream_far(&generators, true);
+        if let Some((generator, _)) = self.terrain() {
+            self.stream_far(&generator, true);
+        }
     }
 
     /// Far columns built since the last call (see [`crate::far`]).
@@ -462,117 +469,116 @@ impl Simulation {
         self.far.reach
     }
 
-    /// Each terrain's generator, by terrain.
-    fn generators_for_terrains(&self) -> Vec<SharedGenerator> {
-        self.terrains
-            .iter()
-            .map(|def| {
-                // `add_terrain` checked every terrain's generator is registered.
-                let (_, g) = self.generators.iter().find(|(n, _)| *n == def.generator).expect("a terrain's generator");
-                std::sync::Arc::clone(g)
-            })
-            .collect()
+    /// The world's terrain and its generator, if the mods placed one.
+    fn terrain(&self) -> Option<(SharedGenerator, TerrainDef)> {
+        let def = self.terrains.first()?;
+        // `add_terrain` checked the terrain's generator is registered.
+        let (_, generator) = self.generators.iter().find(|(n, _)| *n == def.generator)?;
+        Some((std::sync::Arc::clone(generator), def.clone()))
     }
 
-    /// Drops a column of terrain, handing the chunks edited in it to the store to bring back
+    /// Drops a chunk of terrain, handing it to the store if it was edited, to bring back
     /// later.
-    fn drop_column(&mut self, column: Column) {
-        let rows = crate::stream::rows(&self.terrains[column.terrain], self.stream.height());
+    fn drop_chunk(&mut self, pos: ChunkPos) {
         let grid = self.universe.main_mut();
-        let chunks: Vec<ChunkPos> = column.chunks(rows).collect();
-        let mut stored = Vec::new();
-        for &pos in &chunks {
-            if self.changed.edited().contains(&pos) {
-                stored.push((pos, save::name_chunk(&self.blocks, &grid.export_chunk(pos)).to_bytes()));
-                self.changed.forget_edits(pos);
-            }
-            grid.remove_chunk(pos);
+        if self.changed.edited().contains(&pos) {
+            let bytes = save::name_chunk(&self.blocks, &grid.export_chunk(pos)).to_bytes();
+            self.changed.forget_edits(pos);
+            self.stream.store().put(vec![(pos, bytes)]);
+            self.far.edited(&[pos]);
         }
-        if !stored.is_empty() {
-            let positions: Vec<ChunkPos> = stored.iter().map(|(p, _)| *p).collect();
-            self.stream.store().put(stored);
-            self.far.edited(&positions);
-        }
-        self.stream.drop_column(column, chunks.into_iter());
+        grid.remove_chunk(pos);
+        self.stream.drop_chunk(pos);
     }
 
-    /// Brings generated columns into the world: their chunks (or the edited ones stored from
-    /// before), light across their seams, and anything buried by them lifted out.
-    fn bring_in(&mut self, done: Vec<crate::stream::Done>) {
+    /// Brings a chunk a worker made into the world: the generated chunk, or the edited one
+    /// stored from before, lit alone; then light across its seams, and anything it buried
+    /// lifted out.
+    fn bring_in(&mut self, done: crate::stream::Done) {
         let start = std::time::Instant::now();
-        let mut new = Vec::new();
-        let mut kept = Vec::new();
-        let mut columns = HashSet::new();
-        for d in done {
-            let chunks = match d.chunks {
-                Ok(chunks) => chunks,
-                Err(e) => {
-                    self.stream.error = Some(e);
-                    continue;
+        let pos = done.pos;
+        let made = match done.made {
+            Ok(made) => made,
+            Err(e) => {
+                self.stream.error = Some(e);
+                return;
+            }
+        };
+        // Tops the simulation didn't have yet are taken as the worker found them. If any it
+        // did have moved since the chunk was lit by them, the chunk is lit again.
+        let mut lit = true;
+        for ((dx, dy), used) in crate::tops::AROUND.iter().zip(&made.tops) {
+            let (x, y) = (pos.0.x + dx, pos.0.y + dy);
+            let tops = &mut self.universe.main_mut().tops;
+            match tops.column(x, y) {
+                Some(now) => lit &= std::sync::Arc::ptr_eq(now, used) || **now == **used,
+                // Where terrain is kept away there's none to have tops: it's open sky beside
+                // the terrain's edge, not the dark wall the worker took it for.
+                None if self.stream.cleared(x, y) => lit = false,
+                None => {
+                    tops.set_column(x, y, std::sync::Arc::clone(used));
+                    self.tops_set.insert((x, y));
                 }
-            };
-            let positions: Vec<ChunkPos> = chunks.iter().map(|c| c.pos).collect();
-            let mut report = crate::LoadReport::default();
-            let stored: Vec<crate::ChunkData> = d.stored.iter().map(|c| save::unname_chunk(&self.blocks, c, &mut report)).collect();
-            for skipped in report.skipped {
-                if self.missing_names.insert(skipped.clone()) {
-                    eprintln!("loading stored terrain: left out {skipped}");
-                }
             }
-            let grid = self.universe.main_mut();
-            for chunk in chunks.iter().filter(|c| !stored.iter().any(|s| s.pos == c.pos)) {
-                grid.import_chunk(chunk);
-            }
-            for edited in stored.into_iter().filter(|s| positions.contains(&s.pos)) {
-                grid.import_chunk(&edited);
-                self.changed.mark_edited(edited.pos);
-                kept.push(edited.pos);
-            }
-            new.extend_from_slice(&positions);
-            columns.insert((d.column.x, d.column.y));
-            self.stream.add_column(d.column, positions.into_iter(), d.seconds);
         }
-        if new.is_empty() {
-            return;
+        let (mut data, edited) = match (made.stored, made.chunk) {
+            (Some(saved), _) => {
+                let mut report = crate::LoadReport::default();
+                let data = save::unname_chunk(&self.blocks, &saved, &mut report);
+                for skipped in report.skipped {
+                    if self.missing_names.insert(skipped.clone()) {
+                        eprintln!("loading stored terrain: left out {skipped}");
+                    }
+                }
+                (data, true)
+            }
+            (None, Some(data)) => (data, false),
+            (None, None) => return,
+        };
+        if edited || !lit {
+            crate::light::light_alone(&mut data, &self.universe.main().tops, &self.blocks);
+        }
+        self.universe.main_mut().import_chunk(&data);
+        if edited {
+            self.changed.mark_edited(pos);
+        }
+        // The tops may be off where they were worked out without this chunk: an older save
+        // has none stored, and a top found through a chunk that wasn't loaded is a guess.
+        let check = self.universe.main_mut().tops_to_check(&self.blocks, pos, edited);
+        let mut relight = self.follow_tops(&check);
+        if !check.is_empty() {
+            // Tops moved under the chunk's own light: all of it is settled again.
+            relight.extend((0..api::CHUNK_VOLUME).map(|i| pos.boxel(api::LocalPos::from_index(i))));
         }
         if self.light_settled {
             let grid = self.universe.main_mut();
-            let fresh: HashSet<ChunkPos> = new.iter().copied().collect();
-            let mut changed = grid.light_seams(&self.blocks, &new);
-            if !kept.is_empty() {
-                // An edited chunk's light was worked out with the generated one in its column.
-                let boxels: Vec<BoxelPos> = kept
-                    .iter()
-                    .flat_map(|&c| (0..api::CHUNK_VOLUME).map(move |i| c.boxel(api::LocalPos::from_index(i))))
-                    .collect();
-                changed.extend(grid.relight(&self.blocks, &boxels));
+            let mut changed = grid.light_seams(&self.blocks, &[pos]);
+            if !relight.is_empty() {
+                changed.extend(grid.relight(&self.blocks, &relight));
             }
-            for pos in changed.into_iter().filter(|p| !fresh.contains(p)) {
-                self.changed.mark_chunk(pos);
+            for other in changed.into_iter().filter(|&p| p != pos) {
+                self.changed.mark_chunk(other);
             }
         }
         // Whatever stood where the ground came in is lifted out of it.
         let (grid, blocks) = (self.universe.main(), &self.blocks);
-        let in_new = |pos: WorldPos| {
-            let c = pos.boxel().chunk().0;
-            columns.contains(&(c.x, c.y))
-        };
-        let lifted = |pos: WorldPos| if in_new(pos) { lift_out(grid, blocks, pos) } else { pos };
+        let lifted = |at: WorldPos| if at.boxel().chunk() == pos { lift_out(grid, blocks, at, true) } else { at };
         if let Some(player) = &mut self.player {
-            let pos = player.pos();
-            let up = lifted(pos);
-            if up != pos {
+            let at = player.pos();
+            let up = lifted(at);
+            if up != at {
                 player.teleport(up);
             }
         }
         self.targets.move_all(lifted);
+        self.stream.add_chunk(pos, done.seconds);
         self.stream.stats.join_seconds += start.elapsed().as_secs_f32();
     }
 
-    /// Whether the ground at `pos` is terrain still to come: in or above a terrain's rows, in a
-    /// column that will be generated but isn't loaded yet.
+    /// Whether the ground at `pos` is terrain still to come: where terrain goes, in a chunk
+    /// that isn't loaded yet, or just over one.
     pub fn awaiting_ground(&self, pos: WorldPos) -> bool {
-        awaiting_ground(&self.stream, &self.terrains, pos)
+        awaiting_ground(&self.stream, !self.terrains.is_empty(), pos)
     }
 
     /// Chunks brought in by streaming since the last call.
@@ -585,28 +591,28 @@ impl Simulation {
         self.stream.take_unloaded()
     }
 
-    /// Whether the chunk at `pos` is where terrain goes, loaded or not: in a terrain's rows,
-    /// away from what the mods built.
+    /// Whether the chunk at `pos` is where terrain goes, loaded or not: away from what the
+    /// mods built, in a world with terrain.
     pub fn is_terrain_place(&self, pos: ChunkPos) -> bool {
-        let height = self.stream.height();
-        !self.stream.cleared(pos.0.x, pos.0.y)
-            && self.terrains.iter().any(|def| crate::stream::rows(def, height).contains(&pos.0.z))
+        !self.terrains.is_empty() && !self.stream.cleared(pos.0.x, pos.0.y)
     }
 
     /// Whether the chunk at `pos` is part of the loaded terrain, rather than built.
     pub fn is_terrain(&self, pos: ChunkPos) -> bool {
-        let height = self.stream.height();
-        self.terrains.iter().enumerate().any(|(i, def)| self.stream.covers(i, &crate::stream::rows(def, height), pos))
+        self.stream.is_loaded(pos)
     }
 
     /// Brings the light up to date with the blocks (see [`crate::light`]): the whole world if it
     /// was just built, made again or loaded, otherwise around the boxels changed since last
-    /// time. Chunks whose light changed around changed boxels are marked changed; making or
-    /// loading the world marks its chunks itself.
+    /// time, with the tops following them first (see [`crate::tops`]). Chunks whose light
+    /// changed around changed boxels are marked changed; making or loading the world marks its
+    /// chunks itself.
     pub fn settle_light(&mut self) {
         let start = std::time::Instant::now();
+        let mut unlit = self.changed.take_unlit();
+        let beside = self.follow_tops(&unlit);
+        unlit.extend(beside);
         let grid = self.universe.main_mut();
-        let unlit = self.changed.take_unlit();
         if !self.light_settled {
             grid.relight_all(&self.blocks);
             self.light_settled = true;
@@ -731,7 +737,7 @@ impl Simulation {
             world,
             ..
         } = self;
-        let waiting = |pos: WorldPos| awaiting_ground(stream, terrains, pos);
+        let waiting = |pos: WorldPos| awaiting_ground(stream, !terrains.is_empty(), pos);
         let awake = player.as_ref().map(|p| crate::combat::Awake { center: p.pos(), reach: world.sim_distance, waiting: &waiting });
         let terrain = GridTerrain { grid: universe.main(), blocks };
         // A player exists only once `spawn_player` found its controller.
@@ -1487,7 +1493,9 @@ impl Simulation {
 
     /// Moves the player to `pos`, lifted out of the ground if it's buried there.
     pub fn teleport_player(&mut self, pos: WorldPos) {
-        let pos = lift_out(self.universe.main(), &self.blocks, pos);
+        // Only out of ground that's loaded: somewhere that isn't may be a tunnel, and if it
+        // turns out to be rock the player is lifted out when it comes in.
+        let pos = lift_out(self.universe.main(), &self.blocks, pos, false);
         if let Some(player) = &mut self.player {
             player.teleport(pos);
         }
@@ -2056,29 +2064,42 @@ impl WorldEdit for WorldEditor<'_> {
         if !self.generators.iter().any(|(n, _)| *n == def.generator) {
             return Err(ApiError::UnknownGenerator(def.generator));
         }
+        if !self.terrains.is_empty() {
+            return Err(ApiError::InvalidDef(format!(
+                "a second terrain ({}): a world takes one, which goes on forever every way",
+                def.generator
+            )));
+        }
         self.terrains.push(def);
         Ok(())
     }
 }
 
-/// Whether the ground at `pos` is terrain still to come (see [`Simulation::awaiting_ground`]).
-fn awaiting_ground(stream: &Stream, terrains: &[TerrainDef], pos: WorldPos) -> bool {
-    let chunk = pos.boxel().chunk().0;
-    terrains.iter().enumerate().any(|(terrain, def)| {
-        chunk.z >= crate::stream::rows(def, stream.height()).start
-            && !stream.cleared(chunk.x, chunk.y)
-            && !stream.is_loaded(Column { terrain, x: chunk.x, y: chunk.y })
-    })
+/// Whether the ground at `pos` is terrain still to come (see [`Simulation::awaiting_ground`]):
+/// the chunk `pos` is in, or the one a body there would fall into next.
+fn awaiting_ground(stream: &Stream, terrain: bool, pos: WorldPos) -> bool {
+    let chunk = pos.boxel().chunk();
+    let under = pos.boxel().offset(api::I64Vec3::new(0, 0, -UNDERFOOT)).chunk();
+    terrain && !stream.cleared(chunk.0.x, chunk.0.y) && !(stream.is_loaded(chunk) && stream.is_loaded(under))
 }
+
+/// How far under a body the ground must be loaded for it to move, in boxels: more than it
+/// falls in a tick.
+const UNDERFOOT: i64 = 2;
 
 /// How far [`lift_out`] looks up before giving up, in boxels.
 const MAX_LIFT: i64 = 2048;
 
 /// `pos` moved straight up by whole boxels until the boxels at its feet and just above hold no
 /// full block, or `pos` itself if they already don't (or no clear spot is near enough). Only
-/// full blocks count, so standing on a slab or among posts isn't being buried.
-fn lift_out(grid: &Grid, blocks: &BlockRegistry, pos: WorldPos) -> WorldPos {
-    let full = |p: BoxelPos| grid.cell(p).iter().any(|o| blocks.get(o.block).is_some_and(|d| d.is_full()));
+/// full blocks count, so standing on a slab or among posts isn't being buried. With
+/// `unloaded_is_ground`, ground that isn't loaded counts as full up to its column's top, so a
+/// body found deep in rock comes out on top rather than a chunk at a time.
+fn lift_out(grid: &Grid, blocks: &BlockRegistry, pos: WorldPos, unloaded_is_ground: bool) -> WorldPos {
+    let full = |p: BoxelPos| match grid.chunk(p.chunk()) {
+        Some(_) => grid.cell(p).iter().any(|o| blocks.get(o.block).is_some_and(|d| d.is_full())),
+        None => unloaded_is_ground && !grid.tops.is_sky(p.0),
+    };
     let clear = |p: BoxelPos| !full(p) && !full(p.offset(api::I64Vec3::Z));
     let feet = pos.boxel();
     (0..MAX_LIFT)

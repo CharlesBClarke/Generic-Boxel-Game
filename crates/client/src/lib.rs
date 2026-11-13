@@ -752,8 +752,8 @@ fn world_cost(
     let generation = match &world.defs().terrain_error {
         Some(e) => format!("terrain failed: {e}"),
         None => format!(
-            "terrain {} columns, {} waiting, {} meshing | generated {} in {:.1} s on the workers, joined in {:.2} s",
-            t.columns, t.waiting, meshing, t.generated, t.seconds, t.join_seconds
+            "terrain {} chunks, {} waiting, {} meshing | generated {} in {:.1} s on the workers, joined in {:.2} s",
+            t.chunks, t.waiting, meshing, t.generated, t.seconds, t.join_seconds
         ),
     };
     let meshing = meshes.and_then(|m| m.last_meshing).map_or(String::new(), |(n, s)| format!(" | meshed {n} in {s:.2} s"));

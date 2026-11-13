@@ -1298,7 +1298,7 @@ mod remesh_timing {
         let ao = mesher::AoTuning::default();
         let grid = world.universe().main();
         let chunks: Vec<_> = grid.chunks().map(|(pos, _)| pos).collect();
-        println!("streamed {} columns, {:.2} s on the workers", generated.columns, generated.seconds);
+        println!("streamed {} chunks, {:.2} s on the workers", generated.chunks, generated.seconds);
         for merge in [false, true] {
             let start = std::time::Instant::now();
             let meshes = mesher::mesh_chunks(grid, &chunks, world.blocks(), &volumes, &ao, merge);

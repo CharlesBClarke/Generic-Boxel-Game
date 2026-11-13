@@ -63,6 +63,7 @@ The project's words, used the same way in conversation, code and docs. When a ne
 | Variant | A blueprint linked to another (its base) with changes: turned, mirrored, shifted or with one material swapped for another. Editing the base changes the variant. |
 | Shift | Sliding a whole gadget inside its boxel, a quarter at a time or to the middle. Example: a gadget built in the upper right quarter of the grid, shifted to be centered. |
 | Chunk | A 32×32×32 cube of boxels, the unit of storage and meshing. |
+| Top, tops | The top at an X and Y is the highest boxel there that stops light falling from the sky (its pieces cover its top or bottom face). The tops are the map of them, kept for every X and Y of terrain, generator plus edits, so the open sky is known without loading what's above (2026-11-12). Over the top is open sky; below it, a chunk that isn't loaded is a dark wall. |
 | Sub-grid | A volume of boxels with its own position and rotation, separate from the main world grid. Ships, vehicles and contraptions are sub-grids. |
 | World view | A camera into any grid, loaded and drawn by the client. The player's own view is one world view among possibly many. |
 | Occupant | Something that fills a boxel position: a block and how it's turned. One position can hold several occupants (up to 16), which generalizes Minecraft's waterlogging. |

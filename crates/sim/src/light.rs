@@ -12,7 +12,11 @@
 //! cover that face completely, texel by texel: a shutter against a face closes it, a slab is lit
 //! from above but shades what's under it. Light a boxel gives off itself also leaves through
 //! covered faces, so a lamp lights around it whatever its shape. A panel across the middle of a
-//! boxel covers neither face, so light gets past it. A missing chunk is open sky.
+//! boxel covers neither face, so light gets past it.
+//!
+//! A chunk that isn't loaded is open sky over its column's top and a dark wall below it (see
+//! [`crate::tops`]), so the sky's light never leaks in underground from where the world hasn't
+//! loaded; where no tops are known it's open sky all the way down.
 //!
 //! The rule has one settled state, so it isn't stepped tick by tick like the design doc's other
 //! boxel rules: queues solve it straight there, all at once when terrain is made and around the
@@ -21,8 +25,9 @@
 
 use std::collections::{HashMap, HashSet, VecDeque};
 
-use api::{BlockDef, BoxelPos, CHUNK_VOLUME, ChunkPos, I64Vec3, ShapeGrid};
+use api::{BlockDef, BoxelPos, CHUNK_SIZE, CHUNK_VOLUME, ChunkPos, I64Vec3, NO_TOP, ShapeGrid};
 
+use crate::tops::Tops;
 use crate::{BlockRegistry, CellId, Chunk, Grid, Layer, Occupant};
 
 /// Light in one boxel: red, green, blue and sky, a byte each.
@@ -115,6 +120,12 @@ impl CellLight {
     fn covers(self, d: usize) -> bool {
         self.covered & (1 << d) != 0
     }
+
+    /// Stops light falling from the sky: nothing over it lights what's under it. What a
+    /// column's top is the highest of (see [`crate::tops`]).
+    fn stops_sky(self) -> bool {
+        self.covers(UP) || self.covers(DOWN)
+    }
 }
 
 /// Which faces of its boxel `shape` covers completely, as bits by direction (see [`DIRS`]).
@@ -172,7 +183,7 @@ struct Node {
 /// What's one step from a boxel.
 enum Step {
     In(Node),
-    /// A missing chunk: open sky, never written.
+    /// A missing chunk, never written: open sky or a dark wall, by the tops.
     Missing,
 }
 
@@ -190,6 +201,7 @@ struct Pass<'a> {
     positions: &'a [ChunkPos],
     slots: &'a HashMap<ChunkPos, usize>,
     info: &'a [CellLight],
+    tops: &'a Tops,
     /// Every boxel written to, with its light before the first write, so only those that end
     /// up different count as changed.
     touched: Option<HashMap<Node, Light>>,
@@ -237,7 +249,14 @@ impl Pass<'_> {
         }
     }
 
-    /// The light a boxel gets from missing chunks beside it, in channel `c`.
+    /// Where the boxel one step from `n` toward `d` is in the world.
+    fn beside(&self, n: Node, d: usize) -> I64Vec3 {
+        let [x, y, z] = coords(n.at as usize);
+        self.positions[n.slot as usize].0 * CHUNK_SIZE + I64Vec3::new(x as i64, y as i64, z as i64) + I64Vec3::from_array(DIRS[d])
+    }
+
+    /// The light a boxel gets from missing chunks beside it, in channel `c`: the sky's, where
+    /// the boxel beside it is open sky.
     fn sky_from_missing(&self, n: Node, c: usize) -> u8 {
         if c != Light::SKY_CHANNEL {
             return 0;
@@ -247,6 +266,7 @@ impl Pass<'_> {
         for d in 0..6 {
             if !info.covers(d)
                 && let Step::Missing = self.step(n, d)
+                && self.tops.is_sky(self.beside(n, d))
             {
                 best = best.max(if d == UP { Light::MAX } else { Light::passed_on(c, Light::MAX) });
             }
@@ -365,6 +385,181 @@ fn fall(cells: &Layer<CellId>, info: &[CellLight], open: &mut [u32; SIZE], emitt
     layer
 }
 
+/// Which boxel columns of the chunk at `pos` have open sky just over the chunk, when nothing
+/// is loaded there: bit x of row y, as [`fall`] takes them.
+fn open_over(tops: &Tops, pos: ChunkPos) -> [u32; SIZE] {
+    let Some(column) = tops.column(pos.0.x, pos.0.y) else {
+        return [u32::MAX; SIZE];
+    };
+    let above = (pos.0.z + 1) * CHUNK_SIZE;
+    let mut open = [0u32; SIZE];
+    for (y, row) in open.iter_mut().enumerate() {
+        for x in 0..SIZE {
+            if above > column[x + y * SIZE] {
+                *row |= 1 << x;
+            }
+        }
+    }
+    open
+}
+
+/// Lights the chunk `data` as if nothing stood beside it: the sky over its column's top, dark
+/// walls below (see [`crate::tops`]), from `tops` for its column and the four beside it. How
+/// terrain chunks are lit, each on a thread of its own, before [`Grid::light_seams`] joins
+/// them to the world.
+pub fn light_alone(data: &mut crate::ChunkData, tops: &Tops, blocks: &BlockRegistry) {
+    let mut grid = Grid { tops: tops.around(data.pos.0.x, data.pos.0.y), ..Grid::default() };
+    grid.import_chunk(data);
+    grid.relight_all(blocks);
+    data.light = grid.chunks.swap_remove(0).light;
+}
+
+/// What a chunk that isn't loaded holds of one boxel column, as far as its world can tell
+/// (see [`Grid::follow_tops`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Unloaded {
+    /// Something that stops the sky, no higher than this Z. Too high is safe.
+    Top(i64),
+    /// Nothing that stops the sky.
+    Nothing,
+}
+
+/// What [`Grid::follow_tops`] moved.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct TopsMoved {
+    /// Loaded boxels beside sky that opened or closed in chunks that aren't loaded: to
+    /// relight along with the boxels that changed.
+    pub relight: Vec<BoxelPos>,
+    /// The chunk columns (X and Y) whose tops changed, with repeats.
+    pub columns: Vec<(i64, i64)>,
+}
+
+/// How many chunks that aren't loaded and hold nothing a search for a column's top goes down
+/// through before it takes the column for empty.
+const EMPTY_ROWS: u32 = 256;
+
+impl Grid {
+    /// Brings the tops up to date after the boxels at `changed` changed: a boxel that stops the
+    /// sky over its column's top is the new top, and where the top stopped doing so the next
+    /// one down is. `unloaded` says what a chunk that isn't loaded holds of a boxel column,
+    /// given the boxel X and Y and the chunk's Z. A boxel of `changed` that is the top and
+    /// doesn't stop the sky is also how a top that was only a guess is checked. Does nothing
+    /// where no tops are known.
+    pub fn follow_tops(&mut self, blocks: &BlockRegistry, changed: &[BoxelPos], unloaded: &mut dyn FnMut(i64, i64, i64) -> Unloaded) -> TopsMoved {
+        let mut moved = TopsMoved::default();
+        if self.tops.is_empty() {
+            return moved;
+        }
+        self.update_light_info(blocks);
+        for &pos in changed {
+            let p = pos.0;
+            let Some(top) = self.tops.top(p.x, p.y) else { continue };
+            if p.z < top {
+                continue;
+            }
+            let (chunk, local) = pos.split();
+            let Some(&slot) = self.slots.get(&chunk) else { continue };
+            let stops = self.light_info[self.chunks[slot].cells.get(local).index()].stops_sky();
+            let new = match (stops, p.z == top) {
+                (true, false) => p.z,
+                (false, true) => self.top_below(p.x, p.y, p.z - 1, unloaded),
+                _ => continue,
+            };
+            self.tops.set_top(p.x, p.y, new);
+            moved.columns.push((chunk.0.x, chunk.0.y));
+            moved.relight.extend(self.beside_missing(p.x, p.y, top.min(new), top.max(new)));
+        }
+        moved
+    }
+
+    /// The boxels of the chunk at `pos` that show its column's tops are off, for
+    /// [`Grid::follow_tops`] to put right: a top in the chunk that doesn't stop the sky after
+    /// all, and with `raise` (for a chunk the tops were worked out without) a boxel over the top
+    /// that does.
+    pub fn tops_to_check(&mut self, blocks: &BlockRegistry, pos: ChunkPos, raise: bool) -> Vec<BoxelPos> {
+        let (Some(column), Some(&slot)) = (self.tops.column(pos.0.x, pos.0.y).cloned(), self.slots.get(&pos)) else {
+            return Vec::new();
+        };
+        self.update_light_info(blocks);
+        let cells = &self.chunks[slot].cells;
+        let origin = pos.0 * CHUNK_SIZE;
+        let (bottom, highest) = (origin.z, origin.z + CHUNK_SIZE - 1);
+        let uniform = cells.uniform().map(|id| self.light_info[id.index()].stops_sky());
+        let mut out = Vec::new();
+        for (i, &top) in column.iter().enumerate() {
+            let (x, y) = (origin.x + (i % SIZE) as i64, origin.y + (i / SIZE) as i64);
+            let stops = |z: i64| uniform.unwrap_or_else(|| self.light_info[cells.get(BoxelPos::new(x, y, z).split().1).index()].stops_sky());
+            if raise
+                && top < highest
+                && let Some(z) = (bottom.max(top.saturating_add(1))..=highest).rev().find(|&z| stops(z))
+            {
+                out.push(BoxelPos::new(x, y, z));
+            } else if (bottom..=highest).contains(&top) && !stops(top) {
+                out.push(BoxelPos::new(x, y, top));
+            }
+        }
+        out
+    }
+
+    /// The highest boxel at or below `z` in the boxel column `x, y` that stops the sky, or
+    /// [`NO_TOP`].
+    fn top_below(&self, x: i64, y: i64, mut z: i64, unloaded: &mut dyn FnMut(i64, i64, i64) -> Unloaded) -> i64 {
+        let mut empty_rows = 0;
+        loop {
+            let (chunk, _) = BoxelPos::new(x, y, z).split();
+            let bottom = chunk.0.z * CHUNK_SIZE;
+            match self.slots.get(&chunk) {
+                Some(&slot) => {
+                    empty_rows = 0;
+                    let cells = &self.chunks[slot].cells;
+                    let stops = |at: i64| self.light_info[cells.get(BoxelPos::new(x, y, at).split().1).index()].stops_sky();
+                    match cells.uniform() {
+                        Some(id) if self.light_info[id.index()].stops_sky() => return z,
+                        Some(_) => {}
+                        None => {
+                            if let Some(at) = (bottom..=z).rev().find(|&at| stops(at)) {
+                                return at;
+                            }
+                        }
+                    }
+                }
+                None => match unloaded(x, y, chunk.0.z) {
+                    Unloaded::Top(top) => return top.min(z),
+                    Unloaded::Nothing => {
+                        empty_rows += 1;
+                        if empty_rows > EMPTY_ROWS {
+                            return NO_TOP;
+                        }
+                    }
+                },
+            }
+            z = bottom - 1;
+        }
+    }
+
+    /// The loaded boxels beside the boxels of the column `x, y` over `low` up to `high` that
+    /// are in chunks that aren't loaded: what their being sky or not lights.
+    fn beside_missing(&self, x: i64, y: i64, mut low: i64, mut high: i64) -> Vec<BoxelPos> {
+        if high.saturating_sub(low) > 64 * CHUNK_SIZE {
+            // Only as far as anything is loaded.
+            let rows = self.positions.iter().map(|p| p.0.z);
+            let (Some(first), Some(last)) = (rows.clone().min(), rows.max()) else { return Vec::new() };
+            low = low.max((first - 1) * CHUNK_SIZE - 1);
+            high = high.min((last + 2) * CHUNK_SIZE);
+        }
+        let mut out = Vec::new();
+        let loaded = |p: I64Vec3| self.slots.contains_key(&BoxelPos(p).split().0);
+        for z in low + 1..=high {
+            let p = I64Vec3::new(x, y, z);
+            if loaded(p) {
+                continue;
+            }
+            out.extend(DIRS.iter().map(|d| p + I64Vec3::from_array(*d)).filter(|&q| loaded(q)).map(BoxelPos));
+        }
+        out
+    }
+}
+
 /// Every boxel on a chunk's face toward direction `d`.
 fn face(d: usize) -> impl Iterator<Item = usize> {
     let axis = d / 2;
@@ -393,6 +588,7 @@ impl Grid {
             positions: &self.positions,
             slots: &self.slots,
             info: &self.light_info,
+            tops: &self.tops,
             touched: track.then(HashMap::new),
         }
     }
@@ -414,7 +610,8 @@ impl Grid {
         for &slot in &order {
             let pos = self.positions[slot];
             if above.is_none_or(|a| a.0 != pos.0 + I64Vec3::Z) {
-                open = [u32::MAX; SIZE];
+                // Nothing loaded above: the sky is open over the tops.
+                open = open_over(&self.tops, pos);
             }
             above = Some(pos);
             found.clear();
@@ -459,7 +656,7 @@ impl Grid {
                     for at in face(d) {
                         let n = node(at);
                         let side = Light::passed_on(Light::SKY_CHANNEL, Light::MAX);
-                        if pass.level(n, Light::SKY_CHANNEL) < side && !pass.info(n).covers(d) {
+                        if pass.level(n, Light::SKY_CHANNEL) < side && !pass.info(n).covers(d) && pass.tops.is_sky(pass.beside(n, d)) {
                             pass.set_level(n, Light::SKY_CHANNEL, side);
                             sky.push_back(n);
                         }
@@ -504,15 +701,14 @@ impl Grid {
     }
 
     /// Settles the light where chunks lit apart meet the rest of the world. Each of `new` was
-    /// lit with its column, as if nothing stood beside the column (see
-    /// [`Grid::relight_all`]); the rest was lit as if they were missing, so open sky. Light
-    /// crosses every seam between them both ways, and light that only came from the sky that
-    /// isn't open any more is taken away. Returns every chunk other than `new` whose light
+    /// lit as if nothing stood beside it (see [`light_alone`]), or with others of `new`; the
+    /// rest was lit as if they were missing. Light crosses every seam between them both ways,
+    /// and light that only came from sky a missing chunk stood for, where what's really there
+    /// gives less, is taken away. Returns every chunk other than `new` whose light
     /// changed, and every chunk beside one whose border boxels did, in no particular order.
     pub fn light_seams(&mut self, blocks: &BlockRegistry, new: &[ChunkPos]) -> Vec<ChunkPos> {
         self.update_light_info(blocks);
         let fresh: HashSet<ChunkPos> = new.iter().copied().collect();
-        let column = |p: ChunkPos| (p.0.x, p.0.y);
         let mut pass = self.pass(true);
         // Boxels lit by sky that came in through a seam's face, which isn't open any more.
         let mut darken: Vec<Node> = Vec::new();
@@ -523,27 +719,55 @@ impl Grid {
             for (d, dir) in DIRS.iter().enumerate() {
                 let other = ChunkPos(pos.0 + I64Vec3::from_array(*dir));
                 let Some(&far) = pass.slots.get(&other) else { continue };
-                if fresh.contains(&other) && (column(other) == column(pos) || other.0.to_array() < pos.0.to_array()) {
-                    // Lit together, or a seam handled from the other side.
+                if fresh.contains(&other) && other.0.to_array() < pos.0.to_array() {
+                    // A seam handled from the other side.
                     continue;
                 }
                 let axis = d / 2;
-                for at in face(d) {
+                let pair = |at: usize| {
                     let mut across = coords(at);
                     across[axis] = if d.is_multiple_of(2) { 0 } else { SIZE - 1 };
-                    let n = Node { slot: slot as u32, at: at as u16 };
-                    let m = Node { slot: far as u32, at: index(across) as u16 };
+                    (Node { slot: slot as u32, at: at as u16 }, Node { slot: far as u32, at: index(across) as u16 })
+                };
+                // Whether `a` holds sky light a missing chunk toward `dir` may have given that
+                // `b`, really there, gives less of: light to take back if the missing boxel
+                // counted as open sky.
+                let gave_more = |pass: &Pass, a: Node, b: Node, dir: usize| {
+                    let (ia, ib) = (pass.info(a), pass.info(b));
+                    let sky = pass.level(a, Light::SKY_CHANNEL);
+                    // A missing chunk only ever gave sky: full from above, a step less from
+                    // the sides and below.
+                    let gave = if dir == UP { Light::MAX } else { Light::passed_on(Light::SKY_CHANNEL, Light::MAX) };
+                    !ia.covers(dir)
+                        && sky > 0
+                        && (sky < Light::MAX || dir == UP)
+                        && carried(ib, ia, dir ^ 1, pass.level(b, Light::SKY_CHANNEL), Light::SKY_CHANNEL) < gave
+                };
+                let reaches = |pass: &Pass, a: Node, b: Node, dir: usize, c: usize| {
+                    carried(pass.info(a), pass.info(b), dir, pass.level(a, c), c) > pass.level(b, c)
+                };
+                // Two chunks each the same all through (open air, solid rock) meet the same
+                // way at every boxel of the seam, so one pair says whether any needs anything.
+                let same_all_through = |pass: &Pass, slot: usize| {
+                    pass.chunks[slot].cells.uniform().is_some() && matches!(pass.chunks[slot].light, Layer::Uniform(_))
+                };
+                if same_all_through(&pass, slot) && same_all_through(&pass, far) {
+                    let (n, m) = pair(face(d).next().expect("a face has boxels"));
+                    let quiet = [(n, m, d), (m, n, d ^ 1)]
+                        .into_iter()
+                        .all(|(a, b, dir)| !gave_more(&pass, a, b, dir) && (0..4).all(|c| !reaches(&pass, a, b, dir, c)));
+                    if quiet {
+                        continue;
+                    }
+                }
+                for at in face(d) {
+                    let (n, m) = pair(at);
                     for (a, b, dir) in [(n, m, d), (m, n, d ^ 1)] {
-                        let (ia, ib) = (pass.info(a), pass.info(b));
-                        let sky = pass.level(a, Light::SKY_CHANNEL);
-                        // Missing chunks beside only ever gave sky: full from above, a step
-                        // less from the sides and below.
-                        if !ia.covers(dir) && sky > 0 && (sky < Light::MAX || dir == UP) {
+                        if gave_more(&pass, a, b, dir) && pass.tops.is_sky(pass.beside(a, dir)) {
                             darken.push(a);
                         }
                         for (c, queue) in brighten.iter_mut().enumerate() {
-                            let want = carried(ia, ib, dir, pass.level(a, c), c);
-                            if want > pass.level(b, c) {
+                            if reaches(&pass, a, b, dir, c) {
                                 queue.push_back(a);
                             }
                         }
@@ -1035,6 +1259,194 @@ mod tests {
                 }
             }
         }
+    }
+
+    /// The tops of every chunk column `grid` has chunks in, worked out from all of them.
+    fn tops_of(grid: &mut Grid, reg: &BlockRegistry) -> Tops {
+        grid.update_light_info(reg);
+        let mut tops = Tops::default();
+        for (pos, chunk) in grid.chunks() {
+            let key = (pos.0.x, pos.0.y);
+            let mut column = tops.column(key.0, key.1).map_or([NO_TOP; api::TOPS_LEN], |c| **c);
+            for i in 0..CHUNK_VOLUME {
+                let [x, y, z] = coords(i);
+                if grid.light_info[chunk.cells.at(i).index()].stops_sky() {
+                    let top = &mut column[x + y * SIZE];
+                    *top = (*top).max(pos.0.z * CHUNK_SIZE + z as i64);
+                }
+            }
+            tops.set_column(key.0, key.1, std::sync::Arc::new(column));
+        }
+        tops
+    }
+
+    fn assert_same_light(got: &Grid, want: &Grid, what: &str) {
+        for (pos, chunk) in want.chunks() {
+            let got = &got.chunk(pos).unwrap().light;
+            for i in 0..CHUNK_VOLUME {
+                assert_eq!(got.at(i), chunk.light.at(i), "{what}, chunk {pos:?}, boxel {:?}", coords(i));
+            }
+        }
+    }
+
+    #[test]
+    fn chunks_lit_alone_and_joined_match_lighting_together() {
+        let b = blocks();
+        for seed in 1..5 {
+            let mut world = rough_world(&b, seed);
+            // A row of empty chunks over it, and a shutter over the tops at a chunk's edge, which
+            // stops the sky going sideways without stopping it falling.
+            for x in 0..3 {
+                for y in 0..2 {
+                    world.import_chunk(&Grid::default().export_chunk(ChunkPos::new(x, y, 2)));
+                }
+            }
+            let tops = tops_of(&mut world, &b.reg);
+            let mut order: Vec<ChunkPos> = world.chunks().map(|(pos, _)| pos).collect();
+            order.sort_by_key(|p| p.0.to_array());
+            let mut rng = Rng(seed * 31);
+            for i in (1..order.len()).rev() {
+                order.swap(i, rng.below(i as u64 + 1) as usize);
+            }
+            let mut joined = Grid { tops: tops.clone(), ..Grid::default() };
+            let mut together = Grid { tops: tops.clone(), ..Grid::default() };
+            for (i, &pos) in order.iter().enumerate() {
+                let mut data = world.export_chunk(pos);
+                together.import_chunk(&data);
+                light_alone(&mut data, &tops, &b.reg);
+                joined.import_chunk(&data);
+                joined.light_seams(&b.reg, &[pos]);
+                // The same at every step on the way, not only once everything is in.
+                if i % 4 == 3 || i + 1 == order.len() {
+                    together.relight_all(&b.reg);
+                    assert_same_light(&joined, &together, &format!("seed {seed}, {} chunks in", i + 1));
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn a_shaft_stays_dark_beside_chunks_that_arent_loaded() {
+        let b = blocks();
+        // One chunk deep underground, with a shaft through it and a tunnel out of its side.
+        let deep = ChunkPos::new(0, 0, -10);
+        let o = deep.0.z * 32;
+        let mut grid = Grid::default();
+        fill(&mut grid, [0, 0, o], [32, 32, o + 32], b.stone);
+        fill(&mut grid, [10, 10, o], [12, 12, o + 32], BlockId::EMPTY);
+        fill(&mut grid, [0, 10, o + 10], [12, 12, o + 12], BlockId::EMPTY);
+        grid.relight_all(&b.reg);
+        assert_eq!(grid.light(at(10, 10, o + 31)).sky(), Light::MAX, "with no tops known it's open sky all round");
+        assert!(grid.light(at(0, 10, o + 10)).sky() > 0);
+        // With the ground known to be far above, nothing gets in.
+        grid.tops.set_column(0, 0, std::sync::Arc::new([40; api::TOPS_LEN]));
+        grid.tops.set_column(-1, 0, std::sync::Arc::new([40; api::TOPS_LEN]));
+        grid.relight_all(&b.reg);
+        for z in 0..32 {
+            assert_eq!(grid.light(at(10, 10, o + z)), Light::DARK, "the shaft at {z}");
+        }
+        assert_eq!(grid.light(at(0, 10, o + 10)), Light::DARK, "the tunnel's mouth");
+        assert_eq!(grid.light(at(10, 10, o + 40)), Light::DARK, "a missing chunk under the top reads dark");
+        assert_eq!(grid.light(at(10, 10, 41)), Light::SKY, "and open sky over it");
+    }
+
+    #[test]
+    fn a_roof_that_isnt_loaded_still_shades() {
+        let b = blocks();
+        let mut grid = Grid::default();
+        fill(&mut grid, [0, 0, 0], [32, 32, 4], b.stone);
+        // A roof far overhead, over the western half, in chunks that aren't loaded.
+        let mut tops = [3; api::TOPS_LEN];
+        for (i, top) in tops.iter_mut().enumerate() {
+            if i % SIZE < 16 {
+                *top = 500;
+            }
+        }
+        // The same north and south, all roof to the west and open ground to the east.
+        for (x, y, column) in [(0, 0, tops), (0, 1, tops), (0, -1, tops), (-1, 0, [500; api::TOPS_LEN]), (1, 0, [3; api::TOPS_LEN])] {
+            grid.tops.set_column(x, y, std::sync::Arc::new(column));
+        }
+        grid.relight_all(&b.reg);
+        assert_eq!(grid.light(at(20, 16, 4)).sky(), Light::MAX, "open ground");
+        assert_eq!(grid.light(at(15, 16, 4)).sky(), away(Light::SKY_CHANNEL, Light::MAX, 1), "just under the roof's edge");
+        assert_eq!(grid.light(at(0, 16, 4)).sky(), 0, "deep under it");
+        assert_eq!(grid.light(at(15, 16, 31)).sky(), away(Light::SKY_CHANNEL, Light::MAX, 1), "all the way up");
+    }
+
+    #[test]
+    fn tops_follow_placing_and_breaking() {
+        let b = blocks();
+        let mut grid = Grid::default();
+        fill(&mut grid, [0, 0, 0], [32, 32, 4], b.stone);
+        grid.import_chunk(&Grid::default().export_chunk(ChunkPos::new(0, 0, 1)));
+        grid.tops = tops_of(&mut grid, &b.reg);
+        grid.relight_all(&b.reg);
+        let mut guess = |_: i64, _: i64, row: i64| Unloaded::Top((row + 1) * 32 - 1);
+        let mut edit = |grid: &mut Grid, pos: BoxelPos, block: BlockId| {
+            grid.set_block(pos, block);
+            let moved = grid.follow_tops(&b.reg, &[pos], &mut guess);
+            let mut changed = vec![pos];
+            changed.extend(moved.relight.iter().copied());
+            grid.relight(&b.reg, &changed);
+            moved
+        };
+        // A block in the air is the new top, and shades the ground.
+        let moved = edit(&mut grid, at(5, 5, 40), b.stone);
+        assert_eq!((grid.tops.top(5, 5), moved.columns), (Some(40), vec![(0, 0)]));
+        assert!(grid.light(at(5, 5, 4)).sky() < Light::MAX);
+        // A block under the top doesn't move it.
+        assert!(edit(&mut grid, at(5, 5, 20), b.stone).columns.is_empty());
+        // Breaking the top finds the next one down, through the chunk between.
+        edit(&mut grid, at(5, 5, 40), BlockId::EMPTY);
+        assert_eq!(grid.tops.top(5, 5), Some(20));
+        edit(&mut grid, at(5, 5, 20), BlockId::EMPTY);
+        assert_eq!(grid.tops.top(5, 5), Some(3));
+        assert_eq!(grid.light(at(5, 5, 4)).sky(), Light::MAX);
+        // Digging through the floor runs into a chunk that isn't loaded: whoever knows says.
+        for z in 0..4 {
+            edit(&mut grid, at(5, 5, z), BlockId::EMPTY);
+        }
+        assert_eq!(grid.tops.top(5, 5), Some(-1), "the guess: the top boxel of the missing chunk");
+        // A slab stops the sky under it but is lit itself.
+        edit(&mut grid, at(9, 9, 50), b.slab);
+        assert_eq!(grid.tops.top(9, 9), Some(50));
+        assert_eq!(grid.light(at(9, 9, 50)).sky(), Light::MAX);
+        // After all that, the light is what lighting from scratch gives.
+        let mut scratch = Grid { tops: grid.tops.clone(), ..Grid::default() };
+        for (pos, _) in grid.chunks() {
+            scratch.import_chunk(&grid.export_chunk(pos));
+        }
+        scratch.relight_all(&b.reg);
+        assert_same_light(&grid, &scratch, "after edits");
+    }
+
+    #[test]
+    fn a_top_moving_in_chunks_that_arent_loaded_relights_what_is() {
+        let b = blocks();
+        // Two chunks side by side at ground level; over the eastern one's edge a tower stands
+        // in a chunk that's loaded, far above a gap that isn't.
+        let mut grid = Grid::default();
+        fill(&mut grid, [0, 0, 0], [64, 32, 4], b.stone);
+        grid.set_block(at(32, 16, 200), b.stone);
+        grid.tops = tops_of(&mut grid, &b.reg);
+        assert_eq!(grid.tops.top(32, 16), Some(200));
+        grid.relight_all(&b.reg);
+        // Breaking it opens the sky down the gap: the search goes down through chunks that
+        // hold nothing to the ground.
+        grid.set_block(at(32, 16, 200), BlockId::EMPTY);
+        let mut nothing = |_: i64, _: i64, _: i64| Unloaded::Nothing;
+        let moved = grid.follow_tops(&b.reg, &[at(32, 16, 200)], &mut nothing);
+        assert_eq!(grid.tops.top(32, 16), Some(3));
+        let mut changed = vec![at(32, 16, 200)];
+        changed.extend(moved.relight);
+        grid.relight(&b.reg, &changed);
+        assert_eq!(grid.light(at(32, 16, 4)).sky(), Light::MAX);
+        let mut scratch = Grid { tops: grid.tops.clone(), ..Grid::default() };
+        for (pos, _) in grid.chunks() {
+            scratch.import_chunk(&grid.export_chunk(pos));
+        }
+        scratch.relight_all(&b.reg);
+        assert_same_light(&grid, &scratch, "after the tower went");
     }
 
     #[test]

@@ -1,24 +1,21 @@
-//! Generated terrain on the engine side: how tall it is, filling chunks on every core, and
-//! turning what a generator wrote into chunks. Which chunks are filled when is streaming's
-//! business (see [`crate::stream`]): the terrain goes on forever sideways.
+//! Generated terrain on the engine side: the world's own settings, filling chunks on every
+//! core, and turning what a generator wrote into chunks. Which chunks are filled when is
+//! streaming's business (see [`crate::stream`]): the terrain goes on forever, every way.
 
 use api::{ApiError, BoxelPos, ChunkFill, ChunkPos, Generator, I64Vec3, TerrainDef, Tunable, Tunables};
 
 use crate::{BlockRegistry, ChunkData, Layer, Occupant};
 
-/// The engine's own world settings: how tall terrain is, and how far from the player things are
-/// simulated.
+/// The engine's own world settings: how far from the player things are simulated.
 #[derive(Clone, Debug, PartialEq)]
 pub struct WorldSettings {
-    /// How many chunks each terrain spans bottom to top.
-    pub terrain_height: u32,
     /// Creatures and loose items farther than this from the player, in meters, hold still.
     pub sim_distance: f32,
 }
 
 impl Default for WorldSettings {
     fn default() -> Self {
-        Self { terrain_height: 16, sim_distance: 256.0 }
+        Self { sim_distance: 256.0 }
     }
 }
 
@@ -27,24 +24,22 @@ const WORLD_GROUPS: &[(&str, &[&str])] = &[
 ];
 /// What each of [`WorldSettings`]'s values does, for the tuning panel.
 const WORLD_HELP: &[(&str, &str)] = &[
-    ("terrain_height", "How many 32-boxel chunks each terrain spans, bottom to top. Takes effect on Regenerate terrain."),
     ("sim_distance", "Creatures and loose items farther than this from you hold still, meters."),
 ];
 
 impl Tunables for WorldSettings {
     fn tunables(&self) -> Vec<Tunable> {
         api::tuning::described(vec![
-            Tunable::new("terrain_height", self.terrain_height as f32, 1.0, 32.0),
             Tunable::new("sim_distance", self.sim_distance, 16.0, 4096.0),
         ], WORLD_GROUPS, WORLD_HELP)
     }
 
     fn set_tunable(&mut self, name: &str, value: f32) -> bool {
         match name {
-            // The terrain had a width before it went on forever (save version 3 and older). Its
-            // value is taken and ignored, so older saves and tuning files load quietly.
-            "terrain_width" => {}
-            "terrain_height" => self.terrain_height = value.round().clamp(1.0, 32.0) as u32,
+            // The terrain had a width before it went on forever sideways (save version 3 and
+            // older), and a height before it did up and down (version 5 and older). Their
+            // values are taken and ignored, so older saves and tuning files load quietly.
+            "terrain_width" | "terrain_height" => {}
             "sim_distance" => self.sim_distance = value.max(0.0),
             _ => return false,
         }
@@ -160,6 +155,13 @@ mod tests {
                 }
             }
         }
+
+        fn tops(&self, x: i64, y: i64, step: u32, out: &mut [i64]) {
+            for (i, top) in out.iter_mut().enumerate() {
+                let (px, py) = (x + (i as i64 % CHUNK_SIZE) * step as i64, y + (i as i64 / CHUNK_SIZE) * step as i64);
+                *top = (0..40).rev().find(|z| (px + py + z).rem_euclid(7) == 0).unwrap_or(-1);
+            }
+        }
     }
 
     fn blocks() -> BlockRegistry {
@@ -223,6 +225,9 @@ mod tests {
                 let e = out.entry("t:nope");
                 out.set(0, 0, 0, e);
             }
+            fn tops(&self, _: i64, _: i64, _: u32, out: &mut [i64]) {
+                out.fill(0);
+            }
         }
         let def = TerrainDef { generator: "t:bad".into(), center: BoxelPos::new(0, 0, 0) };
         let got = fill_chunks(&Bad, &def, &[ChunkPos(I64Vec3::ZERO)], &blocks());
@@ -230,12 +235,13 @@ mod tests {
     }
 
     #[test]
-    fn world_settings_round_chunk_counts() {
+    fn old_world_settings_are_taken_and_ignored() {
         let mut s = WorldSettings::default();
-        assert!(s.set_tunable("terrain_height", 7.6));
-        assert_eq!(s.terrain_height, 8);
-        assert!(s.set_tunable("terrain_width", 11.0), "the old width is taken and ignored");
-        assert!(!s.tunables().iter().any(|t| t.name == "terrain_width"));
+        assert!(s.set_tunable("terrain_height", 7.6), "the old height is taken and ignored");
+        assert!(s.set_tunable("terrain_width", 11.0), "and the old width");
+        assert!(!s.tunables().iter().any(|t| t.name == "terrain_width" || t.name == "terrain_height"));
+        assert!(s.set_tunable("sim_distance", 99.0));
+        assert_eq!(s.sim_distance, 99.0);
         assert!(!s.set_tunable("nope", 1.0));
     }
 }

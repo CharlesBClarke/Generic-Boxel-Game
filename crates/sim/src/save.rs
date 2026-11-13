@@ -192,8 +192,10 @@ const MAGIC: &[u8; 8] = b"BOXELSAV";
 /// Goes up whenever the layout changes. Version 4 kept the layout but moved edited terrain out
 /// of the file into the chunk store (see [`crate::store`]), so a version 4 save holds only the
 /// chunks outside the terrain; older ones hold edited terrain too. Version 5 added each chunk's
-/// records.
-pub const VERSION: u32 = 5;
+/// records. Version 6 kept the layout again: its world loads terrain by chunk with no height
+/// limit, and its chunk store also holds the tops edits moved (see [`crate::tops`]), which a
+/// game from before wouldn't know what to make of.
+pub const VERSION: u32 = 6;
 
 impl SaveData {
     pub fn to_bytes(&self) -> Vec<u8> {

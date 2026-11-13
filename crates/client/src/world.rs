@@ -30,6 +30,8 @@ pub struct ChunkNews {
     pub restart: bool,
     /// Far columns built and dropped (see [`sim::far`]), in the order they came.
     pub far: Vec<FarNews>,
+    /// The tops (see [`sim::tops`]) that came, moved or were dropped, to pass on as they came.
+    pub tops: Vec<sim::TopsNews>,
 }
 
 /// A far column built (new, or built again to replace the one before) or dropped.
@@ -85,6 +87,7 @@ impl ClientWorld {
         for chunk in &welcome.chunks {
             universe.main_mut().import_chunk(chunk);
         }
+        universe.main_mut().tops = welcome.tops;
         let mut world = Self {
             looks: welcome.content.looks,
             models: welcome.content.models,
@@ -129,6 +132,16 @@ impl ClientWorld {
                     self.changed.push(chunk.pos);
                 }
                 self.news.data.push(chunk);
+            }
+            ServerMsg::Tops(tops) => {
+                let known = &mut self.universe.main_mut().tops;
+                for &(x, y) in &tops.dropped {
+                    known.remove_column(x, y);
+                }
+                for ((x, y), column) in &tops.set {
+                    known.set_column(*x, *y, std::sync::Arc::clone(column));
+                }
+                self.news.tops.push(tops);
             }
             ServerMsg::ChunksLoaded(chunks) => {
                 for chunk in chunks {

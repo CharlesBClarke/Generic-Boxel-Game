@@ -59,8 +59,10 @@ impl Simulation {
         self.stream.store()
     }
 
-    /// Puts the edited terrain loaded now in the store's unsaved layer.
+    /// Puts the edited terrain loaded now, and the tops edits moved, in the store's unsaved
+    /// layer.
     fn store_loaded_edits(&self) {
+        self.store_tops();
         let grid = self.universe.main();
         let edited = self.changed.edited();
         let mut positions: Vec<ChunkPos> = edited.iter().copied().filter(|&pos| self.is_terrain(pos) && grid.chunk(pos).is_some()).collect();

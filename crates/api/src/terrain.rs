@@ -25,7 +25,25 @@ pub trait Generator: Tunables + Send + Sync {
         let _ = (origin, step, out);
         false
     }
+
+    /// The top of the terrain over one chunk's worth of ground: for each of the
+    /// [`CHUNK_SIZE`] × [`CHUNK_SIZE`] cells from `x, y` (boxels from the terrain's center, x
+    /// fastest in `out`), the Z of the highest boxel the generator fills there, measured from
+    /// the terrain's center, or [`NO_TOP`] where it fills nothing at any height. The engine
+    /// knows from this where the open sky starts without loading what's above, so the answer
+    /// may be too high (the sky starts later than it could) but never too low.
+    ///
+    /// Each cell is `step` boxels a side, as for [`Generator::fill_coarse`]. At `step` 1 it
+    /// should be exact; above that it only says roughly how high far terrain reaches, and the
+    /// top at each cell's middle will do.
+    fn tops(&self, x: i64, y: i64, step: u32, out: &mut [i64]);
 }
+
+/// What [`Generator::tops`] gives where a generator fills nothing at any height.
+pub const NO_TOP: i64 = i64::MIN;
+
+/// How many cells [`Generator::tops`] fills: one for each boxel column of a chunk.
+pub const TOPS_LEN: usize = (CHUNK_SIZE * CHUNK_SIZE) as usize;
 
 /// One chunk's worth of blocks, as plain data: a palette of block names, and each boxel's
 /// entry in it. Entry 0 is always empty.
@@ -81,8 +99,10 @@ impl ChunkFill {
     }
 }
 
-/// Where a generator's terrain goes. The engine fills a box of chunks around `center`, as big
-/// as its own settings say; the generator sees positions relative to `center`.
+/// Where a generator's terrain goes. It goes on forever from `center`, sideways, up and down,
+/// loaded around the players as they move; the generator sees positions relative to `center`.
+/// A world takes one terrain: what's deep down or high up is its generator's business, and
+/// other worlds are other grids.
 #[derive(Clone, Debug, PartialEq)]
 pub struct TerrainDef {
     /// The registered generator's name.

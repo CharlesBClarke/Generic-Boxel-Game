@@ -79,6 +79,10 @@ pub enum ServerMsg {
     Tick(Box<Snapshot>),
     /// A chunk changed, or a neighbor's border did. Comes before the tick it changed in.
     Chunk(ChunkData),
+    /// Where the open sky starts over columns of terrain (see [`sim::tops`]): columns that are
+    /// new to the client or that an edit moved, and ones dropped. Comes before the chunks
+    /// loaded with them.
+    Tops(sim::TopsNews),
     /// Chunks of terrain brought in around the player, new to the client. Comes before the
     /// tick they came in.
     ChunksLoaded(Vec<ChunkData>),
@@ -126,6 +130,8 @@ pub struct Welcome {
     pub defs: Defs,
     /// Every chunk in the world.
     pub chunks: Vec<ChunkData>,
+    /// Where the open sky starts over every column of terrain loaded (see [`sim::tops`]).
+    pub tops: sim::Tops,
     pub spawn: WorldPos,
     /// Named spots in the world, in the order the mods made them.
     pub waypoints: Vec<(String, WorldPos)>,

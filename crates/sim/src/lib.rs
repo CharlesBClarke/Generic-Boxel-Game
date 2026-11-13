@@ -24,6 +24,7 @@ pub mod simulation;
 pub mod store;
 pub mod stream;
 pub mod terrain;
+pub mod tops;
 pub mod view;
 pub mod world;
 
@@ -42,9 +43,10 @@ pub use player::{Body, Player, PlayerInput, PushOut, Shape, StepReport, Terrain}
 pub use raycast::{Hit, raycast};
 pub use registry::{BlockId, BlockRegistry, Derived, Drop, FULL_VOLUME, LookRegistry, MaterialId, volume};
 pub use save::SaveData;
-pub use simulation::{BlockEdit, LoadReport, PlayerHurt, SimError, Simulation};
+pub use simulation::{BlockEdit, LoadReport, PlayerHurt, SimError, Simulation, TopsNews};
 pub use store::{ChunkStore, MemoryStore};
 pub use stream::StreamStats;
 pub use terrain::WorldSettings;
+pub use tops::{Tops, TopsArray};
 pub use view::{FACE_CENTER, PlaceTarget, View, face_region};
 pub use world::{Chunk, ChunkData, Grid, GridId, Universe};
