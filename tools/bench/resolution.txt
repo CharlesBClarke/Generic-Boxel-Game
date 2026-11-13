@@ -1,0 +1,11 @@
+# What drawing the world smaller than the window buys (Resolution toy, 2026-11-12). Same
+# square window as the bench; each set picks a resolution from the View section's list
+# (`view.resolution`: 0 native, 4 720p, 5 540p). `shipped` first and `shipped_again` last show
+# drift (heat). Rerun: `tools/bench.sh --study tools/bench/resolution.txt`.
+
+[set shipped]
+[set p720]
+view.resolution = 4
+[set p540]
+view.resolution = 5
+[set shipped_again]

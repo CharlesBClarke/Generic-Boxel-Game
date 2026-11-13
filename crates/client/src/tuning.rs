@@ -15,6 +15,7 @@
 
 use api::{Tunable, Tunables};
 use bevy::prelude::*;
+use bevy::window::PrimaryWindow;
 use bevy_egui::{EguiContexts, egui};
 use protocol::{Command, TuningSection};
 
@@ -29,6 +30,7 @@ use crate::tuning_layout::{self, Favourites, Tab};
 use crate::ui_scale::UiScaleTuning;
 use crate::shading::ShadingTuning;
 use crate::shadows::{Filter, ShadowTuning};
+use crate::render_scale::{self, Resolution, Upscale};
 use crate::view::{ToneMapper, ViewSwitches, ViewTuning};
 use crate::world::{ClientWorld, Link};
 
@@ -78,7 +80,7 @@ pub fn tuning_panel(
     mut picks: ResMut<SoundPicks>,
     (mut view, mut view_switches): (ResMut<ViewTuning>, ResMut<ViewSwitches>),
     (mut light, mut shadow): (ResMut<ShadingTuning>, ResMut<ShadowTuning>),
-    mut ui_scale: ResMut<UiScaleTuning>,
+    (mut ui_scale, window): (ResMut<UiScaleTuning>, Single<&Window, With<PrimaryWindow>>),
 ) -> Result {
     // The saved file is applied once, on the first frame there is a player, open or not.
     if world.player().is_none() {
@@ -274,6 +276,25 @@ pub fn tuning_panel(
                             .show_ui(ui, |ui| {
                                 for t in ToneMapper::ALL {
                                     ui.selectable_value(&mut seeing.tone_mapper, t, t.label());
+                                }
+                            });
+                        // Only what's smaller than the window, besides native and the current
+                        // pick (a saved pick a smaller window draws at native).
+                        let screen = window.physical_size();
+                        egui::ComboBox::from_label("resolution")
+                            .selected_text(seeing.resolution.label(screen))
+                            .show_ui(ui, |ui| {
+                                for r in Resolution::ALL {
+                                    if r == Resolution::Native || r == seeing.resolution || render_scale::draw_size(screen, r).is_some() {
+                                        ui.selectable_value(&mut seeing.resolution, r, r.label(screen));
+                                    }
+                                }
+                            });
+                        egui::ComboBox::from_label("stretch")
+                            .selected_text(seeing.upscale.label())
+                            .show_ui(ui, |ui| {
+                                for u in Upscale::ALL {
+                                    ui.selectable_value(&mut seeing.upscale, u, u.label());
                                 }
                             });
                     }
@@ -705,7 +726,7 @@ impl Tunables for Values {
 
 /// Values with a control of their own instead of a slider.
 fn skipped(section: &str, name: &str) -> bool {
-    matches!((section, name), ("view", "tone_mapper") | ("shadows", "filter"))
+    matches!((section, name), ("view", "tone_mapper" | "resolution" | "upscale") | ("shadows", "filter"))
 }
 
 /// The value `name` of `section` had as the game started.
