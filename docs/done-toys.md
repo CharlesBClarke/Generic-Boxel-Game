@@ -3,6 +3,48 @@
 Moved out of `SLICES.md` on 2026-11-03 so the roadmap stays short. Each toy's full write-up, newest first, as it stood when it closed. `SLICES.md` keeps a one-line summary of each.
 
 
+#### Resolution (`toy-render-scale`)
+
+**Stage:** Done (2026-11-12).
+
+From the Render scale backlog entry. The user: "I just want to play at a resuiton lower then my screen for fps resons", and "in games ussaly you get to select the reselytion, why are we doing fraction of scree", so it became a resolution list rather than a percentage slider.
+
+*Plan (approved 2026-11-12).* Play at a resolution below the screen's, for frame rate. The user: "in games ussaly you get to select the reselytion, why are we doing fraction of scree", so it's a resolution pick list, not a percentage: native, 1440p, 1080p, 900p, 720p, 540p, 360p by height, the width following the window's shape, only those smaller than the window offered. The world is drawn into an image that size and stretched to the window (smooth or pixelated, picked in game); a screen camera of its own draws Bevy UI and egui at full size, so they stay sharp. At native the player camera draws straight to the window as before. The monitor's video mode is not changed. Distant-terrain-only lower resolution is out. `crates/client/src/render_scale.rs`; `view.resolution` and `view.upscale` in the tuning file, so profiles and the bench can set them. Tests: the draw size (rounding, window shape, too big or minimized means native).
+
+*Implementation notes:*
+- `crates/client/src/render_scale.rs`: `Resolution` and `Upscale` (saved by place, like the tone mapper), `draw_size`, the screen camera and the world picture.
+- The screen camera (`Camera2d`, order 1, no clear) is `IsDefaultUiCamera` and holds egui's primary context; egui's automatic context is switched off so it can't land on the player camera.
+- At native both cameras draw to the window and share its textures, which needs the same MSAA: `apply_resolution` copies the player camera's MSAA to the screen camera at native and turns it off when the world goes to an image.
+- Below native the player camera's `RenderTarget` is an `Image` of the picked size (rebuilt when the pick, the stretch or the window size changes), shown by a full-window `ImageNode` under all other UI (`GlobalZIndex(i32::MIN)`). A pick as big as the window, or a minimized window, means native.
+- The tuning panel's View section shows the resolution list (only sizes smaller than the window, besides native and the current pick) and the stretch list; both are `view.resolution` and `view.upscale` in the tuning file, so profiles and bench sets can set them. A bench study, `tools/bench/resolution.txt`, compares native, 720p and 540p.
+
+*Verify (2026-11-12):* the user: "ok it works"; stretch default smooth ("default strech is fine"). Tests: 6 new (`render_scale::tests`), workspace 834 passed, 0 failed. Done when: pick a lower resolution and the world draws smaller and stretched while the UI stays sharp: met (played; bench screenshots show a soft world with a sharp hotbar and text).
+
+Quick bench, `master` vs `work` (shipped, 1080×1080):
+
+| spot | master ms | work ms | change |
+| --- | --- | --- | --- |
+| recorded | 19.0 | 19.4 | +2% |
+| overlook | 19.9 | 21.1 | +6% |
+| lake | 17.2 | 17.5 | +2% |
+
+The overlook row was flagged slower. It's drift (heat), not cost: the study's `shipped_again`, run four minutes later on the same build, measured 19.3 / 20.2 / 17.0 ms, level with `master`. At native the screen camera adds only a pass that draws nothing but the UI.
+
+Resolution study (`tools/bench.sh --study tools/bench/resolution.txt`, work, 1080×1080 window):
+
+| set | recorded | overlook | lake |
+| --- | --- | --- | --- |
+| native | 19.2 ms (52 fps) | 21.4 ms (47) | 17.9 ms (56) |
+| 720p (720×720) | 14.7 ms (68) | 15.0 ms (67) | 14.2 ms (70) |
+| 540p (540×540) | 11.9 ms (84) | 12.5 ms (80) | 12.5 ms (80) |
+| native again | 19.3 ms | 20.2 ms | 17.0 ms |
+
+Since greedy meshing cut the triangles, pixels are now a big share of the frame: 720p (44% of the pixels) saves 3–6 ms, 540p 5–9 ms. The far-only split isn't needed.
+
+*Decisions:* a list of resolutions by height, not a fraction of the window; the monitor's video mode is never changed; UI and egui live on their own screen camera; distant-terrain-only lower resolution dropped.
+
+*Deferred:* adding `view.resolution` to the 30 and 60 fps profiles (the user's to pick); profiles as the bench (backlog). No new API debt (client only).
+
 #### Mending: storage and a mender (`toy-mending`)
 
 **Stage:** Done (2026-11-12).

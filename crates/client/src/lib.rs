@@ -21,6 +21,7 @@ pub mod mesher;
 pub mod model;
 pub mod meshing;
 pub mod perf;
+pub mod render_scale;
 pub mod shading;
 pub mod shadows;
 pub mod sky;
@@ -77,6 +78,8 @@ pub fn run(connection: Box<dyn Connection>) {
             primary_window: Some(Window { title: "Boxel".into(), ..default() }),
             ..default()
         }))
+        // The screen camera owns egui (see `render_scale`), not the first camera spawned.
+        .insert_resource(bevy_egui::EguiGlobalSettings { auto_create_primary_context: false, ..default() })
         .add_plugins((EguiPlugin::default(), typing::TypingPlugin, SolidPlugin, model::ModelPlugin, shading::ShadingPlugin, shadows::ShadowsPlugin))
         .init_resource::<heights::Heights>()
         .insert_resource(ClearColor(Color::srgb(0.55, 0.75, 0.95)))
@@ -127,6 +130,7 @@ pub fn run(connection: Box<dyn Connection>) {
             Startup,
             (
                 setup_scene,
+                render_scale::setup_screen,
                 spawn_chunk_meshes,
                 drill::setup_drill,
                 combat::setup_media,
@@ -168,7 +172,7 @@ pub fn run(connection: Box<dyn Connection>) {
                 .chain(),
         )
         .add_systems(EguiPrimaryContextPass, (editing::hotbar, tuning::tuning_panel, crafting::crafting_menu, world_menu::world_menu).chain())
-        .add_systems(Update, (world_notes, ui_scale::apply_ui_scale, view::apply_view_switches, view::apply_tone_mapper))
+        .add_systems(Update, (world_notes, ui_scale::apply_ui_scale, view::apply_view_switches, view::apply_tone_mapper, render_scale::apply_resolution.after(view::apply_view_switches)))
         .add_systems(PostUpdate, heights::update_heights.before(shading::ShadingSet))
         .add_systems(Last, (save_on_exit, limit_frame_rate))
         .run();

@@ -9,6 +9,7 @@ use bevy::core_pipeline::tonemapping::Tonemapping;
 use bevy::prelude::*;
 
 use crate::editing::ChunkMeshes;
+use crate::render_scale::{Resolution, Upscale};
 use crate::{ChunkMesh, PlayerCamera, coords};
 
 /// The view's tuning.
@@ -19,11 +20,15 @@ pub struct ViewTuning {
     /// How the frame's light is fitted to the screen. Switching rebuilds the block and sky
     /// shaders, so it stalls for a moment once.
     pub tone_mapper: ToneMapper,
+    /// How big the world is drawn, stretched to the window (see [`crate::render_scale`]).
+    pub resolution: Resolution,
+    /// How a world drawn smaller than the window is stretched to it.
+    pub upscale: Upscale,
 }
 
 impl Default for ViewTuning {
     fn default() -> Self {
-        Self { render_distance: 512.0, tone_mapper: ToneMapper::Aces }
+        Self { render_distance: 512.0, tone_mapper: ToneMapper::Aces, resolution: Resolution::Native, upscale: Upscale::Smooth }
     }
 }
 
@@ -34,6 +39,8 @@ const VIEW_GROUPS: &[(&str, &[&str])] = &[
 const VIEW_HELP: &[(&str, &str)] = &[
     ("render_distance", "Chunks farther than this from the camera aren't drawn, meters."),
     ("tone_mapper", "How the frame's light is fitted to the screen. Switching rebuilds the shaders, a moment's stall."),
+    ("resolution", "How big the world is drawn, stretched to fill the window; lower buys frame rate. Menus and text stay sharp."),
+    ("upscale", "How a world drawn smaller than the window is stretched: smooth, or pixelated."),
 ];
 
 impl Tunables for ViewTuning {
@@ -41,6 +48,8 @@ impl Tunables for ViewTuning {
         api::tuning::described(vec![
             Tunable::new("render_distance", self.render_distance, 32.0, 4096.0),
             Tunable::new("tone_mapper", self.tone_mapper.index() as f32, 0.0, (ToneMapper::ALL.len() - 1) as f32),
+            Tunable::new("resolution", self.resolution.index() as f32, 0.0, (Resolution::ALL.len() - 1) as f32),
+            Tunable::new("upscale", self.upscale.index() as f32, 0.0, (Upscale::ALL.len() - 1) as f32),
         ], VIEW_GROUPS, VIEW_HELP)
     }
 
@@ -48,6 +57,8 @@ impl Tunables for ViewTuning {
         match name {
             "render_distance" => self.render_distance = value.max(0.0),
             "tone_mapper" => self.tone_mapper = ToneMapper::from_index(value),
+            "resolution" => self.resolution = Resolution::from_index(value),
+            "upscale" => self.upscale = Upscale::from_index(value),
             _ => return false,
         }
         true
