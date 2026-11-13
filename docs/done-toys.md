@@ -3,6 +3,90 @@
 Moved out of `SLICES.md` on 2026-11-03 so the roadmap stays short. Each toy's full write-up, newest first, as it stood when it closed. `SLICES.md` keeps a one-line summary of each.
 
 
+#### Far terrain: LOD, first toy (`toy-far-terrain`)
+
+**Stage:** Done (2026-11-12).
+
+From the LOD infrastructure entry, picked 2026-11-12 ahead of the glitch fixes (those still wait, each a `fix-` branch). The user asked "how hard is the LOD system? should we try and do a clean room reimplimentation?": no clean room (ideas from Distant Horizons and others are free to use; their code isn't copied and wouldn't port), our own LOD on our mesher.
+
+*Plan (approved 2026-11-12).* Generated terrain seen out to ~2 km, frame rate no worse than master's 512 m view.
+- **Levels.** A level-*k* chunk is still a 32³ grid, each cell 2^k boxels a side, so `ChunkFill`, the mesher and chunk messages work at every level; a level-*k* column is the terrain's height in level-*k* chunks. Full detail (level 0) to 256 m (the user: "full detail to 256"), far terrain to 2 km, both sliders (`view.render_distance`, new `view.far_distance`).
+- **API.** `Generator::fill_coarse(origin, step, out) -> bool`, default `false`: a terrain whose generator can't fill coarsely has no far terrain (logged once). `base::Hills` implements it (heights at cell centers, the same surface rules at the coarse slope, boulders only bigger than half a cell). `fill_coarse` at step 1 equals `fill`.
+- **Edits** (the user picked "Shrink edits"): the server builds far chunks from the generator, then overwrites the cells covering stored and loaded edited chunks with a shrunk copy of them, so builds stay visible far away and nothing extra stays loaded.
+- **Server** (`sim::far`): per player, rings of coarse columns per level out to the far distance, on the terrain workers after full columns, nearest first; data only (no light, no simulation). Protocol `FarLoaded` / `FarUnloaded`, tracked per client; `Command::ViewDistance` carries both distances.
+- **Client** (`client::far`): a quadtree over columns: a level-*k* column is drawn as its four children only once all four are meshed and it's near enough, so no overlap, no holes. Coarse chunks meshed in the background by the same mesher, scaled 2^k, neighbors across a level border treated as air (the walls plug cracks). Drawn with `SolidMaterial` flagged far: each cell its look's average color, sun and sky light and fog; no AO, edges, sheen or detail; no cascaded shadows. Fog and far plane follow the far distance.
+- **Bench**: a far terrain on/off line in `bench/switches.rs`.
+- **Tests**: `fill_coarse` step 1 = `fill`, coarse heights near the full ones; quadtree covers every spot once and never splits before its children are ready; far rings follow a player, load and unload with margin, none for a generator that can't; shrinking edits; protocol; coarse meshing walls; the fly harness keeps up.
+
+*Done when:* (1) from a hilltop terrain reaches the far distance with no holes or sky slits between levels, fogged at the edge; (2) level switches while walking and flying don't bother the user; (3) flying at 30 m/s keeps the far rings filled; (4) quick bench frame rate at least master's; (5) near terrain unchanged and the color at the first level border close enough; (6) tests pass, clippy clean.
+
+*Left for later toys:* ores and anti-xray for far data, the far shadow past the render distance, fading between levels, compressing far messages.
+
+*Implementation notes:*
+- `api::Generator::fill_coarse`; `base::Hills::fill_stepped` fills at any step (`fill` is step 1, tested equal).
+- `sim::far`: `FarColumn`, `Reach` (`wanted` for the server, `pick` for the client, one rule), `Far` (rings, stale columns rebuilt after an edit drops into the store, `FarChunks` messages). Far chunks are `ChunkData` in level units; chunks solid all through under a covering one are left out. The terrain workers now run any job (`stream::Task`), shared with far columns, which always keep one on its way. `Simulation::set_reach`, `far_all`, `take_far_loaded`/`take_far_unloaded`; the load radius stays full detail + 32 m (a level-1 column whose children aren't all loaded just stays coarse).
+- Protocol `Command::ViewDistance(Reach)`, `ServerMsg::FarLoaded`/`FarUnloaded`, `Snapshot.far`. Server default radius now 256 + 32 m.
+- Client `far`: far columns meshed alone on the background mesher (`greedy::merge_far` splits T-junctions only on the chunk borders above and below), scaled meshes, the far material (`place.w == 2`: the look's deepest mip, no AO, edges or sheen), `pick_far`; `view.apply_render_distance` shows streamed columns the quadtree picked. Fog and the far plane follow `far_distance`. Readout line, far triangles counted in `ViewStats` (so the bench sees them), bench switch `view.far_terrain`.
+- *Deviation (said to the user mid-implement):* a `view.level_reach` slider (default 1.6; the plan had a fixed 2). Measured from a hill: 2.0 drew ~716k far quads, 1.6 ~308k, 1.4 ~148k. Also: a column always splits within its own width of the player, so short full-detail distances still split the column underfoot.
+- Harness (`meshing::stream_timing`, now with far terrain at 256/2048): flying 30 m/s for 20 s, far waiting 0 at the end; far meshing is the heaviest background work (~14 s of one thread for the first ~700 columns at level reach 2). `far::timing::time_far_meshing` times it per level reach.
+- The far shadow (height map) still covers only the render distance, now 256 m: far terrain is unshadowed.
+- *Play check fixes (2026-11-12):* far terrain cut to the terrain height like full detail (the user saw whole far mountains where near ones were cut flat; removing the limit is the Loading by cube slice). The missing "far terrain" checkbox in View. Distant slopes striped and swam with the camera (the user: "these wavy patterns in the sitence move extremely with camara movment"): MSAA "helped a ton", shadows did nothing, so it's the steps' bright tops beside darker sides; new `view.far_flatten` (default 0.7) gives far cells' sides their top's color and an upward-leaning normal. Dark squares along the first level's edge over the frozen lake (the user confirmed with Shadows → far off): far columns over loaded full columns sat below the ground the far shadow's height map holds (coarse ice is a boxel lower) and shaded themselves; far terrain now looks its shadow up 2 m higher. Sheen turned back on for far terrain (it's the material's, not a boxel's).
+
+*Play check so far (2026-11-12):*
+- Met: no holes or slits between levels; the dark squares are gone and the ice matches across the edge; flying out to new terrain works. The ring of hills seen from the test area is real terrain past the 1 km clear zone, working as built (backlog: The test area on the terrain).
+- Not met: the user: "the color is the biggest issue, the distant hills look just green. and they instantly pop with the color with that Moiré Aliasing probplem. and the shape seems worse then minecraft voxy mod. so I get the sense there are better ways to combine cubes". The user wants a better approach planned in a fresh session ("this might be a job for a smarter model"), so no plan is written here yet.
+- Rule: Voxy is All Rights Reserved: no reading its source, no decompiling, no copying its numbers; ideas from how it looks in play and its public descriptions only. The user asked "shouldn't we do clean room stuff"; agreed it's not needed if its code is never read.
+
+*Plan revision (2026-11-12, engaged).* The far look, without touching how levels are picked. From reading our own code, no Voxy source: hills were "just green" because `far_flatten` lit every slope as flat ground and pulled sides to the top's color, and because `fill_stepped` measured slope across a whole coarse cell, so narrow cliffs turned to grass.
+- **A, slope light.** Each far face carries the slope of the ground around it (from the solid cells near it, so it works on overhangs too; past the column's sides the ground is taken to carry on evenly). The shader draws the face as the staircase of full-detail faces that slope would be, seen from where the camera is: its top and side colors and light mixed by how much of each shows. Steps' tops and sides come out alike, so no stripes; `view.far_flatten` goes.
+- **B, materials.** `fill_stepped` measures steepness at boxel scale at every step, so far cliffs stay stone.
+- **E, the border.** Far faces darken by what ambient occlusion takes off a staircase's steps on average (worked out from the AO tuning; `view.far_crease` scales it).
+- *Done when* changes: (2) level switches moves to Loading by cube (below); (5) stays.
+- *Risk said to the user:* the mixed light may not match full detail at the border well enough; if so, stop and say so.
+- *Built (2026-11-12):* `client::slope` (new): `Cells` (a far column's solid cells; chunks the server left out are solid under a solid floor, empty otherwise), each face's slope from the cells within 3 of it, packed into its stored light's red and green (`pack`/`unpack`), set in `far::mesh_columns` before merging. `solid.wgsl` `far_shade`: the three ways a staircase faces, mixed by share of the slope and how squarely the eye sees each, each way's average color and light, creases darkened from the AO tuning times `view.far_crease` (default 1; replaces `view.far_flatten`). `sun.wgsl`: `lit` split into `sun_reach` and `light_facing`. `base::Hills::fill_stepped`: steepness between boxels at each cell's middle, only where a surface layer is in the chunk.
+- *Costs measured:* far quads drawn from the hill at level reach 1.6: 304k to 360k (faces with different slopes don't merge; halving the slope's steps didn't help). Far meshing +13% (slopes 1.1 s on 6.5 s meshing + 1.1 s merging for 340 columns). Far generation in the 30 m/s flight: workers 3.8 s to 5.8 s over 20 s (four more height lookups a surface cell), still 0 waiting at the end.
+- *Tests:* 861 pass, clippy clean. New: slopes of flat ground, staircases at four pitches (tops and sides agree), the column's sides, an overhang, left-out chunks, packing; coarse tops bare exactly where full detail's steepness says, at steps 4 and 16.
+- *First run:* the block shader failed to compile (a struct field named `lit`, the same as the imported function), so nothing drew; the user pasted the error, the field was renamed.
+
+*Verify, plan revision (2026-11-12).* Quick bench, three builds, the bench's 512 m of full detail in all three (so the toy builds draw master's 512 m and far terrain on top, not 256 m and far terrain as designed):
+
+| spot | master 77b43b2 | toy as committed d53fe46 | with the revision |
+|---|---|---|---|
+| recorded | 19.8 ms (50.6 fps) | 21.6 ms (46.4) | 23.9 ms (41.9) |
+| overlook | 22.2 ms (45.0) | 27.5 ms (36.4) | 28.7 ms (34.9) |
+| lake | 18.0 ms (55.6) | 20.5 ms (48.8) | 22.8 ms (44.0) |
+
+- Far terrain itself: +9% to +24% over master. The revision: +4% to +11% more (18% more far quads, and a far fragment now reads three colors and works out light three ways); the GPU's clock was 5% to 11% lower in the revision's run, so part of that may be the run, not the code.
+- *Not a fair run* (the user asked "did you wait for the lods to load in?"): the GPU was throttled 0% to 95% for master, which ran first, and 95% to 100% for the revision, so the columns aren't comparable; the one fair pair is lake, master against the toy as committed (0% and 5%): +14%. And the bench's loading check didn't wait for far columns still with the background mesher (chunk counts matched between the two toy runs, so they were probably in). Fixed: `FarTerrain::unmeshed`, counted in `bench::switches::loading`. A rerun with cool-downs is waiting for the user's go.
+- *Rerun, fair* (reverse order, two-minute cool-downs, throttled 0% but for two spots at 5% and 25%; the working tree with the loading fix):
+
+| spot | master 77b43b2 | toy as committed d53fe46 | with the revision |
+|---|---|---|---|
+| recorded | 19.5 ms (51.4 fps) | 21.8 ms (46.0) | 23.4 ms (42.7) |
+| overlook | 20.4 ms (49.0) | 24.6 ms (40.6) | 25.9 ms (38.6) |
+| lake | 17.0 ms (58.8) | 20.3 ms (49.3) | 21.5 ms (46.5) |
+
+  Far terrain itself: +12% to +21% over master. The revision: +5% to +8% more. Together +20% to +27%. So (4) is not met, with the caveat above that every build draws 512 m of full detail here.
+- *The comparison the plan meant* (the user: "LODs where suposed to imporve FPS right"; new bench sets `far_256`, `far_256_1km`, `no_far`; all throttled 0%):
+
+| spot | master, 512 m | 256 m + far to 2 km | 256 m + far to 1 km | 512 m, far off |
+|---|---|---|---|---|
+| recorded | 19.5 ms (51.4 fps) | 15.4 ms (65.1) | 16.5 ms (60.7) | 19.7 ms (50.7) |
+| overlook | 20.4 ms (49.0) | 16.0 ms (62.5) | 15.8 ms (63.5) | 21.0 ms (47.6) |
+| lake | 17.0 ms (58.8) | 13.5 ms (74.3) | 13.0 ms (77.0) | 18.1 ms (55.2) |
+
+  The game's default (256 m + far to 2 km) is 21% to 22% less frame time than master's 512 m, seeing four times as far, with 1.0M to 1.3M triangles against 1.6M to 1.9M. The far distance barely matters (1 km against 2 km: within the run's noise). Far off at 512 m matches master. So (4) is met as the plan meant it; `shipped`, which pins 512 m, will keep showing far terrain as a cost.
+- Screenshots looked at: far hills show stone cliffs and slope shading and fade into the fog; nothing missing.
+- Criteria: (1) met (earlier play check). (2) moved to Loading by cube. (3) met (30 m/s flight: 0 far columns waiting). (4) met as the plan meant it (256 m + far against master's 512 m: 21% to 22% less frame time); not met with 512 m of full detail kept under the far terrain (+20% to +27%). (5) the user: "it looks good alot better"; the border itself not called out. (6) met: 861 tests pass, clippy clean.
+
+*Close (2026-11-12).* The user on the revised look: "ok it looks good alot better we can do more in the future".
+- *Decisions:* far terrain draws the slope, not the cell (each face as the mix of full-detail faces its slope would be); generators measure steepness between boxels at every step; the default view is 256 m of full detail and far terrain to 2 km, which is faster than 512 m of full detail alone; Voxy's source is never read.
+- *Deferred:* level switches (criterion (2)) to Loading by cube, with picking by size on screen and the user's "how full" score; ores and anti-xray for far data; the far shadow past the render distance; fading between levels; compressing far messages; working out a far face's light once a face, not once a pixel (the revision's +5% to +8%); far faces of different slopes not merging (+18% far quads); whether a noise look's far color matches its near average was not checked.
+- *API debt:* none new (`Generator::fill_coarse` is API).
+- *Bench:* the `shipped` set pins 512 m of full detail, so it shows far terrain as a +20% to +27% cost; `far_256` is the set that measures the game's default.
+
+
+
 #### Resolution (`toy-render-scale`)
 
 **Stage:** Done (2026-11-12).

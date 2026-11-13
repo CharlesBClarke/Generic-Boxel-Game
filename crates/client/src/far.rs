@@ -1,8 +1,10 @@
 //! Far terrain on the client: the far columns the server sends (see [`sim::far`]), meshed in
-//! the background each on its own, scaled to their level and drawn with the far material (each
-//! face its look's average color, no AO or edges, its shadow looked up a cell higher); and which level is drawn where, picked
-//! by the quadtree from the camera as columns become ready, which also says which ordinary
-//! columns are drawn (see [`crate::view::apply_render_distance`]).
+//! the background each on its own, scaled to their level and drawn with the far material
+//! (each face as the slope of the ground around it, see [`crate::slope`]: the average colors
+//! and light of the full-detail faces such a slope is made of, no AO or edges, its shadow
+//! looked up a cell higher); and which level is drawn where, picked by the quadtree from the
+//! camera as columns become ready, which also says which ordinary columns are drawn (see
+//! [`crate::view::apply_render_distance`]).
 
 use std::collections::{HashMap, HashSet};
 
@@ -86,6 +88,11 @@ impl FarTerrain {
         self.drawn.clear();
     }
 
+    /// Far columns the server sent that have no meshes yet: still with the background mesher.
+    pub fn unmeshed(&self) -> usize {
+        self.columns.values().filter(|e| !e.meshed).count()
+    }
+
     /// Takes in far columns built and dropped, and returns the built ones to mesh.
     pub fn take_news(&mut self, news: Vec<FarNews>, commands: &mut Commands) -> Vec<(FarColumn, u64, Vec<ChunkData>)> {
         let mut asked: Vec<(FarColumn, u64, Vec<ChunkData>)> = Vec::new();
@@ -150,8 +157,9 @@ fn far_transform(column: FarColumn, pos: ChunkPos, origin: I64Vec3) -> Transform
     Transform::from_translation(coords::render_translation(corner, origin)).with_scale(Vec3::splat(column.step() as f32))
 }
 
-/// Meshes far columns, each on its own (nothing beside it read, so its sides get walls), spread
-/// over `threads` threads.
+/// Meshes far columns, each on its own (nothing beside it read, so its sides get walls), every
+/// face given the slope of the ground around it (see [`crate::slope`]), spread over `threads`
+/// threads.
 pub(crate) fn mesh_columns(
     list: Vec<(FarColumn, u64, Vec<ChunkData>)>,
     blocks: &BlockRegistry,
@@ -167,11 +175,15 @@ pub(crate) fn mesh_columns(
         }
         let positions: Vec<ChunkPos> = chunks.iter().map(|c| c.pos).collect();
         let meshed = crate::mesher::mesh_chunks_on(&grid, &positions, blocks, volumes, &ao, false, 1);
+        let cells = crate::slope::Cells::of(&grid, &positions);
         let meshes = positions
             .into_iter()
             .zip(meshed)
             .filter(|(_, m)| !m.is_empty())
-            .map(|(p, m)| (p, if merge { crate::greedy::merge_far(&m) } else { m }))
+            .map(|(p, mut m)| {
+                crate::slope::set_slopes(&mut m, &cells, p);
+                (p, if merge { crate::greedy::merge_far(&m) } else { m })
+            })
             .collect();
         FarMeshed { column, version, meshes }
     };
@@ -196,27 +208,27 @@ pub fn reach(view: &ViewTuning, switches: &ViewSwitches) -> Option<Reach> {
 }
 
 /// Makes the far material once the block material exists (the same, read plainly), and keeps
-/// its flattening as tuned.
+/// its creases as tuned.
 pub(crate) fn sync_far_material(
     chunks: Option<Res<ChunkMeshes>>,
     view: Res<ViewTuning>,
     mut far: ResMut<FarTerrain>,
     mut materials: ResMut<Assets<SolidMaterial>>,
 ) {
-    let flatten = Vec4::new(view.far_flatten, 0.0, 0.0, 0.0);
+    let crease = Vec4::new(view.far_crease, 0.0, 0.0, 0.0);
     match &far.material {
         Some(handle) => {
-            if materials.get(handle).is_some_and(|m| m.far != flatten)
+            if materials.get(handle).is_some_and(|m| m.far != crease)
                 && let Some(m) = materials.get_mut(handle)
             {
-                m.far = flatten;
+                m.far = crease;
             }
         }
         None => {
             let Some(chunks) = chunks else { return };
             let Some(mut material) = materials.get(&chunks.material).cloned() else { return };
             material.place = FAR_PLACE;
-            material.far = flatten;
+            material.far = crease;
             far.material = Some(materials.add(material));
         }
     }
@@ -308,6 +320,19 @@ mod tests {
     }
 
     #[test]
+    fn the_bench_waits_for_far_columns_still_being_meshed() {
+        let column = FarColumn { terrain: 0, level: 1, x: 0, y: 0 };
+        let mut far = FarTerrain::default();
+        far.columns.insert(column, Entry { version: 1, meshed: false, entities: Vec::new(), quads: 0 });
+        assert_eq!(far.unmeshed(), 1);
+        let mut world = World::new();
+        world.insert_resource(far);
+        assert!(crate::bench::switches::loading(&world));
+        world.resource_mut::<FarTerrain>().columns.get_mut(&column).unwrap().meshed = true;
+        assert!(!crate::bench::switches::loading(&world));
+    }
+
+    #[test]
     fn far_columns_are_meshed_with_walls_on_their_sides() {
         let mut blocks = BlockRegistry::default();
         let stone = blocks.register(api::BlockDef::new("t:stone", true, [0; 3])).unwrap();
@@ -369,7 +394,7 @@ mod timing {
         let built = sim.take_far_loaded();
         let volumes = Volumes::build(sim.looks(), sim.blocks());
         let ao = AoTuning::default();
-        let (mut mesh_s, mut merge_s, mut chunks, mut quads, mut merged) = (0.0f32, 0.0f32, 0, 0, 0);
+        let (mut mesh_s, mut slope_s, mut merge_s, mut chunks, mut quads, mut merged) = (0.0f32, 0.0f32, 0.0f32, 0, 0, 0);
         let mut by_level = [0usize; 8];
         let mut per_column: HashMap<FarColumn, usize> = HashMap::new();
         for b in &built {
@@ -380,8 +405,14 @@ mod timing {
             let positions: Vec<ChunkPos> = b.chunks.iter().map(|c| c.pos).collect();
             chunks += positions.len();
             let clock = Instant::now();
-            let meshed = crate::mesher::mesh_chunks_on(&grid, &positions, sim.blocks(), &volumes, &ao, false, 1);
+            let mut meshed = crate::mesher::mesh_chunks_on(&grid, &positions, sim.blocks(), &volumes, &ao, false, 1);
             mesh_s += clock.elapsed().as_secs_f32();
+            let clock = Instant::now();
+            let cells = crate::slope::Cells::of(&grid, &positions);
+            for (m, &p) in meshed.iter_mut().zip(&positions) {
+                crate::slope::set_slopes(m, &cells, p);
+            }
+            slope_s += clock.elapsed().as_secs_f32();
             let clock = Instant::now();
             for m in &meshed {
                 quads += m.quad_count();
@@ -396,7 +427,7 @@ mod timing {
         let picked = sim.reach().pick(0, pos, &|c| c.level == 0 || per_column.contains_key(&c));
         let drawn: usize = picked.iter().filter_map(|c| per_column.get(c)).sum();
         println!(
-            "level reach {level_reach}: {} far columns, {chunks} chunks: meshing {mesh_s:.2} s, merging {merge_s:.2} s | {quads} quads, {merged} merged, by level {by_level:?} | {drawn} far quads drawn",
+            "level reach {level_reach}: {} far columns, {chunks} chunks: meshing {mesh_s:.2} s, slopes {slope_s:.2} s, merging {merge_s:.2} s | {quads} quads, {merged} merged, by level {by_level:?} | {drawn} far quads drawn",
             built.len()
         );
     }

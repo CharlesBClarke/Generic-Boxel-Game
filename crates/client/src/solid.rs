@@ -67,8 +67,9 @@ pub struct SolidMaterial {
     /// What each look generates: [`look_table`].
     #[storage(7, read_only)]
     pub generated: Handle<ShaderStorageBuffer>,
-    /// For far terrain (see [`crate::far`]): how much its cells' sides take their top's color
-    /// and light, 0 to 1, then unused. Zero for everything else.
+    /// For far terrain (see [`crate::far`]): how much of the darkness ambient occlusion puts
+    /// on a staircase's steps its faces take (see [`crate::view::ViewTuning::far_crease`]),
+    /// then unused. Zero for everything else.
     #[uniform(8)]
     pub far: Vec4,
     pub alpha_mode: AlphaMode,

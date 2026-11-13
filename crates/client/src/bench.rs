@@ -20,7 +20,7 @@
 //! Kept to what the client has had since the perf recorder (`f9fbc16`), so `tools/bench/
 //! backport.sh` can copy it into older commits; only `switches` changes with the commit.
 
-mod switches;
+pub(crate) mod switches;
 
 use std::collections::BTreeMap;
 use std::path::PathBuf;

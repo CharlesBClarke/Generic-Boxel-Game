@@ -24,9 +24,10 @@ pub struct ViewTuning {
     /// How many times as far each coarser level of far terrain reaches as the one before (see
     /// [`sim::far::Reach::level_reach`]): lower is fewer triangles, coarse sooner.
     pub level_reach: f32,
-    /// How much far terrain's cells' sides take their top's color and light, 0 to 1: more
-    /// hides the stripes a slope's steps make in the distance, less keeps more relief.
-    pub far_flatten: f32,
+    /// How much of the darkness ambient occlusion puts on a hillside's steps far terrain
+    /// takes, so it's as dark as full detail where they meet: 1 is what the AO tuning works
+    /// out to, 0 none (see `far_shade` in `solid.wgsl`).
+    pub far_crease: f32,
     /// How the frame's light is fitted to the screen. Switching rebuilds the block and sky
     /// shaders, so it stalls for a moment once.
     pub tone_mapper: ToneMapper,
@@ -39,7 +40,7 @@ pub struct ViewTuning {
 impl Default for ViewTuning {
     fn default() -> Self {
         // Full detail to 256 m: the user's pick for far terrain (2026-11-12).
-        Self { render_distance: 256.0, far_distance: 2048.0, level_reach: sim::far::Reach::default().level_reach, far_flatten: 0.7, tone_mapper: ToneMapper::Aces, resolution: Resolution::Native, upscale: Upscale::Smooth }
+        Self { render_distance: 256.0, far_distance: 2048.0, level_reach: sim::far::Reach::default().level_reach, far_crease: 1.0, tone_mapper: ToneMapper::Aces, resolution: Resolution::Native, upscale: Upscale::Smooth }
     }
 }
 
@@ -50,7 +51,7 @@ const VIEW_GROUPS: &[(&str, &[&str])] = &[
 const VIEW_HELP: &[(&str, &str)] = &[
     ("render_distance", "Full detail reaches this far, meters; far terrain takes over past it."),
     ("far_distance", "Far terrain reaches this far, meters, coarser the farther; none if no farther than the render distance."),
-    ("far_flatten", "How much far terrain's step sides take their top's color and light, 0 to 1: more hides the stripes slopes make in the distance, less keeps more relief."),
+    ("far_crease", "How dark far terrain's slopes are next to full detail's, whose steps ambient occlusion darkens: 1 is worked out from the AO tuning, 0 is no darkening. Tune it at the edge of full detail on a hillside."),
     ("level_reach", "How many times as far each coarser level of far terrain reaches as the one before: lower is fewer triangles but coarse sooner."),
     ("tone_mapper", "How the frame's light is fitted to the screen. Switching rebuilds the shaders, a moment's stall."),
     ("resolution", "How big the world is drawn, stretched to fill the window; lower buys frame rate. Menus and text stay sharp."),
@@ -62,7 +63,7 @@ impl Tunables for ViewTuning {
         api::tuning::described(vec![
             Tunable::new("render_distance", self.render_distance, 32.0, 4096.0),
             Tunable::new("far_distance", self.far_distance, 0.0, 8192.0),
-            Tunable::new("far_flatten", self.far_flatten, 0.0, 1.0),
+            Tunable::new("far_crease", self.far_crease, 0.0, 2.0),
             Tunable::new("level_reach", self.level_reach, *sim::far::LEVEL_REACH.start(), *sim::far::LEVEL_REACH.end()),
             Tunable::new("tone_mapper", self.tone_mapper.index() as f32, 0.0, (ToneMapper::ALL.len() - 1) as f32),
             Tunable::new("resolution", self.resolution.index() as f32, 0.0, (Resolution::ALL.len() - 1) as f32),
@@ -74,7 +75,7 @@ impl Tunables for ViewTuning {
         match name {
             "render_distance" => self.render_distance = value.max(0.0),
             "far_distance" => self.far_distance = value.max(0.0),
-            "far_flatten" => self.far_flatten = value.clamp(0.0, 1.0),
+            "far_crease" => self.far_crease = value.clamp(0.0, 2.0),
             "level_reach" => self.level_reach = value.clamp(*sim::far::LEVEL_REACH.start(), *sim::far::LEVEL_REACH.end()),
             "tone_mapper" => self.tone_mapper = ToneMapper::from_index(value),
             "resolution" => self.resolution = Resolution::from_index(value),

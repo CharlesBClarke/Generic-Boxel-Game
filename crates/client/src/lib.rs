@@ -26,6 +26,7 @@ pub mod render_scale;
 pub mod shading;
 pub mod shadows;
 pub mod sky;
+pub mod slope;
 pub mod solid;
 pub mod sound;
 pub mod tuning;

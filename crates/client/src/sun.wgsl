@@ -151,27 +151,39 @@ struct Lit {
     sun: f32,
 }
 
-// The light on a surface at `position` facing `normal` (normalized), from the sun, sky, moon and
-// blocks, given the stored light there: red, green, blue and sky, 0 to 1. The sky's light
-// reaches a surface only as far as stored sky light does: none in a cave. The sun's only as far
-// as its shadows let it. The moon's light, which casts no shadows, comes in as far as the sky's
-// does. The light is white when that part is switched off (see `atmosphere.parts`).
-fn lit(position: vec3<f32>, normal: vec3<f32>, stored: vec4<f32>) -> Lit {
+// How much of the sun reaches a surface at `position` facing `normal`, given its stored
+// light: only as far as its shadows let it. Once the sun is down its light is zero, and its
+// shadows aren't looked up at all.
+fn sun_reach(position: vec3<f32>, normal: vec3<f32>, stored: vec4<f32>) -> f32 {
     let parts = atmosphere.parts;
-    let reach = sky_reach(atmosphere, stored.a);
-    var out: Lit;
-    out.sun = 0.0;
-    // Once the sun is down its light is zero, and its shadows aren't looked up at all.
     let sun_up = max(atmosphere.sun_color.r, max(atmosphere.sun_color.g, atmosphere.sun_color.b)) > 0.0;
     if (parts.w > 0.5 || parts.z > 0.5) && sun_up {
-        out.sun = sun_shadow(position, normal, reach);
+        return sun_shadow(position, normal, sky_reach(atmosphere, stored.a));
     }
-    out.light = vec3<f32>(1.0);
-    if parts.w > 0.5 {
-        out.light = ambient_light(atmosphere, normal) * reach
-            + sun_light(atmosphere, normal) * out.sun
-            + moon_light(atmosphere, normal) * reach
-            + block_light(atmosphere, stored.rgb);
+    return 0.0;
+}
+
+// The light on a surface facing `normal` (normalized), from the sun, sky, moon and blocks,
+// given the stored light there (red, green, blue and sky, 0 to 1) and how much of the sun
+// reaches it (see `sun_reach`). The sky's light reaches a surface only as far as stored sky
+// light does: none in a cave. The moon's light, which casts no shadows, comes in as far as the
+// sky's does. The light is white when that part is switched off (see `atmosphere.parts`).
+fn light_facing(normal: vec3<f32>, stored: vec4<f32>, sun: f32) -> vec3<f32> {
+    if atmosphere.parts.w <= 0.5 {
+        return vec3<f32>(1.0);
     }
+    let reach = sky_reach(atmosphere, stored.a);
+    return ambient_light(atmosphere, normal) * reach
+        + sun_light(atmosphere, normal) * sun
+        + moon_light(atmosphere, normal) * reach
+        + block_light(atmosphere, stored.rgb);
+}
+
+// The light on a surface at `position` facing `normal` (normalized), given the stored light
+// there: see `light_facing` and `sun_reach`.
+fn lit(position: vec3<f32>, normal: vec3<f32>, stored: vec4<f32>) -> Lit {
+    var out: Lit;
+    out.sun = sun_reach(position, normal, stored);
+    out.light = light_facing(normal, stored, out.sun);
     return out;
 }
