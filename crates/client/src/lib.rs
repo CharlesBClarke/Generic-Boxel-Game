@@ -12,6 +12,7 @@ pub mod crafting;
 pub mod dev;
 pub mod drill;
 pub mod editing;
+pub mod far;
 pub mod feel;
 pub mod greedy;
 pub mod heights;
@@ -125,6 +126,7 @@ pub fn run(connection: Box<dyn Connection>) {
         .init_resource::<sound::SoundPreview>()
         .init_resource::<sound::SoundPicks>()
         .init_resource::<perf::PerfRecorder>()
+        .init_resource::<far::FarTerrain>()
         .init_resource::<perf::PerfTags>()
         .add_systems(
             Startup,
@@ -152,11 +154,12 @@ pub fn run(connection: Box<dyn Connection>) {
                 (dev::dev_keys, dev::show_dev_text).chain(),
                 (double_tap_sprint, sprint_toggle),
                 drill::drill_keys,
-                (editing::remesh_changed_chunks, meshing::stream_meshes, view::send_view_distance).chain(),
+                (editing::remesh_changed_chunks, far::sync_far_material, meshing::stream_meshes, view::send_view_distance).chain(),
                 // Strikes first: a broken target bursts from where its view was drawn.
                 (combat::play_strikes, combat::play_slams, blast::play_blasts, hurt::play_player_hurts, combat::update_hit_stop).chain(),
                 blast::update_beams,
-                (update_camera, sync_chunk_transforms, view::apply_render_distance, sound::play_sounds).chain(),
+                (update_camera, sync_chunk_transforms, far::sync_far_transforms, far::pick_far, view::apply_render_distance, sound::play_sounds)
+                    .chain(),
                 editing::draw_outline,
                 editing::update_ghost,
                 (editing::update_hidden_ghosts, editing::update_mend_ghosts),
@@ -319,6 +322,7 @@ fn spawn_chunk_meshes(
         light: Vec4::ZERO,
         place: solid::in_world(origin.cell),
         generated: generated.clone(),
+        far: Vec4::ZERO,
         alpha_mode,
     };
     let material = materials.add(solid(Color::WHITE, AlphaMode::Opaque));
@@ -701,7 +705,7 @@ fn update_hud(
     feel: Res<CameraFeel>,
     time: Res<Time>,
     chunk_meshes: Option<Res<ChunkMeshes>>,
-    (view, drawn, background): (Res<view::ViewTuning>, Res<view::ViewStats>, Res<meshing::BackgroundMesher>),
+    (view, drawn, background, far): (Res<view::ViewTuning>, Res<view::ViewStats>, Res<meshing::BackgroundMesher>, Res<far::FarTerrain>),
     mut text: Single<&mut Text, With<Hud>>,
     mut meter: Local<perf::FpsMeter>,
 ) {
@@ -710,7 +714,7 @@ fn update_hud(
     let Some(player) = world.player() else {
         return;
     };
-    let cost = world_cost(&world, chunk_meshes.as_deref(), &view, &drawn, background.pending());
+    let cost = world_cost(&world, chunk_meshes.as_deref(), &view, &drawn, background.pending(), &far);
     let pos = player.pos();
     let precise = pos.cell().as_dvec3() + pos.offset().as_dvec3();
     let fps = rate.map_or_else(|| "--".to_string(), |(fps, ms)| format!("{fps:.0} fps ({ms:.1} ms)"));
@@ -735,7 +739,14 @@ fn update_hud(
 
 /// What the world costs to hold and draw: terrain streaming, meshing, chunks loaded and
 /// drawn, triangles, memory, and the render and simulation distances.
-fn world_cost(world: &ClientWorld, meshes: Option<&ChunkMeshes>, view: &view::ViewTuning, drawn: &view::ViewStats, meshing: usize) -> String {
+fn world_cost(
+    world: &ClientWorld,
+    meshes: Option<&ChunkMeshes>,
+    view: &view::ViewTuning,
+    drawn: &view::ViewStats,
+    meshing: usize,
+    far: &far::FarTerrain,
+) -> String {
     let t = world.terrain();
     let generation = match &world.defs().terrain_error {
         Some(e) => format!("terrain failed: {e}"),
@@ -753,8 +764,23 @@ fn world_cost(world: &ClientWorld, meshes: Option<&ChunkMeshes>, view: &view::Vi
         .find(|s| s.name == "world")
         .and_then(|s| s.values.iter().find(|t| t.name == "sim_distance"))
         .map_or(String::from("?"), |t| format!("{:.0}", t.value));
+    let f = world.far();
+    let far_line = if far.active {
+        format!(
+            "\nfar terrain {} columns, {} waiting, built in {:.1} s on the workers | {} far columns and {} ordinary drawn, {:.2}M far triangles | far {:.0} m",
+            f.columns,
+            f.waiting,
+            f.seconds,
+            far.stats.far,
+            far.stats.ordinary,
+            far.stats.triangles as f64 / 1e6,
+            view.far_distance,
+        )
+    } else {
+        String::new()
+    };
     format!(
-        "{generation}{meshing} | chunks {} loaded, {meshed} with faces, {} drawn | {:.2}M triangles | {} | render {:.0} m, sim {sim_distance} m",
+        "{generation}{meshing} | chunks {} loaded, {meshed} with faces, {} drawn | {:.2}M triangles | {} | render {:.0} m, sim {sim_distance} m{far_line}",
         world.universe().main().chunks().count(),
         drawn.drawn,
         drawn.triangles as f64 / 1e6,

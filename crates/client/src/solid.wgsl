@@ -35,10 +35,16 @@ const FACE_SCALE: f32 = 512.0;
 // Stored light added to every vertex's, 0 to 1: a loose item's, as its mesh carries none.
 @group(#{MATERIAL_BIND_GROUP}) @binding(5) var<uniform> light: vec4<f32>;
 // The render origin's cell in world texels as the noise takes them, then 1 for meshes where
-// they stand in the world: see `client::solid::SolidMaterial::place`.
+// they stand in the world, or 2 for far terrain: see `client::solid::SolidMaterial::place`.
 @group(#{MATERIAL_BIND_GROUP}) @binding(6) var<uniform> place: vec4<u32>;
 // What each look generates, by volume: see `client::solid::LookGpu`.
 @group(#{MATERIAL_BIND_GROUP}) @binding(7) var<storage, read> generated: array<Generated>;
+// Far terrain: how much its cells' sides take their top's color and light, 0 to 1: see
+// `client::solid::SolidMaterial::far`.
+@group(#{MATERIAL_BIND_GROUP}) @binding(8) var<uniform> far_terrain: vec4<f32>;
+
+// Meters far terrain looks its shadow up higher: a level-1 cell (see `client::far`).
+const FAR_SHADOW_LIFT: f32 = 2.0;
 
 // Mip levels of the face slices; matches `client::volumes::LEVELS`.
 const LEVELS: i32 = 5;
@@ -207,6 +213,17 @@ fn look_color(in: VertexOutput, volume: i32) -> vec3<f32> {
     }
     let u = (axis + 1) % 3;
     let w = (axis + 2) % 3;
+    // Far terrain (see `client::far`): each face its look's average color, one read, its
+    // sides blended toward the top's, so a slope's steps don't stripe it.
+    if place.w == 2u {
+        let face = slice_texel(volume, axis, wrap(vec3<i32>(floor(solid))), LEVELS - 1).rgb;
+        let flatten = far_terrain.x;
+        if axis == 2 || flatten <= 0.0 {
+            return face;
+        }
+        let top = slice_texel(volume, 2, vec3<i32>(0, 0, SIZE - 1), LEVELS - 1).rgb;
+        return mix(face, top, flatten);
+    }
     // A pixel's footprint on the face, in texels: long across ground seen at a glance and
     // short the other way. Like anisotropic filtering, detail goes by the short way, with a
     // few reads spread along the long way so it doesn't shimmer.
@@ -290,11 +307,20 @@ fn fragment(in: VertexOutput) -> @location(0) vec4<f32> {
     let volume = i32(round(in.solid.w));
     let own = vec4<f32>(look_color(in, volume), 1.0) * tint;
     var base = own * in.color;
-    if atmosphere.ao.w > 0.5 && any(in.ao != vec4<u32>(0u)) {
+    // Far terrain is drawn plainly: no AO or edges, which are a boxel's, not a cell's. Sheen
+    // is the material's, so it keeps it.
+    let plain = place.w == 2u;
+    if atmosphere.ao.w > 0.5 && !plain && any(in.ao != vec4<u32>(0u)) {
         base = vec4<f32>(base.rgb * ao_lit(in.ao, in.face), base.a);
     }
     let shine = textureLoad(sheens, vec2<i32>(volume, 0), 0);
-    let normal = normalize(in.world_normal);
+    var normal = normalize(in.world_normal);
+    if plain && far_terrain.x > 0.0 {
+        // Far cells' sides lit more as if facing up (render space is Y-up).
+        let up = vec3<f32>(0.0, 1.0, 0.0);
+        let blended = mix(normal, up, far_terrain.x);
+        normal = select(up, normalize(blended), length(blended) > 0.001);
+    }
     let to_eye_far = view.world_position - in.world_position;
     let distance = length(to_eye_far);
     let to_eye = to_eye_far / max(distance, 0.0001);
@@ -303,12 +329,19 @@ fn fragment(in: VertexOutput) -> @location(0) vec4<f32> {
     let parts = atmosphere.parts;
     var rgb = base.rgb;
     // An item's own stored light comes in through `light`; the world's meshes carry theirs.
-    let l = lit(in.world_position, normal, clamp(in.light + light, vec4<f32>(0.0), vec4<f32>(1.0)));
+    // Far terrain looks its shadow up a cell higher (render space is Y-up): its coarse surface
+    // can sit up to a cell below the ground the far shadow's height map holds, and would
+    // otherwise shade itself.
+    var shadow_at = in.world_position;
+    if plain {
+        shadow_at.y += FAR_SHADOW_LIFT;
+    }
+    let l = lit(shadow_at, normal, clamp(in.light + light, vec4<f32>(0.0), vec4<f32>(1.0)));
     let sun = l.sun;
     if parts.w > 0.5 {
         rgb *= l.light;
     }
-    if parts.x > 0.5 {
+    if parts.x > 0.5 && !plain {
         rgb *= edge_shade(atmosphere, in.edges, in.face);
     }
     // A glowing look lights itself, without shade: its own colors, times its glow.

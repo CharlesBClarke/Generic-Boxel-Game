@@ -649,18 +649,20 @@ fn sync_atmosphere(
     heights: Res<Heights>,
     origin: Res<RenderOrigin>,
     view: Res<ViewTuning>,
+    switches: Res<crate::view::ViewSwitches>,
     ao: Res<AoTuning>,
     mut solids: ResMut<Assets<SolidMaterial>>,
     mut models: ResMut<Assets<ModelMaterial>>,
     mut skies: ResMut<Assets<SkyMaterial>>,
 ) {
-    let mut atmosphere = tuning.atmosphere(&sun.sky, view.render_distance);
+    // Fog fades out whatever is drawn farthest: far terrain if it's on.
+    let mut atmosphere = tuning.atmosphere(&sun.sky, crate::view::view_reach(&view, &switches));
     atmosphere.ao = ao_atmosphere(&ao, tuning.parts.ao);
     shadow_atmosphere(&mut atmosphere, &shadows, heights.placed, origin.cell);
     let image = heights.image.clone();
     // Meshes in the world read generated detail from where they are; the rest keep theirs.
     let place = crate::solid::in_world(origin.cell);
-    let placed = |m: &SolidMaterial| m.place.w == 0 || m.place == place;
+    let placed = |m: &SolidMaterial| m.place.w != 1 || m.place == place;
     let stale: Vec<_> = solids
         .iter()
         .filter(|(_, m)| m.atmosphere != atmosphere || !placed(m) || image.as_ref().is_some_and(|i| *i != m.heights))

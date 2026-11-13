@@ -28,6 +28,14 @@ pub struct ChunkNews {
     /// The whole world came anew (a welcome): a copy kept elsewhere starts again from
     /// [`ClientWorld::universe`].
     pub restart: bool,
+    /// Far columns built and dropped (see [`sim::far`]), in the order they came.
+    pub far: Vec<FarNews>,
+}
+
+/// A far column built (new, or built again to replace the one before) or dropped.
+pub enum FarNews {
+    Built(sim::far::FarChunks),
+    Gone(sim::far::FarColumn),
 }
 
 #[derive(Resource)]
@@ -135,6 +143,8 @@ impl ClientWorld {
                 }
                 self.news.gone.extend(gone);
             }
+            ServerMsg::FarLoaded(columns) => self.news.far.extend(columns.into_iter().map(FarNews::Built)),
+            ServerMsg::FarUnloaded(gone) => self.news.far.extend(gone.into_iter().map(FarNews::Gone)),
             ServerMsg::Blocks(blocks) => self.blocks = *blocks,
             ServerMsg::Blueprints(library) => self.blueprints = *library,
             ServerMsg::Defs(defs) => self.defs = *defs,
@@ -337,6 +347,11 @@ impl ClientWorld {
     /// [`crate::meshing`]).
     pub fn take_chunk_news(&mut self) -> ChunkNews {
         std::mem::take(&mut self.news)
+    }
+
+    /// How far terrain is going on the server, as of the latest tick.
+    pub fn far(&self) -> sim::far::FarStats {
+        self.latest.far
     }
 
     /// How streaming the terrain is going on the server, as of the latest tick.

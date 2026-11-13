@@ -104,7 +104,39 @@ A run of small toy slices. Each one takes a single game-feel feature that doesn'
 
 ### Current toy
 
-None in progress: Resolution closed 2026-11-12. Next: the glitches the user wants to get to (each a `fix-` branch off `master`).
+#### Far terrain: LOD, first toy (`toy-far-terrain`)
+
+**Stage:** Verify, paused 2026-11-12 (committed on the branch, not merged). Not met yet: (2) and (5), see *Play check so far*. The bench waits until those are fixed.
+
+From the LOD infrastructure entry, picked 2026-11-12 ahead of the glitch fixes (those still wait, each a `fix-` branch). The user asked "how hard is the LOD system? should we try and do a clean room reimplimentation?": no clean room (ideas from Distant Horizons and others are free to use; their code isn't copied and wouldn't port), our own LOD on our mesher.
+
+*Plan (approved 2026-11-12).* Generated terrain seen out to ~2 km, frame rate no worse than master's 512 m view.
+- **Levels.** A level-*k* chunk is still a 32³ grid, each cell 2^k boxels a side, so `ChunkFill`, the mesher and chunk messages work at every level; a level-*k* column is the terrain's height in level-*k* chunks. Full detail (level 0) to 256 m (the user: "full detail to 256"), far terrain to 2 km, both sliders (`view.render_distance`, new `view.far_distance`).
+- **API.** `Generator::fill_coarse(origin, step, out) -> bool`, default `false`: a terrain whose generator can't fill coarsely has no far terrain (logged once). `base::Hills` implements it (heights at cell centers, the same surface rules at the coarse slope, boulders only bigger than half a cell). `fill_coarse` at step 1 equals `fill`.
+- **Edits** (the user picked "Shrink edits"): the server builds far chunks from the generator, then overwrites the cells covering stored and loaded edited chunks with a shrunk copy of them, so builds stay visible far away and nothing extra stays loaded.
+- **Server** (`sim::far`): per player, rings of coarse columns per level out to the far distance, on the terrain workers after full columns, nearest first; data only (no light, no simulation). Protocol `FarLoaded` / `FarUnloaded`, tracked per client; `Command::ViewDistance` carries both distances.
+- **Client** (`client::far`): a quadtree over columns: a level-*k* column is drawn as its four children only once all four are meshed and it's near enough, so no overlap, no holes. Coarse chunks meshed in the background by the same mesher, scaled 2^k, neighbors across a level border treated as air (the walls plug cracks). Drawn with `SolidMaterial` flagged far: each cell its look's average color, sun and sky light and fog; no AO, edges, sheen or detail; no cascaded shadows. Fog and far plane follow the far distance.
+- **Bench**: a far terrain on/off line in `bench/switches.rs`.
+- **Tests**: `fill_coarse` step 1 = `fill`, coarse heights near the full ones; quadtree covers every spot once and never splits before its children are ready; far rings follow a player, load and unload with margin, none for a generator that can't; shrinking edits; protocol; coarse meshing walls; the fly harness keeps up.
+
+*Done when:* (1) from a hilltop terrain reaches the far distance with no holes or sky slits between levels, fogged at the edge; (2) level switches while walking and flying don't bother the user; (3) flying at 30 m/s keeps the far rings filled; (4) quick bench frame rate at least master's; (5) near terrain unchanged and the color at the first level border close enough; (6) tests pass, clippy clean.
+
+*Left for later toys:* ores and anti-xray for far data, the far shadow past the render distance, fading between levels, compressing far messages.
+
+*Implementation notes:*
+- `api::Generator::fill_coarse`; `base::Hills::fill_stepped` fills at any step (`fill` is step 1, tested equal).
+- `sim::far`: `FarColumn`, `Reach` (`wanted` for the server, `pick` for the client, one rule), `Far` (rings, stale columns rebuilt after an edit drops into the store, `FarChunks` messages). Far chunks are `ChunkData` in level units; chunks solid all through under a covering one are left out. The terrain workers now run any job (`stream::Task`), shared with far columns, which always keep one on its way. `Simulation::set_reach`, `far_all`, `take_far_loaded`/`take_far_unloaded`; the load radius stays full detail + 32 m (a level-1 column whose children aren't all loaded just stays coarse).
+- Protocol `Command::ViewDistance(Reach)`, `ServerMsg::FarLoaded`/`FarUnloaded`, `Snapshot.far`. Server default radius now 256 + 32 m.
+- Client `far`: far columns meshed alone on the background mesher (`greedy::merge_far` splits T-junctions only on the chunk borders above and below), scaled meshes, the far material (`place.w == 2`: the look's deepest mip, no AO, edges or sheen), `pick_far`; `view.apply_render_distance` shows streamed columns the quadtree picked. Fog and the far plane follow `far_distance`. Readout line, far triangles counted in `ViewStats` (so the bench sees them), bench switch `view.far_terrain`.
+- *Deviation (said to the user mid-implement):* a `view.level_reach` slider (default 1.6; the plan had a fixed 2). Measured from a hill: 2.0 drew ~716k far quads, 1.6 ~308k, 1.4 ~148k. Also: a column always splits within its own width of the player, so short full-detail distances still split the column underfoot.
+- Harness (`meshing::stream_timing`, now with far terrain at 256/2048): flying 30 m/s for 20 s, far waiting 0 at the end; far meshing is the heaviest background work (~14 s of one thread for the first ~700 columns at level reach 2). `far::timing::time_far_meshing` times it per level reach.
+- The far shadow (height map) still covers only the render distance, now 256 m: far terrain is unshadowed.
+- *Play check fixes (2026-11-12):* far terrain cut to the terrain height like full detail (the user saw whole far mountains where near ones were cut flat; removing the limit is the Loading by cube slice). The missing "far terrain" checkbox in View. Distant slopes striped and swam with the camera (the user: "these wavy patterns in the sitence move extremely with camara movment"): MSAA "helped a ton", shadows did nothing, so it's the steps' bright tops beside darker sides; new `view.far_flatten` (default 0.7) gives far cells' sides their top's color and an upward-leaning normal. Dark squares along the first level's edge over the frozen lake (the user confirmed with Shadows → far off): far columns over loaded full columns sat below the ground the far shadow's height map holds (coarse ice is a boxel lower) and shaded themselves; far terrain now looks its shadow up 2 m higher. Sheen turned back on for far terrain (it's the material's, not a boxel's).
+
+*Play check so far (2026-11-12):*
+- Met: no holes or slits between levels; the dark squares are gone and the ice matches across the edge; flying out to new terrain works. The ring of hills seen from the test area is real terrain past the 1 km clear zone, working as built (backlog: The test area on the terrain).
+- Not met: the user: "the color is the biggest issue, the distant hills look just green. and they instantly pop with the color with that Moiré Aliasing probplem. and the shape seems worse then minecraft voxy mod. so I get the sense there are better ways to combine cubes". The user wants a better approach planned in a fresh session ("this might be a job for a smarter model"), so no plan is written here yet.
+- Rule: Voxy is All Rights Reserved: no reading its source, no decompiling, no copying its numbers; ideas from how it looks in play and its public descriptions only. The user asked "shouldn't we do clean room stuff"; agreed it's not needed if its code is never read.
 
 **Waiting for a play check** (remind the user at the start of every session, and at good moments during one, until they confirm; then delete the line):
 - None right now.
@@ -173,7 +205,8 @@ Ideas that come up while playing get added here.
 
 - ~~Saving and loading, with block names in the save~~ Done (Saving, 2026-11-07), see Done toys. Creatures aren't saved yet.
 - World generation. *The generator is done (Generated terrain, 2026-11-05); streaming is done (Terrain streaming, 2026-11-11). Unloaded edits are stored on disk (Chunk storage, 2026-11-11). Next: LOD, as it starts to hurt.* Staging and the creatures-on-terrain checklist. Notes: `docs/notes/world-generation.md`.
-- LOD, once world generation exists
+- LOD, once world generation exists. *First toy in progress: Far terrain (2026-11-12).*
+- **Loading by cube** (next after Far terrain, picked 2026-11-12). Chunks stream in 3D instead of whole columns, sky light from a map of the highest solid point at each X and Y (generator plus edits), the terrain height limit goes, and far terrain picks levels per cube (an octree by 3D distance). The user: "we will remove all columb logic in the future" (so "column" stays out of the Terminology table). Found when far terrain showed whole mountains where full detail cut them flat at `terrain_height`.
 - ~~Meshing off the main thread~~ Done for streamed terrain (Terrain streaming, 2026-11-11): arriving columns are meshed in the background. Edits still remesh on the main thread, at once; an edit beside a finely cut chunk still takes ~55 ms in the dev build.
 
 ### Seam backlog (added when the game is ready for them)

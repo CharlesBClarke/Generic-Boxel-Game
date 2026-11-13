@@ -57,6 +57,8 @@ impl Copy {
             }
             ServerMsg::Blocks(blocks) => self.blocks = blocks.len(),
             ServerMsg::Tick(_)
+            | ServerMsg::FarLoaded(_)
+            | ServerMsg::FarUnloaded(_)
             | ServerMsg::Blueprints(_)
             | ServerMsg::Defs(_)
             | ServerMsg::Sounds(_)
@@ -181,7 +183,7 @@ fn blueprint_edits_send_the_library_before_the_tick_and_refusals_in_its_events()
 /// The base game keeping little terrain loaded, generated, so saving and loading stay quick.
 fn small_world() -> Simulation {
     let mut sim = base_sim();
-    sim.set_view_distance(32.0);
+    sim.set_view_distance(32.0, 0.0);
     sim.world_settings_mut().terrain_height = 16;
     sim.generate_terrain().unwrap();
     sim
@@ -190,7 +192,7 @@ fn small_world() -> Simulation {
 #[test]
 fn the_copy_follows_terrain_streaming_in_and_out_as_the_player_moves() {
     let mut sim = base_sim();
-    sim.set_view_distance(32.0);
+    sim.set_view_distance(32.0, 0.0);
     sim.world_settings_mut().terrain_height = 8;
     let over = |x: i64| WorldPos::at_boxel(base::TERRAIN_CENTER.offset(I64Vec3::new(x, 5, 150)));
     sim.teleport_player(over(0));
@@ -344,7 +346,7 @@ fn worlds_are_saved_as_opened_and_started_fresh() {
     let _ = std::fs::remove_dir_all(&dir);
     let file = WorldFile::in_folder(&dir, "first").unwrap();
     let mut sim = base_sim();
-    sim.set_view_distance(32.0);
+    sim.set_view_distance(32.0, 0.0);
     sim.world_settings_mut().terrain_height = 16;
     let fresh = sim.snapshot();
     sim.set_chunk_store(std::sync::Arc::new(file.chunk_files()));
@@ -526,7 +528,7 @@ fn a_failed_reload_keeps_the_old_sounds() {
 /// The base game keeping little terrain loaded, its edited terrain in `file`'s folder.
 fn game_on(file: &WorldFile) -> Simulation {
     let mut sim = base_sim();
-    sim.set_view_distance(32.0);
+    sim.set_view_distance(32.0, 0.0);
     sim.world_settings_mut().terrain_height = 16;
     sim.set_chunk_store(std::sync::Arc::new(file.chunk_files()));
     sim

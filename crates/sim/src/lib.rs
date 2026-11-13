@@ -8,6 +8,7 @@ pub mod clock;
 pub mod combat;
 pub mod crafting;
 pub mod edit;
+pub mod far;
 pub mod inventory;
 pub mod items;
 pub mod layer;

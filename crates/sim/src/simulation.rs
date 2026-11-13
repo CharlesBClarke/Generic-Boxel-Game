@@ -24,7 +24,7 @@ use crate::{
     occupant_boxes, raycast,
 };
 
-mod save;
+pub(crate) mod save;
 
 pub use save::LoadReport;
 
@@ -102,6 +102,8 @@ pub struct Simulation {
     terrains: Vec<TerrainDef>,
     /// Which columns of terrain are loaded around the player, and the rest of streaming.
     stream: Stream,
+    /// Coarse terrain past the loaded columns, for the view to reach far.
+    far: crate::far::Far,
     world: WorldSettings,
     /// The time of day.
     clock: Clock,
@@ -336,6 +338,7 @@ impl Simulation {
             }
             self.stream.drop_column(column, chunks.into_iter());
         }
+        self.far.reset();
     }
 
     /// Where terrain loads around: the player, or the spawn point without one.
@@ -343,10 +346,18 @@ impl Simulation {
         self.player.as_ref().map_or(self.spawn, |p| p.pos())
     }
 
-    /// Sets how far around the player terrain is kept loaded, in meters: a client's render
-    /// distance and a chunk more, so what it draws is always there.
-    pub fn set_view_distance(&mut self, meters: f32) {
-        self.stream.radius = meters.max(0.0) + api::CHUNK_SIZE as f32;
+    /// Sets how far a client's view reaches: full detail out to `detail` meters (terrain is
+    /// kept loaded a chunk past it, so what it draws is always there), far terrain out to
+    /// `far`; none if `far` is no farther than `detail`.
+    pub fn set_view_distance(&mut self, detail: f32, far: f32) {
+        self.set_reach(crate::far::Reach { detail, far, ..crate::far::Reach::default() });
+    }
+
+    /// [`Simulation::set_view_distance`], with how far each level of far terrain reaches.
+    pub fn set_reach(&mut self, reach: crate::far::Reach) {
+        let detail = reach.detail.max(0.0);
+        self.stream.radius = detail + api::CHUNK_SIZE as f32;
+        self.far.reach = crate::far::Reach { detail, far: reach.far.max(detail), level_reach: reach.level_reach };
     }
 
     /// How far around the player terrain is kept loaded, in meters.
@@ -382,11 +393,73 @@ impl Simulation {
             }
         }
         self.stream.request(&generators, &self.terrains, &self.blocks);
+        self.stream_far(&generators, false);
+    }
+
+    /// Far terrain one step, or until every wanted far column is in with `wait`.
+    fn stream_far(&mut self, generators: &[SharedGenerator], wait: bool) {
+        if self.terrains.is_empty() {
+            return;
+        }
+        let height = self.stream.height();
+        let rows: Vec<_> = self.terrains.iter().map(|def| crate::stream::rows(def, height)).collect();
+        let around = crate::far::Around {
+            pos: self.stream_center(),
+            terrains: &self.terrains,
+            generators,
+            blocks: &self.blocks,
+            rows: &rows,
+            edited: self.changed.edited(),
+            grid: self.universe.main(),
+        };
+        let built = self.stream.built().to_vec();
+        let cleared = |x, y| crate::stream::cleared_by(&built, x, y);
+        if wait {
+            self.far.wait(&mut self.stream, &around, &cleared);
+        } else {
+            self.far.step(&mut self.stream, &around, &cleared);
+        }
     }
 
     /// Loads every column within the load distance before returning, for tests and tools.
     pub fn stream_all(&mut self) {
         self.stream_terrain(Some(self.stream.radius));
+    }
+
+    /// Builds every far column wanted around the player before returning, for tests and tools.
+    pub fn far_all(&mut self) {
+        let generators = self.generators_for_terrains();
+        self.stream_far(&generators, true);
+    }
+
+    /// Far columns built since the last call (see [`crate::far`]).
+    pub fn take_far_loaded(&mut self) -> Vec<crate::far::FarChunks> {
+        self.far.take_loaded()
+    }
+
+    /// Far columns dropped since the last call.
+    pub fn take_far_unloaded(&mut self) -> Vec<crate::far::FarColumn> {
+        self.far.take_unloaded()
+    }
+
+    /// How far terrain has gone.
+    pub fn far_stats(&self) -> crate::far::FarStats {
+        self.far.stats
+    }
+
+    /// Why building far terrain last failed, if it did.
+    pub fn far_error(&self) -> Option<&ApiError> {
+        self.far.error.as_ref()
+    }
+
+    /// Forgets every far column, so they're all built and sent again.
+    pub fn reset_far(&mut self) {
+        self.far.reset();
+    }
+
+    /// How far the view reaches, as the client last said.
+    pub fn reach(&self) -> crate::far::Reach {
+        self.far.reach
     }
 
     /// Each terrain's generator, by terrain.
@@ -416,7 +489,9 @@ impl Simulation {
             grid.remove_chunk(pos);
         }
         if !stored.is_empty() {
+            let positions: Vec<ChunkPos> = stored.iter().map(|(p, _)| *p).collect();
             self.stream.store().put(stored);
+            self.far.edited(&positions);
         }
         self.stream.drop_column(column, chunks.into_iter());
     }

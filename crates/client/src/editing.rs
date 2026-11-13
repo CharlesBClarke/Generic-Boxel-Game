@@ -1289,7 +1289,7 @@ mod remesh_timing {
         let mut sim = base_sim();
         sim.spawn_player().unwrap();
         sim.teleport_player(api::WorldPos::at_boxel(base::TERRAIN_CENTER.offset(api::I64Vec3::new(0, 0, 100))));
-        sim.set_view_distance(224.0);
+        sim.set_view_distance(224.0, 0.0);
         sim.generate_terrain().unwrap();
         sim.stream_all();
         let generated = sim.stream_stats();
