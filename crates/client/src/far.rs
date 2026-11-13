@@ -267,7 +267,7 @@ pub(crate) fn pick_far(
     terrains.dedup();
     let ready = |c: FarColumn| {
         if c.level == 0 {
-            bg.column_drawable(c.x, c.y)
+            bg.surface_drawable(c.x, c.y)
         } else {
             far.columns.get(&c).is_some_and(|e| e.meshed)
         }

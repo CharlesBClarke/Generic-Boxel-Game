@@ -42,7 +42,17 @@ impl Copy {
                 for chunk in &w.chunks {
                     self.universe.main_mut().import_chunk(chunk);
                 }
+                self.universe.main_mut().tops = w.tops.clone();
                 self.blocks = w.blocks.len();
+            }
+            ServerMsg::Tops(tops) => {
+                let known = &mut self.universe.main_mut().tops;
+                for &(x, y) in &tops.dropped {
+                    known.remove_column(x, y);
+                }
+                for ((x, y), column) in &tops.set {
+                    known.set_column(*x, *y, std::sync::Arc::clone(column));
+                }
             }
             ServerMsg::Chunk(chunk) => self.universe.main_mut().import_chunk(chunk),
             ServerMsg::ChunksLoaded(chunks) => {
@@ -184,7 +194,6 @@ fn blueprint_edits_send_the_library_before_the_tick_and_refusals_in_its_events()
 fn small_world() -> Simulation {
     let mut sim = base_sim();
     sim.set_view_distance(32.0, 0.0);
-    sim.world_settings_mut().terrain_height = 16;
     sim.generate_terrain().unwrap();
     sim
 }
@@ -193,7 +202,6 @@ fn small_world() -> Simulation {
 fn the_copy_follows_terrain_streaming_in_and_out_as_the_player_moves() {
     let mut sim = base_sim();
     sim.set_view_distance(32.0, 0.0);
-    sim.world_settings_mut().terrain_height = 8;
     let over = |x: i64| WorldPos::at_boxel(base::TERRAIN_CENTER.offset(I64Vec3::new(x, 5, 150)));
     sim.teleport_player(over(0));
     sim.generate_terrain().unwrap();
@@ -205,7 +213,16 @@ fn the_copy_follows_terrain_streaming_in_and_out_as_the_player_moves() {
     let mut step = |server: &mut Server, copy: &mut Copy, what: PlayerInput| {
         for m in server.handle(input(what)) {
             match &m {
-                ServerMsg::ChunksLoaded(c) => news.0 += c.len(),
+                ServerMsg::ChunksLoaded(c) => {
+                    news.0 += c.len();
+                    // The tops a chunk is under, and beside, come before it does.
+                    let tops = &copy.universe.main().tops;
+                    for chunk in c {
+                        for (dx, dy) in sim::tops::AROUND {
+                            assert!(tops.column(chunk.pos.0.x + dx, chunk.pos.0.y + dy).is_some(), "tops for {:?}", chunk.pos);
+                        }
+                    }
+                }
                 ServerMsg::ChunksUnloaded(c) => news.1 += c.len(),
                 _ => {}
             }
@@ -240,6 +257,7 @@ fn the_copy_follows_terrain_streaming_in_and_out_as_the_player_moves() {
     for (pos, chunk) in theirs.chunks() {
         assert_eq!(ours.chunk(pos).unwrap().light, chunk.light, "light in {pos:?}");
     }
+    assert!(!theirs.tops.is_empty() && ours.tops == theirs.tops, "and the same tops, with those left behind dropped");
 }
 
 /// Whether two games' worlds hold the same blocks everywhere, by name: separate games may
@@ -347,7 +365,6 @@ fn worlds_are_saved_as_opened_and_started_fresh() {
     let file = WorldFile::in_folder(&dir, "first").unwrap();
     let mut sim = base_sim();
     sim.set_view_distance(32.0, 0.0);
-    sim.world_settings_mut().terrain_height = 16;
     let fresh = sim.snapshot();
     sim.set_chunk_store(std::sync::Arc::new(file.chunk_files()));
     sim.generate_terrain().unwrap();
@@ -529,7 +546,6 @@ fn a_failed_reload_keeps_the_old_sounds() {
 fn game_on(file: &WorldFile) -> Simulation {
     let mut sim = base_sim();
     sim.set_view_distance(32.0, 0.0);
-    sim.world_settings_mut().terrain_height = 16;
     sim.set_chunk_store(std::sync::Arc::new(file.chunk_files()));
     sim
 }

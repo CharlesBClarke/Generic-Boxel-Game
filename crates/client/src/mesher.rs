@@ -634,7 +634,10 @@ impl<'a> CellBoxes<'a> {
 }
 
 /// Which boxels of a chunk and the layer around it hold a full block that's shown, worked out
-/// once per chunk: asking the grid boxel by boxel was most of meshing terrain.
+/// once per chunk: asking the grid boxel by boxel was most of meshing terrain. Ground that
+/// isn't loaded counts as full: a boxel of a missing chunk at or under its column's top (see
+/// [`sim::tops`]), so the rock at the edge of what's loaded draws no walls against the rock
+/// past it.
 struct FullBoxels(Vec<bool>);
 
 impl FullBoxels {
@@ -650,13 +653,20 @@ impl FullBoxels {
         let n = CHUNK_SIZE;
         // Which chunk along one axis (0, 1 or 2) and where in it, for a position from -1 to n.
         let split = |v: i64| if v < 0 { (0, n - 1) } else if v >= n { (2, 0) } else { (1, v) };
+        let origin = pos.0 * n;
+        let ground_known = !grid.tops.is_empty();
         for z in -1..=n {
             let (cz, lz) = split(z);
             for y in -1..=n {
                 let (cy, ly) = split(y);
                 for x in -1..=n {
                     let (cx, lx) = split(x);
-                    let Some(chunk) = chunks[(cx + 3 * cy + 9 * cz) as usize] else { continue };
+                    let Some(chunk) = chunks[(cx + 3 * cy + 9 * cz) as usize] else {
+                        if ground_known && !grid.tops.is_sky(origin + I64Vec3::new(x, y, z)) {
+                            out[Self::index(I64Vec3::new(x, y, z))] = true;
+                        }
+                        continue;
+                    };
                     let id = chunk.cells.get(LocalPos::new(lx as u8, ly as u8, lz as u8));
                     if id.is_empty() {
                         continue;
@@ -697,10 +707,15 @@ impl FullBoxels {
 }
 
 /// Whether the chunk at `pos` and its six neighbors are each one full block all through, so
-/// none of its faces can show. Most of a generated terrain's underground is.
+/// none of its faces can show. Most of a generated terrain's underground is. A neighbor that
+/// isn't loaded counts if all of it is under its column's tops: ground still to come.
 fn buried(grid: &Grid, pos: ChunkPos, blocks: &BlockRegistry) -> bool {
     let solid = |p: ChunkPos| {
-        let Some(id) = grid.chunk(p).and_then(|c| c.cells.uniform()) else {
+        let Some(chunk) = grid.chunk(p) else {
+            let highest = (p.0.z + 1) * CHUNK_SIZE - 1;
+            return grid.tops.column(p.0.x, p.0.y).is_some_and(|tops| tops.iter().all(|&top| top >= highest));
+        };
+        let Some(id) = chunk.cells.uniform() else {
             return false;
         };
         grid.occupants(id).iter().any(|o| !blocks.is_hidden(o.block) && blocks.get(o.block).is_some_and(|d| d.is_full()))
@@ -1187,6 +1202,40 @@ mod tests {
         grid.set_block(BoxelPos::new(4, 4, 32), BlockId::EMPTY);
         assert!(!buried(&grid, ChunkPos(I64Vec3::ZERO), &blocks));
         assert_eq!(mesh_chunk(&grid, ChunkPos(I64Vec3::ZERO), &blocks).quad_count(), 1);
+    }
+
+    #[test]
+    fn ground_that_isnt_loaded_counts_as_solid() {
+        let (mut grid, blocks, stone) = setup();
+        // A chunk of rock deep down, alone: with no tops known, the chunks around it are open
+        // air and all six sides show.
+        let deep = I64Vec3::new(0, 0, -5);
+        fill_chunk(&mut grid, deep, stone);
+        let side = CHUNK_SIZE as usize;
+        assert_eq!(mesh_chunk(&grid, ChunkPos(deep), &blocks).quad_count(), 6 * side * side);
+        // With the ground known to be far above on every side, it's buried.
+        for (x, y) in [(0, 0), (1, 0), (-1, 0), (0, 1), (0, -1)] {
+            grid.tops.set_column(x, y, std::sync::Arc::new([40; api::TOPS_LEN]));
+        }
+        assert!(buried(&grid, ChunkPos(deep), &blocks));
+        assert!(mesh_chunk(&grid, ChunkPos(deep), &blocks).is_empty());
+        // A tunnel dug into it shows its own walls and nothing at the chunk's sides, even where
+        // the tunnel runs out into what isn't loaded.
+        for x in 0..4 {
+            grid.set_block(ChunkPos(deep).origin().offset(I64Vec3::new(x, 5, 5)), BlockId::EMPTY);
+        }
+        assert_eq!(mesh_chunk(&grid, ChunkPos(deep), &blocks).quad_count(), 4 * 4 + 1, "four walls a boxel and the end");
+        // At the surface, a missing chunk beside it is ground only up to its tops: the side
+        // shows over them.
+        let mut grid = Grid::default();
+        fill_chunk(&mut grid, I64Vec3::ZERO, stone);
+        grid.tops.set_column(0, 0, std::sync::Arc::new([31; api::TOPS_LEN]));
+        for (x, y) in [(-1, 0), (0, 1), (0, -1)] {
+            grid.tops.set_column(x, y, std::sync::Arc::new([31; api::TOPS_LEN]));
+        }
+        grid.tops.set_column(1, 0, std::sync::Arc::new([19; api::TOPS_LEN]));
+        // The top, and the east side's upper 12 rows; the chunk under it is ground too.
+        assert_eq!(mesh_chunk(&grid, ChunkPos(I64Vec3::ZERO), &blocks).quad_count(), side * side + 12 * side);
     }
 
     #[test]

@@ -7,6 +7,9 @@
 //! is as tall as the highest thing in it, so overhangs read as solid down to the ground. Hidden
 //! pieces don't count. Edits update their column; the maps
 //! follow the camera in jumps.
+//!
+//! Over terrain the tops are the server's (see [`sim::tops`]): where the open sky starts, known
+//! whether or not the chunks at the surface are loaded. Elsewhere they're read from the chunks.
 
 use std::collections::{HashMap, HashSet};
 
@@ -123,9 +126,17 @@ fn shown(grid: &Grid, blocks: &BlockRegistry, id: CellId) -> bool {
     id != CellId::EMPTY && grid.occupants(id).iter().any(|o| !blocks.is_hidden(o.block))
 }
 
-/// The tops of a column of chunks, from its chunks at the Zs in `stack`.
+/// The tops of a column of chunks: the server's where it sent them, or else worked out from
+/// the column's chunks at the Zs in `stack`.
 pub fn column_tops(grid: &Grid, blocks: &BlockRegistry, column: (i64, i64), stack: &[i64]) -> Tops {
     let mut tops: Tops = Box::new([None; COLUMNS]);
+    if let Some(sent) = grid.tops.column(column.0, column.1) {
+        for (top, &sent) in tops.iter_mut().zip(sent.iter()) {
+            // The top face of the highest boxel that stops the sky.
+            *top = (sent != api::NO_TOP).then(|| sent + 1);
+        }
+        return tops;
+    }
     let mut left = COLUMNS;
     let mut known: HashMap<CellId, bool> = HashMap::new();
     let mut zs = stack.to_vec();
@@ -174,6 +185,12 @@ impl Heights {
             }
             self.pending.insert(column);
         }
+    }
+
+    /// Notes columns of chunks whose tops the server sent, moved or dropped, so they're worked
+    /// out again.
+    pub fn tops_changed(&mut self, columns: impl Iterator<Item = (i64, i64)>) {
+        self.pending.extend(columns);
     }
 
     /// Works out pending columns again. Returns whether any changed.
@@ -334,6 +351,25 @@ mod tests {
         assert_eq!(tops[3 + 4 * 32], Some(41), "the highest boxel, across chunks");
         assert_eq!(tops[0], Some(0), "the solid chunk below ends at 0");
         assert_eq!(h.tops.len(), 1);
+    }
+
+    #[test]
+    fn over_terrain_the_tops_are_the_ones_the_server_sent() {
+        let (mut grid, blocks, stone) = setup();
+        // Only a chunk deep underground is loaded: read from the chunks, the top would be its.
+        fill_chunk(&mut grid, I64Vec3::new(0, 0, -9), stone);
+        let mut sent = [50; api::TOPS_LEN];
+        sent[7] = api::NO_TOP;
+        grid.tops.set_column(0, 0, std::sync::Arc::new(sent));
+        let mut h = heights_of(&grid, &blocks);
+        let tops = &h.tops[&(0, 0)];
+        assert_eq!(tops[0], Some(51), "the top face of the highest boxel that stops the sky");
+        assert_eq!(tops[7], None, "nothing at any height");
+        // An edit moves the server's tops, and the column follows.
+        grid.tops.set_top(0, 0, 90);
+        h.tops_changed([(0, 0)].into_iter());
+        assert!(h.refresh(&grid, &blocks));
+        assert_eq!(h.tops[&(0, 0)][0], Some(91));
     }
 
     #[test]

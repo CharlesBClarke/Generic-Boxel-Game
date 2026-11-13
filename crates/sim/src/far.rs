@@ -3,8 +3,13 @@
 //!
 //! A level-*k* chunk is a chunk's 32³ cells, each standing for 2^*k* boxels a side, so the same
 //! [`ChunkData`] carries it; positions are in level-*k* chunks (a level-*k* chunk at `p` spans
-//! boxels `p * 32 * 2^k` on). A far column is one terrain's level-*k* chunks at one X and Y, its
-//! full height. Level 0 is the ordinary columns [`crate::stream`] loads.
+//! boxels `p * 32 * 2^k` on). A far column is the terrain's level-*k* chunks at one X and Y,
+//! from the lowest of its tops to the highest (see [`api::Generator::tops`]) and wherever
+//! edits reach. Level 0 is the ordinary chunks [`crate::stream`] loads, taken a column at a
+//! time.
+//!
+//! Far terrain is still in columns, while the chunks near the player load by cube: a stand-in
+//! until it picks its levels by cube too.
 //!
 //! Which level is drawn where is a quadtree over columns ([`Reach::pick`]): a column splits into
 //! its four children of the level below when it's near enough, and only once all four can be
@@ -284,7 +289,6 @@ struct FarJob {
     column: FarColumn,
     generator: SharedGenerator,
     center: I64Vec3,
-    rows: Range<i64>,
     blocks: Arc<BlockRegistry>,
     store: Arc<dyn ChunkStore>,
     /// Edited chunks under it that are loaded, as they stand.
@@ -355,8 +359,6 @@ pub(crate) struct Around<'a> {
     pub terrains: &'a [TerrainDef],
     pub generators: &'a [SharedGenerator],
     pub blocks: &'a BlockRegistry,
-    /// Each terrain's ordinary chunk rows.
-    pub rows: &'a [Range<i64>],
     /// Loaded chunks edited since they were generated.
     pub edited: &'a HashSet<ChunkPos>,
     pub grid: &'a crate::Grid,
@@ -518,7 +520,7 @@ impl Far {
         let store = Arc::clone(stream.store());
         if self.stored.is_none() {
             match store.positions() {
-                Ok(p) => self.stored = Some(p.into_iter().collect()),
+                Ok(p) => self.stored = Some(p.into_iter().filter(|&p| !crate::tops::is_store_key(p)).collect()),
                 Err(e) => {
                     self.error = Some(ApiError::Storage(e));
                     self.stored = Some(HashSet::new());
@@ -545,9 +547,8 @@ impl Far {
                     continue;
                 }
             }
-            let rows = &around.rows[column.terrain];
             let (xs, ys) = column.under();
-            let in_column = |p: &ChunkPos| xs.contains(&p.0.x) && ys.contains(&p.0.y) && rows.contains(&p.0.z);
+            let in_column = |p: &ChunkPos| xs.contains(&p.0.x) && ys.contains(&p.0.y);
             let loaded: Vec<ChunkData> = around.edited.iter().filter(|p| in_column(p)).map(|&p| around.grid.export_chunk(p)).collect();
             let stored: Vec<ChunkPos> =
                 stored_all.iter().filter(|p| in_column(p) && !around.edited.contains(p)).copied().collect();
@@ -564,7 +565,6 @@ impl Far {
                 column,
                 generator: Arc::clone(&around.generators[column.terrain]),
                 center: around.terrains[column.terrain].center.0,
-                rows: rows.clone(),
                 blocks: Arc::clone(&blocks),
                 store: Arc::clone(&store),
                 loaded,
@@ -640,19 +640,29 @@ fn build(job: &FarJob) -> Result<Option<Vec<ChunkData>>, ApiError> {
             edits.push(crate::simulation::save::unname_chunk(&job.blocks, &saved, &mut report));
         }
     }
+    // The ordinary chunk rows it spans: from under the lowest of the generator's tops to over
+    // the highest, a cell to spare either way, and wherever an edit is.
+    let mut tops = [api::NO_TOP; api::TOPS_LEN];
+    generator.tops(column.x * column.span() - job.center.x, column.y * column.span() - job.center.y, step as u32, &mut tops);
+    let known = || tops.iter().filter(|&&t| t != api::NO_TOP).map(|&t| t + job.center.z);
+    let row = |z: i64| z.div_euclid(CHUNK_SIZE);
+    let edited = || edits.iter().map(|e| e.pos.0.z);
+    let low = known().min().map(|z| row(z - step)).into_iter().chain(edited()).min();
+    let high = known().max().map(|z| row(z + step)).into_iter().chain(edited()).max();
+    let (Some(low), Some(high)) = (low, high) else { return Ok(Some(Vec::new())) };
+    let rows = low..high + 1;
     let mut fill = ChunkFill::default();
     let mut out = Vec::new();
     // Whether the chunk above covers this one: solid all through, or its lowest layer is. A
     // chunk solid all through under one is buried, never seen, and left out.
     let mut covered = false;
-    for pos in column.chunks(&job.rows) {
+    for pos in column.chunks(&rows) {
         fill.clear();
         let origin = pos.0 * column.span();
         if !generator.fill_coarse(origin - job.center, step as u32, &mut fill) {
             return Ok(None);
         }
         let mut data = crate::terrain::to_chunk(pos, &fill, &job.blocks)?;
-        cut_to_rows(&mut data, column, &job.rows);
         if !job.cleared.is_empty() {
             clear(&mut data, column, &job.cleared);
         }
@@ -673,24 +683,6 @@ fn build(job: &FarJob) -> Result<Option<Vec<ChunkData>>, ApiError> {
         out.push(data);
     }
     Ok(Some(out))
-}
-
-/// Empties the cells of `data` whose middles are outside the terrain's ordinary chunk `rows`,
-/// so far terrain stops where the full terrain does.
-fn cut_to_rows(data: &mut ChunkData, column: FarColumn, rows: &Range<i64>) {
-    let (bottom, top) = (rows.start * CHUNK_SIZE, rows.end * CHUNK_SIZE);
-    let step = column.step();
-    let base = data.pos.0.z * column.span();
-    let layer = (CHUNK_SIZE * CHUNK_SIZE) as usize;
-    for z in 0..CHUNK_SIZE {
-        let middle = base + z * step + step / 2;
-        if middle < bottom || middle >= top {
-            let start = z as usize * layer;
-            for i in start..start + layer {
-                data.cells.set_at(i, 0);
-            }
-        }
-    }
 }
 
 /// Empties the cells of `data` over ordinary columns `cleared` marks.

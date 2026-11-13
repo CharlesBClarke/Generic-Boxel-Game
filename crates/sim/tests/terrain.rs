@@ -1,6 +1,7 @@
-//! Generated terrain with the base game's generator: streaming it around the player, generating
-//! it again after tuning, keeping edits in dropped columns, lifting bodies out of it, and holding
-//! still what's beyond the simulation distance or over ground still to come.
+//! Generated terrain with the base game's generator: streaming it around the player by chunk,
+//! up and down as well as sideways, generating it again after tuning, keeping edits in dropped
+//! chunks and the tops they moved, lifting bodies out of it, and holding still what's beyond
+//! the simulation distance or over ground still to come.
 
 use api::{BoxelPos, ChunkPos, I64Vec3, Vec2, Vec3, WorldPos};
 use sim::{Grid, PlayerInput, Simulation};
@@ -16,7 +17,6 @@ fn base() -> Simulation {
 fn small() -> Simulation {
     let mut sim = base();
     sim.set_view_distance(32.0, 0.0);
-    sim.world_settings_mut().terrain_height = 16;
     sim
 }
 
@@ -56,9 +56,18 @@ fn the_terrain_loads_around_the_player_where_the_base_game_put_it() {
     let mut sim = small();
     on_terrain(&mut sim);
     let stats = sim.stream_stats();
-    assert!(stats.columns >= 9, "the columns within 64 m: {}", stats.columns);
+    assert!(stats.chunks >= 27, "the chunks within 64 m: {}", stats.chunks);
     assert_eq!(stats.waiting, 0);
-    assert_eq!(terrain_chunks(&sim).len(), stats.columns * 16, "whole columns");
+    let chunks = terrain_chunks(&sim);
+    assert_eq!(chunks.len(), stats.chunks);
+    // A sphere around the player: as far up and down as sideways, and no farther.
+    let player = sim.player().unwrap().pos();
+    let here = player.boxel().chunk();
+    for z in -1..=1 {
+        assert!(chunks.contains(&ChunkPos(here.0 + I64Vec3::new(0, 0, z))), "the chunk {z} up");
+    }
+    assert!(chunks.iter().all(|&c| sim::stream::chunk_distance(c, player) <= sim.load_distance()));
+    assert!(!chunks.contains(&ChunkPos(here.0 + I64Vec3::new(0, 0, 4))), "nothing 128 m overhead");
     let hills = base::terrain::Hills::default();
     let ground = hills.ground(5, 7);
     assert!(block_name(&sim, 5, 7, ground).is_some(), "the ground at {ground}");
@@ -77,14 +86,16 @@ fn the_terrain_loads_around_the_player_where_the_base_game_put_it() {
 fn streamed_terrain_is_what_the_generator_makes_lit_as_if_made_at_once() {
     let mut sim = small();
     on_terrain(&mut sim);
-    // Walk a little, so some columns came in later, beside ones already there.
+    // Walk a little, so some chunks came in later, beside ones already there.
     sim.teleport_player(over(70, -40, 30));
     sim.stream_all();
     let grid = sim.universe().main();
     let chunks = terrain_chunks(&sim);
     let def = api::TerrainDef { generator: base::terrain::HILLS.into(), center: base::TERRAIN_CENTER };
     let made = sim::terrain::fill_chunks(&base::terrain::Hills::default(), &def, &chunks, sim.blocks()).unwrap();
+    // Chunks that aren't loaded are sky or dark walls by the same tops.
     let mut whole = Grid::default();
+    whole.tops = grid.tops.clone();
     for (pos, data) in chunks.iter().zip(&made) {
         let streamed = grid.export_chunk(*pos);
         assert_eq!(occupants(&streamed), occupants(data), "blocks in {pos:?}");
@@ -114,7 +125,7 @@ fn tops(sim: &Simulation) -> Vec<Option<i64>> {
 }
 
 #[test]
-fn columns_left_behind_are_dropped_and_ones_ahead_load() {
+fn chunks_left_behind_are_dropped_and_ones_ahead_load() {
     let mut sim = small();
     on_terrain(&mut sim);
     sim.take_unloaded_chunks();
@@ -136,21 +147,21 @@ fn columns_left_behind_are_dropped_and_ones_ahead_load() {
 fn the_load_distance_follows_the_view_distance() {
     let mut sim = small();
     on_terrain(&mut sim);
-    let near = sim.stream_stats().columns;
+    let near = sim.stream_stats().chunks;
     sim.set_view_distance(96.0, 0.0);
     assert_eq!(sim.load_distance(), 128.0);
     sim.stream_all();
-    let far = sim.stream_stats().columns;
-    assert!(far > 3 * near, "{near} columns at 64 m, {far} at 128 m");
+    let far = sim.stream_stats().chunks;
+    assert!(far > 5 * near, "{near} chunks at 64 m, {far} at 128 m");
     sim.set_view_distance(32.0, 0.0);
     sim.stream_all();
     // Down to the radius and its margin, so a little more than at first.
-    let back = sim.stream_stats().columns;
+    let back = sim.stream_stats().chunks;
     assert!(back < far && back >= near, "{back}");
 }
 
 #[test]
-fn an_edit_survives_its_column_being_dropped() {
+fn an_edit_survives_its_chunk_being_dropped() {
     let mut sim = small();
     on_terrain(&mut sim);
     settle(&mut sim);
@@ -159,19 +170,30 @@ fn an_edit_survives_its_column_being_dropped() {
     let pitch = -89.0f32.to_radians();
     sim.step(&PlayerInput { pitch, use_pressed: true, use_held: true, ..Default::default() });
     assert!(sim.universe().main().cell(below).is_empty(), "dug out");
+    // The top of the ground there goes down with the hole, and clients hear of it.
+    let top = |sim: &Simulation| sim.universe().main().tops.top(below.0.x, below.0.y);
+    assert_eq!(top(&sim), Some(below.0.z - 1), "the top follows the dig");
     let dug = below.split().0;
+    assert!(sim.take_tops().set.iter().any(|(at, _)| *at == (dug.0.x, dug.0.y)));
     sim.teleport_player(over(400, 0, 20));
     sim.stream_all();
     assert!(sim.universe().main().chunk(dug).is_none(), "dropped");
     assert!(sim.chunk_store().read(dug).unwrap().is_some(), "stored while dropped");
+    assert_eq!(top(&sim), None, "and its tops with it");
+    assert!(sim.take_tops().dropped.contains(&(dug.0.x, dug.0.y)));
+    assert!(sim.chunk_store().read(sim::tops::store_key(dug.0.x, dug.0.y)).unwrap().is_some(), "stored too, as edits moved them");
     sim.teleport_player(WorldPos::at_boxel(below.offset(I64Vec3::new(3, 3, 40))));
     sim.stream_all();
     assert!(sim.universe().main().cell(below).is_empty(), "comes back dug");
     assert!(sim.edited_chunks().contains(&dug), "still edited");
+    assert_eq!(top(&sim), Some(below.0.z - 1), "the top comes back as the dig left it");
+    assert_eq!(sim.universe().main().light(below).sky(), sim::Light::MAX, "so the sky reaches into the hole");
     // Made again from scratch, it's filled in.
     sim.generate_terrain().unwrap();
     sim.stream_all();
     assert!(!sim.universe().main().cell(below).is_empty(), "regenerated");
+    assert_eq!(top(&sim), Some(below.0.z), "and the top is the generator's again");
+    assert!(sim.chunk_store().read(sim::tops::store_key(dug.0.x, dug.0.y)).unwrap().is_none());
 }
 
 fn settle(sim: &mut Simulation) {
@@ -233,10 +255,20 @@ fn the_player_waits_over_ground_still_to_come_and_lands_on_top() {
 fn teleporting_into_the_ground_comes_out_on_top() {
     let mut sim = small();
     on_terrain(&mut sim);
-    sim.teleport_player(WorldPos::at_boxel(base::TERRAIN_CENTER.offset(I64Vec3::new(0, 0, -200))));
-    let z = sim.player().unwrap().pos().cell().z - base::TERRAIN_CENTER.0.z;
     let hills = base::terrain::Hills::default();
-    assert!(z > hills.ground(0, 0), "out at {z}");
+    // Into loaded ground: out at once.
+    let ground = hills.ground(0, 0);
+    sim.teleport_player(WorldPos::at_boxel(base::TERRAIN_CENTER.offset(I64Vec3::new(0, 0, ground - 5))));
+    let z = sim.player().unwrap().pos().cell().z - base::TERRAIN_CENTER.0.z;
+    assert!(z > ground, "out at {z}");
+    // Deep down, where nothing is loaded, it may be a tunnel for all anyone knows: the player
+    // stays until the rock there comes in, then comes out on top in one go.
+    let deep = WorldPos::at_boxel(base::TERRAIN_CENTER.offset(I64Vec3::new(0, 0, -200)));
+    sim.teleport_player(deep);
+    assert_eq!(sim.player().unwrap().pos(), deep);
+    sim.stream_all();
+    let z = sim.player().unwrap().pos().cell().z - base::TERRAIN_CENTER.0.z;
+    assert!(z > ground, "out at {z}");
     // A teleport into the open isn't moved.
     let open = WorldPos::new(base::TERRAIN_CENTER.0 + I64Vec3::new(0, 0, 300), Vec3::new(0.5, 0.5, 0.25));
     sim.teleport_player(open);
@@ -291,7 +323,19 @@ fn creatures_and_items_beyond_the_simulation_distance_or_over_ground_to_come_hol
 #[test]
 #[ignore]
 fn time_the_full_terrain() {
+    time_terrain(256.0);
+}
+
+/// Times streaming in the bench's 512 m of full detail. Run with `--ignored --nocapture`.
+#[test]
+#[ignore]
+fn time_the_bench_terrain() {
+    time_terrain(512.0);
+}
+
+fn time_terrain(detail: f32) {
     let mut sim = base();
+    sim.set_view_distance(detail, 0.0);
     sim.teleport_player(over(0, 0, 2));
     let start = std::time::Instant::now();
     sim.generate_terrain().unwrap();
@@ -299,8 +343,8 @@ fn time_the_full_terrain() {
     sim.stream_all();
     let stats = sim.stream_stats();
     println!(
-        "{} columns in {:.2} s (the ground near in {near:.2} s); {:.2} s generating on the workers, {:.2} s joining",
-        stats.columns,
+        "{} chunks in {:.2} s (the ground near in {near:.2} s); {:.2} s generating on the workers, {:.2} s joining",
+        stats.chunks,
         start.elapsed().as_secs_f32(),
         stats.seconds,
         stats.join_seconds

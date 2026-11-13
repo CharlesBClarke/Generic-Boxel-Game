@@ -116,8 +116,8 @@ fn lighting_cost() {
     sim.stream_all();
     let stats = sim.stream_stats();
     println!(
-        "terrain: {} columns in {:.2} s, {:.2} s on the workers (lit there), seams {:.2} s",
-        stats.columns,
+        "terrain: {} chunks in {:.2} s, {:.2} s on the workers (lit there), seams {:.2} s",
+        stats.chunks,
         start.elapsed().as_secs_f32(),
         stats.seconds,
         stats.join_seconds

@@ -94,6 +94,7 @@ impl Server {
         self.sim.take_changed_chunks();
         self.sim.take_loaded_chunks();
         self.sim.take_unloaded_chunks();
+        self.sim.take_tops();
         // Far terrain comes after, built afresh for this client.
         self.sim.reset_far();
         self.sim.take_far_unloaded();
@@ -102,6 +103,7 @@ impl Server {
         let grid = self.sim.universe().main();
         self.has = grid.chunks().map(|(pos, _)| pos).collect();
         let chunks = grid.chunks().map(|(pos, _)| grid.export_chunk(pos)).collect();
+        let tops = grid.tops.clone();
         let snapshot = self.snapshot(Vec::new());
         Welcome {
             content: Content {
@@ -113,6 +115,7 @@ impl Server {
             blueprints: self.sim.blueprints().clone(),
             defs: self.defs(),
             chunks,
+            tops,
             spawn: self.sim.spawn(),
             waypoints: self.sim.waypoints().to_vec(),
             snapshot,
@@ -178,10 +181,11 @@ impl Server {
         out
     }
 
-    /// What changed in the chunks since last time, for the client: chunks dropped, then chunks
-    /// brought in, far columns dropped and built, then changed chunks the client has, or that
-    /// are new to the world.
+    /// What changed in the chunks since last time, for the client: the tops that moved, chunks
+    /// dropped, then chunks brought in, far columns dropped and built, then changed chunks the
+    /// client has, or that are new to the world.
     fn chunk_news(&mut self) -> Vec<ServerMsg> {
+        let tops = self.sim.take_tops();
         let unloaded = self.sim.take_unloaded_chunks();
         let loaded = self.sim.take_loaded_chunks();
         let changed = self.sim.take_changed_chunks();
@@ -189,6 +193,9 @@ impl Server {
         let far = self.sim.take_far_loaded();
         let grid = self.sim.universe().main();
         let mut out = Vec::new();
+        if !tops.is_empty() {
+            out.push(ServerMsg::Tops(tops));
+        }
         let gone: Vec<api::ChunkPos> = unloaded.into_iter().filter(|pos| grid.chunk(*pos).is_none() && self.has.remove(pos)).collect();
         if !gone.is_empty() {
             out.push(ServerMsg::ChunksUnloaded(gone));

@@ -54,7 +54,8 @@ pub struct ChunkData {
     pub records: Vec<(u16, Record)>,
 }
 
-/// A volume of boxels made of chunks. Missing chunks read as empty, under the open sky.
+/// A volume of boxels made of chunks. Missing chunks read as empty: under the open sky over
+/// their column's top, dark below it (see [`crate::tops`]).
 #[derive(Default)]
 pub struct Grid {
     /// Every chunk, in no particular order; `slots` says which is where. Kept in a list so
@@ -66,6 +67,9 @@ pub struct Grid {
     pub(crate) cells: CellTable,
     /// What each occupant list does to light, by cell ID, filled in as lists are first lit.
     pub(crate) light_info: Vec<crate::light::CellLight>,
+    /// Where the open sky starts over each column of terrain. Empty for a grid with no
+    /// terrain, whose missing chunks are all open sky.
+    pub tops: crate::tops::Tops,
 }
 
 impl Grid {
@@ -89,10 +93,15 @@ impl Grid {
         self.cells.get(id)
     }
 
-    /// The light in the boxel at `pos`. A missing chunk is open sky.
+    /// The light in the boxel at `pos`. A missing chunk is open sky over its column's top and
+    /// dark below it.
     pub fn light(&self, pos: BoxelPos) -> Light {
         let (chunk, local) = pos.split();
-        self.chunk(chunk).map_or(Light::SKY, |c| c.light.get(local))
+        match self.chunk(chunk) {
+            Some(c) => c.light.get(local),
+            None if self.tops.is_sky(pos.0) => Light::SKY,
+            None => Light::DARK,
+        }
     }
 
     /// The record of the boxel at `pos`, if it has one.

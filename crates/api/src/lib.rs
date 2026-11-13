@@ -47,5 +47,5 @@ pub use movement::{Ground, MoveContext, MoveInput, MoveOutput, MovementControlle
 pub use player::PlayerDef;
 pub use shape::ShapeGrid;
 pub use signal::{BlastDef, SignalDef};
-pub use terrain::{ChunkFill, Generator, TerrainDef};
+pub use terrain::{ChunkFill, Generator, NO_TOP, TOPS_LEN, TerrainDef};
 pub use tuning::{Tunable, Tunables};

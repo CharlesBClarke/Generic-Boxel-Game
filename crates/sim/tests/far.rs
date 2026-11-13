@@ -18,7 +18,6 @@ fn base() -> Simulation {
 fn seeing(far: f32) -> Simulation {
     let mut sim = base();
     sim.set_view_distance(32.0, far);
-    sim.world_settings_mut().terrain_height = 16;
     sim
 }
 
@@ -152,33 +151,31 @@ fn far_columns_over_an_edit_are_built_again_once_it_drops() {
 }
 
 #[test]
-fn far_terrain_stops_at_the_terrain_height_like_full_detail() {
+fn far_terrain_is_as_tall_as_the_land() {
     let mut sim = seeing(1024.0);
-    // Four chunks tall: 64 boxels above the terrain's center and 64 below, so the hills'
-    // higher ground is cut off.
-    sim.world_settings_mut().terrain_height = 4;
+    // Mountains well past where terrain used to stop, 256 boxels over its center.
+    let hills = sim.generator_names().position(|n| n == base::terrain::HILLS).unwrap();
+    assert!(sim.tune_generator(hills, "mountain_height", 500.0));
     sim.teleport_player(over(0, 0));
     sim.generate_terrain().unwrap();
     sim.far_all();
+    assert!(sim.far_error().is_none(), "{:?}", sim.far_error());
     let mut have = HashMap::new();
     gather(&mut sim, &mut have);
     let center_z = base::TERRAIN_CENTER.0.z;
-    let mut cells = 0;
+    let mut highest = i64::MIN;
     for built in have.values() {
         let (step, span) = (built.column.step(), built.column.span());
         for chunk in &built.chunks {
             for i in 0..api::CHUNK_VOLUME {
-                let middle = chunk.pos.0.z * span + LocalPos::from_index(i).z as i64 * step + step / 2 - center_z;
                 if chunk.cells.at(i) != 0 {
-                    cells += 1;
-                    assert!((-64..64).contains(&middle), "{:?} cell at {middle}", built.column);
+                    highest = highest.max(chunk.pos.0.z * span + LocalPos::from_index(i).z as i64 * step + step / 2 - center_z);
                 }
             }
         }
     }
-    assert!(cells > 0);
-    // And there was ground above the limit to cut.
-    let hills = base::terrain::Hills::default();
-    let higher = (-1000..1000).step_by(50).flat_map(|y| (-1000..1000).step_by(50).map(move |x| (x, y))).any(|(x, y)| hills.ground(x, y) >= 64);
-    assert!(higher, "the hills rise past 64 somewhere within 1 km");
+    let tall = base::terrain::Hills { mountain_height: 500.0, ..base::terrain::Hills::default() };
+    let peak = (-1000..1000).step_by(25).flat_map(|y| (-1000..1000).step_by(25).map(move |x| (x, y))).map(|(x, y)| tall.ground(x, y)).max().unwrap();
+    assert!(peak > 300, "the land rises past the old limit within 1 km: {peak}");
+    assert!(highest > 300, "and far terrain with it: {highest}");
 }

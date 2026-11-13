@@ -107,8 +107,9 @@ pub trait WorldEdit {
     /// from +X around +Z). That's its spot: it comes back there after breaking.
     fn add_target(&mut self, name: &str, pos: WorldPos, yaw: f32) -> Result<(), ApiError>;
 
-    /// Places generated terrain. The engine fills it once every mod has built its world, so
-    /// blocks set here are covered where the terrain reaches.
+    /// Places the world's generated terrain: one, since it goes on forever every way, so a
+    /// second is an error. The engine makes it around the players once every mod has built its
+    /// world, keeping it away from what the mods built.
     fn add_terrain(&mut self, def: TerrainDef) -> Result<(), ApiError>;
 
     /// Fills the box from `min` to `max`, both inclusive.

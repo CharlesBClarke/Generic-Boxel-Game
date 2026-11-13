@@ -286,6 +286,10 @@ impl Generator for Hills {
         self.fill_stepped(origin, step.max(1) as i64, out);
         true
     }
+
+    fn tops(&self, x: i64, y: i64, step: u32, out: &mut [i64]) {
+        self.tops_stepped(x, y, step.max(1) as i64, out);
+    }
 }
 
 impl Hills {
@@ -381,6 +385,66 @@ impl Hills {
         }
     }
 
+    /// The highest boxel filled over each cell, `s` boxels a side from `x, y`: the ground or
+    /// the ice over it, and the boulders standing on it. Exact at `s` 1; coarser, the ground at
+    /// each cell's middle and the tops of the boulders big enough to show.
+    fn tops_stepped(&self, x: i64, y: i64, s: i64, out: &mut [i64]) {
+        let n = CHUNK_SIZE as usize;
+        let span = CHUNK_SIZE * s;
+        let half = s as f64 * 0.5;
+        let ice = self.ice_level.floor() as i64;
+        for cy in 0..n {
+            for cx in 0..n {
+                let (bx, by) = (x + cx as i64 * s, y + cy as i64 * s);
+                let h = self.height(bx as f64 + half, by as f64 + half).floor() as i64;
+                out[cx + cy * n] = h.max(ice);
+            }
+        }
+        let mut rocks = self.rocks_near([x, y], [x + span - 1, y + span - 1]);
+        rocks.retain(|r| s == 1 || r.radius * 2.0 >= s as f64);
+        for rock in &rocks {
+            let r = rock.radius;
+            let [rx, ry, rz] = rock.center;
+            let range = |c: f64, o: i64| -> (i64, i64) {
+                let lo = ((c - r - 1.0 - o as f64) / s as f64).floor() as i64;
+                let hi = ((c + r + 1.0 - o as f64) / s as f64).ceil() as i64;
+                (lo.max(0), hi.min(CHUNK_SIZE - 1))
+            };
+            let ((x0, x1), (y0, y1)) = (range(rx, x), range(ry, y));
+            for cy in y0..=y1 {
+                for cx in x0..=x1 {
+                    let top = &mut out[cx as usize + cy as usize * n];
+                    if s > 1 {
+                        // Roughly: as high as the boulder gets.
+                        let (dx, dy) = ((x + cx * s) as f64 + half - rx, (y + cy * s) as f64 + half - ry);
+                        if dx * dx + dy * dy < r * r {
+                            *top = (*top).max((rz + r).ceil() as i64);
+                        }
+                        continue;
+                    }
+                    // Down from the highest a boulder reaches to the first boxel inside it.
+                    let mut z = (rz + r + 1.0).ceil() as i64;
+                    while z > *top {
+                        if self.in_rock(rock, [(x + cx) as f64 + 0.5, (y + cy) as f64 + 0.5, z as f64 + 0.5]) {
+                            *top = z;
+                            break;
+                        }
+                        z -= 1;
+                    }
+                }
+            }
+        }
+    }
+
+    /// Whether the point `p` is inside `rock`.
+    fn in_rock(&self, rock: &Rock, p: [f64; 3]) -> bool {
+        let r = rock.radius;
+        let [cx, cy, cz] = rock.center;
+        let d = [(p[0] - cx) / r, (p[1] - cy) / r, (p[2] - cz) / (r * 0.75)];
+        let lumps = 0.8 + 0.35 * value3(rock.salt, p[0] / 1.7, p[1] / 1.7, p[2] / 1.7);
+        d[0] * d[0] + d[1] * d[1] + d[2] * d[2] < lumps * lumps
+    }
+
     /// Fills the cells, `s` boxels a side from `origin`, whose middles are inside `rock`.
     fn place_rock(&self, rock: &Rock, origin: I64Vec3, s: i64, out: &mut ChunkFill, stone: u16) {
         let n = CHUNK_SIZE;
@@ -397,9 +461,7 @@ impl Hills {
             for y in y0..=y1 {
                 for x in x0..=x1 {
                     let p = [(origin.x + x * s) as f64 + half, (origin.y + y * s) as f64 + half, (origin.z + z * s) as f64 + half];
-                    let d = [(p[0] - cx) / r, (p[1] - cy) / r, (p[2] - cz) / (r * 0.75)];
-                    let lumps = 0.8 + 0.35 * value3(rock.salt, p[0] / 1.7, p[1] / 1.7, p[2] / 1.7);
-                    if d[0] * d[0] + d[1] * d[1] + d[2] * d[2] < lumps * lumps {
+                    if self.in_rock(rock, p) {
                         out.set(x as usize, y as usize, z as usize, stone);
                     }
                 }
@@ -647,6 +709,44 @@ mod tests {
         assert_eq!(at(h).as_deref(), Some(GRASS));
         assert_eq!(at(h - 1).as_deref(), Some(DIRT));
         assert_eq!(at(h - 10).as_deref(), Some(STONE));
+    }
+
+    #[test]
+    fn tops_are_the_highest_boxel_filled() {
+        // Plenty of boulders, and ice high enough to cover some ground.
+        let hills = Hills { rock_chance: 1.0, rock_min: 2.0, rock_max: 5.0, ice_level: 10.0, ..Hills::default() };
+        let n = CHUNK_SIZE as usize;
+        for (cx, cy) in [(0i64, 0i64), (3, -2), (-7, 5)] {
+            let (x, y) = (cx * CHUNK_SIZE, cy * CHUNK_SIZE);
+            let mut tops = vec![0i64; api::TOPS_LEN];
+            hills.tops(x, y, 1, &mut tops);
+            let (lo, hi) = (*tops.iter().min().unwrap(), *tops.iter().max().unwrap());
+            let mut found = vec![i64::MIN; api::TOPS_LEN];
+            // A chunk past the highest top too, to see nothing is above it.
+            for cz in lo.div_euclid(CHUNK_SIZE)..=hi.div_euclid(CHUNK_SIZE) + 1 {
+                let filled = fill(&hills, I64Vec3::new(x, y, cz * CHUNK_SIZE));
+                for z in 0..n {
+                    for (i, top) in found.iter_mut().enumerate() {
+                        if filled.get(i % n, i / n, z) != 0 {
+                            *top = (*top).max(cz * CHUNK_SIZE + z as i64);
+                        }
+                    }
+                }
+            }
+            assert_eq!(found, tops, "chunk column {cx}, {cy}");
+        }
+    }
+
+    #[test]
+    fn coarse_tops_follow_the_ground() {
+        let hills = Hills { rock_chance: 0.0, ..Hills::default() };
+        let mut tops = vec![0i64; api::TOPS_LEN];
+        hills.tops(-512, 256, 8, &mut tops);
+        let ice = hills.ice_level.floor() as i64;
+        for (i, &top) in tops.iter().enumerate().step_by(37) {
+            let (x, y) = (-512 + (i as i64 % CHUNK_SIZE) * 8 + 4, 256 + (i as i64 / CHUNK_SIZE) * 8 + 4);
+            assert_eq!(top, (hills.height(x as f64, y as f64).floor() as i64).max(ice));
+        }
     }
 
     #[test]

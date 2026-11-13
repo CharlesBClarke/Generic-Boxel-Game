@@ -106,8 +106,8 @@ pub fn load_world(
     }
     let stats = sim.stream_stats();
     eprintln!(
-        "terrain: {} columns loaded around the player at start ({:.2} s on the workers); the rest streams in",
-        stats.columns, stats.seconds
+        "terrain: {} chunks loaded around the player at start ({:.2} s on the workers); the rest streams in",
+        stats.chunks, stats.seconds
     );
     Ok((sim, fresh))
 }

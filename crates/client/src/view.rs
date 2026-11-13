@@ -263,9 +263,11 @@ pub fn view_reach(view: &ViewTuning, switches: &ViewSwitches) -> f32 {
 }
 
 /// Shows the chunks to draw and hides the rest, and sets the far plane. With far terrain on,
-/// the chunks of streamed columns are drawn where the quadtree picked them (see
-/// [`crate::far::pick_far`]); other chunks, and all of them with it off, within the render
-/// distance.
+/// the streamed chunks that show a column's surface (see [`sim::tops::surface_rows`]) are drawn
+/// where the quadtree picked the column (see [`crate::far::pick_far`]), far terrain standing
+/// in for them elsewhere; the streamed chunks under and over those are always drawn, so a
+/// tunnel or a tower shows whatever the surface is drawn as. Other chunks, and all of them
+/// with far terrain off, within the render distance.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn apply_render_distance(
     view: Res<ViewTuning>,
@@ -289,7 +291,7 @@ pub(crate) fn apply_render_distance(
     for (chunk, transform, mut visibility) in &mut chunks {
         let pos = chunk.0;
         let show = if far.active && bg.is_streamed(pos) {
-            far.ordinary.contains(&(pos.0.x, pos.0.y))
+            far.ordinary.contains(&(pos.0.x, pos.0.y)) || !bg.shows_surface(pos)
         } else {
             within(transform.translation, eye, view.render_distance)
         };
