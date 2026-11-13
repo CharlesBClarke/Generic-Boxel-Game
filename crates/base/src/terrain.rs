@@ -279,19 +279,41 @@ impl Hills {
 
 impl Generator for Hills {
     fn fill(&self, origin: I64Vec3, out: &mut ChunkFill) {
-        let s = CHUNK_SIZE as usize;
-        // Heights over the chunk with a border of one, for slopes.
-        let w = s + 2;
+        self.fill_stepped(origin, 1, out);
+    }
+
+    fn fill_coarse(&self, origin: I64Vec3, step: u32, out: &mut ChunkFill) -> bool {
+        self.fill_stepped(origin, step.max(1) as i64, out);
+        true
+    }
+}
+
+impl Hills {
+    /// Fills a chunk of cells `s` boxels a side from `origin`: a cell is ground where the
+    /// ground fills more than half of it, sampled at its middle, so at `s` 1 it's exactly the
+    /// boxels. Surface layers count in boxels down from the top cell, and how steep the ground is
+    /// is measured between boxels at the cell's middle, as full detail does, so the same
+    /// ground is bare at every step.
+    fn fill_stepped(&self, origin: I64Vec3, s: i64, out: &mut ChunkFill) {
+        let n = CHUNK_SIZE as usize;
+        let span = CHUNK_SIZE * s;
+        // Heights over the chunk's cells with a border of one cell, for slopes.
+        let w = n + 2;
+        let half = s as f64 * 0.5;
         let mut heights = vec![0i64; w * w];
         for y in 0..w {
             for x in 0..w {
-                heights[x + y * w] = self.ground(origin.x + x as i64 - 1, origin.y + y as i64 - 1);
+                let (bx, by) = (origin.x + (x as i64 - 1) * s, origin.y + (y as i64 - 1) * s);
+                heights[x + y * w] = self.height(bx as f64 + half, by as f64 + half).floor() as i64;
             }
         }
         let lowest = heights.iter().copied().min().unwrap_or(0);
         let ice = self.ice_level.floor() as i64;
-        let top = origin.z + CHUNK_SIZE - 1;
-        let rocks = self.rocks_near([origin.x, origin.y], [origin.x + CHUNK_SIZE - 1, origin.y + CHUNK_SIZE - 1]);
+        let top = origin.z + span - 1;
+        let max = [origin.x + span - 1, origin.y + span - 1];
+        // Boulders smaller than half a cell would be a cell or nothing: left out.
+        let mut rocks = self.rocks_near([origin.x, origin.y], max);
+        rocks.retain(|r| s == 1 || r.radius * 2.0 >= s as f64);
         let rocks_reach = rocks.iter().any(|r| (r.center[2] + r.radius) as i64 >= origin.z && (r.center[2] - r.radius) as i64 <= top);
         let highest = heights.iter().copied().max().unwrap_or(0).max(ice);
         // All of it underground, deeper than any surface layer: solid stone.
@@ -306,19 +328,36 @@ impl Generator for Hills {
         }
         let (grass, dirt, gravel, ice_block) = (out.entry(GRASS), out.entry(DIRT), out.entry(GRAVEL), out.entry(ICE));
         let dirt_depth = self.dirt_depth.max(0.0).round() as i64;
-        for y in 0..s {
-            for x in 0..s {
+        // Cells start every `s` boxels from here, upward.
+        let phase = origin.z.rem_euclid(s);
+        // A cell starting at `bottom` is filled up to `level` if more than half of it is.
+        let fills = |level: i64, bottom: i64| 2 * (level - bottom + 1) > s;
+        for y in 0..n {
+            for x in 0..n {
                 let at = |dx: i64, dy: i64| heights[(x as i64 + 1 + dx) as usize + (y as i64 + 1 + dy) as usize * w];
                 let h = at(0, 0);
-                let slope = [at(1, 0), at(-1, 0), at(0, 1), at(0, -1)].iter().map(|n| (n - h).abs()).max().unwrap_or(0);
+                // The top boxel of the highest filled cell, where the surface shows.
+                let surface = phase + (h - s / 2 - phase).div_euclid(s) * s + s - 1;
+                // Rise per boxel across: to the boxels beside the cell's middle, at any step,
+                // so a cliff narrower than a coarse cell still counts as steep. Only looked up
+                // where a surface layer reaches into this chunk: deeper it's all stone.
+                let beside = if s == 1 {
+                    [at(1, 0), at(-1, 0), at(0, 1), at(0, -1)]
+                } else if surface >= origin.z && surface - top < dirt_depth.max(1) {
+                    let (cx, cy) = ((origin.x + x as i64 * s) as f64 + half, (origin.y + y as i64 * s) as f64 + half);
+                    [(1.0, 0.0), (-1.0, 0.0), (0.0, 1.0), (0.0, -1.0)].map(|(dx, dy)| self.height(cx + dx, cy + dy).floor() as i64)
+                } else {
+                    [h; 4]
+                };
+                let slope = beside.iter().map(|m| (m - h).abs()).max().unwrap_or(0);
                 let under_ice = h < ice;
                 let bare = slope as f32 > self.cliff_slope || h as f32 > self.stone_line;
                 // Steeper ground keeps less soil.
                 let soil = if bare { 0 } else { (dirt_depth - slope / 2).max(1) };
-                for z in 0..s {
-                    let wz = origin.z + z as i64;
-                    let e = if wz <= h {
-                        let depth = h - wz;
+                for z in 0..n {
+                    let bottom = origin.z + z as i64 * s;
+                    let e = if fills(h, bottom) {
+                        let depth = surface - (bottom + s - 1);
                         if under_ice {
                             if depth < soil.max(1) { gravel } else { stone }
                         } else if bare || depth >= soil {
@@ -328,7 +367,7 @@ impl Generator for Hills {
                         } else {
                             dirt
                         }
-                    } else if wz <= ice {
+                    } else if fills(ice, bottom) {
                         ice_block
                     } else {
                         continue;
@@ -338,26 +377,26 @@ impl Generator for Hills {
             }
         }
         for rock in &rocks {
-            self.place_rock(rock, origin, out, stone);
+            self.place_rock(rock, origin, s, out, stone);
         }
     }
-}
 
-impl Hills {
-    fn place_rock(&self, rock: &Rock, origin: I64Vec3, out: &mut ChunkFill, stone: u16) {
-        let s = CHUNK_SIZE;
+    /// Fills the cells, `s` boxels a side from `origin`, whose middles are inside `rock`.
+    fn place_rock(&self, rock: &Rock, origin: I64Vec3, s: i64, out: &mut ChunkFill, stone: u16) {
+        let n = CHUNK_SIZE;
         let r = rock.radius;
         let [cx, cy, cz] = rock.center;
+        let half = s as f64 * 0.5;
         let range = |c: f64, o: i64| -> (i64, i64) {
-            let lo = ((c - r - 1.0).floor() as i64 - o).max(0);
-            let hi = ((c + r + 1.0).ceil() as i64 - o).min(s - 1);
-            (lo, hi)
+            let lo = ((c - r - 1.0 - o as f64) / s as f64).floor() as i64;
+            let hi = ((c + r + 1.0 - o as f64) / s as f64).ceil() as i64;
+            (lo.max(0), hi.min(n - 1))
         };
         let ((x0, x1), (y0, y1), (z0, z1)) = (range(cx, origin.x), range(cy, origin.y), range(cz, origin.z));
         for z in z0..=z1 {
             for y in y0..=y1 {
                 for x in x0..=x1 {
-                    let p = [(origin.x + x) as f64 + 0.5, (origin.y + y) as f64 + 0.5, (origin.z + z) as f64 + 0.5];
+                    let p = [(origin.x + x * s) as f64 + half, (origin.y + y * s) as f64 + half, (origin.z + z * s) as f64 + half];
                     let d = [(p[0] - cx) / r, (p[1] - cy) / r, (p[2] - cz) / (r * 0.75)];
                     let lumps = 0.8 + 0.35 * value3(rock.salt, p[0] / 1.7, p[1] / 1.7, p[2] / 1.7);
                     if d[0] * d[0] + d[1] * d[1] + d[2] * d[2] < lumps * lumps {
@@ -639,6 +678,106 @@ mod tests {
         assert!(deep.cells.iter().all(|&e| deep.palette[e as usize - 1] == STONE));
         let high = fill(&hills, I64Vec3::new(0, 0, 480));
         assert!(high.cells.iter().all(|&e| e == 0));
+    }
+
+    #[test]
+    fn coarse_at_step_one_is_the_full_fill() {
+        let hills = Hills { rock_chance: 0.5, ..Hills::default() };
+        for (x, y) in [(0, 0), (64, -96), (-320, 448), (1000, 2000)] {
+            let origin = surface_chunk(&hills, x, y);
+            for dz in [-32, 0, 32] {
+                let o = origin + I64Vec3::new(0, 0, dz);
+                let mut coarse = ChunkFill::default();
+                assert!(hills.fill_coarse(o, 1, &mut coarse));
+                assert_eq!(names(&coarse), names(&fill(&hills, o)), "at {o:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn coarse_ground_follows_the_full_ground() {
+        let hills = Hills { rock_chance: 0.0, ..Hills::default() };
+        for s in [2i64, 4, 8, 16] {
+            let span = CHUNK_SIZE * s;
+            // A chunk-aligned column of coarse chunks over the ground's whole range.
+            let (ox, oy) = (span * 3, -span * 2);
+            let mut tops = vec![None; 32 * 32];
+            for cz in (-512 / span).min(-1)..(512 / span).max(1) {
+                let origin = I64Vec3::new(ox, oy, cz * span);
+                let mut out = ChunkFill::default();
+                assert!(hills.fill_coarse(origin, s as u32, &mut out));
+                for y in 0..32 {
+                    for x in 0..32 {
+                        for z in 0..32 {
+                            if matches!(out.name(x, y, z), Some(n) if n != ICE) {
+                                tops[x + y * 32] = Some(origin.z + (z as i64 + 1) * s - 1);
+                            }
+                        }
+                    }
+                }
+            }
+            for y in 0..32 {
+                for x in 0..32 {
+                    let (bx, by) = (ox + x as i64 * s + s / 2, oy + y as i64 * s + s / 2);
+                    let ground = hills.ground(bx, by);
+                    let top = tops[x + y * 32].expect("ground in every column");
+                    assert!((top - ground).abs() <= s, "step {s} at {bx}, {by}: top {top}, ground {ground}");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn coarse_tops_are_grass_where_gentle() {
+        let hills = Hills { rock_chance: 0.0, stone_line: 1000.0, cliff_slope: 1000.0, ice_level: -1000.0, ..Hills::default() };
+        let s = 4i64;
+        let origin = I64Vec3::new(0, 0, hills.ground(64, 64).div_euclid(128) * 128);
+        let mut grass = 0;
+        for dz in [-128, 0, 128] {
+            let mut out = ChunkFill::default();
+            hills.fill_coarse(origin + I64Vec3::new(0, 0, dz), s as u32, &mut out);
+            grass += (0..32 * 32 * 32).filter(|&i| out.name(i % 32, i / 32 % 32, i / 1024) == Some(GRASS)).count();
+        }
+        assert_eq!(grass, 32 * 32, "one grass cell on top of every column");
+    }
+
+    #[test]
+    fn coarse_tops_are_bare_where_full_detail_is_steep() {
+        // No stone line, ice or boulders: only steepness bares the ground.
+        let hills = Hills { rock_chance: 0.0, stone_line: 10000.0, ice_level: -10000.0, ..Hills::default() };
+        let (mut bare, mut wrong, mut coarsely_gentle) = (0, 0, 0);
+        for s in [4i64, 16] {
+            let span = CHUNK_SIZE * s;
+            for (cx, cy) in [(0, 0), (3, -2), (-5, 4), (9, 7)] {
+                let (ox, oy) = (cx * span, cy * span);
+                let mut tops = vec![false; 32 * 32];
+                for cz in (-512 / span).min(-1)..(512 / span).max(1) {
+                    let mut out = ChunkFill::default();
+                    hills.fill_coarse(I64Vec3::new(ox, oy, cz * span), s as u32, &mut out);
+                    for i in 0..32 * 32 * 32 {
+                        if let Some(name) = out.name(i % 32, i / 32 % 32, i / 1024) {
+                            tops[i % 1024] = name == STONE;
+                        }
+                    }
+                }
+                let height = |x: f64, y: f64| hills.height(x, y).floor() as i64;
+                for y in 0..32i64 {
+                    for x in 0..32i64 {
+                        let (mx, my) = ((ox + x * s + s / 2) as f64, (oy + y * s + s / 2) as f64);
+                        let h = height(mx, my);
+                        let rise = |d: f64| [(d, 0.0), (-d, 0.0), (0.0, d), (0.0, -d)].iter().map(|(dx, dy)| (height(mx + dx, my + dy) - h).abs()).max().unwrap();
+                        let steep = rise(1.0) as f32 > hills.cliff_slope;
+                        let stone = tops[(x + y * 32) as usize];
+                        bare += steep as usize;
+                        wrong += (steep != stone) as usize;
+                        // Steep between boxels, but not from one cell's middle to the next.
+                        coarsely_gentle += (steep && (rise(s as f64) / s) as f32 <= hills.cliff_slope) as usize;
+                    }
+                }
+            }
+        }
+        assert_eq!(wrong, 0, "of {bare} bare");
+        assert!(coarsely_gentle > 0, "some of the {bare} bare cells are steep only at boxel scale");
     }
 
     #[test]

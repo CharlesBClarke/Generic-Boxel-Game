@@ -15,7 +15,7 @@ fn base_sim() -> Simulation {
 /// The base game with a small terrain, generated.
 fn small_world() -> Simulation {
     let mut sim = base_sim();
-    sim.set_view_distance(32.0);
+    sim.set_view_distance(32.0, 0.0);
     sim.generate_terrain().unwrap();
     sim
 }

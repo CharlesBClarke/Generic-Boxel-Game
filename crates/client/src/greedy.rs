@@ -80,6 +80,12 @@ pub fn merge(mesh: &MeshData) -> MeshData {
     close_t_junctions(&merge_quads(mesh))
 }
 
+/// [`merge`] for a chunk of a far column (see [`crate::far`]), which has neighbors only above
+/// and below.
+pub fn merge_far(mesh: &MeshData) -> MeshData {
+    close_t_junctions_on(&merge_quads(mesh), [false, false, true])
+}
+
 /// Closes T-junctions: where a corner of one quad sits partway along another's edge, the GPU
 /// rounds the two sides of the seam apart and leaves pixel gaps, seen as sparkles. A quad
 /// more than a boxel long with such corners on its edges becomes a fan of triangles from its
@@ -94,6 +100,13 @@ pub fn merge(mesh: &MeshData) -> MeshData {
 /// values on every vertex: a merged quad's values change evenly across it, so they come out
 /// the same at every point.
 pub fn close_t_junctions(mesh: &MeshData) -> MeshData {
+    close_t_junctions_on(mesh, [true; 3])
+}
+
+/// [`close_t_junctions`] for a chunk with neighbors only across its borders on the axes
+/// `borders` marks: edges on its other borders split only where its own corners are, as for
+/// a far column's chunks (see [`crate::far`]), which have neighbors only above and below.
+pub fn close_t_junctions_on(mesh: &MeshData, borders: [bool; 3]) -> MeshData {
     let key = |p: [f32; 3]| p.map(f32::to_bits);
     let corners: std::collections::HashSet<[u32; 3]> = mesh.positions.iter().map(|&p| key(p)).collect();
     let border = api::CHUNK_SIZE as f32;
@@ -109,7 +122,7 @@ pub fn close_t_junctions(mesh: &MeshData) -> MeshData {
             }
             let length = d.iter().map(|c| c.abs()).sum::<f32>();
             let unit = d.map(|c| c / length);
-            let on_border = (0..3).any(|c| d[c] == 0.0 && (a[c] == 0.0 || a[c] == border));
+            let on_border = (0..3).any(|c| borders[c] && d[c] == 0.0 && (a[c] == 0.0 || a[c] == border));
             let steps = length.ceil() as i32;
             (1..steps)
                 .filter(|&i| on_border || corners.contains(&key(std::array::from_fn(|c| a[c] + unit[c] * i as f32))))

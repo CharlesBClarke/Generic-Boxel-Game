@@ -34,6 +34,15 @@ enum ToWorker {
     Settings { ao: AoTuning, merge: bool },
     /// Chunks to mesh, each with its version when asked.
     Mesh(Vec<(ChunkPos, u64)>),
+    /// Far columns to mesh (see [`crate::far`]), each with its version, on their own: nothing
+    /// beside a far column is read, so its sides get walls that plug the cracks between levels.
+    Far(Vec<(sim::far::FarColumn, u64, Vec<ChunkData>)>),
+}
+
+/// What the thread sends back.
+enum FromWorker {
+    Near(Vec<Meshed>),
+    Far(Vec<crate::far::FarMeshed>),
 }
 
 /// A chunk meshed in the background.
@@ -59,6 +68,9 @@ enum ColumnState {
 struct Column {
     chunks: Vec<ChunkPos>,
     state: ColumnState,
+    /// Its meshes have all come back once, so it can be drawn (meshed again later, its old
+    /// meshes show until the new ones are in).
+    shown: bool,
 }
 
 /// The background mesher's thread, and what's been asked of it.
@@ -68,7 +80,7 @@ pub(crate) struct BackgroundMesher {
     columns: HashMap<(i64, i64), Column>,
     to: Sender<ToWorker>,
     /// In a mutex only so the resource can be shared between threads; only one system uses it.
-    from: Mutex<Receiver<Vec<Meshed>>>,
+    from: Mutex<Receiver<FromWorker>>,
     /// Chunks asked for and not back yet.
     pending: HashSet<ChunkPos>,
     /// How many blocks and which settings the thread has, so changes are sent.
@@ -79,7 +91,7 @@ pub(crate) struct BackgroundMesher {
 impl Default for BackgroundMesher {
     fn default() -> Self {
         let (to, inbox) = channel::<ToWorker>();
-        let (outbox, from) = channel::<Vec<Meshed>>();
+        let (outbox, from) = channel::<FromWorker>();
         std::thread::Builder::new()
             .name("background mesher".into())
             .spawn(move || work(inbox, outbox))
@@ -89,6 +101,27 @@ impl Default for BackgroundMesher {
 }
 
 impl BackgroundMesher {
+    /// Whether the streamed column at chunk `x, y` has had every mesh of it back once, so it
+    /// can be drawn.
+    pub fn column_drawable(&self, x: i64, y: i64) -> bool {
+        self.columns.get(&(x, y)).is_some_and(|c| c.shown)
+    }
+
+    /// Notes columns whose meshes have all come back for the first time.
+    fn note_shown(&mut self) {
+        let pending = &self.pending;
+        for c in self.columns.values_mut() {
+            if !c.shown && matches!(c.state, ColumnState::Meshed { .. }) && !c.chunks.iter().any(|p| pending.contains(p)) {
+                c.shown = true;
+            }
+        }
+    }
+
+    /// Whether the chunk at `pos` belongs to a streamed column.
+    pub fn is_streamed(&self, pos: ChunkPos) -> bool {
+        self.columns.contains_key(&(pos.0.x, pos.0.y))
+    }
+
     /// Chunks asked for and not back yet, and chunks of columns waiting for their neighbors.
     pub fn pending(&self) -> usize {
         let waiting: usize =
@@ -100,7 +133,8 @@ impl BackgroundMesher {
     /// meshed without a neighbor.
     fn arrived(&mut self, chunks: &[ChunkPos], now: std::time::Instant) {
         for &pos in chunks {
-            let column = self.columns.entry((pos.0.x, pos.0.y)).or_insert(Column { chunks: Vec::new(), state: ColumnState::Waiting(now) });
+            let column =
+                self.columns.entry((pos.0.x, pos.0.y)).or_insert(Column { chunks: Vec::new(), state: ColumnState::Waiting(now), shown: false });
             if !column.chunks.contains(&pos) {
                 column.chunks.push(pos);
             }
@@ -169,7 +203,7 @@ fn mesh_threads() -> usize {
 
 /// The thread: keeps its copy of the world from what it's told, and meshes what it's asked
 /// for, a batch at a time.
-fn work(inbox: Receiver<ToWorker>, outbox: Sender<Vec<Meshed>>) {
+fn work(inbox: Receiver<ToWorker>, outbox: Sender<FromWorker>) {
     let mut grid = Grid::default();
     let mut blocks = BlockRegistry::default();
     let mut volumes: Option<Volumes> = None;
@@ -177,6 +211,7 @@ fn work(inbox: Receiver<ToWorker>, outbox: Sender<Vec<Meshed>>) {
     while let Ok(first) = inbox.recv() {
         // Everything waiting is taken in before meshing, so a batch reads the newest world.
         let mut asked: HashMap<ChunkPos, u64> = HashMap::new();
+        let mut far: Vec<(sim::far::FarColumn, u64, Vec<ChunkData>)> = Vec::new();
         for msg in std::iter::once(first).chain(inbox.try_iter()) {
             match msg {
                 ToWorker::Restart { chunks, blocks: b, looks } => {
@@ -187,6 +222,7 @@ fn work(inbox: Receiver<ToWorker>, outbox: Sender<Vec<Meshed>>) {
                     volumes = Some(Volumes::build(&looks, &b));
                     blocks = b;
                     asked.clear();
+                    far.clear();
                 }
                 ToWorker::Chunks(chunks) => {
                     for chunk in &chunks {
@@ -206,18 +242,24 @@ fn work(inbox: Receiver<ToWorker>, outbox: Sender<Vec<Meshed>>) {
                 }
                 ToWorker::Settings { ao, merge } => settings = (ao, merge),
                 ToWorker::Mesh(list) => asked.extend(list),
+                ToWorker::Far(list) => far.extend(list),
             }
         }
         let Some(volumes) = &volumes else { continue };
-        if asked.is_empty() {
-            continue;
+        if !asked.is_empty() {
+            let list: Vec<(ChunkPos, u64)> = asked.into_iter().collect();
+            let positions: Vec<ChunkPos> = list.iter().map(|(p, _)| *p).collect();
+            let meshed = crate::mesher::mesh_chunks_on(&grid, &positions, &blocks, volumes, &settings.0, settings.1, mesh_threads());
+            let out = list.into_iter().zip(meshed).map(|((pos, version), data)| Meshed { pos, version, data }).collect();
+            if outbox.send(FromWorker::Near(out)).is_err() {
+                return;
+            }
         }
-        let list: Vec<(ChunkPos, u64)> = asked.into_iter().collect();
-        let positions: Vec<ChunkPos> = list.iter().map(|(p, _)| *p).collect();
-        let meshed = crate::mesher::mesh_chunks_on(&grid, &positions, &blocks, volumes, &settings.0, settings.1, mesh_threads());
-        let out = list.into_iter().zip(meshed).map(|((pos, version), data)| Meshed { pos, version, data }).collect();
-        if outbox.send(out).is_err() {
-            return;
+        if !far.is_empty() {
+            let out = crate::far::mesh_columns(far, &blocks, volumes, settings.1, mesh_threads());
+            if outbox.send(FromWorker::Far(out)).is_err() {
+                return;
+            }
         }
     }
 }
@@ -238,16 +280,31 @@ pub(crate) fn stream_meshes(
     mut bg: ResMut<BackgroundMesher>,
     mut heights: ResMut<crate::heights::Heights>,
     mut hidden: ResMut<crate::editing::HiddenGhosts>,
+    mut far: ResMut<crate::far::FarTerrain>,
 ) {
-    let news = world.take_chunk_news();
+    let mut news = world.take_chunk_news();
     let grid = world.universe().main();
     if news.restart {
         let chunks = grid.chunks().map(|(pos, _)| grid.export_chunk(pos)).collect();
         let _ = bg.to.send(ToWorker::Restart { chunks, blocks: world.blocks().clone(), looks: world.looks().clone() });
         bg.blocks_sent = world.blocks().len();
         bg.pending.clear();
+        // What came with the welcome was meshed with it (see `spawn_chunk_meshes`).
+        bg.columns.clear();
+        for (pos, _) in grid.chunks() {
+            let column = bg
+                .columns
+                .entry((pos.0.x, pos.0.y))
+                .or_insert(Column { chunks: Vec::new(), state: ColumnState::Meshed { whole: true }, shown: true });
+            column.chunks.push(pos);
+        }
+        far.clear(&mut commands);
     } else if !news.data.is_empty() {
-        let _ = bg.to.send(ToWorker::Chunks(news.data));
+        let _ = bg.to.send(ToWorker::Chunks(std::mem::take(&mut news.data)));
+    }
+    let asked = far.take_news(std::mem::take(&mut news.far), &mut commands);
+    if !asked.is_empty() {
+        let _ = bg.to.send(ToWorker::Far(asked));
     }
     if world.blocks().len() != bg.blocks_sent {
         bg.blocks_sent = world.blocks().len();
@@ -280,11 +337,18 @@ pub(crate) fn stream_meshes(
         let _ = bg.to.send(ToWorker::Mesh(list));
     }
 
-    let came: Vec<Vec<Meshed>> = match bg.from.get_mut() {
+    let came: Vec<FromWorker> = match bg.from.get_mut() {
         Ok(from) => from.try_iter().collect(),
         Err(_) => Vec::new(),
     };
-    for batch in came {
+    let mut near: Vec<Vec<Meshed>> = Vec::new();
+    for out in came {
+        match out {
+            FromWorker::Near(batch) => near.push(batch),
+            FromWorker::Far(batch) => far.put(batch, &mut commands, &mut meshes, origin.cell),
+        }
+    }
+    for batch in near {
         for Meshed { pos, version, data } in batch {
             bg.pending.remove(&pos);
             if chunk_meshes.version(pos) != version || grid.chunk(pos).is_none() {
@@ -296,6 +360,7 @@ pub(crate) fn stream_meshes(
             chunk_meshes.put(&mut commands, &mut meshes, &mut handles, pos, data, origin.cell);
         }
     }
+    bg.note_shown();
 }
 
 #[cfg(test)]
@@ -321,6 +386,8 @@ mod stream_timing {
         sim.generate_terrain().unwrap();
         let mut server = Server::new(sim);
         let mut world = ClientWorld::new(server.welcome());
+        let reach = sim::far::Reach::default();
+        server.handle(ClientMsg::Command(Command::ViewDistance(reach)));
         let fly = PlayerInput { toggle_fly: true, ..Default::default() };
         for m in server.handle(ClientMsg::Input(Box::new(fly))) {
             world.apply(m);
@@ -333,6 +400,7 @@ mod stream_timing {
         let epoch = Instant::now();
         let (mut tick_s, mut apply_s, mut mesh_s, mut worst_tick, mut worst_apply) = (0.0f32, 0.0f32, 0.0f32, 0.0f32, 0.0f32);
         let (mut arrived, mut meshed, mut changed, mut nonempty) = (0, 0, 0, 0);
+        let (mut far_s, mut far_columns, mut far_quads) = (0.0f32, 0, 0);
         for t in 0..ticks {
             let x = speed * t as f32 / 60.0;
             let at = WorldPos::new(start.cell() + I64Vec3::new(x as i64, 0, 0), Vec3::new(x.fract(), 0.5, 0.5));
@@ -352,8 +420,20 @@ mod stream_timing {
             let s = clock.elapsed().as_secs_f32();
             apply_s += s;
             worst_apply = worst_apply.max(s);
-            let news = world.take_chunk_news();
+            let mut news = world.take_chunk_news();
             world.take_changed_chunks();
+            let far: Vec<(sim::far::FarColumn, u64, Vec<sim::ChunkData>)> = std::mem::take(&mut news.far)
+                .into_iter()
+                .filter_map(|n| match n {
+                    crate::world::FarNews::Built(b) => Some((b.column, 0, b.chunks)),
+                    crate::world::FarNews::Gone(_) => None,
+                })
+                .collect();
+            far_columns += far.len();
+            let clock = Instant::now();
+            let far_meshed = crate::far::mesh_columns(far, world.blocks(), &volumes, true, mesh_threads());
+            far_s += clock.elapsed().as_secs_f32();
+            far_quads += far_meshed.iter().flat_map(|f| &f.meshes).map(|(_, m)| m.quad_count()).sum::<usize>();
             let grid = world.universe().main();
             // Time as the game would see it, a tick at a time.
             let now = epoch + std::time::Duration::from_secs_f32(t as f32 / 60.0);
@@ -372,7 +452,8 @@ mod stream_timing {
         println!(
             "{speed} m/s for {seconds} s: server tick avg {:.2} ms, worst {:.1} ms | client apply avg {:.2} ms, worst {:.1} ms | \
              meshing {:.2} s wall on {} threads for {seconds} s ({meshed} meshes for {arrived} chunks arrived, {nonempty} with faces) | \
-             {changed} changed chunks sent | {} columns loaded, {} waiting, workers {:.1} s, joining {:.2} s",
+             {changed} changed chunks sent | {} columns loaded, {} waiting, workers {:.1} s, joining {:.2} s | \
+             far: {far_columns} columns arrived, meshed in {far_s:.2} s ({far_quads} quads), {} loaded, {} waiting, built in {:.1} s",
             tick_s / n * 1000.0,
             worst_tick * 1000.0,
             apply_s / n * 1000.0,
@@ -383,6 +464,9 @@ mod stream_timing {
             t.waiting,
             t.seconds,
             t.join_seconds,
+            world.far().columns,
+            world.far().waiting,
+            world.far().seconds,
         );
     }
 

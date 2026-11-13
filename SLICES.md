@@ -104,7 +104,7 @@ A run of small toy slices. Each one takes a single game-feel feature that doesn'
 
 ### Current toy
 
-None in progress: Resolution closed 2026-11-12. Next: the glitches the user wants to get to (each a `fix-` branch off `master`).
+*None in progress.* Next, picked 2026-11-12: Loading by cube (under Infrastructure, with notes from Far terrain). Plan it in a new session.
 
 **Waiting for a play check** (remind the user at the start of every session, and at good moments during one, until they confirm; then delete the line):
 - None right now.
@@ -173,7 +173,8 @@ Ideas that come up while playing get added here.
 
 - ~~Saving and loading, with block names in the save~~ Done (Saving, 2026-11-07), see Done toys. Creatures aren't saved yet.
 - World generation. *The generator is done (Generated terrain, 2026-11-05); streaming is done (Terrain streaming, 2026-11-11). Unloaded edits are stored on disk (Chunk storage, 2026-11-11). Next: LOD, as it starts to hurt.* Staging and the creatures-on-terrain checklist. Notes: `docs/notes/world-generation.md`.
-- LOD, once world generation exists
+- LOD, once world generation exists. *First toy done: Far terrain (2026-11-12), see Done toys. Next: Loading by cube, below.*
+- **Loading by cube** (next after Far terrain, picked 2026-11-12). Chunks stream in 3D instead of whole columns, sky light from a map of the highest solid point at each X and Y (generator plus edits), the terrain height limit goes, and far terrain picks levels per cube (an octree by 3D distance). The user: "we will remove all columb logic in the future" (so "column" stays out of the Terminology table). Found when far terrain showed whole mountains where full detail cut them flat at `terrain_height`. Notes from Far terrain (2026-11-12) for the planner: (a) pick levels by a cell's size on screen (distance, field of view, resolution) with a pixel target as the quality slider, in place of fixed distances: cells are now roughly 10 to 25 px wide at each level's near edge, which is why level switches pop (Far terrain's criterion (2), "level switches while walking and flying don't bother the user", moves here); (b) the user's idea: "count how full a level and use that to bias when it drobs", read as: score how mixed a cube is when combined (fill and material; all-air and all-solid score zero), drop low scorers to coarser levels sooner, hold high scorers longer; server and client must agree, so the score travels with the cube; (c) no height-field far terrain: it's column logic and can't show caves or overhangs.
 - ~~Meshing off the main thread~~ Done for streamed terrain (Terrain streaming, 2026-11-11): arriving columns are meshed in the background. Edits still remesh on the main thread, at once; an edit beside a finely cut chunk still takes ~55 ms in the dev build.
 
 ### Seam backlog (added when the game is ready for them)
@@ -200,6 +201,8 @@ Shortcuts taken around the API, each with the toy that needed it. Paid down in s
 
 ### Phase 2 decisions
 
+- **Far terrain draws the slope, not the cell** (2026-11-12, from Far terrain): a far face carries the slope of the ground around it (`client::slope`) and is drawn as the mix of full-detail faces that slope would be, seen from the camera (`far_shade` in `solid.wgsl`); a generator's coarse fill judges materials at boxel scale, so the same ground is the same material at every level. No height-field far terrain: it's column logic and can't show caves or overhangs. Voxy is All Rights Reserved: its source is never read, decompiled or copied; ideas from how it looks in play and its public descriptions only.
+- **256 m of full detail plus far terrain is the default view** (2026-11-12, from Far terrain): faster than 512 m of full detail alone (bench set `far_256` against master's `shipped`: about 21% less frame time) and sees to 2 km. The bench's `shipped` set still pins 512 m, so far terrain shows there as a cost.
 - **Everything in the world is lit** (2026-11-11, from Lit models): blocks draw with `SolidMaterial`, models (creatures, held tools, debris) with `client::model::ModelMaterial`, both lit through `sun.wgsl` with the stored light where they are. New things drawn in the world use one of these, not an unlit material.
 - **A robotic player** (tentative, 2026-10-25): the user wants movement and camera feel to read as a robot. Landings are a shock absorber: soft landings compress smoothly, damaging ones bottom out hard. Later feel work (combat, damage) should keep to it.
 - **Skyrim-style controls** (2026-10-31, from Combat feel; clarified 2026-11-03): whatever is held has a main use on left click and a second use on right click. Blocks break and place; a tool swings and guards. Part of the answer to the ambiguous-interactions gripe; the Interaction controls toy builds on it. *Only half of Skyrim's system is built:* the one-item case. In Skyrim, holding two things (one per hand) gives each button that hand's main use, and alt uses go unreachable; that half is the backlog's Two hands.
@@ -240,6 +243,7 @@ Bugs found in already-merged code, each fixed on its own `fix-` branch (see the 
 ### Done toys
 
 Full write-ups (plans, implementation notes, verify rounds, decisions) are in `docs/done-toys.md`. One line each, newest first:
+- **Far terrain** (2026-11-12, `toy-far-terrain`). Generated terrain drawn coarsely from 256 m out to 2 km: the server builds coarser and coarser columns from the generator (edits shrunk in), the client draws each face as the slope of the ground around it, so hills keep their cliffs and shading. 256 m + far terrain against 512 m of full detail: 20.4 → 16.0 ms at `overlook`, seeing four times as far. Level switches still pop: moved to Loading by cube.
 - **Resolution** (2026-11-12, `toy-render-scale`). A resolution pick list in View (native, 1440p down to 360p, width following the window) and a stretch (smooth or pixelated): the world is drawn that size and stretched to the window, menus and text sharp on a screen camera of their own. 720p in the bench's 1080² window: 19.2 → 14.7 ms at `recorded`; native unchanged.
 - **Mending** (2026-11-12, `toy-mending`). Cachite keeps loose items that touch it; mendite remembers what was last in every texel within its reach (a texel, tunable) and on a signal puts back what's gone, paid from the cachite the signal reached, all or nothing. Records kept with chunks (saved, stored, sent); hint text and rose ghosts of what would come back; a mender and bin behind the lab's gun. Bench unchanged.
 - **Generated detail** (2026-11-11, `toy-generated-detail`). Noise looks (dirt, stone, grass, ice, metals, crystals) come from the world position, so fields never repeat; wood is boards of one color with grain that runs on across blocks; looks are read as face slices with mips and anisotropic reads, noise fading octave by octave, so far ground keeps its detail without shimmer. Shading → Looks sliders; costs 2–6 ms at the bench's spots (a fix is in the backlog).

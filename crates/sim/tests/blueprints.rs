@@ -16,7 +16,7 @@ fn at_table() -> Simulation {
     sim.spawn_player().expect("base registers a player");
     let w = sim.world_settings_mut();
     w.terrain_height = 16;
-    sim.set_view_distance(32.0);
+    sim.set_view_distance(32.0, 0.0);
     let t = table();
     sim.teleport_player(WorldPos::new(I64Vec3::new(t.0.x + 1, t.0.y - 3, t.0.z), Vec3::new(0.5, 0.5, 0.0)));
     for _ in 0..30 {

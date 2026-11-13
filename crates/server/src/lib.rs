@@ -94,6 +94,9 @@ impl Server {
         self.sim.take_changed_chunks();
         self.sim.take_loaded_chunks();
         self.sim.take_unloaded_chunks();
+        // Far terrain comes after, built afresh for this client.
+        self.sim.reset_far();
+        self.sim.take_far_unloaded();
         self.blocks_sent = self.sim.blocks().len();
         self.blueprints_sent = self.sim.blueprints_revision();
         let grid = self.sim.universe().main();
@@ -176,11 +179,14 @@ impl Server {
     }
 
     /// What changed in the chunks since last time, for the client: chunks dropped, then chunks
-    /// brought in, then changed chunks the client has, or that are new to the world.
+    /// brought in, far columns dropped and built, then changed chunks the client has, or that
+    /// are new to the world.
     fn chunk_news(&mut self) -> Vec<ServerMsg> {
         let unloaded = self.sim.take_unloaded_chunks();
         let loaded = self.sim.take_loaded_chunks();
         let changed = self.sim.take_changed_chunks();
+        let far_gone = self.sim.take_far_unloaded();
+        let far = self.sim.take_far_loaded();
         let grid = self.sim.universe().main();
         let mut out = Vec::new();
         let gone: Vec<api::ChunkPos> = unloaded.into_iter().filter(|pos| grid.chunk(*pos).is_none() && self.has.remove(pos)).collect();
@@ -196,6 +202,12 @@ impl Server {
         if !arrived.is_empty() {
             self.has.extend(fresh.iter().copied());
             out.push(ServerMsg::ChunksLoaded(arrived));
+        }
+        if !far_gone.is_empty() {
+            out.push(ServerMsg::FarUnloaded(far_gone));
+        }
+        if !far.is_empty() {
+            out.push(ServerMsg::FarLoaded(far));
         }
         for pos in changed {
             if fresh.contains(&pos) {
@@ -225,6 +237,7 @@ impl Server {
             swing: sim.swing().copied(),
             guarding: sim.guarding(),
             terrain: sim.stream_stats(),
+            far: sim.far_stats(),
             events,
         }
     }
@@ -356,7 +369,7 @@ impl Server {
             Command::PauseTime(paused) => sim.clock_mut().paused = paused,
             Command::TeleportPlayer(pos) => sim.teleport_player(pos),
             Command::RespawnTargets => sim.respawn_targets(),
-            Command::ViewDistance(meters) => sim.set_view_distance(meters),
+            Command::ViewDistance(reach) => sim.set_reach(reach),
             Command::RegenerateTerrain => {
                 self.generation_error = sim.generate_terrain().err().map(|e| e.to_string());
                 if let Some(e) = &self.generation_error {

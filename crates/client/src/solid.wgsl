@@ -15,7 +15,7 @@
 #import bevy_pbr::mesh_view_bindings::view
 #import bevy_pbr::shadows::cascade_debug_visualization
 #import bevy_pbr::view_transformations::position_world_to_clip
-#import boxel::sun::{atmosphere, lit, has_maps, view_depth}
+#import boxel::sun::{atmosphere, lit, sun_reach, light_facing, has_maps, view_depth}
 #import boxel::atmosphere::{dithered, sky, fog_amount, sheen, edge_shade}
 #import boxel::look_noise::{value_fading, octave_fades, pick, grain_factor}
 #ifdef TONEMAP_IN_SHADER
@@ -35,10 +35,16 @@ const FACE_SCALE: f32 = 512.0;
 // Stored light added to every vertex's, 0 to 1: a loose item's, as its mesh carries none.
 @group(#{MATERIAL_BIND_GROUP}) @binding(5) var<uniform> light: vec4<f32>;
 // The render origin's cell in world texels as the noise takes them, then 1 for meshes where
-// they stand in the world: see `client::solid::SolidMaterial::place`.
+// they stand in the world, or 2 for far terrain: see `client::solid::SolidMaterial::place`.
 @group(#{MATERIAL_BIND_GROUP}) @binding(6) var<uniform> place: vec4<u32>;
 // What each look generates, by volume: see `client::solid::LookGpu`.
 @group(#{MATERIAL_BIND_GROUP}) @binding(7) var<storage, read> generated: array<Generated>;
+// Far terrain: how much of the darkness ambient occlusion puts on a staircase's steps its
+// faces take, then unused: see `client::solid::SolidMaterial::far`.
+@group(#{MATERIAL_BIND_GROUP}) @binding(8) var<uniform> far_terrain: vec4<f32>;
+
+// Meters far terrain looks its shadow up higher: a level-1 cell (see `client::far`).
+const FAR_SHADOW_LIFT: f32 = 2.0;
 
 // Mip levels of the face slices; matches `client::volumes::LEVELS`.
 const LEVELS: i32 = 5;
@@ -285,31 +291,129 @@ fn look_color(in: VertexOutput, volume: i32) -> vec3<f32> {
     return color;
 }
 
+// A unit vector in render space (Y-up) along `axis` of the world's (Z-up: east, north, up),
+// forward if `side` is 1 and backward if -1.
+fn render_axis(axis: i32, side: f32) -> vec3<f32> {
+    if axis == 0 {
+        return vec3<f32>(side, 0.0, 0.0);
+    }
+    if axis == 1 {
+        return vec3<f32>(0.0, 0.0, -side);
+    }
+    return vec3<f32>(0.0, side, 0.0);
+}
+
+// The slope a far face carries in its stored light's red and green (see
+// `client::slope::pack`, which this undoes), in render space.
+fn far_slope(packed: vec2<f32>) -> vec3<f32> {
+    let o = (round(packed * 255.0) - vec2<f32>(128.0)) / 124.0;
+    let z = 1.0 - abs(o.x) - abs(o.y);
+    let fold = max(-z, 0.0);
+    let x = o.x + select(fold, -fold, o.x >= 0.0);
+    let y = o.y + select(fold, -fold, o.y >= 0.0);
+    let n = normalize(vec3<f32>(x, y, z));
+    return vec3<f32>(n.x, n.z, -n.y);
+}
+
+// A far face's color: its look's alone, then lit; and how much of the sun reaches it.
+struct Far {
+    own: vec3<f32>,
+    shaded: vec3<f32>,
+    sun: f32,
+}
+
+// Far terrain (see `client::far`). At full detail the ground facing `slope` is a staircase of
+// boxel faces, too small to tell apart from here, and what shows is their mix: each of the
+// three ways the stairs face, by how much of the slope it takes up and how squarely the eye
+// sees it. A far face is drawn as that mix (each way's average color and light, less what
+// ambient occlusion takes off steps that size), so a coarse step's top and side come out the
+// same and a hillside shades as one surface, not in stripes. `face` is the far face's own
+// direction; `stored` its light.
+fn far_shade(volume: i32, slope: vec3<f32>, face: vec3<f32>, to_eye: vec3<f32>, position: vec3<f32>, stored: vec4<f32>) -> Far {
+    // The world's axes: east, north, up.
+    let n = vec3<f32>(slope.x, -slope.z, slope.y);
+    let eye = vec3<f32>(to_eye.x, -to_eye.z, to_eye.y);
+    let own_way = abs(vec3<f32>(face.x, -face.z, face.y));
+    let side = select(vec3<f32>(-1.0), vec3<f32>(1.0), n >= vec3<f32>(0.0));
+    // The far face itself is in view, whatever the slope says: never nothing to show.
+    var share = abs(n) * max(eye * side, vec3<f32>(0.0)) + own_way * 0.001;
+    share /= share.x + share.y + share.z;
+    // A step's crease darkens its boxel by half of what a floor against one wall gets at the
+    // crease (see `ao_lit`), fading across it.
+    let a = atmosphere.ao;
+    var crease = 0.0;
+    if a.w > 0.5 {
+        crease = 0.5 * a.x * pow(clamp(0.5 / a.y, 0.0, 1.0), a.z) * far_terrain.x;
+    }
+    let total = abs(n.x) + abs(n.y) + abs(n.z);
+    var out: Far;
+    out.sun = sun_reach(position, slope, stored);
+    out.own = vec3<f32>(0.0);
+    out.shaded = vec3<f32>(0.0);
+    for (var axis = 0; axis < 3; axis++) {
+        if share[axis] <= 0.0 {
+            continue;
+        }
+        // The look's outermost layer that way, averaged: one pixel at the deepest level.
+        var texel = vec3<i32>(0);
+        texel[axis] = select(0, SIZE - 1, side[axis] > 0.0);
+        let color = slice_texel(volume, axis, texel, LEVELS - 1).rgb * share[axis];
+        // How much of a face that way lies along a crease: all of it where it's the narrow
+        // part of the stairs, less the wider it is.
+        let creased = min((total - abs(n[axis])) / max(abs(n[axis]), 0.0001), 1.0);
+        out.own += color;
+        out.shaded += color * light_facing(render_axis(axis, side[axis]), stored, out.sun) * (1.0 - crease * creased);
+    }
+    return out;
+}
+
 @fragment
 fn fragment(in: VertexOutput) -> @location(0) vec4<f32> {
     let volume = i32(round(in.solid.w));
-    let own = vec4<f32>(look_color(in, volume), 1.0) * tint;
-    var base = own * in.color;
-    if atmosphere.ao.w > 0.5 && any(in.ao != vec4<u32>(0u)) {
-        base = vec4<f32>(base.rgb * ao_lit(in.ao, in.face), base.a);
-    }
     let shine = textureLoad(sheens, vec2<i32>(volume, 0), 0);
-    let normal = normalize(in.world_normal);
+    var normal = normalize(in.world_normal);
     let to_eye_far = view.world_position - in.world_position;
     let distance = length(to_eye_far);
     let to_eye = to_eye_far / max(distance, 0.0001);
-
     // Each part can be switched off, to measure what it costs.
     let parts = atmosphere.parts;
-    var rgb = base.rgb;
-    // An item's own stored light comes in through `light`; the world's meshes carry theirs.
-    let l = lit(in.world_position, normal, clamp(in.light + light, vec4<f32>(0.0), vec4<f32>(1.0)));
-    let sun = l.sun;
-    if parts.w > 0.5 {
-        rgb *= l.light;
-    }
-    if parts.x > 0.5 {
-        rgb *= edge_shade(atmosphere, in.edges, in.face);
+    var own: vec4<f32>;
+    var base: vec4<f32>;
+    var rgb: vec3<f32>;
+    var sun: f32;
+    if place.w == 2u {
+        // Far terrain: drawn as the slope it's part of (see `far_shade`), with no ambient
+        // occlusion or edges, which are a boxel's, not a cell's. Its stored light holds only
+        // the sky's; red and green carry the slope. It looks its shadow up a cell higher
+        // (render space is Y-up): its coarse surface can sit up to a cell below the ground the
+        // far shadow's height map holds, and would otherwise shade itself.
+        let slope = far_slope(in.light.xy);
+        let stored = clamp(vec4<f32>(0.0, 0.0, 0.0, in.light.a) + light, vec4<f32>(0.0), vec4<f32>(1.0));
+        var shadow_at = in.world_position;
+        shadow_at.y += FAR_SHADOW_LIFT;
+        let far = far_shade(volume, slope, normal, to_eye, shadow_at, stored);
+        own = vec4<f32>(far.own, 1.0) * tint;
+        base = own * in.color;
+        rgb = far.shaded * tint.rgb * in.color.rgb;
+        sun = far.sun;
+        // A sheen is the material's, so far terrain keeps it, off the slope.
+        normal = slope;
+    } else {
+        own = vec4<f32>(look_color(in, volume), 1.0) * tint;
+        base = own * in.color;
+        if atmosphere.ao.w > 0.5 && any(in.ao != vec4<u32>(0u)) {
+            base = vec4<f32>(base.rgb * ao_lit(in.ao, in.face), base.a);
+        }
+        rgb = base.rgb;
+        // An item's own stored light comes in through `light`; the world's meshes carry theirs.
+        let l = lit(in.world_position, normal, clamp(in.light + light, vec4<f32>(0.0), vec4<f32>(1.0)));
+        sun = l.sun;
+        if parts.w > 0.5 {
+            rgb *= l.light;
+        }
+        if parts.x > 0.5 {
+            rgb *= edge_shade(atmosphere, in.edges, in.face);
+        }
     }
     // A glowing look lights itself, without shade: its own colors, times its glow.
     let glow = shine.z;

@@ -367,6 +367,7 @@ pub fn tuning_panel(
                             ui.checkbox(&mut drawing.msaa, "anti-aliasing (4× MSAA)");
                             ui.checkbox(&mut drawing.depth_prepass, "depth prepass");
                             ui.checkbox(&mut drawing.merge_faces, "merge faces");
+                            ui.checkbox(&mut drawing.far_terrain, "far terrain");
                         });
                     }
                     "ao" => {

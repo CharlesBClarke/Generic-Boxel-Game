@@ -49,9 +49,10 @@ pub enum Command {
     /// Generates the terrain again with the current tuning (the `world` section and each
     /// generator's). The old chunks are dropped and the new ones come with the next ticks.
     RegenerateTerrain,
-    /// How far the client draws, in meters, so the server keeps that much terrain loaded around
-    /// the player.
-    ViewDistance(f32),
+    /// How far the client draws: full detail out to its `detail` meters, so the server keeps
+    /// that much terrain loaded around the player, and far terrain (see [`sim::far`]) out to
+    /// its `far`, none if it's no farther.
+    ViewDistance(sim::far::Reach),
     /// Reads the sounds again, for trying sound files without a restart. The server answers
     /// with [`ServerMsg::Sounds`].
     ReloadSounds,
@@ -84,6 +85,11 @@ pub enum ServerMsg {
     /// Chunks of terrain dropped far from the player, for the client to forget. Comes before
     /// the tick they went.
     ChunksUnloaded(Vec<ChunkPos>),
+    /// Far columns built around the player (see [`sim::far`]): new ones, or ones built again
+    /// since an edit under them, to replace the old. Comes before the tick they came in.
+    FarLoaded(Vec<sim::far::FarChunks>),
+    /// Far columns dropped, for the client to forget.
+    FarUnloaded(Vec<sim::far::FarColumn>),
     /// Blocks were added, by crafting a new shape. Comes before the tick they were added in.
     Blocks(Box<BlockRegistry>),
     /// The player's blueprints changed, by an edit or a load. Comes before the tick they
@@ -188,6 +194,8 @@ pub struct Snapshot {
     pub guarding: bool,
     /// How streaming the terrain is going.
     pub terrain: StreamStats,
+    /// How far terrain is going.
+    pub far: sim::far::FarStats,
     /// What happened during the tick, in order.
     pub events: Vec<Event>,
 }

@@ -13,7 +13,7 @@ fn base_sim() -> Simulation {
     let mut sim = Simulation::with_mods(&mods).expect("base mod loads");
     sim.spawn_player().expect("base registers a player");
     sim.world_settings_mut().terrain_height = 16;
-    sim.set_view_distance(32.0);
+    sim.set_view_distance(32.0, 0.0);
     sim
 }
 

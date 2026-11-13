@@ -56,6 +56,16 @@ impl Column {
     }
 }
 
+/// Whether the column at chunk `(x, y)` is within [`CLEAR_DISTANCE`] of one of the `built`
+/// columns.
+pub fn cleared_by(built: &[(i64, i64)], x: i64, y: i64) -> bool {
+    let reach = CLEAR_DISTANCE / CHUNK_SIZE as f32;
+    built.iter().any(|&(bx, by)| {
+        let (dx, dy) = ((bx - x) as f32, (by - y) as f32);
+        dx * dx + dy * dy <= reach * reach
+    })
+}
+
 /// The chunk rows (Z) a terrain spans when it's `height` chunks tall: centered on its center.
 pub fn rows(def: &TerrainDef, height: u32) -> Range<i64> {
     let center = def.center.chunk().0.z;
@@ -100,11 +110,14 @@ pub(crate) struct Done {
     pub seconds: f32,
 }
 
-/// Threads that generate columns. They stop once the simulation is dropped.
-struct Workers {
-    jobs: Sender<Job>,
-    done: Receiver<Done>,
-    count: usize,
+/// Work for the terrain threads: generating a column, or a far column (see [`crate::far`]).
+/// Each job sends its own result back.
+pub(crate) type Task = Box<dyn FnOnce() + Send>;
+
+/// Threads that generate terrain. They stop once the simulation is dropped.
+pub(crate) struct Workers {
+    jobs: Sender<Task>,
+    pub count: usize,
 }
 
 impl Workers {
@@ -112,41 +125,46 @@ impl Workers {
         // Half the cores, less one: the game, its renderer and the client's background meshing
         // want the rest.
         let count = (std::thread::available_parallelism().map_or(2, |n| n.get()) / 2).saturating_sub(1).max(1);
-        let (jobs, inbox) = channel::<Job>();
-        let (outbox, done) = channel::<Done>();
+        let (jobs, inbox) = channel::<Task>();
         let inbox = Arc::new(Mutex::new(inbox));
         for i in 0..count {
             let inbox = Arc::clone(&inbox);
-            let outbox = outbox.clone();
             std::thread::Builder::new()
                 .name(format!("terrain {i}"))
                 .spawn(move || {
                     loop {
                         // The lock is held only while waiting for the next job.
-                        let job = match inbox.lock() {
+                        let task = match inbox.lock() {
                             Ok(inbox) => inbox.recv(),
                             Err(_) => return,
                         };
-                        let Ok(job) = job else { return };
-                        let start = Instant::now();
-                        // A generator that panics fails its column, not the thread.
-                        let chunks = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| generate_column(&job)))
-                            .unwrap_or_else(|_| Err(ApiError::InvalidDef(format!("generating column {:?} panicked", job.column))));
-                        let (chunks, stored) = match (chunks, read_stored(&job)) {
-                            (Ok(chunks), Ok(stored)) => (Ok(chunks), stored),
-                            (Err(e), _) | (_, Err(e)) => (Err(e), Vec::new()),
-                        };
-                        let seconds = start.elapsed().as_secs_f32();
-                        let done = Done { epoch: job.epoch, column: job.column, chunks, stored, seconds };
-                        if outbox.send(done).is_err() {
-                            return;
-                        }
+                        let Ok(task) = task else { return };
+                        task();
                     }
                 })
                 .expect("starting a terrain thread");
         }
-        Self { jobs, done, count }
+        Self { jobs, count }
     }
+
+    /// Hands a job to the threads; `false` if they've stopped.
+    pub fn send(&self, task: Task) -> bool {
+        self.jobs.send(task).is_ok()
+    }
+}
+
+/// Generates a column for `job`, and sends it to `outbox`.
+fn run_job(job: Job, outbox: &Sender<Done>) {
+    let start = Instant::now();
+    // A generator that panics fails its column, not the thread.
+    let chunks = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| generate_column(&job)))
+        .unwrap_or_else(|_| Err(ApiError::InvalidDef(format!("generating column {:?} panicked", job.column))));
+    let (chunks, stored) = match (chunks, read_stored(&job)) {
+        (Ok(chunks), Ok(stored)) => (Ok(chunks), stored),
+        (Err(e), _) | (_, Err(e)) => (Err(e), Vec::new()),
+    };
+    let seconds = start.elapsed().as_secs_f32();
+    let _ = outbox.send(Done { epoch: job.epoch, column: job.column, chunks, stored, seconds });
 }
 
 /// The column's chunks the store has.
@@ -201,6 +219,9 @@ pub struct Stream {
     /// thrown away when they come back.
     epoch: u64,
     workers: Option<Workers>,
+    /// Where the workers send generated columns, and where they come back.
+    outbox: Sender<Done>,
+    done: Receiver<Done>,
     /// The registry the workers name blocks from: a copy taken when they start. Terrain only
     /// uses blocks the mods registered, which never change.
     blocks: Option<Arc<BlockRegistry>>,
@@ -220,12 +241,15 @@ impl Default for Stream {
 
 /// Meters kept loaded until a client says how far it draws: the client's default render
 /// distance and a chunk.
-pub const DEFAULT_RADIUS: f32 = 512.0 + CHUNK_SIZE as f32;
+pub const DEFAULT_RADIUS: f32 = 256.0 + CHUNK_SIZE as f32;
 
 impl Stream {
     /// A stream keeping `radius` meters around the player.
     pub fn new(radius: f32) -> Self {
+        let (outbox, done) = channel();
         Self {
+            outbox,
+            done,
             radius,
             height: crate::WorldSettings::default().terrain_height,
             loaded: HashSet::new(),
@@ -268,11 +292,12 @@ impl Stream {
 
     /// Whether the column at chunk `(x, y)` is too near something the mods built for terrain.
     pub fn cleared(&self, x: i64, y: i64) -> bool {
-        let reach = CLEAR_DISTANCE / CHUNK_SIZE as f32;
-        self.built.iter().any(|&(bx, by)| {
-            let (dx, dy) = ((bx - x) as f32, (by - y) as f32);
-            dx * dx + dy * dy <= reach * reach
-        })
+        cleared_by(&self.built, x, y)
+    }
+
+    /// The columns of chunks the mods built on, which keep terrain away.
+    pub fn built(&self) -> &[(i64, i64)] {
+        &self.built
     }
 
     pub fn is_loaded(&self, column: Column) -> bool {
@@ -400,7 +425,8 @@ impl Stream {
                 blocks: Arc::clone(blocks),
                 store: Arc::clone(&self.store),
             };
-            if workers.jobs.send(job).is_ok() {
+            let outbox = self.outbox.clone();
+            if workers.send(Box::new(move || run_job(job, &outbox))) {
                 self.in_flight.insert(column);
             }
         }
@@ -429,10 +455,9 @@ impl Stream {
     /// Generated columns that came back, with ones from an older epoch or no longer wanted
     /// thrown away. Waits for at least one if `wait` and any are on their way.
     fn finished(&mut self, wait: bool) -> Vec<Done> {
-        let Some(workers) = &self.workers else { return Vec::new() };
         let mut out: Vec<Done> = Vec::new();
         if wait && !self.in_flight.is_empty() {
-            match workers.done.recv_timeout(STALLED) {
+            match self.done.recv_timeout(STALLED) {
                 Ok(done) => out.push(done),
                 Err(_) => {
                     // Nothing came back: ask again rather than wait forever.
@@ -441,7 +466,7 @@ impl Stream {
                 }
             }
         }
-        out.extend(workers.done.try_iter());
+        out.extend(self.done.try_iter());
         let wanted: HashSet<Column> = self.wanted.iter().copied().collect();
         out.retain(|done| {
             if done.epoch != self.epoch {
@@ -451,6 +476,16 @@ impl Stream {
             wanted.contains(&done.column) && !self.loaded.contains(&done.column)
         });
         out
+    }
+
+    /// The terrain threads, started if they aren't, for far columns to share.
+    pub(crate) fn workers(&mut self) -> &Workers {
+        self.workers.get_or_insert_with(Workers::start)
+    }
+
+    /// How many columns are on their way from the workers.
+    pub(crate) fn in_flight(&self) -> usize {
+        self.in_flight.len()
     }
 
     /// Whether every wanted column is loaded.

@@ -9,12 +9,13 @@ use crate::shading::ShadingTuning;
 use crate::shadows::ShadowTuning;
 use crate::view::ViewSwitches;
 
-/// Whether the world around the player is still loading: terrain the server hasn't brought in
-/// yet, or chunks still being meshed in the background.
+/// Whether the world around the player is still loading: terrain or far terrain the server
+/// hasn't brought in yet, or chunks or far columns still being meshed in the background.
 pub fn loading(world: &World) -> bool {
-    let waiting = world.get_resource::<crate::world::ClientWorld>().is_some_and(|w| w.terrain().waiting > 0);
+    let waiting = world.get_resource::<crate::world::ClientWorld>().is_some_and(|w| w.terrain().waiting > 0 || w.far().waiting > 0);
     let meshing = world.get_resource::<crate::meshing::BackgroundMesher>().is_some_and(|m| m.pending() > 0);
-    waiting || meshing
+    let far = world.get_resource::<crate::far::FarTerrain>().is_some_and(|f| f.unmeshed() > 0);
+    waiting || meshing || far
 }
 
 /// Sets the switch named `key` to `on`; false if there is no such switch.
@@ -38,6 +39,7 @@ pub fn set(world: &mut World, key: &str, on: bool) -> bool {
         "view.msaa" => &mut view.msaa,
         "view.depth_prepass" => &mut view.depth_prepass,
         "view.merge_faces" => &mut view.merge_faces,
+        "view.far_terrain" => &mut view.far_terrain,
         _ => return false,
     };
     *switch = on;
@@ -68,6 +70,10 @@ mod tests {
         assert!(!parts.detail && !parts.mips);
         assert!(set(&mut world, "view.msaa", false) && set(&mut world, "view.depth_prepass", true));
         assert!(set(&mut world, "view.merge_faces", false));
-        assert_eq!(*world.resource::<ViewSwitches>(), ViewSwitches { msaa: false, depth_prepass: true, merge_faces: false });
+        assert!(set(&mut world, "view.far_terrain", false));
+        assert_eq!(
+            *world.resource::<ViewSwitches>(),
+            ViewSwitches { msaa: false, depth_prepass: true, merge_faces: false, far_terrain: false }
+        );
     }
 }

@@ -15,8 +15,19 @@ use crate::{ChunkMesh, PlayerCamera, coords};
 /// The view's tuning.
 #[derive(Resource, Clone, Copy, Debug, PartialEq)]
 pub struct ViewTuning {
-    /// Chunks whose centers are farther than this from the camera, in meters, aren't drawn.
+    /// Full detail reaches this far, in meters: chunks farther than this from the camera aren't
+    /// drawn, and past it far terrain takes over (see [`crate::far`]).
     pub render_distance: f32,
+    /// Far terrain reaches this far, in meters; none if it's no farther than the render
+    /// distance.
+    pub far_distance: f32,
+    /// How many times as far each coarser level of far terrain reaches as the one before (see
+    /// [`sim::far::Reach::level_reach`]): lower is fewer triangles, coarse sooner.
+    pub level_reach: f32,
+    /// How much of the darkness ambient occlusion puts on a hillside's steps far terrain
+    /// takes, so it's as dark as full detail where they meet: 1 is what the AO tuning works
+    /// out to, 0 none (see `far_shade` in `solid.wgsl`).
+    pub far_crease: f32,
     /// How the frame's light is fitted to the screen. Switching rebuilds the block and sky
     /// shaders, so it stalls for a moment once.
     pub tone_mapper: ToneMapper,
@@ -28,7 +39,8 @@ pub struct ViewTuning {
 
 impl Default for ViewTuning {
     fn default() -> Self {
-        Self { render_distance: 512.0, tone_mapper: ToneMapper::Aces, resolution: Resolution::Native, upscale: Upscale::Smooth }
+        // Full detail to 256 m: the user's pick for far terrain (2026-11-12).
+        Self { render_distance: 256.0, far_distance: 2048.0, level_reach: sim::far::Reach::default().level_reach, far_crease: 1.0, tone_mapper: ToneMapper::Aces, resolution: Resolution::Native, upscale: Upscale::Smooth }
     }
 }
 
@@ -37,7 +49,10 @@ const VIEW_GROUPS: &[(&str, &[&str])] = &[
 ];
 /// What each of [`ViewTuning`]'s values does, for the tuning panel.
 const VIEW_HELP: &[(&str, &str)] = &[
-    ("render_distance", "Chunks farther than this from the camera aren't drawn, meters."),
+    ("render_distance", "Full detail reaches this far, meters; far terrain takes over past it."),
+    ("far_distance", "Far terrain reaches this far, meters, coarser the farther; none if no farther than the render distance."),
+    ("far_crease", "How dark far terrain's slopes are next to full detail's, whose steps ambient occlusion darkens: 1 is worked out from the AO tuning, 0 is no darkening. Tune it at the edge of full detail on a hillside."),
+    ("level_reach", "How many times as far each coarser level of far terrain reaches as the one before: lower is fewer triangles but coarse sooner."),
     ("tone_mapper", "How the frame's light is fitted to the screen. Switching rebuilds the shaders, a moment's stall."),
     ("resolution", "How big the world is drawn, stretched to fill the window; lower buys frame rate. Menus and text stay sharp."),
     ("upscale", "How a world drawn smaller than the window is stretched: smooth, or pixelated."),
@@ -47,6 +62,9 @@ impl Tunables for ViewTuning {
     fn tunables(&self) -> Vec<Tunable> {
         api::tuning::described(vec![
             Tunable::new("render_distance", self.render_distance, 32.0, 4096.0),
+            Tunable::new("far_distance", self.far_distance, 0.0, 8192.0),
+            Tunable::new("far_crease", self.far_crease, 0.0, 2.0),
+            Tunable::new("level_reach", self.level_reach, *sim::far::LEVEL_REACH.start(), *sim::far::LEVEL_REACH.end()),
             Tunable::new("tone_mapper", self.tone_mapper.index() as f32, 0.0, (ToneMapper::ALL.len() - 1) as f32),
             Tunable::new("resolution", self.resolution.index() as f32, 0.0, (Resolution::ALL.len() - 1) as f32),
             Tunable::new("upscale", self.upscale.index() as f32, 0.0, (Upscale::ALL.len() - 1) as f32),
@@ -56,6 +74,9 @@ impl Tunables for ViewTuning {
     fn set_tunable(&mut self, name: &str, value: f32) -> bool {
         match name {
             "render_distance" => self.render_distance = value.max(0.0),
+            "far_distance" => self.far_distance = value.max(0.0),
+            "far_crease" => self.far_crease = value.clamp(0.0, 2.0),
+            "level_reach" => self.level_reach = value.clamp(*sim::far::LEVEL_REACH.start(), *sim::far::LEVEL_REACH.end()),
             "tone_mapper" => self.tone_mapper = ToneMapper::from_index(value),
             "resolution" => self.resolution = Resolution::from_index(value),
             "upscale" => self.upscale = Upscale::from_index(value),
@@ -150,11 +171,14 @@ pub struct ViewSwitches {
     /// Neighboring faces that look alike drawn as one bigger quad (see [`crate::greedy`]).
     /// Changing it remeshes every chunk.
     pub merge_faces: bool,
+    /// Terrain drawn coarsely past the render distance, out to the far distance (see
+    /// [`crate::far`]).
+    pub far_terrain: bool,
 }
 
 impl Default for ViewSwitches {
     fn default() -> Self {
-        Self { msaa: false, depth_prepass: false, merge_faces: true }
+        Self { msaa: false, depth_prepass: false, merge_faces: true, far_terrain: true }
     }
 }
 
@@ -170,6 +194,9 @@ impl ViewSwitches {
         }
         if !self.merge_faces {
             out.push("faces unmerged");
+        }
+        if !self.far_terrain {
+            out.push("far terrain off");
         }
         out
     }
@@ -199,7 +226,7 @@ pub(crate) fn apply_view_switches(
 /// What the view draws, for the readout.
 #[derive(Resource, Clone, Copy, Debug, Default, PartialEq)]
 pub struct ViewStats {
-    /// Chunks with geometry that are within the render distance.
+    /// Chunks with geometry drawn, far ones included.
     pub drawn: usize,
     /// Triangles in them.
     pub triangles: usize,
@@ -213,23 +240,39 @@ pub fn within(corner: Vec3, eye: Vec3, distance: f32) -> bool {
 }
 
 /// Tells the server how far the view reaches whenever that changes, so it keeps that much
-/// terrain loaded.
+/// terrain loaded and builds far terrain out to the far distance.
 pub(crate) fn send_view_distance(
     view: Res<ViewTuning>,
-    mut sent: Local<Option<f32>>,
+    switches: Res<ViewSwitches>,
+    mut sent: Local<Option<sim::far::Reach>>,
     mut link: ResMut<crate::world::Link>,
     mut world: ResMut<crate::world::ClientWorld>,
 ) {
-    if *sent != Some(view.render_distance) {
-        *sent = Some(view.render_distance);
-        link.command(protocol::Command::ViewDistance(view.render_distance), &mut world);
+    let reach = crate::far::reach(&view, &switches)
+        .unwrap_or(sim::far::Reach { detail: view.render_distance, far: 0.0, level_reach: view.level_reach });
+    if *sent != Some(reach) {
+        *sent = Some(reach);
+        link.command(protocol::Command::ViewDistance(reach), &mut world);
     }
 }
 
-/// Hides chunks beyond the render distance and shows the rest, and sets the far plane.
+/// How far the view reaches, for the far plane and the fog: the far distance if far terrain
+/// is on, or else the render distance.
+pub fn view_reach(view: &ViewTuning, switches: &ViewSwitches) -> f32 {
+    crate::far::reach(view, switches).map_or(view.render_distance, |r| r.far)
+}
+
+/// Shows the chunks to draw and hides the rest, and sets the far plane. With far terrain on,
+/// the chunks of streamed columns are drawn where the quadtree picked them (see
+/// [`crate::far::pick_far`]); other chunks, and all of them with it off, within the render
+/// distance.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn apply_render_distance(
     view: Res<ViewTuning>,
+    switches: Res<ViewSwitches>,
     meshes: Option<Res<ChunkMeshes>>,
+    far: Res<crate::far::FarTerrain>,
+    bg: Res<crate::meshing::BackgroundMesher>,
     mut stats: ResMut<ViewStats>,
     mut camera: Single<(&Transform, &mut Projection), With<PlayerCamera>>,
     mut chunks: Query<(&ChunkMesh, &Transform, &mut Visibility), Without<PlayerCamera>>,
@@ -237,20 +280,28 @@ pub(crate) fn apply_render_distance(
     let (eye, projection) = &mut *camera;
     let eye = eye.translation;
     if let Some(p) = crate::shadows::perspective_mut(projection) {
-        let far = view.render_distance + CHUNK_SIZE as f32 * 2.0;
+        let far = view_reach(&view, &switches) + CHUNK_SIZE as f32 * 2.0;
         if (p.far - far).abs() > 0.5 {
             p.far = far;
         }
     }
     let mut drawn = ViewStats::default();
     for (chunk, transform, mut visibility) in &mut chunks {
-        let show = within(transform.translation, eye, view.render_distance);
+        let pos = chunk.0;
+        let show = if far.active && bg.is_streamed(pos) {
+            far.ordinary.contains(&(pos.0.x, pos.0.y))
+        } else {
+            within(transform.translation, eye, view.render_distance)
+        };
         visibility.set_if_neq(if show { Visibility::Inherited } else { Visibility::Hidden });
         if show {
             drawn.drawn += 1;
-            drawn.triangles += meshes.as_ref().and_then(|m| m.quads.get(&chunk.0)).copied().unwrap_or(0) * 2;
+            drawn.triangles += meshes.as_ref().and_then(|m| m.quads.get(&pos)).copied().unwrap_or(0) * 2;
         }
     }
+    // Far terrain counts too, so the readouts and the bench see everything drawn.
+    drawn.drawn += far.stats.chunks;
+    drawn.triangles += far.stats.triangles;
     stats.set_if_neq(drawn);
 }
 

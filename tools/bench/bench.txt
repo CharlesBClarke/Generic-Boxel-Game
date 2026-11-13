@@ -74,3 +74,15 @@ shadows.far = 0
 
 [set far_only]
 shadows.maps = 0
+
+# Far terrain (2026-11-12): what the view costs with full detail at the game's own 256 m and
+# far terrain past it, against `shipped`'s 512 m; and with no far terrain at all.
+[set far_256]
+view.render_distance = 256
+
+[set far_256_1km]
+view.render_distance = 256
+view.far_distance = 1024
+
+[set no_far]
+view.far_terrain = 0

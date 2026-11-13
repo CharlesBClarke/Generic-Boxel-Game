@@ -15,7 +15,7 @@ fn base() -> Simulation {
 /// A base game that keeps little terrain loaded, so tests stay quick: 64 m around the player.
 fn small() -> Simulation {
     let mut sim = base();
-    sim.set_view_distance(32.0);
+    sim.set_view_distance(32.0, 0.0);
     sim.world_settings_mut().terrain_height = 16;
     sim
 }
@@ -137,12 +137,12 @@ fn the_load_distance_follows_the_view_distance() {
     let mut sim = small();
     on_terrain(&mut sim);
     let near = sim.stream_stats().columns;
-    sim.set_view_distance(96.0);
+    sim.set_view_distance(96.0, 0.0);
     assert_eq!(sim.load_distance(), 128.0);
     sim.stream_all();
     let far = sim.stream_stats().columns;
     assert!(far > 3 * near, "{near} columns at 64 m, {far} at 128 m");
-    sim.set_view_distance(32.0);
+    sim.set_view_distance(32.0, 0.0);
     sim.stream_all();
     // Down to the radius and its margin, so a little more than at first.
     let back = sim.stream_stats().columns;

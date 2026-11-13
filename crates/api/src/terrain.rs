@@ -12,6 +12,19 @@ pub trait Generator: Tunables + Send + Sync {
     /// Fills the chunk whose lowest corner is `origin`, measured in boxels from the terrain's
     /// center (see [`TerrainDef`]). `out` comes in empty.
     fn fill(&self, origin: I64Vec3, out: &mut ChunkFill);
+
+    /// Fills a coarse chunk for far terrain: still [`CHUNK_SIZE`] cells a side, but each cell
+    /// stands for `step` boxels a side (`step` a power of two), so the chunk spans
+    /// `CHUNK_SIZE * step` boxels from its lowest corner `origin` (relative to the terrain's
+    /// center, as for [`Generator::fill`]). A cell holds what fills most of the boxels it stands
+    /// for, or stays empty. Only how it looks from afar matters: nobody walks on it.
+    ///
+    /// Returns `false` if the generator can't, as the default does; its terrain then has no far
+    /// terrain. At `step` 1 it should fill exactly what [`Generator::fill`] does.
+    fn fill_coarse(&self, origin: I64Vec3, step: u32, out: &mut ChunkFill) -> bool {
+        let _ = (origin, step, out);
+        false
+    }
 }
 
 /// One chunk's worth of blocks, as plain data: a palette of block names, and each boxel's

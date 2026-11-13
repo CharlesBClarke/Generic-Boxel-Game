@@ -60,12 +60,18 @@ pub struct SolidMaterial {
     /// Where generated detail is read from: the render origin's cell in texels, as the noise
     /// takes positions (see [`api::look::world_texel`]), then 1 for meshes drawn where they
     /// stand in the world (chunks, the ghost) or 0 for ones that aren't (loose items), which
-    /// read it as if at the world's middle. Kept up to date by `crate::shading`.
+    /// read it as if at the world's middle, or 2 for far terrain, drawn plainly (see
+    /// [`crate::far::FAR_PLACE`]). Kept up to date by `crate::shading`.
     #[uniform(6)]
     pub place: UVec4,
     /// What each look generates: [`look_table`].
     #[storage(7, read_only)]
     pub generated: Handle<ShaderStorageBuffer>,
+    /// For far terrain (see [`crate::far`]): how much of the darkness ambient occlusion puts
+    /// on a staircase's steps its faces take (see [`crate::view::ViewTuning::far_crease`]),
+    /// then unused. Zero for everything else.
+    #[uniform(8)]
+    pub far: Vec4,
     pub alpha_mode: AlphaMode,
 }
 
