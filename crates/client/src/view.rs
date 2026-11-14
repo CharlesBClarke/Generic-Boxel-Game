@@ -21,9 +21,17 @@ pub struct ViewTuning {
     /// Far terrain reaches this far, in meters; none if it's no farther than the render
     /// distance.
     pub far_distance: f32,
-    /// How many times as far each coarser level of far terrain reaches as the one before (see
-    /// [`sim::far::Reach::level_reach`]): lower is fewer triangles, coarse sooner.
-    pub level_reach: f32,
+    /// How many pixels wide far terrain's cells may look before a finer level takes over (see
+    /// [`sim::far::Reach::pixels`]): lower is finer, for more triangles.
+    pub far_pixels: f32,
+    /// How much a build must fill a far cell to keep it (see [`sim::far::Reach::hold`]).
+    pub far_hold: f32,
+    /// How many levels finer far cells are sampled for their mix of materials (see
+    /// [`sim::far::Reach::mix`]).
+    pub far_mix: u8,
+    /// Pixels a meter-wide thing one meter away covers: from the window's height and the
+    /// field of view at rest, kept up to date by [`update_screen_scale`]; not tuned.
+    pub screen: f32,
     /// How much of the darkness ambient occlusion puts on a hillside's steps far terrain
     /// takes, so it's as dark as full detail where they meet: 1 is what the AO tuning works
     /// out to, 0 none (see `far_shade` in `solid.wgsl`).
@@ -40,7 +48,7 @@ pub struct ViewTuning {
 impl Default for ViewTuning {
     fn default() -> Self {
         // Full detail to 256 m: the user's pick for far terrain (2026-11-12).
-        Self { render_distance: 256.0, far_distance: 2048.0, level_reach: sim::far::Reach::default().level_reach, far_crease: 1.0, tone_mapper: ToneMapper::Aces, resolution: Resolution::Native, upscale: Upscale::Smooth }
+        Self { render_distance: 256.0, far_distance: 2048.0, far_pixels: sim::far::DEFAULT_PIXELS, far_hold: 1.0, far_mix: 1, screen: sim::far::Reach::default().screen, far_crease: 1.0, tone_mapper: ToneMapper::Aces, resolution: Resolution::Native, upscale: Upscale::Smooth }
     }
 }
 
@@ -52,7 +60,9 @@ const VIEW_HELP: &[(&str, &str)] = &[
     ("render_distance", "Full detail reaches this far, meters; far terrain takes over past it."),
     ("far_distance", "Far terrain reaches this far, meters, coarser the farther; none if no farther than the render distance."),
     ("far_crease", "How dark far terrain's slopes are next to full detail's, whose steps ambient occlusion darkens: 1 is worked out from the AO tuning, 0 is no darkening. Tune it at the edge of full detail on a hillside."),
-    ("level_reach", "How many times as far each coarser level of far terrain reaches as the one before: lower is fewer triangles but coarse sooner."),
+    ("far_pixels", "How many pixels wide far terrain's cells may look before a finer level takes over: lower is finer and pops less, but draws more triangles."),
+    ("far_hold", "How much of a far cell a build must fill to keep it, in boxel-thick planes right across it: 1 keeps one-boxel walls and floors far away, 0 only builds filling more than half a cell. Rebuilds far terrain."),
+    ("far_mix", "How many levels finer far cells are sampled to mix their materials' colors: 0 off, 1 on (far terrain takes about four times as long to build). Rebuilds far terrain."),
     ("tone_mapper", "How the frame's light is fitted to the screen. Switching rebuilds the shaders, a moment's stall."),
     ("resolution", "How big the world is drawn, stretched to fill the window; lower buys frame rate. Menus and text stay sharp."),
     ("upscale", "How a world drawn smaller than the window is stretched: smooth, or pixelated."),
@@ -64,7 +74,9 @@ impl Tunables for ViewTuning {
             Tunable::new("render_distance", self.render_distance, 32.0, 4096.0),
             Tunable::new("far_distance", self.far_distance, 0.0, 8192.0),
             Tunable::new("far_crease", self.far_crease, 0.0, 2.0),
-            Tunable::new("level_reach", self.level_reach, *sim::far::LEVEL_REACH.start(), *sim::far::LEVEL_REACH.end()),
+            Tunable::new("far_pixels", self.far_pixels, *sim::far::PIXELS.start(), *sim::far::PIXELS.end()),
+            Tunable::new("far_hold", self.far_hold, 0.0, 4.0),
+            Tunable::new("far_mix", self.far_mix as f32, 0.0, sim::far::MAX_MIX as f32),
             Tunable::new("tone_mapper", self.tone_mapper.index() as f32, 0.0, (ToneMapper::ALL.len() - 1) as f32),
             Tunable::new("resolution", self.resolution.index() as f32, 0.0, (Resolution::ALL.len() - 1) as f32),
             Tunable::new("upscale", self.upscale.index() as f32, 0.0, (Upscale::ALL.len() - 1) as f32),
@@ -76,7 +88,9 @@ impl Tunables for ViewTuning {
             "render_distance" => self.render_distance = value.max(0.0),
             "far_distance" => self.far_distance = value.max(0.0),
             "far_crease" => self.far_crease = value.clamp(0.0, 2.0),
-            "level_reach" => self.level_reach = value.clamp(*sim::far::LEVEL_REACH.start(), *sim::far::LEVEL_REACH.end()),
+            "far_pixels" => self.far_pixels = value.clamp(*sim::far::PIXELS.start(), *sim::far::PIXELS.end()),
+            "far_hold" => self.far_hold = value.clamp(0.0, 4.0),
+            "far_mix" => self.far_mix = value.round().clamp(0.0, sim::far::MAX_MIX as f32) as u8,
             "tone_mapper" => self.tone_mapper = ToneMapper::from_index(value),
             "resolution" => self.resolution = Resolution::from_index(value),
             "upscale" => self.upscale = Upscale::from_index(value),
@@ -249,10 +263,24 @@ pub(crate) fn send_view_distance(
     mut world: ResMut<crate::world::ClientWorld>,
 ) {
     let reach = crate::far::reach(&view, &switches)
-        .unwrap_or(sim::far::Reach { detail: view.render_distance, far: 0.0, level_reach: view.level_reach });
+        .unwrap_or(sim::far::Reach { detail: view.render_distance, far: 0.0, ..crate::far::reach_of(&view) });
     if *sent != Some(reach) {
         *sent = Some(reach);
         link.command(protocol::Command::ViewDistance(reach), &mut world);
+    }
+}
+
+/// Keeps [`ViewTuning::screen`] up to date with the window's height and the field of view at
+/// rest (not the widening with speed, which would rebuild what far terrain wants as the
+/// player runs). Changes under 2% are let go.
+pub(crate) fn update_screen_scale(
+    window: Single<&Window, With<bevy::window::PrimaryWindow>>,
+    feel: Res<crate::feel::CameraFeel>,
+    mut view: ResMut<ViewTuning>,
+) {
+    let screen = sim::far::Reach::screen_scale(window.physical_height() as f32, feel.fov);
+    if (screen / view.screen.max(1.0) - 1.0).abs() > 0.02 {
+        view.screen = screen;
     }
 }
 

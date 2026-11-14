@@ -38,7 +38,7 @@ enum ToWorker {
     Mesh(Vec<(ChunkPos, u64)>),
     /// Far columns to mesh (see [`crate::far`]), each with its version, on their own: nothing
     /// beside a far column is read, so its sides get walls that plug the cracks between levels.
-    Far(Vec<(sim::far::FarColumn, u64, Vec<ChunkData>)>),
+    Far(Vec<crate::far::Asked>),
 }
 
 /// What the thread sends back.
@@ -242,7 +242,7 @@ fn work(inbox: Receiver<ToWorker>, outbox: Sender<FromWorker>) {
     while let Ok(first) = inbox.recv() {
         // Everything waiting is taken in before meshing, so a batch reads the newest world.
         let mut asked: HashMap<ChunkPos, u64> = HashMap::new();
-        let mut far: Vec<(sim::far::FarColumn, u64, Vec<ChunkData>)> = Vec::new();
+        let mut far: Vec<crate::far::Asked> = Vec::new();
         for msg in std::iter::once(first).chain(inbox.try_iter()) {
             match msg {
                 ToWorker::Restart { chunks, tops, blocks: b, looks } => {
@@ -603,10 +603,10 @@ mod stream_timing {
             worst_apply = worst_apply.max(s);
             let mut news = world.take_chunk_news();
             world.take_changed_chunks();
-            let far: Vec<(sim::far::FarColumn, u64, Vec<sim::ChunkData>)> = std::mem::take(&mut news.far)
+            let far: Vec<crate::far::Asked> = std::mem::take(&mut news.far)
                 .into_iter()
                 .filter_map(|n| match n {
-                    crate::world::FarNews::Built(b) => Some((b.column, 0, b.chunks)),
+                    crate::world::FarNews::Built(b) => Some((0, b)),
                     crate::world::FarNews::Gone(_) => None,
                 })
                 .collect();

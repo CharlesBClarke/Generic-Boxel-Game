@@ -57,10 +57,14 @@ fn far_terrain_is_built_out_to_the_far_distance() {
     // The ground shows in every column: each has a chunk with something in it.
     for (column, built) in &have {
         assert!(!built.chunks.is_empty(), "{column:?} has ground");
+        assert_eq!(built.mixes.len(), built.chunks.len(), "a mix for each chunk");
         for chunk in &built.chunks {
             assert_eq!((chunk.pos.0.x, chunk.pos.0.y), (column.x, column.y));
         }
     }
+    // Some surface cells are of two materials, and say so.
+    let mixed = have.values().flat_map(|b| &b.mixes).filter(|m| (0..api::CHUNK_VOLUME).any(|i| m.at(i).is_some())).count();
+    assert!(mixed > 0, "some cells mixed");
 }
 
 #[test]

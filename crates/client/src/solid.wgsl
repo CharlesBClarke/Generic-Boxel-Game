@@ -39,6 +39,9 @@ const FACE_SCALE: f32 = 512.0;
 // faces take, then unused: see `client::solid::SolidMaterial::far`.
 @group(#{MATERIAL_BIND_GROUP}) @binding(8) var<uniform> far_terrain: vec4<f32>;
 
+// What a far face's vertex alpha packs its second material's volume by: `client::far::MIX_PACK`.
+const FAR_MIX_PACK: f32 = 32.0;
+
 // Meters far terrain looks its shadow up higher: a level-1 cell (see `client::far`).
 const FAR_SHADOW_LIFT: f32 = 2.0;
 
@@ -302,8 +305,9 @@ struct Far {
 // sees it. A far face is drawn as that mix (each way's average color and light, less what
 // ambient occlusion takes off steps that size), so a coarse step's top and side come out the
 // same and a hillside shades as one surface, not in stripes. `face` is the far face's own
-// direction; `stored` its light.
-fn far_shade(volume: i32, slope: vec3<f32>, face: vec3<f32>, to_eye: vec3<f32>, position: vec3<f32>, stored: vec4<f32>) -> Far {
+// direction; `stored` its light. A cell of two materials is drawn as their mix: `second`'s
+// colors make up `share_second` of it (see `client::far::set_mixes`).
+fn far_shade(volume: i32, second: i32, share_second: f32, slope: vec3<f32>, face: vec3<f32>, to_eye: vec3<f32>, position: vec3<f32>, stored: vec4<f32>) -> Far {
     // The world's axes: east, north, up.
     let n = vec3<f32>(slope.x, -slope.z, slope.y);
     let eye = vec3<f32>(to_eye.x, -to_eye.z, to_eye.y);
@@ -332,7 +336,11 @@ fn far_shade(volume: i32, slope: vec3<f32>, face: vec3<f32>, to_eye: vec3<f32>, 
         // its first variant.
         var texel = vec3<i32>(0);
         texel[axis] = select(0, SIZE - 1, side[axis] > 0.0);
-        let color = slice_texel(volume, 0, axis, texel, LEVELS - 1).rgb * share[axis];
+        var look = slice_texel(volume, 0, axis, texel, LEVELS - 1).rgb;
+        if share_second > 0.0 {
+            look = mix(look, slice_texel(second, 0, axis, texel, LEVELS - 1).rgb, share_second);
+        }
+        let color = look * share[axis];
         // How much of a face that way lies along a crease: all of it where it's the narrow
         // part of the stairs, less the wider it is.
         let creased = min((total - abs(n[axis])) / max(abs(n[axis]), 0.0001), 1.0);
@@ -366,9 +374,14 @@ fn fragment(in: VertexOutput) -> @location(0) vec4<f32> {
         let stored = clamp(vec4<f32>(0.0, 0.0, 0.0, in.light.a) + light, vec4<f32>(0.0), vec4<f32>(1.0));
         var shadow_at = in.world_position;
         shadow_at.y += FAR_SHADOW_LIFT;
-        let far = far_shade(volume, slope, normal, to_eye, shadow_at, stored);
+        // The vertex color's alpha carries the cell's second material and its share; far
+        // terrain is opaque.
+        let packed = round(in.color.a);
+        let second = i32(floor(packed / FAR_MIX_PACK));
+        let share_second = (packed - f32(second) * FAR_MIX_PACK) / 16.0;
+        let far = far_shade(volume, second, share_second, slope, normal, to_eye, shadow_at, stored);
         own = vec4<f32>(far.own, 1.0) * tint;
-        base = own * in.color;
+        base = own * vec4<f32>(in.color.rgb, 1.0);
         rgb = far.shaded * tint.rgb * in.color.rgb;
         sun = far.sun;
         // A sheen is the material's, so far terrain keeps it, off the slope.

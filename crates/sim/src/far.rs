@@ -17,6 +17,13 @@
 //! builds every column the quadtree may want around the player ([`Reach::wanted`]) on the
 //! terrain threads, from the generator's coarse fill ([`api::Generator::fill_coarse`]), with
 //! the edited chunks under it shrunk in, and sends them; the client picks what to draw.
+//! Levels split by size on screen: where a level's cells would look wider than a pixel
+//! target (see [`Reach`]).
+//!
+//! A far cell is solid or empty, of one main material, with a second one and its share
+//! beside it (a [`Mix`]), found by sampling the generator a level finer, so a hillside of
+//! grass and rock is drawn as their mix. Builds shrink into every level, and a cell holds
+//! what was built in it if that fills a boxel-thick plane across it ([`Reach::hold`]).
 //! Far chunks are data only: no light worked out (open sky everywhere), never simulated.
 
 use std::collections::{HashMap, HashSet};
@@ -113,29 +120,55 @@ impl FarColumn {
     }
 }
 
-/// How far the view reaches: full detail out to `detail` meters, coarser and coarser out to
-/// `far`, each level reaching `level_reach` times as far as the one before. At 2 a cell looks
-/// about as big at the near edge of every level; less makes the levels coarse sooner, for
-/// fewer triangles.
+/// How far the view reaches and how far terrain is built: full detail out to `detail` meters,
+/// coarser and coarser out to `far`. A level's cells are kept no wider on screen than
+/// `pixels`: a level-*k* column splits once its cells, 2^*k* meters a side, would look wider
+/// than that from the player, seen at `screen` pixels for a meter one meter away (the
+/// client's window height and field of view, see [`Reach::screen_scale`]). So switching
+/// levels changes about the same few pixels everywhere, and `pixels` is the quality slider:
+/// lower is finer, for more triangles.
+///
+/// `hold` and `mix` say how cells are built: see [`Reach::hold`] and [`Reach::mix`].
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Reach {
     pub detail: f32,
     pub far: f32,
-    pub level_reach: f32,
+    pub pixels: f32,
+    pub screen: f32,
+    /// A cell under edits stays solid, however empty, if what was built in it (boxels that
+    /// differ from what the generator makes there) fills `hold` boxel-thick planes across it:
+    /// at 1 a one-boxel wall or floor right through the cell keeps it, a lone pillar doesn't.
+    /// 0 keeps only cells more than half filled, as every other cell is.
+    pub hold: f32,
+    /// How many levels finer the generator is sampled to find what a cell is made of besides
+    /// its main material (see [`Mix`]): 0 none, up to [`MAX_MIX`].
+    pub mix: u8,
 }
 
 impl Default for Reach {
     fn default() -> Self {
-        // 1.6: 2.0 drew ~1.4M far triangles from a hill on the base terrain, 1.6 ~0.6M
-        // (2026-11-12).
-        Self { detail: 256.0, far: 2048.0, level_reach: 1.6 }
+        Self { detail: 256.0, far: 2048.0, pixels: DEFAULT_PIXELS, screen: Reach::screen_scale(1080.0, 80.0), hold: 1.0, mix: 1 }
     }
 }
 
-/// The range [`Reach::level_reach`] is kept in.
-pub const LEVEL_REACH: std::ops::RangeInclusive<f32> = 1.25..=4.0;
+/// [`Reach::pixels`] when nothing says otherwise. At 8, far terrain draws about as many
+/// triangles as it did when levels reached 1.6 times as far as the one before (2026-11-14).
+pub const DEFAULT_PIXELS: f32 = 8.0;
+
+/// The range [`Reach::pixels`] is kept in.
+pub const PIXELS: std::ops::RangeInclusive<f32> = 1.0..=64.0;
+
+/// The most [`Reach::mix`] goes to. A level finer makes far terrain about four times as slow
+/// to build; two levels finer, sixteen (2026-11-14), for little to see.
+pub const MAX_MIX: u8 = 1;
 
 impl Reach {
+    /// Pixels a meter-wide thing one meter away covers, for a view `height` pixels tall with a
+    /// vertical field of view of `fov` degrees.
+    pub fn screen_scale(height: f32, fov: f32) -> f32 {
+        height.max(1.0) / (2.0 * (fov.clamp(1.0, 179.0).to_radians() * 0.5).tan())
+    }
+
     /// The coarsest level used: the first whose columns never split at the far distance.
     pub fn top(&self) -> u8 {
         let mut level = 1u8;
@@ -145,17 +178,23 @@ impl Reach {
         level
     }
 
-    /// Meters within which a level-`level` column's middle must be for it to split: the
-    /// full-detail distance, times the level reach each level up, but never less than the
-    /// column's width, so the column the player is in always splits however short full detail
-    /// is.
+    /// Meters within which a level-`level` column's middle must be for it to split: level 1
+    /// at the full-detail distance, coarser ones where their cells would look `pixels` wide,
+    /// never nearer than that; and never less than the column's width, so the column the
+    /// player is in always splits however short full detail is.
     pub fn split_distance(&self, level: u8) -> f32 {
         if level == 0 {
             return 0.0;
         }
-        let growth = self.level_reach.clamp(*LEVEL_REACH.start(), *LEVEL_REACH.end());
-        let reach = self.detail.max(1.0) * growth.powi(level as i32 - 1);
-        reach.max((CHUNK_SIZE << level) as f32)
+        let detail = self.detail.max(1.0);
+        let pixels = self.pixels.clamp(*PIXELS.start(), *PIXELS.end());
+        let by_size = if level == 1 { 0.0 } else { (1u64 << level) as f32 * self.screen.max(1.0) / pixels };
+        by_size.max(detail).max((CHUNK_SIZE << level) as f32)
+    }
+
+    /// Whether `other` builds cells the same way: the same hold and mix.
+    pub fn builds_like(&self, other: &Reach) -> bool {
+        self.hold == other.hold && self.mix == other.mix
     }
 
     /// Whether there's far terrain at all: the far distance past full detail.
@@ -251,16 +290,66 @@ impl Reach {
 
     /// The reach a little wider, for dropping columns only once they're well past wanted.
     pub fn widened(&self) -> Reach {
-        Reach { detail: self.detail * 1.25 + CHUNK_SIZE as f32, far: self.far + 2.0 * CHUNK_SIZE as f32, level_reach: self.level_reach }
+        Reach { detail: self.detail * 1.25 + CHUNK_SIZE as f32, far: self.far + 2.0 * CHUNK_SIZE as f32, ..*self }
     }
 }
 
 /// A far column's chunks, as sent: only those with something in them, and not solid all
-/// through under one whose lowest layer is solid.
+/// through under one whose lowest layer is solid; and each one's [`Mix`], in the same order.
 #[derive(Clone, Debug, PartialEq)]
 pub struct FarChunks {
     pub column: FarColumn,
     pub chunks: Vec<ChunkData>,
+    pub mixes: Vec<Mix>,
+}
+
+/// What a far chunk's cells are made of besides their main material (the one in
+/// [`ChunkData::cells`]): for each cell, its second material and how much of the cell's solid
+/// part that makes up, so a cell of grass over stone is drawn as their mix rather than as
+/// grass. Cells with no second material have entry 0.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Mix {
+    /// Each second material with its share, in sixteenths (1 to 16); entry 0 is none.
+    pub kinds: Vec<(crate::BlockId, u8)>,
+    pub cells: crate::Layer<u16>,
+}
+
+impl Default for Mix {
+    fn default() -> Self {
+        Self { kinds: vec![(crate::BlockId::default(), 0)], cells: crate::Layer::Uniform(0) }
+    }
+}
+
+impl Mix {
+    /// The second material at cell `index` and its share, from 0 to 1, if it has one.
+    pub fn at(&self, index: usize) -> Option<(crate::BlockId, f32)> {
+        let entry = self.cells.at(index) as usize;
+        (entry != 0).then(|| self.kinds.get(entry)).flatten().map(|&(b, w)| (b, w as f32 / 16.0))
+    }
+
+    /// Sets cell `index`'s second material to `block` making up `share` of it (0 to 1), or none.
+    pub fn set(&mut self, index: usize, second: Option<(crate::BlockId, f32)>) {
+        let entry = match second {
+            Some((block, share)) => {
+                let w = (share.clamp(0.0, 1.0) * 16.0).round() as u8;
+                if w == 0 {
+                    0
+                } else {
+                    match self.kinds.iter().position(|&k| k == (block, w)) {
+                        Some(i) => i as u16,
+                        None => {
+                            self.kinds.push((block, w));
+                            (self.kinds.len() - 1) as u16
+                        }
+                    }
+                }
+            }
+            None => 0,
+        };
+        if entry != 0 || self.cells.at(index) != 0 {
+            self.cells.set_at(index, entry);
+        }
+    }
 }
 
 /// How far terrain has gone, for the client's readout.
@@ -274,13 +363,16 @@ pub struct FarStats {
     pub seconds: f32,
 }
 
+/// A far column's chunks and their mixes, as built.
+type Column = (Vec<ChunkData>, Vec<Mix>);
+
 /// A far column built on a terrain thread.
 struct Built {
     epoch: u64,
     serial: u64,
     column: FarColumn,
     /// `None` if the generator can't fill coarsely.
-    chunks: Result<Option<Vec<ChunkData>>, ApiError>,
+    chunks: Result<Option<Column>, ApiError>,
     seconds: f32,
 }
 
@@ -298,6 +390,9 @@ struct FarJob {
     /// Which ordinary columns under it terrain is kept away from (see
     /// [`crate::stream::CLEAR_DISTANCE`]), x fastest; empty if none is.
     cleared: Vec<bool>,
+    /// [`Reach::hold`] and [`Reach::mix`].
+    hold: f32,
+    mix: u8,
 }
 
 /// The far columns around the player: which are loaded, wanted and on their way.
@@ -312,7 +407,9 @@ pub struct Far {
     serial: u64,
     epoch: u64,
     wanted: Vec<FarColumn>,
-    wanted_for: Option<((i64, i64), u32, u32, u64)>,
+    wanted_for: Option<((i64, i64), Reach, u64)>,
+    /// How the loaded columns were built: their [`Reach::hold`] and [`Reach::mix`].
+    built_like: Option<Reach>,
     /// Edited chunks in the store, once read from it.
     stored: Option<HashSet<ChunkPos>>,
     /// Terrains whose generator can't fill coarsely.
@@ -340,6 +437,7 @@ impl Default for Far {
             epoch: 0,
             wanted: Vec::new(),
             wanted_for: None,
+            built_like: None,
             stored: None,
             cannot: HashSet::new(),
             outbox,
@@ -436,7 +534,15 @@ impl Far {
         }
         // Want.
         let chunk = pos.boxel().chunk().0;
-        let key = ((chunk.x, chunk.y), self.reach.detail.to_bits(), self.reach.far.to_bits() ^ self.reach.level_reach.to_bits().rotate_left(16), self.epoch);
+        // Built another way than asked now: every column is built again, the old ones drawn
+        // until then.
+        if self.built_like.is_some_and(|r| !r.builds_like(&self.reach)) {
+            for &c in self.loaded.iter().chain(self.in_flight.keys()) {
+                self.stale.insert(c, self.serial);
+            }
+        }
+        self.built_like = Some(self.reach);
+        let key = ((chunk.x, chunk.y), self.reach, self.epoch);
         if self.wanted_for != Some(key) {
             self.wanted_for = Some(key);
             let mut wanted: Vec<(f32, FarColumn)> = Vec::new();
@@ -470,8 +576,8 @@ impl Far {
                 self.in_flight.remove(&built.column);
             }
             self.stats.seconds += built.seconds;
-            let chunks = match built.chunks {
-                Ok(Some(chunks)) => chunks,
+            let (chunks, mixes) = match built.chunks {
+                Ok(Some(built)) => built,
                 Ok(None) => {
                     if self.cannot.insert(built.column.terrain) {
                         eprintln!("terrain {}: its generator can't fill coarsely, so it has no far terrain", built.column.terrain);
@@ -494,7 +600,7 @@ impl Far {
                 self.stale.remove(&built.column);
             }
             self.loaded.insert(built.column);
-            self.loaded_now.push(FarChunks { column: built.column, chunks });
+            self.loaded_now.push(FarChunks { column: built.column, chunks, mixes });
         }
         self.stats.columns = self.loaded.len();
     }
@@ -570,6 +676,8 @@ impl Far {
                 loaded,
                 stored,
                 cleared: mask,
+                hold: self.reach.hold,
+                mix: self.reach.mix,
             };
             let (outbox, epoch) = (self.outbox.clone(), self.epoch);
             let task = Box::new(move || {
@@ -626,19 +734,46 @@ impl Far {
     }
 }
 
+/// An edited chunk under a far column, and what the generator makes there, to tell what was
+/// built (`None` where nothing is told apart: all of it counts as built).
+struct Edit {
+    data: ChunkData,
+    generated: Option<ChunkData>,
+}
+
 /// Builds a far column: the generator's coarse fill, cleared where terrain is kept away, with
-/// the edited chunks under it shrunk in. `None` if the generator can't fill coarsely.
-fn build(job: &FarJob) -> Result<Option<Vec<ChunkData>>, ApiError> {
+/// the edited chunks under it shrunk in, and each kept chunk's [`Mix`]. `None` if the
+/// generator can't fill coarsely.
+fn build(job: &FarJob) -> Result<Option<Column>, ApiError> {
     let generator = job.generator.read().map_err(|_| ApiError::InvalidDef("a terrain generator panicked".into()))?;
     let column = job.column;
     let step = column.step();
-    let mut edits: Vec<ChunkData> = job.loaded.clone();
+    let mut edited: Vec<ChunkData> = job.loaded.clone();
     for &pos in &job.stored {
         if let Some(bytes) = job.store.read(pos).map_err(ApiError::Storage)? {
             let saved = SavedChunk::from_bytes(&bytes).map_err(|e| ApiError::Storage(format!("chunk {:?}: {e}", pos.0.to_array())))?;
             let mut report = crate::LoadReport::default();
-            edits.push(crate::simulation::save::unname_chunk(&job.blocks, &saved, &mut report));
+            edited.push(crate::simulation::save::unname_chunk(&job.blocks, &saved, &mut report));
         }
+    }
+    let mut fill = ChunkFill::default();
+    // What the generator makes under each edit, only needed to hold built cells.
+    let mut edits = Vec::with_capacity(edited.len());
+    for data in edited {
+        let generated = if job.hold > 0.0 {
+            let p = data.pos.0;
+            let (n, (xs, ys)) = (1i64 << column.level, column.under());
+            let (bx, by) = (p.x - xs.start, p.y - ys.start);
+            let cleared = !job.cleared.is_empty() && xs.contains(&p.x) && ys.contains(&p.y) && job.cleared[(bx + by * n) as usize];
+            fill.clear();
+            if !cleared {
+                generator.fill(p * CHUNK_SIZE - job.center, &mut fill);
+            }
+            Some(crate::terrain::to_chunk(data.pos, &fill, &job.blocks)?)
+        } else {
+            None
+        };
+        edits.push(Edit { data, generated });
     }
     // The ordinary chunk rows it spans: from under the lowest of the generator's tops to over
     // the highest, a cell to spare either way, and wherever an edit is.
@@ -646,13 +781,13 @@ fn build(job: &FarJob) -> Result<Option<Vec<ChunkData>>, ApiError> {
     generator.tops(column.x * column.span() - job.center.x, column.y * column.span() - job.center.y, step as u32, &mut tops);
     let known = || tops.iter().filter(|&&t| t != api::NO_TOP).map(|&t| t + job.center.z);
     let row = |z: i64| z.div_euclid(CHUNK_SIZE);
-    let edited = || edits.iter().map(|e| e.pos.0.z);
+    let edited = || edits.iter().map(|e| e.data.pos.0.z);
     let low = known().min().map(|z| row(z - step)).into_iter().chain(edited()).min();
     let high = known().max().map(|z| row(z + step)).into_iter().chain(edited()).max();
-    let (Some(low), Some(high)) = (low, high) else { return Ok(Some(Vec::new())) };
+    let (Some(low), Some(high)) = (low, high) else { return Ok(Some((Vec::new(), Vec::new()))) };
     let rows = low..high + 1;
-    let mut fill = ChunkFill::default();
     let mut out = Vec::new();
+    let mut mixes = Vec::new();
     // Whether the chunk above covers this one: solid all through, or its lowest layer is. A
     // chunk solid all through under one is buried, never seen, and left out.
     let mut covered = false;
@@ -666,9 +801,8 @@ fn build(job: &FarJob) -> Result<Option<Vec<ChunkData>>, ApiError> {
         if !job.cleared.is_empty() {
             clear(&mut data, column, &job.cleared);
         }
-        for edit in &edits {
-            shrink_into(&mut data, column, edit, &job.blocks);
-        }
+        let mut mix = Mix::default();
+        let touched = shrink_edits(&mut data, &mut mix, column, &edits, &job.blocks, job.hold);
         data.cells.compact();
         let uniform = data.cells.uniform();
         if uniform == Some(0) {
@@ -680,9 +814,111 @@ fn build(job: &FarJob) -> Result<Option<Vec<ChunkData>>, ApiError> {
         }
         let n = CHUNK_SIZE as usize;
         covered = uniform.is_some() || (0..n * n).all(|i| data.cells.at(i) != 0);
+        if job.mix > 0 && uniform.is_none() && !mix_finer(&**generator, &mut data, &mut mix, column, (job.center, job.mix, &job.blocks), &touched, &mut fill)? {
+            return Ok(None);
+        }
+        mix.cells.compact();
         out.push(data);
+        mixes.push(mix);
     }
-    Ok(Some(out))
+    Ok(Some((out, mixes)))
+}
+
+/// Finds what each solid cell of `data` is made of by filling the generator `depth` levels
+/// finer over it (see [`Reach::mix`]), the terrain's center at `center`: the material most of the finer cells are becomes the cell's own, the
+/// next its second (see [`Mix`]). Cells `touched` by edits are left as the edits made them,
+/// as are cleared ones. `false` if the generator can't fill coarsely.
+fn mix_finer(
+    generator: &dyn api::Generator,
+    data: &mut ChunkData,
+    mix: &mut Mix,
+    column: FarColumn,
+    (center, depth, blocks): (I64Vec3, u8, &BlockRegistry),
+    touched: &[bool],
+    fill: &mut ChunkFill,
+) -> Result<bool, ApiError> {
+    let depth = depth.min(column.level) as i64;
+    let per = 1i64 << depth;
+    let fine = column.step() >> depth;
+    let size = CHUNK_SIZE;
+    // Up to four materials and how many finer cells each fills, per cell.
+    let mut tally: Vec<[(crate::BlockId, u16); 4]> = vec![[(crate::BlockId::default(), 0); 4]; api::CHUNK_VOLUME];
+    // Only cells that can show need a mix: solid ones with air beside them, or under the
+    // chunk's top (what's over it isn't known here). A cell on the column's sides counts by
+    // its neighbors inside; the sides are drawn, but neighboring columns hide them.
+    let filled = |x: i64, y: i64, z: i64| data.cells.get(LocalPos::new(x as u8, y as u8, z as u8)) != 0;
+    let shows = |p: LocalPos| {
+        let (x, y, z) = (p.x as i64, p.y as i64, p.z as i64);
+        z == size - 1
+            || !filled(x, y, z + 1)
+            || (z > 0 && !filled(x, y, z - 1))
+            || (x > 0 && !filled(x - 1, y, z))
+            || (x < size - 1 && !filled(x + 1, y, z))
+            || (y > 0 && !filled(x, y - 1, z))
+            || (y < size - 1 && !filled(x, y + 1, z))
+    };
+    let solid: Vec<bool> =
+        (0..api::CHUNK_VOLUME).map(|i| data.cells.at(i) != 0 && !touched[i] && shows(LocalPos::from_index(i))).collect();
+    for cz in 0..per {
+        for cy in 0..per {
+            for cx in 0..per {
+                let sub = I64Vec3::new(cx, cy, cz);
+                // Skip finer chunks under no solid cell.
+                let base = sub * (size / per);
+                let any = (0..size / per).any(|z| {
+                    (0..size / per).any(|y| {
+                        (0..size / per).any(|x| solid[LocalPos::new((base.x + x) as u8, (base.y + y) as u8, (base.z + z) as u8).index()])
+                    })
+                });
+                if !any {
+                    continue;
+                }
+                fill.clear();
+                let origin = data.pos.0 * column.span() + sub * size * fine;
+                if !generator.fill_coarse(origin - center, fine as u32, fill) {
+                    return Ok(false);
+                }
+                let ids: Vec<Option<crate::BlockId>> = std::iter::once(None)
+                    .chain(fill.palette.iter().map(|name| blocks.id(name)))
+                    .collect();
+                for i in 0..api::CHUNK_VOLUME {
+                    let Some(block) = ids.get(fill.cells[i] as usize).copied().flatten() else { continue };
+                    let p = LocalPos::from_index(i);
+                    let cell = LocalPos::new(
+                        (base.x + p.x as i64 / per) as u8,
+                        (base.y + p.y as i64 / per) as u8,
+                        (base.z + p.z as i64 / per) as u8,
+                    )
+                    .index();
+                    if !solid[cell] {
+                        continue;
+                    }
+                    let slots = &mut tally[cell];
+                    if let Some(slot) = slots.iter_mut().find(|s| s.1 > 0 && s.0 == block) {
+                        slot.1 += 1;
+                    } else if let Some(slot) = slots.iter_mut().find(|s| s.1 == 0) {
+                        *slot = (block, 1);
+                    }
+                }
+            }
+        }
+    }
+    for (i, slots) in tally.iter_mut().enumerate() {
+        if !solid[i] {
+            continue;
+        }
+        slots.sort_by_key(|s| std::cmp::Reverse(s.1));
+        let [(first, a), (second, b), ..] = *slots;
+        if a == 0 {
+            continue;
+        }
+        if data.lists[data.cells.at(i) as usize] != [Occupant::new(first)] {
+            let entry = list_for(data, first);
+            data.cells.set_at(i, entry);
+        }
+        mix.set(i, (b > 0).then(|| (second, b as f32 / (a + b) as f32)));
+    }
+    Ok(true)
 }
 
 /// Empties the cells of `data` over ordinary columns `cleared` marks.
@@ -700,70 +936,120 @@ fn clear(data: &mut ChunkData, column: FarColumn, cleared: &[bool]) {
     }
 }
 
-/// Writes the cells of `data` (a far chunk of `column`'s level) that `edit` (an ordinary chunk)
-/// lies under, shrunk: each cell takes the material that fills most of its boxels, if the
-/// boxels are more than half filled, or is emptied. Only levels whose cells are no bigger than
-/// a chunk shrink edits in.
-fn shrink_into(data: &mut ChunkData, column: FarColumn, edit: &ChunkData, blocks: &BlockRegistry) {
-    let s = column.step();
-    if s > CHUNK_SIZE {
-        return;
+/// What the edits put in one far cell, in boxels.
+#[derive(Default)]
+struct Tally {
+    /// Boxels of the cell inside an edited chunk.
+    covered: u32,
+    total: f32,
+    /// What differs from what the generator makes there.
+    built: f32,
+    kinds: Vec<(crate::BlockId, f32)>,
+    built_kinds: Vec<(crate::BlockId, f32)>,
+}
+
+fn add(list: &mut Vec<(crate::BlockId, f32)>, block: crate::BlockId, w: f32) {
+    match list.iter_mut().find(|(b, _)| *b == block) {
+        Some(t) => t.1 += w,
+        None => list.push((block, w)),
     }
+}
+
+/// The material filling most, if any.
+fn top(list: &[(crate::BlockId, f32)]) -> Option<(crate::BlockId, f32)> {
+    list.iter().copied().max_by(|a, b| a.1.total_cmp(&b.1).then(b.0.cmp(&a.0)))
+}
+
+/// Writes the cells of `data` (a far chunk of `column`'s level) that `edits` lie under,
+/// shrunk, and their mix: a cell is solid if more than half filled, or if what was built in it
+/// fills `hold` planes across it (see [`Reach::hold`]), and takes the material filling most
+/// of it, or of what was built; else it's emptied. A cell wider than a chunk counts what's
+/// outside the edited chunks as it was generated. Returns which cells the edits touched.
+fn shrink_edits(data: &mut ChunkData, mix: &mut Mix, column: FarColumn, edits: &[Edit], blocks: &BlockRegistry, hold: f32) -> Vec<bool> {
+    let mut touched = vec![false; api::CHUNK_VOLUME];
     let n = 1i64 << column.level;
-    let e = edit.pos.0;
-    if I64Vec3::new(e.x.div_euclid(n), e.y.div_euclid(n), e.z.div_euclid(n)) != data.pos.0 {
-        return;
-    }
-    let per = CHUNK_SIZE / s;
-    // Where the edited chunk's cells start in the far chunk.
-    let base = I64Vec3::new(e.x.rem_euclid(n), e.y.rem_euclid(n), e.z.rem_euclid(n)) * per;
+    let s = column.step();
+    let mut tallies: HashMap<usize, Tally> = HashMap::new();
     let full = crate::FULL_VOLUME as f32;
-    // What each occupant list fills, by display block.
-    let weights: Vec<Vec<(crate::BlockId, f32)>> = edit
-        .lists
-        .iter()
-        .map(|list| {
-            list.iter()
-                .filter(|o| !blocks.is_hidden(o.block))
-                .map(|o| {
-                    let shown = blocks.made_of(o.block).map_or(o.block, |m| blocks.material_block(m));
-                    (shown, blocks.shape(o.block).volume() as f32 / full)
-                })
-                .collect()
-        })
-        .collect();
-    let half = (s * s * s) as f32 / 2.0;
-    let mut tally: Vec<(crate::BlockId, f32)> = Vec::new();
-    for cz in 0..per {
-        for cy in 0..per {
-            for cx in 0..per {
-                tally.clear();
-                let mut total = 0.0;
-                for z in 0..s {
-                    for y in 0..s {
-                        for x in 0..s {
-                            let local = LocalPos::new((cx * s + x) as u8, (cy * s + y) as u8, (cz * s + z) as u8);
-                            for &(block, w) in &weights[edit.cells.get(local) as usize] {
-                                total += w;
-                                match tally.iter_mut().find(|(b, _)| *b == block) {
-                                    Some(t) => t.1 += w,
-                                    None => tally.push((block, w)),
-                                }
-                            }
-                        }
-                    }
+    for edit in edits {
+        let e = edit.data.pos.0;
+        if I64Vec3::new(e.x.div_euclid(n), e.y.div_euclid(n), e.z.div_euclid(n)) != data.pos.0 {
+            continue;
+        }
+        // Where the edited chunk starts in the far chunk, in boxels.
+        let base = I64Vec3::new(e.x.rem_euclid(n), e.y.rem_euclid(n), e.z.rem_euclid(n)) * CHUNK_SIZE;
+        // What each occupant list fills, by display block.
+        let weights: Vec<Vec<(crate::BlockId, f32)>> = edit
+            .data
+            .lists
+            .iter()
+            .map(|list| {
+                list.iter()
+                    .filter(|o| !blocks.is_hidden(o.block))
+                    .map(|o| {
+                        let shown = blocks.made_of(o.block).map_or(o.block, |m| blocks.material_block(m));
+                        (shown, blocks.shape(o.block).volume() as f32 / full)
+                    })
+                    .collect()
+            })
+            .collect();
+        for i in 0..api::CHUNK_VOLUME {
+            let p = LocalPos::from_index(i);
+            let cell = LocalPos::new(
+                ((base.x + p.x as i64) / s) as u8,
+                ((base.y + p.y as i64) / s) as u8,
+                ((base.z + p.z as i64) / s) as u8,
+            )
+            .index();
+            let t = tallies.entry(cell).or_default();
+            t.covered += 1;
+            let entry = edit.data.cells.at(i) as usize;
+            let built = edit.generated.as_ref().is_none_or(|g| g.lists[g.cells.at(i) as usize] != edit.data.lists[entry]);
+            for &(block, w) in &weights[entry] {
+                t.total += w;
+                add(&mut t.kinds, block, w);
+                if built {
+                    t.built += w;
+                    add(&mut t.built_kinds, block, w);
                 }
-                let cell = LocalPos::new((base.x + cx) as u8, (base.y + cy) as u8, (base.z + cz) as u8);
-                let entry = if total > half {
-                    let block = tally.iter().max_by(|a, b| a.1.total_cmp(&b.1)).map(|t| t.0).expect("something filled");
-                    list_for(data, block)
-                } else {
-                    0
-                };
-                data.cells.set(cell, entry);
             }
         }
     }
+    let volume = (s * s * s) as f32;
+    let planes = hold * (s * s) as f32;
+    let mut cells: Vec<(usize, Tally)> = tallies.into_iter().collect();
+    cells.sort_by_key(|c| c.0);
+    for (cell, mut t) in cells {
+        touched[cell] = true;
+        let outside = volume - t.covered as f32;
+        if outside > 0.0
+            && let Some(o) = data.lists[data.cells.at(cell) as usize].first()
+        {
+            t.total += outside;
+            add(&mut t.kinds, o.block, outside);
+        }
+        let main = if t.total > volume / 2.0 {
+            top(&t.kinds)
+        } else if hold > 0.0 && t.built > 0.0 && t.built >= planes {
+            top(&t.built_kinds)
+        } else {
+            None
+        };
+        match main {
+            Some((block, _)) => {
+                let entry = list_for(data, block);
+                data.cells.set_at(cell, entry);
+                let w = t.kinds.iter().find(|k| k.0 == block).map_or(0.0, |k| k.1);
+                let rest: Vec<(crate::BlockId, f32)> = t.kinds.iter().copied().filter(|k| k.0 != block).collect();
+                mix.set(cell, top(&rest).map(|(b, w2)| (b, w2 / (w + w2))));
+            }
+            None => {
+                data.cells.set_at(cell, 0);
+                mix.set(cell, None);
+            }
+        }
+    }
+    touched
 }
 
 /// The entry in `data`'s occupant lists holding just `block`, added if it's new.
@@ -776,12 +1062,6 @@ fn list_for(data: &mut ChunkData, block: crate::BlockId) -> u16 {
             (data.lists.len() - 1) as u16
         }
     }
-}
-
-/// Each cell's entry, for tests.
-#[cfg(test)]
-fn layer_entries(layer: &crate::Layer<u16>) -> Vec<u16> {
-    (0..api::CHUNK_VOLUME).map(|i| layer.at(i)).collect()
 }
 
 #[cfg(test)]
@@ -811,6 +1091,28 @@ mod tests {
     }
 
     #[test]
+    fn levels_split_where_their_cells_would_look_wider_than_the_pixel_target() {
+        // 1080 pixels tall, 90° up and down: a meter one meter away is 540 pixels.
+        let screen = Reach::screen_scale(1080.0, 90.0);
+        assert!((screen - 540.0).abs() < 0.01);
+        let reach = Reach { detail: 300.0, far: 4096.0, pixels: 6.0, screen, hold: 1.0, mix: 1 };
+        // Level 1 meets full detail; level 3's 8 m cells are 6 pixels at 720 m.
+        assert_eq!(reach.split_distance(1), 300.0);
+        assert!((reach.split_distance(3) - 720.0).abs() < 0.01);
+        // Each level twice as far as the one before: a cell's always about as wide where its
+        // level starts.
+        for level in 3..MAX_LEVEL {
+            assert!((reach.split_distance(level + 1) / reach.split_distance(level) - 2.0).abs() < 1e-4);
+        }
+        // Never nearer than full detail: a coarse target skips fine levels.
+        let coarse = Reach { pixels: 40.0, ..reach };
+        assert_eq!(coarse.split_distance(2), 300.0);
+        // A smaller pixel target, or a taller window, splits farther.
+        assert!(Reach { pixels: 3.0, ..reach }.split_distance(4) > reach.split_distance(4));
+        assert!(Reach { screen: screen * 2.0, ..reach }.split_distance(4) > reach.split_distance(4));
+    }
+
+    #[test]
     fn nearest_is_zero_inside_and_grows_outside() {
         let c = FarColumn { terrain: 0, level: 1, x: 0, y: 0 };
         assert_eq!(c.nearest(at(10.0, 60.0)), 0.0);
@@ -818,18 +1120,24 @@ mod tests {
         assert!((c.nearest(at(-3.0, -4.0)) - 5.0).abs() < 1e-4);
     }
 
+    /// Full detail to `detail` meters and far terrain to `far`, otherwise as by default.
+    fn reach(detail: f32, far: f32) -> Reach {
+        Reach { detail, far, ..Reach::default() }
+    }
+
     #[test]
     fn the_top_level_reaches_the_far_distance() {
-        let reach = Reach { detail: 256.0, far: 2048.0, level_reach: 2.0 };
-        assert_eq!(reach.top(), 4);
-        assert!(reach.split_distance(4) >= reach.far);
-        assert_eq!(Reach { detail: 256.0, far: 200.0, level_reach: 2.0 }.top(), 1);
-        assert_eq!(Reach { detail: 1.0, far: 1.0e9, level_reach: 2.0 }.top(), MAX_LEVEL);
+        let r = reach(256.0, 2048.0);
+        let top = r.top();
+        assert!(r.split_distance(top) >= r.far);
+        assert!(r.split_distance(top - 1) < r.far);
+        assert_eq!(reach(256.0, 200.0).top(), 1);
+        assert_eq!(reach(1.0, 1.0e9).top(), MAX_LEVEL);
     }
 
     #[test]
     fn the_column_the_player_is_in_splits_however_short_full_detail_is() {
-        let reach = Reach { detail: 8.0, far: 2048.0, level_reach: 2.0 };
+        let reach = reach(8.0, 2048.0);
         // At a corner of a level-4 column, 362 m from its middle.
         let pos = at(0.5, 0.5);
         let mut c = FarColumn { terrain: 0, level: reach.top(), x: 0, y: 0 };
@@ -855,7 +1163,7 @@ mod tests {
 
     #[test]
     fn with_everything_ready_each_spot_is_drawn_once_finer_nearer() {
-        let reach = Reach { detail: 256.0, far: 2048.0, level_reach: 2.0 };
+        let reach = reach(256.0, 2048.0);
         for pos in [at(16.0, 16.0), at(-700.5, 333.25), at(5000.0, -12000.0)] {
             let picked = reach.pick(0, pos, &|_| true);
             let seen = coverage(&picked);
@@ -885,7 +1193,7 @@ mod tests {
 
     #[test]
     fn a_column_splits_only_once_its_children_are_ready() {
-        let reach = Reach { detail: 256.0, far: 2048.0, level_reach: 2.0 };
+        let reach = reach(256.0, 2048.0);
         let pos = at(16.0, 16.0);
         // Everything but one ordinary column near the player.
         let missing = FarColumn { terrain: 0, level: 0, x: 1, y: 0 };
@@ -902,7 +1210,7 @@ mod tests {
 
     #[test]
     fn widened_keeps_what_was_wanted() {
-        let reach = Reach { detail: 256.0, far: 2048.0, level_reach: 2.0 };
+        let reach = reach(256.0, 2048.0);
         let wide = reach.widened();
         for pos in [at(16.0, 16.0), at(400.0, -90.0)] {
             for c in reach.wanted(0, pos) {
@@ -911,41 +1219,199 @@ mod tests {
         }
     }
 
-    #[test]
-    fn shrinking_an_edit_fills_cells_mostly_filled() {
-        let mut blocks = BlockRegistry::default();
-        let stone = blocks.register(api::BlockDef::new("t:stone", true, [0; 3])).unwrap();
-        // A far chunk at level 1 (cells 2 boxels a side), empty.
-        let column = FarColumn { terrain: 0, level: 1, x: 0, y: 0 };
+    /// A chunk at `pos` of `lists`, each cell's entry from `entry`.
+    fn chunk(pos: I64Vec3, lists: Vec<Vec<Occupant>>, entry: impl Fn(LocalPos) -> u16) -> ChunkData {
         let mut data = ChunkData {
-            pos: ChunkPos(I64Vec3::ZERO),
-            lists: vec![Vec::new()],
-            cells: crate::Layer::Uniform(0),
-            light: crate::Layer::Uniform(crate::Light::SKY),
-            records: Vec::new(),
-        };
-        // An edited chunk at ordinary chunk (1, 0, 0): stone in its lowest 5 boxels.
-        let mut edit = ChunkData {
-            pos: ChunkPos(I64Vec3::new(1, 0, 0)),
-            lists: vec![Vec::new(), vec![Occupant::new(stone)]],
+            pos: ChunkPos(pos),
+            lists,
             cells: crate::Layer::Uniform(0),
             light: crate::Layer::Uniform(crate::Light::SKY),
             records: Vec::new(),
         };
         for i in 0..api::CHUNK_VOLUME {
-            if LocalPos::from_index(i).z < 5 {
-                edit.cells.set_at(i, 1);
+            let e = entry(LocalPos::from_index(i));
+            if e != 0 {
+                data.cells.set_at(i, e);
             }
         }
-        shrink_into(&mut data, column, &edit, &blocks);
-        let cells = layer_entries(&data.cells);
-        let filled = |x: u8, y: u8, z: u8| cells[LocalPos::new(x, y, z).index()] != 0;
+        data
+    }
+
+    fn stone_and_grass() -> (BlockRegistry, crate::BlockId, crate::BlockId) {
+        let mut blocks = BlockRegistry::default();
+        let stone = blocks.register(api::BlockDef::new("t:stone", true, [0; 3])).unwrap();
+        let grass = blocks.register(api::BlockDef::new("t:grass", true, [0; 3])).unwrap();
+        (blocks, stone, grass)
+    }
+
+    /// Whether cell `(x, y, z)` of `data` is filled, and with what.
+    fn cell(data: &ChunkData, x: u8, y: u8, z: u8) -> Option<crate::BlockId> {
+        data.lists[data.cells.get(LocalPos::new(x, y, z)) as usize].first().map(|o| o.block)
+    }
+
+    #[test]
+    fn shrinking_an_edit_fills_cells_mostly_filled() {
+        let (blocks, stone, _) = stone_and_grass();
+        // A far chunk at level 1 (cells 2 boxels a side), empty.
+        let column = FarColumn { terrain: 0, level: 1, x: 0, y: 0 };
+        let mut data = chunk(I64Vec3::ZERO, vec![Vec::new()], |_| 0);
+        // An edited chunk at ordinary chunk (1, 0, 0): stone in its lowest 5 boxels.
+        let edit = chunk(I64Vec3::new(1, 0, 0), vec![Vec::new(), vec![Occupant::new(stone)]], |p| (p.z < 5) as u16);
+        let mut mix = Mix::default();
+        shrink_edits(&mut data, &mut mix, column, &[Edit { data: edit, generated: None }], &blocks, 0.0);
         // It lands in cells 16..32 in X; boxels 0..4 fill cells 0 and 1 whole, cell 2 half
         // (boxel 4 of 4..6): not more than half, so empty.
-        assert!(filled(16, 0, 0) && filled(31, 15, 1));
-        assert!(!filled(16, 0, 2));
-        assert!(!filled(15, 0, 0), "west of it is untouched");
-        let entry = cells[LocalPos::new(16, 0, 0).index()];
-        assert_eq!(data.lists[entry as usize], [Occupant::new(stone)]);
+        assert_eq!(cell(&data, 16, 0, 0), Some(stone));
+        assert_eq!(cell(&data, 31, 15, 1), Some(stone));
+        assert_eq!(cell(&data, 16, 0, 2), None);
+        assert_eq!(cell(&data, 15, 0, 0), None, "west of it is untouched");
+    }
+
+    /// An ordinary chunk at `pos` with a one-boxel wall of stone across it at `x` 5, `rows`
+    /// high (from its floor), on empty generated ground.
+    fn wall(pos: I64Vec3, stone: crate::BlockId, rows: u8) -> Edit {
+        let data = chunk(pos, vec![Vec::new(), vec![Occupant::new(stone)]], |p| (p.x == 5 && p.z < rows) as u16);
+        let generated = Some(chunk(pos, vec![Vec::new()], |_| 0));
+        Edit { data, generated }
+    }
+
+    /// Shrinks `edits` into the far chunk at the origin of `level`, empty, holding `hold`.
+    fn shrunk(level: u8, edits: &[Edit], blocks: &BlockRegistry, hold: f32) -> ChunkData {
+        let column = FarColumn { terrain: 0, level, x: 0, y: 0 };
+        let mut data = chunk(I64Vec3::ZERO, vec![Vec::new()], |_| 0);
+        let mut mix = Mix::default();
+        shrink_edits(&mut data, &mut mix, column, edits, blocks, hold);
+        data
+    }
+
+    #[test]
+    fn a_one_boxel_wall_stays_at_every_level() {
+        let (blocks, stone, _) = stone_and_grass();
+        for level in 1..=5 {
+            let data = shrunk(level, &[wall(I64Vec3::ZERO, stone, 32)], &blocks, 1.0);
+            let x = (5 >> level) as u8;
+            assert_eq!(cell(&data, x, 0, 0), Some(stone), "level {level}");
+            assert_eq!(cell(&data, x + 1, 0, 0), None, "level {level}: only the wall's cells");
+            // Held off, a thin wall goes.
+            assert_eq!(cell(&shrunk(level, &[wall(I64Vec3::ZERO, stone, 32)], &blocks, 0.0), x, 0, 0), None, "level {level}");
+        }
+        // At level 6 a cell is 2 chunks a side: a wall through all of it, made of four
+        // edited chunks, holds it; a wall through a quarter of it doesn't.
+        let four: Vec<Edit> = [(0, 0), (1, 0), (0, 1), (1, 1)].iter().map(|&(y, z)| wall(I64Vec3::new(0, y, z), stone, 32)).collect();
+        assert_eq!(cell(&shrunk(6, &four, &blocks, 1.0), 0, 0, 0), Some(stone));
+        assert_eq!(cell(&shrunk(6, &four[..1], &blocks, 1.0), 0, 0, 0), None);
+    }
+
+    #[test]
+    fn a_lone_pillar_and_generated_ground_are_not_held() {
+        let (blocks, stone, _) = stone_and_grass();
+        let pos = I64Vec3::ZERO;
+        // A pillar one boxel across, all the way up the chunk.
+        let pillar = Edit {
+            data: chunk(pos, vec![Vec::new(), vec![Occupant::new(stone)]], |p| (p.x == 5 && p.y == 5) as u16),
+            generated: Some(chunk(pos, vec![Vec::new()], |_| 0)),
+        };
+        assert_eq!(cell(&shrunk(3, &[pillar], &blocks, 1.0), 0, 0, 0), None);
+        // Ground 3 boxels deep that the generator made itself: not built, so cells 8 a side
+        // stay empty under 3/8 of it, as they do where nothing was edited.
+        let ground = |p: LocalPos| (p.z < 3) as u16;
+        let lists = vec![Vec::new(), vec![Occupant::new(stone)]];
+        let edit = Edit { data: chunk(pos, lists.clone(), ground), generated: Some(chunk(pos, lists, ground)) };
+        assert_eq!(cell(&shrunk(3, &[edit], &blocks, 1.0), 0, 0, 0), None);
+    }
+
+    #[test]
+    fn an_edited_cell_of_two_materials_keeps_both() {
+        let (blocks, stone, grass) = stone_and_grass();
+        // Stone in the lowest 5 boxels, grass the 3 over it: cells 8 a side are 5/8 stone,
+        // 3/8 grass.
+        let lists = vec![Vec::new(), vec![Occupant::new(stone)], vec![Occupant::new(grass)]];
+        let edit = chunk(I64Vec3::ZERO, lists, |p| if p.z < 5 { 1 } else if p.z < 8 { 2 } else { 0 });
+        let column = FarColumn { terrain: 0, level: 3, x: 0, y: 0 };
+        let mut data = chunk(I64Vec3::ZERO, vec![Vec::new()], |_| 0);
+        let mut mix = Mix::default();
+        let touched = shrink_edits(&mut data, &mut mix, column, &[Edit { data: edit, generated: None }], &blocks, 1.0);
+        assert_eq!(cell(&data, 0, 0, 0), Some(stone));
+        let (second, share) = mix.at(LocalPos::new(0, 0, 0).index()).expect("a second material");
+        assert_eq!(second, grass);
+        assert!((share - 0.375).abs() < 1.0 / 32.0, "{share}");
+        assert!(touched[LocalPos::new(3, 3, 0).index()] && !touched[LocalPos::new(4, 0, 0).index()]);
+    }
+
+    #[test]
+    fn a_mix_keeps_shares_in_sixteenths_and_reuses_entries() {
+        let (_, stone, grass) = stone_and_grass();
+        let mut mix = Mix::default();
+        mix.set(3, Some((grass, 0.5)));
+        mix.set(9, Some((grass, 0.52)));
+        mix.set(12, Some((stone, 0.01)));
+        assert_eq!(mix.at(3), Some((grass, 0.5)));
+        assert_eq!(mix.at(9), Some((grass, 0.5)), "rounded to the same sixteenth");
+        assert_eq!(mix.at(12), None, "too little to show");
+        assert_eq!(mix.kinds.len(), 2);
+        mix.set(3, None);
+        assert_eq!(mix.at(3), None);
+    }
+
+    /// Stone below z 0, with grass making up the top `grass` boxels of it.
+    struct Layers {
+        grass: i64,
+    }
+
+    impl api::Tunables for Layers {
+        fn tunables(&self) -> Vec<api::Tunable> {
+            Vec::new()
+        }
+        fn set_tunable(&mut self, _: &str, _: f32) -> bool {
+            false
+        }
+    }
+
+    impl api::Generator for Layers {
+        fn fill(&self, origin: I64Vec3, out: &mut ChunkFill) {
+            self.fill_coarse(origin, 1, out);
+        }
+        fn fill_coarse(&self, origin: I64Vec3, step: u32, out: &mut ChunkFill) -> bool {
+            let s = step as i64;
+            let (stone, grass) = (out.entry("t:stone"), out.entry("t:grass"));
+            for i in 0..api::CHUNK_VOLUME {
+                let p = LocalPos::from_index(i);
+                // The cell's middle, sampled.
+                let z = origin.z + p.z as i64 * s + s / 2;
+                out.cells[i] = if z >= 0 { 0 } else if z >= -self.grass { grass } else { stone };
+            }
+            true
+        }
+        fn tops(&self, _: i64, _: i64, _: u32, out: &mut [i64]) {
+            out.fill(-1);
+        }
+    }
+
+    #[test]
+    fn finer_cells_give_a_cell_its_mix() {
+        use api::Generator;
+        let (blocks, stone, grass) = stone_and_grass();
+        let generator = Layers { grass: 2 };
+        // Level 2, cells 4 a side: the cell from -4 to 0 samples stone at its middle (-2 is
+        // grass's lowest, so grass by the sample), and at level 1 its halves are grass over
+        // stone.
+        let column = FarColumn { terrain: 0, level: 2, x: 0, y: 0 };
+        let pos = ChunkPos(I64Vec3::new(0, 0, -1));
+        let mut fill = ChunkFill::default();
+        assert!(generator.fill_coarse(pos.0 * column.span(), 4, &mut fill));
+        let mut data = crate::terrain::to_chunk(pos, &fill, &blocks).unwrap();
+        let mut mix = Mix::default();
+        let untouched = vec![false; api::CHUNK_VOLUME];
+        assert!(mix_finer(&generator, &mut data, &mut mix, column, (I64Vec3::ZERO, 1, &blocks), &untouched, &mut fill).unwrap());
+        let top = LocalPos::new(0, 0, 31).index();
+        let main = data.lists[data.cells.at(top) as usize][0].block;
+        let (second, share) = mix.at(top).expect("mixed");
+        assert_eq!([main, second].iter().filter(|&&b| b == grass).count(), 1);
+        assert_eq!([main, second].iter().filter(|&&b| b == stone).count(), 1);
+        assert!((share - 0.5).abs() < 0.01, "{share}");
+        // Deeper, all stone: no mix.
+        let deep = LocalPos::new(0, 0, 20).index();
+        assert_eq!(mix.at(deep), None);
+        assert_eq!(data.lists[data.cells.at(deep) as usize][0].block, stone);
     }
 }

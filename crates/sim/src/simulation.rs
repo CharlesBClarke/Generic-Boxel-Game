@@ -365,7 +365,7 @@ impl Simulation {
     pub fn set_reach(&mut self, reach: crate::far::Reach) {
         let detail = reach.detail.max(0.0);
         self.stream.radius = detail + api::CHUNK_SIZE as f32;
-        self.far.reach = crate::far::Reach { detail, far: reach.far.max(detail), level_reach: reach.level_reach };
+        self.far.reach = crate::far::Reach { detail, far: reach.far.max(detail), mix: reach.mix.min(crate::far::MAX_MIX), hold: reach.hold.max(0.0), ..reach };
     }
 
     /// How far around the player terrain is kept loaded, in meters.

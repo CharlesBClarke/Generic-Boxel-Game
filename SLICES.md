@@ -104,7 +104,23 @@ A run of small toy slices. Each one takes a single game-feel feature that doesn'
 
 ### Current toy
 
-**None.** Look variants closed 2026-11-14. Next: planned in a new session; Far terrain by cube (LOD, `docs/notes/lod.md`) is the obvious pick.
+#### Far terrain by cube (`toy-far-terrain-by-cube`)
+
+**Stage:** Verify (2026-11-14). Tests: `cargo test --workspace` all pass, clippy clean. Building far terrain with mixes takes about 4× as long (6.1 s against 1.6 s for 268 columns around the center; `client::far` timing test); drawing cost barely moves (+2% merged quads).
+
+**Goal:** far terrain that keeps its colors, pops less, and keeps builds: items 1–3 of `docs/notes/lod.md`'s ranking. The octree (cubes instead of columns, item 4) and the "how full" score (5) are the next toy, which pays off the far terrain stand-in debt. The name stays, as the backlog entry's; the cube part comes next.
+
+**Plan** (approved 2026-11-14; the user's "ok" took the recommended answers: split as here, and the hold keeps planes, not lone pillars)
+- *Average colors per cell* (`sim::far`, `client::far`, `solid.wgsl`): each far cell keeps a main and a second material with a share (`sim::far::Mix`, sent beside each far chunk). Found by sampling the generator one level finer over the cell (engine side, no API change, so mod generators get it for free); edits give theirs from their tally. The far mesher packs the second material and share into the vertex color's alpha; `far_shade` mixes the two looks per facing way. Tunable `far_mix` (0 off, 1 on).
+- *Levels by size on screen* (`sim::far::Reach`): `level_reach` is replaced by a pixel target, `far_pixels`; a level-*k* column splits once its 2^*k* m cells would look wider than that, from the window's height and the field of view at rest (sent to the server with the reach, so server and client agree). Level 1 still meets full detail at the render distance.
+- *Builds stay visible* (`sim::far::shrink_edits`): edits shrink into every level, level 6's cells (wider than a chunk) included, the rest of such a cell counted as generated. A cell is solid if more than half filled, or if what was built (boxels differing from the generator's) fills `far_hold` boxel-thick planes across it (1: one-boxel walls and floors stay, lone pillars don't). Generated ground in edited chunks doesn't count as built.
+- *Tests*: split distances from the pixel target, field of view and height; a mixed cell from finer samples; a one-boxel wall kept at every level (level 6 across four edited chunks), a pillar and generated ground not; an edited cell's mix; mix packing and the shader's constant; the base terrain integration tests. Plus the quick bench.
+
+**Done when**
+1. Distant hills keep their mix of rock, dirt and grass, with no flat green.
+2. Level switches while walking and flying don't bother the user (carried over from Far terrain).
+3. A one-boxel-thick build is still visible at the edge of the far distance.
+4. The bench shows no surprising slowdown, or any slowdown is explained and accepted.
 
 **Waiting for a play check** (remind the user at the start of every session, and at good moments during one, until they confirm; then delete the line):
 - Loading by cube (3), deferred 2026-11-13: dig a shaft straight down 50–100 m. Light should come only from the sky straight above and the walls should darken with depth; no daylight in the rock beside the shaft, or near the bottom where chunks below haven't loaded.
