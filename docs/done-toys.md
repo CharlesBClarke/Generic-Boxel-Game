@@ -3,6 +3,21 @@
 Moved out of `SLICES.md` on 2026-11-03 so the roadmap stays short. Each toy's full write-up, newest first, as it stood when it closed. `SLICES.md` keeps a one-line summary of each.
 
 
+#### Grass depth (`toy-grass-depth`)
+
+**Stage:** Done (2026-11-14). Data only.
+
+Started without a plan stage, at the user's call: a change of two numbers in `blocks.toml`, tried by restarting. Came out of planning the next LOD toy: the LOD ranking blamed far terrain for colors and moiré, so `fix-noise-mip-mix` went first (see Fixes), and with far terrain, edges and AO all off, gentle hills still showed moiré in full detail. The user: "I think its a fundemendal issue with our grass block, the 2texles slick of green is just causing the issue. I think IRL this shape would have a real morre pattern. so that correct, but it looks bad so maybe we just change ouor grass block because it will likely be the most common block seen".
+
+- *Why:* a grass side was 2–4 texels of green over dirt, so each one-boxel step's riser averaged mostly brown against a green top. Mips blend inside a face, but nothing blends between two faces, so once steps are thinner than a pixel, risers and tops alias as stripes. The contrast between a top and its riser's average sets how strong they are.
+- *Tried:* `[looks.grass]` `top` at `depth = 8, ragged = 4`, then fully green, `depth = 16, ragged = 0`. The user on fully green: "ok that really helps". Kept.
+- *Side effect:* a grass block is green all through, so a cut through one would show green; not visible while grass is a full block only (see Covered blocks in the backlog).
+- *Tests:* data_mods and client pass with the new recipe (the look loads, every look's last mip matches its faces).
+- *Bench:* deferred to the start of the next toy, at the user's call. The first try measured nothing: the user closed the bench windows as they opened, and the bench still exits 0 with "no results" (see `docs/friction.md`).
+- *Deferred:* patchy covers (green breaking into dirt as it goes down, coverage not repeating every block) to the Material tool entry; tops losing detail sooner than sides (anisotropy) and a ring of reduced detail on flat ground (suspected shadow cascades) to "Detail seen from different angles"; texturing's cost (~6–7 ms at `recorded` when last measured, 2026-11-11) to a switch study with the deferred bench.
+- *Led to:* the user's dislike of looks being two tools (baked volumes and runtime noise, each degrading differently with distance): the Look variants entry, `docs/notes/look-variants.md`.
+- *API debt:* none.
+
 #### Loading by cube: LOD, second toy (`toy-loading-by-cube`)
 
 **Stage:** Done (2026-11-13). Infrastructure.
