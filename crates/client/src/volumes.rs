@@ -37,7 +37,7 @@ impl Volumes {
         let mut details = vec![LookDetail::default()];
         for (i, look) in looks.iter().enumerate() {
             details.push(look.detail.clone());
-            rgba.extend_from_slice(&look.rgba);
+            rgba.extend_from_slice(&resolved(look));
             by_look.insert(look.name.clone(), (i as u32 + 1, look.turns));
             let [s, k] = look.sheen.map_or([0.0, 1.0], |s| [s.strength, s.sharpness]);
             sheens.push([s, k, look.glow]);
@@ -124,6 +124,25 @@ impl Volumes {
     }
 }
 
+/// `look`'s texels as they look on average, so mip levels made from them (see
+/// [`Volumes::atlas`]) are what its faces show from afar: a texel taking its color from noise
+/// gets the noise's average over the world in place of its baked color. Grain needs nothing,
+/// as it's drawn to average out to the texel's own color.
+fn resolved(look: &LookDef) -> Vec<u8> {
+    let mut rgba = look.rgba.clone();
+    if look.detail.texels.is_empty() {
+        return rgba;
+    }
+    let averages: Vec<[u8; 3]> = look.detail.noise.iter().map(|n| n.average().map(linear_to_srgb)).collect();
+    for (i, &byte) in look.detail.texels.iter().enumerate() {
+        let layer = api::look::detail_layer(byte) as usize;
+        if layer > 0 {
+            rgba[4 * i..4 * i + 3].copy_from_slice(&averages[layer - 1]);
+        }
+    }
+    rgba
+}
+
 /// Mip levels of [`Volumes::atlas`]: down to one pixel a slice.
 pub const LEVELS: u32 = 5;
 
@@ -180,6 +199,72 @@ mod tests {
         let mean = |a: u8, b: u8| linear_to_srgb((srgb_to_linear(a) + srgb_to_linear(b)) / 2.0);
         assert_eq!(&atlas[at..at + 3], [mean(0, 16), mean(0, 16), 4 * 16]);
     }
+    /// What a pixel up close shows of texel `i` of `look` at world texel `p`, linear RGB: the
+    /// shader's `look_color` with nothing faded. `grain_mean` is the grain's average factor.
+    fn drawn(look: &LookDef, grain_mean: f32, i: usize, p: [u32; 3]) -> [f32; 3] {
+        let byte = look.detail.texels.get(i).copied().unwrap_or(0);
+        let layer = api::look::detail_layer(byte) as usize;
+        if layer > 0 {
+            return look.detail.noise[layer - 1].color(p).map(srgb_to_linear);
+        }
+        let baked = [0, 1, 2].map(|c| srgb_to_linear(look.rgba[4 * i + c]));
+        let grain = api::look::detail_grain(byte);
+        match &look.detail.grain {
+            Some(g) if grain > 0 => baked.map(|c| c * g.factor(grain, api::look::detail_board(byte), p) / grain_mean),
+            _ => baked,
+        }
+    }
+
+    #[test]
+    fn every_looks_last_mip_is_what_its_faces_show_on_average() {
+        // Far off, a face is drawn from its slice's last mip (far terrain always, full detail
+        // once its detail fades), so that one pixel has to be the average of what the face
+        // shows up close, noise and grain included, over many boxels.
+        let sim = crate::world::testing::base_sim();
+        let looks = sim.looks();
+        let volumes = Volumes::build(looks, sim.blocks());
+        let [width, height] = volumes.atlas_size().map(|n| n as usize);
+        let atlas = volumes.atlas();
+        let last = LEVELS as usize - 1;
+        let start: usize = (0..last).map(|k| (width >> k) * (height >> k) * 4).sum();
+        let size = LookDef::SIZE;
+        // Boxels far apart, so many blobs and streaks are counted.
+        let boxels: Vec<[i64; 3]> = (0..64i64).map(|b| [b % 4 * 37, b / 4 % 4 * 53, b / 16 * 41]).collect();
+        let mut wrong = Vec::new();
+        for (v, look) in looks.iter().enumerate() {
+            let v = v + 1;
+            let grain_mean = look.detail.grain.map_or(1.0, |g| api::look::Grain::mean_factor(g.strength, g.mean_value()));
+            for a in 0..3 {
+                for d in [0, size - 1] {
+                    let mut sum = [0.0f64; 3];
+                    let mut n = 0.0;
+                    for b in &boxels {
+                        for j in 0..size * size {
+                            let mut t = [0; 3];
+                            t[a] = d;
+                            t[(a + 1) % 3] = j % size;
+                            t[(a + 2) % 3] = j / size;
+                            let i = LookDef::index(t[0], t[1], t[2]);
+                            let world = [0, 1, 2].map(|k| b[k] * size as i64 + t[k] as i64);
+                            let c = drawn(look, grain_mean, i, api::look::world_texel(world));
+                            for k in 0..3 {
+                                sum[k] += c[k] as f64;
+                            }
+                            n += 1.0;
+                        }
+                    }
+                    let want = sum.map(|s| linear_to_srgb((s / n) as f32));
+                    let at = start + 4 * ((3 * v + a) * (width >> last) + d);
+                    let got = &atlas[at..at + 3];
+                    if (0..3).any(|k| (got[k] as i32 - want[k] as i32).abs() > 3) {
+                        wrong.push(format!("{} facing axis {a} at depth {d}: mip {got:?}, shown {want:?}", look.name));
+                    }
+                }
+            }
+        }
+        assert!(wrong.is_empty(), "{}", wrong.join("\n"));
+    }
+
     use api::BlockDef;
 
     fn look(name: &str, color: [u8; 4], turns: bool) -> LookDef {

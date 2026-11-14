@@ -89,7 +89,6 @@ pub fn in_world(origin: api::I64Vec3) -> UVec4 {
 pub struct NoiseGpu {
     /// Linear RGB.
     pub colors: [Vec4; api::look::MAX_COLORS],
-    pub average: Vec4,
     /// In sixteenths of a texel (see [`api::look::scale_units`]), then how many colors.
     pub scale: UVec4,
     /// The seed, the rest unused.
@@ -102,7 +101,8 @@ pub struct LookGpu {
     pub noise: [NoiseGpu; api::look::MAX_LAYERS],
     /// Along, across and through the board, in sixteenths of a texel, then the seed.
     pub grain_scale: UVec4,
-    /// The grain's strength, the rest unused.
+    /// The grain's strength and its noise's average value (see
+    /// [`api::look::Grain::mean_value`]), the rest unused.
     pub grain: Vec4,
 }
 
@@ -118,7 +118,6 @@ pub fn look_table(volumes: &Volumes) -> Vec<LookGpu> {
                 for (c, rgb) in gpu.colors.iter_mut().zip(&layer.colors) {
                     *c = Vec4::new(srgb_to_linear(rgb[0]), srgb_to_linear(rgb[1]), srgb_to_linear(rgb[2]), 1.0);
                 }
-                gpu.average = Vec3::from_array(layer.average()).extend(1.0);
                 let [x, y, z] = layer.scale.map(scale_units);
                 gpu.scale = UVec4::new(x, y, z, layer.colors.len() as u32);
                 gpu.seed = UVec4::new(layer.seed, 0, 0, 0);
@@ -126,7 +125,7 @@ pub fn look_table(volumes: &Volumes) -> Vec<LookGpu> {
             if let Some(g) = &d.grain {
                 let [x, y, z] = g.scale.map(scale_units);
                 look.grain_scale = UVec4::new(x, y, z, g.seed);
-                look.grain = Vec4::new(g.strength, 0.0, 0.0, 0.0);
+                look.grain = Vec4::new(g.strength, g.mean_value(), 0.0, 0.0);
             }
             look
         })
