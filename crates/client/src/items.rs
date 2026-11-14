@@ -96,7 +96,7 @@ pub(crate) fn sync_items(
         let light = stored_light(world.universe().main(), blocks, center);
         let view = views.entry(item.id).or_insert_with(|| {
             let material = match materials.get(&chunk_meshes.material).cloned() {
-                // A loose item tumbles, so it reads generated detail as if at the world's middle.
+                // A loose item tumbles, so it shows its look's first variant wherever it is.
                 Some(shared) => materials.add(SolidMaterial { light, place: crate::solid::AWAY, ..shared }),
                 None => chunk_meshes.material.clone(),
             };
@@ -300,7 +300,6 @@ mod tests {
             heights: Handle::default(),
             light: Vec4::ZERO,
             place: UVec4::ZERO,
-            generated: Handle::default(),
             far: Vec4::ZERO,
             alpha_mode: AlphaMode::Opaque,
         });

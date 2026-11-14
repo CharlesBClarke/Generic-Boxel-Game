@@ -1168,7 +1168,7 @@ mod tests {
         let mut looks = LookRegistry::default();
         for name in names {
             let turns = turning.contains(name);
-            looks.register(LookDef { name: (*name).into(), turns, rgba: vec![200; LookDef::VOLUME * 4], sheen: None, glow: 0.0, detail: Default::default() }).unwrap();
+            looks.register(LookDef { name: (*name).into(), turns, rgba: vec![200; LookDef::VOLUME * 4], sheen: None, glow: 0.0 }).unwrap();
         }
         looks
     }

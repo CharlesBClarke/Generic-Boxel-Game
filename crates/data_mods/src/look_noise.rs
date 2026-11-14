@@ -1,20 +1,21 @@
-//! Detail a look generates as it's drawn, from the world texel position, so it never repeats
-//! from block to block: speckle noise in place of a look's baked noise, and grain along each
-//! board of planks. Plain data plus the functions that say what it draws; the client's
-//! `look_noise.wgsl` is the same functions on the GPU and must agree with these bit for bit.
+//! Noise that never repeats, for baking a look's variants (see [`crate::looks`]): speckle and
+//! grain worked out from a texel's place in an endless field, so each variant is a different
+//! 16³ window of it. A tool for making looks; nothing is worked out as the game draws.
 //!
-//! World texel positions are `u32`s that wrap: a texel's position in the world, in texels,
-//! plus [`WORLD_OFFSET`] so the wrap sits far from the world's middle.
+//! Field positions are `u32`s that wrap: a texel's place in the field, in texels, plus
+//! [`WORLD_OFFSET`] so the wrap sits far from the middle.
 
-/// What a look generates, beside its baked cube.
+use api::LookDef;
+
+/// What a look takes from the field: which noise layer or grain each texel gets.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct LookDetail {
     /// Noise layers a texel can take its color from: the base noise and a `top` cover.
     pub noise: Vec<NoiseLayer>,
     /// Grain for the texels marked with a direction.
     pub grain: Option<Grain>,
-    /// One detail byte a texel, in the cube's order (see [`crate::LookDef::index`]), or
-    /// empty when nothing is generated. Bits 0–1: which noise layer the texel shows (0 for
+    /// One detail byte a texel, in the cube's order (see [`api::LookDef::index`]), or empty
+    /// when nothing comes from the field. Bits 0–1: which noise layer the texel shows (0 for
     /// its baked color, `n` for `noise[n - 1]`). Bits 2–3: which way its grain runs (0 none,
     /// then [`GRAIN_X`], [`GRAIN_Y`], [`GRAIN_UP`]). Bits 4–7: its board, so neighboring
     /// boards' grain differs.
@@ -22,37 +23,33 @@ pub struct LookDetail {
 }
 
 impl LookDetail {
-    /// Says what's wrong, if anything: the texels' count, layers past the list, grain marks
-    /// without grain, too many layers or colors, scales below a texel.
-    pub fn check(&self) -> Result<(), String> {
-        if !self.texels.is_empty() && self.texels.len() != crate::LookDef::VOLUME {
-            return Err(format!("detail has {} texels, expected {} or none", self.texels.len(), crate::LookDef::VOLUME));
+    /// `base` (a volume, four bytes a texel) with its marked texels taken from the field's
+    /// window whose lowest corner is at field texel `corner`: noise texels get the noise's
+    /// color there, grain texels their own color shaded by the grain there (divided by the
+    /// grain's average, so grain never shifts a color on average).
+    pub fn bake(&self, base: &[u8], corner: [u32; 3]) -> Vec<u8> {
+        let mut rgba = base.to_vec();
+        if self.texels.is_empty() {
+            return rgba;
         }
-        if self.noise.len() > MAX_LAYERS {
-            return Err(format!("detail has {} noise layers, at most {MAX_LAYERS}", self.noise.len()));
-        }
-        for layer in &self.noise {
-            if layer.colors.is_empty() || layer.colors.len() > MAX_COLORS {
-                return Err(format!("a noise layer needs 1 to {MAX_COLORS} colors, not {}", layer.colors.len()));
-            }
-            if layer.scale.iter().any(|s| !(s.is_finite() && *s >= 1.0)) {
-                return Err(format!("noise scale must be at least 1, not {:?}", layer.scale));
-            }
-        }
-        if let Some(g) = &self.grain
-            && (g.scale.iter().any(|s| !(s.is_finite() && *s >= 1.0)) || !(0.0..=0.5).contains(&g.strength))
-        {
-            return Err(format!("grain needs scales of at least 1 and a strength from 0 to 0.5, not {g:?}"));
-        }
-        for &b in &self.texels {
-            if detail_layer(b) as usize > self.noise.len() {
-                return Err(format!("a texel shows noise layer {}, but there are {}", detail_layer(b), self.noise.len()));
-            }
-            if detail_grain(b) != 0 && self.grain.is_none() {
-                return Err("texels are marked with grain, but there's no grain".into());
+        let mean = self.grain.map(|g| Grain::mean_factor(g.strength, g.mean_value()));
+        let size = LookDef::SIZE as u32;
+        for (i, &byte) in self.texels.iter().enumerate() {
+            let n = i as u32;
+            let p = [n % size, n / size % size, n / (size * size)];
+            let p = [0, 1, 2].map(|a| corner[a].wrapping_add(p[a]));
+            let at = 4 * i;
+            let layer = detail_layer(byte) as usize;
+            if layer > 0 {
+                rgba[at..at + 3].copy_from_slice(&self.noise[layer - 1].color(p));
+            } else if let (Some(g), Some(mean), d @ 1..) = (self.grain, mean, detail_grain(byte)) {
+                let factor = g.factor(d, detail_board(byte), p) / mean;
+                for c in &mut rgba[at..at + 3] {
+                    *c = (*c as f32 * factor).round().clamp(0.0, 255.0) as u8;
+                }
             }
         }
-        Ok(())
+        rgba
     }
 }
 
@@ -62,10 +59,6 @@ pub const GRAIN_X: u8 = 1;
 pub const GRAIN_Y: u8 = 2;
 /// Grain runs up.
 pub const GRAIN_UP: u8 = 3;
-/// The most noise layers a look has.
-pub const MAX_LAYERS: usize = 3;
-/// The most colors a noise layer has.
-pub const MAX_COLORS: usize = 8;
 /// Added to a world texel position before it's used, so the `u32` wrap is about 134 million
 /// blocks away in every direction rather than at the world's middle.
 pub const WORLD_OFFSET: u32 = 1 << 31;
@@ -93,7 +86,7 @@ pub const fn detail_board(byte: u8) -> u8 {
 /// Speckle: smooth noise, each value picking one of the colors.
 #[derive(Clone, Debug, PartialEq)]
 pub struct NoiseLayer {
-    /// sRGB, at most [`MAX_COLORS`].
+    /// sRGB.
     pub colors: Vec<[u8; 3]>,
     /// Texels across one blob, per axis, from 1 up.
     pub scale: [f32; 3],
@@ -126,25 +119,6 @@ impl NoiseLayer {
     /// The color at world texel `p`, sRGB.
     pub fn color(&self, p: [u32; 3]) -> [u8; 3] {
         pick(&self.colors, self.value(p))
-    }
-
-    /// The average color over the world, linear RGB from 0 to 1.
-    pub fn average(&self) -> [f32; 3] {
-        let mut sum = [0.0f64; 3];
-        let n = 40u32;
-        for z in 0..n {
-            for y in 0..n {
-                for x in 0..n {
-                    // Spread out, so many blobs are counted.
-                    let p = [x * 7, y * 7, z * 7].map(|c| c.wrapping_add(WORLD_OFFSET));
-                    let c = self.color(p);
-                    for i in 0..3 {
-                        sum[i] += srgb_to_linear(c[i]) as f64;
-                    }
-                }
-            }
-        }
-        sum.map(|s| (s / (n * n * n) as f64) as f32)
     }
 }
 
@@ -244,12 +218,6 @@ pub fn pick(colors: &[[u8; 3]], value: f32) -> [u8; 3] {
     colors[(stretched * colors.len() as f32) as usize]
 }
 
-/// An sRGB byte as linear light, 0 to 1.
-pub fn srgb_to_linear(c: u8) -> f32 {
-    let c = c as f32 / 255.0;
-    if c <= 0.04045 { c / 12.92 } else { ((c + 0.055) / 1.055).powf(2.4) }
-}
-
 /// A world texel position (in texels, any size) as the noise takes it.
 pub fn world_texel(p: [i64; 3]) -> [u32; 3] {
     p.map(|c| (c as u32).wrapping_add(WORLD_OFFSET))
@@ -263,17 +231,6 @@ mod tests {
 
     fn dirt(scale: f32) -> NoiseLayer {
         NoiseLayer { colors: DIRT.to_vec(), scale: [scale; 3], seed: 2 }
-    }
-
-    #[test]
-    fn bad_detail_is_caught() {
-        let ok = LookDetail { noise: vec![dirt(2.0)], grain: None, texels: vec![detail_byte(1, 0, 0); crate::LookDef::VOLUME] };
-        assert_eq!(ok.check(), Ok(()));
-        assert!(LookDetail { texels: vec![0; 5], ..ok.clone() }.check().is_err(), "short");
-        assert!(LookDetail { noise: vec![], ..ok.clone() }.check().is_err(), "a layer past the list");
-        assert!(LookDetail { texels: vec![detail_byte(0, GRAIN_X, 0); crate::LookDef::VOLUME], ..ok.clone() }.check().is_err(), "no grain");
-        assert!(LookDetail { noise: vec![dirt(0.5)], ..ok.clone() }.check().is_err(), "too fine");
-        assert!(LookDetail { noise: vec![dirt(2.0); 4], ..ok }.check().is_err(), "too many layers");
     }
 
     #[test]
@@ -321,15 +278,6 @@ mod tests {
         assert!(away.iter().all(|v| (0.0..=1.0).contains(v)));
         let jumps = away.windows(2).map(|w| (w[0] - w[1]).abs()).fold(0.0f32, f32::max);
         assert!(jumps < 0.5, "{jumps}");
-    }
-
-    #[test]
-    fn the_average_sits_among_the_colors() {
-        let avg = dirt(1.5).average();
-        let lin = |i: usize, k: usize| srgb_to_linear(DIRT[k][i]);
-        for i in 0..3 {
-            assert!(avg[i] > lin(i, 0) && avg[i] < lin(i, 3), "channel {i}: {avg:?}");
-        }
     }
 
     #[test]

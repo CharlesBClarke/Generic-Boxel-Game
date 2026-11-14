@@ -374,7 +374,7 @@ mod tests {
         let slab = blocks.register(BlockDef::new("test:slab", true, [128, 128, 128]).with_shape(vec![BlockBox::new([0, 0, 0], [16, 16, 8])])).unwrap();
         let log = blocks.register(BlockDef::new("test:log", true, [0; 3]).with_look("test:log")).unwrap();
         let mut looks = LookRegistry::default();
-        looks.register(LookDef { name: "test:log".into(), turns: true, rgba: vec![200; LookDef::VOLUME * 4], sheen: None, glow: 0.0, detail: Default::default() }).unwrap();
+        looks.register(LookDef { name: "test:log".into(), turns: true, rgba: vec![200; LookDef::VOLUME * 4], sheen: None, glow: 0.0 }).unwrap();
         let volumes = Volumes::build(&looks, &blocks);
         (blocks, volumes, [stone, slab, log])
     }
@@ -739,26 +739,16 @@ mod tests {
     }
 
     #[test]
-    fn the_block_shader_imports_every_look_noise_function_it_calls() {
-        // A missing import only shows when the game builds its pipelines; catch it here.
-        let shader = include_str!("solid.wgsl");
-        let import = shader.lines().find(|l| l.starts_with("#import boxel::look_noise::")).expect("an import");
-        for line in include_str!("look_noise.wgsl").lines() {
-            let Some(name) = line.strip_prefix("fn ").and_then(|l| l.split('(').next()) else { continue };
-            let called = shader.lines().filter(|l| !l.starts_with("#import")).any(|l| l.contains(&format!("{name}(")));
-            if called {
-                assert!(import.contains(name), "solid.wgsl calls {name} without importing it");
-            }
-        }
-    }
-
-    #[test]
     fn the_shader_knows_the_face_scale() {
         let shader = include_str!("solid.wgsl");
         assert!(shader.contains(&format!("const FACE_SCALE: f32 = {FACE_SCALE:.1};")), "solid.wgsl's FACE_SCALE should be {FACE_SCALE}");
         let levels = crate::volumes::LEVELS;
         assert!(shader.contains(&format!("const LEVELS: i32 = {levels};")), "solid.wgsl's LEVELS should be {levels}");
-        assert!(shader.contains(&format!("array<vec4<f32>, {}>", api::look::MAX_COLORS)), "noise colors");
-        assert!(shader.contains(&format!("array<Noise, {}>", api::look::MAX_LAYERS)), "noise layers");
+        let variants = crate::volumes::VARIANTS;
+        assert!(shader.contains(&format!("const VARIANTS: i32 = {variants};")), "solid.wgsl's VARIANTS should be {variants}");
+        // `variant_of` hashes as `client::volumes::variant_of` does.
+        for k in ["0x8da6b343u", "0xd8163841u", "0xcb1ab31fu", "0x7feb352du", "0x846ca68bu"] {
+            assert!(shader.contains(k), "solid.wgsl's variant_of should use {k}");
+        }
     }
 }

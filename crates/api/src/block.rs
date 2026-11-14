@@ -239,9 +239,10 @@ pub enum Turning {
 }
 
 /// How a block looks inside and out, registered by name like everything else: a cube of
-/// [`LookDef::SIZE`] texels a side that spans one boxel and repeats every block. Faces show the
-/// texels just inside them, so a cut shows what's inside. Plain pixels, so it crosses any
-/// boundary as data.
+/// [`LookDef::SIZE`] texels a side that spans one boxel. Faces show the texels just inside
+/// them, so a cut shows what's inside. A look may hold several cubes, its variants, and each
+/// block shows one of them, picked by where it is, so a field of blocks doesn't repeat every
+/// block. Plain pixels, so it crosses any boundary as data.
 #[derive(Clone, Debug, PartialEq)]
 pub struct LookDef {
     /// Namespaced name, such as `"base:stone"`.
@@ -251,17 +252,14 @@ pub struct LookDef {
     /// is turned. A rule of the material, so every shape of it agrees.
     pub turns: bool,
     /// Four bytes a texel, sRGB, opaque. X runs fastest, then Y, then Z (up, as in the world):
-    /// texel `(x, y, z)` starts at byte `4 * LookDef::index(x, y, z)`.
+    /// texel `(x, y, z)` starts at byte `4 * LookDef::index(x, y, z)`. Then the next variant's
+    /// texels the same way, up to [`LookDef::MAX_VARIANTS`] in all.
     pub rgba: Vec<u8>,
     /// A shine where the sun reflects off it toward the eye, like ice; `None` for matte looks.
     pub sheen: Option<Sheen>,
     /// How brightly it lights itself, ignoring the sun, the sky and shade: 0 for none, 1 shows
     /// its own colors at full strength in the dark, above 1 brighter still. Lights nothing else.
     pub glow: f32,
-    /// What it generates as it's drawn, over or instead of the cube, from the world position:
-    /// see [`crate::look`]. A look that turns generates nothing, as its texels aren't where
-    /// they stand in the world.
-    pub detail: crate::look::LookDetail,
 }
 
 /// How a look shines (Blinn-Phong): how bright the highlight gets, and how tight it is.
@@ -278,19 +276,31 @@ impl LookDef {
     pub const SIZE: usize = 16;
     /// Texels in the whole cube.
     pub const VOLUME: usize = Self::SIZE * Self::SIZE * Self::SIZE;
+    /// The most variants a look holds.
+    pub const MAX_VARIANTS: usize = 16;
+
+    /// How many variants it holds.
+    pub fn variants(&self) -> usize {
+        self.rgba.len() / (4 * Self::VOLUME)
+    }
+
+    /// Variant `k`'s texels, four bytes each.
+    pub fn variant(&self, k: usize) -> &[u8] {
+        &self.rgba[4 * Self::VOLUME * k..4 * Self::VOLUME * (k + 1)]
+    }
 
     /// The texel number of `(x, y, z)`, each below `SIZE`.
     pub const fn index(x: usize, y: usize, z: usize) -> usize {
         x + Self::SIZE * (y + Self::SIZE * z)
     }
 
-    /// The color at `(x, y, z)`.
+    /// The color at `(x, y, z)` in the first variant.
     pub fn texel(&self, x: usize, y: usize, z: usize) -> [u8; 4] {
         let at = 4 * Self::index(x, y, z);
         self.rgba[at..at + 4].try_into().unwrap()
     }
 
-    /// The average color, for wherever the block is drawn as one color.
+    /// The average color over every variant, for wherever the block is drawn as one color.
     pub fn average(&self) -> [u8; 3] {
         let mut sum = [0u64; 3];
         for px in self.rgba.as_chunks::<4>().0 {
