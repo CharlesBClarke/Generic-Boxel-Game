@@ -3,6 +3,55 @@
 Moved out of `SLICES.md` on 2026-11-03 so the roadmap stays short. Each toy's full write-up, newest first, as it stood when it closed. `SLICES.md` keeps a one-line summary of each.
 
 
+#### Look variants (`toy-look-variants`)
+
+**Stage:** Done (2026-11-14).
+
+**Goal:** one look system. Noise becomes a tool for making looks; the game draws only baked volumes, several variants of each look picked per boxel by position, so everything degrades one way, by the mips. Lazy version first (seams accepted). Notes: `docs/notes/look-variants.md`.
+
+**Plan**
+- *Baking* (`data_mods::looks`): every look baked as 16 variants. Variant *k* takes the look's world-position noise and grain sampled in a 16³ window at its own offset (not wrapping, so neighbors may seam). Patterns (brick colors, plank shades, rings) are the same in every variant; only noise and grain vary (the user: "yes"). `api::LookDef`'s `detail: LookDetail` becomes `variants`; the noise code moves from `api::look` into `data_mods` (a tool for making looks now) and `api::look` goes.
+- *Drawing* (`client::volumes`, `solid.wgsl`): variants side by side across the atlas (16 tiles wide, 4096 px). The shader hashes the boxel's world cell to pick a variant, per pixel, so greedy merges stay. Loose items, models and far terrain use variant 0 (the user: "sure"). Removed: `look_noise.wgsl`, the `generated` buffer, the detail byte, the `detail` switch, `noise_fade_start`/`noise_fade_end`, the live `grain` slider, `tests/look_noise_gpu.rs`. Anisotropic reads and mips stay.
+- *Tuning*: **variants** (1 / 4 / 8 / 16), how many the hash spreads over; all 16 always baked, so it changes live.
+- *Tests*: variants deterministic, only recipe colors, differ from each other, patterned texels equal across variants; atlas layout and per-tile mips; a Rust copy of the pick hash spreads evenly; last-mip-is-average adapted.
+- *Bench*: the deferred quick bench (`tools/bench.sh --quick 92bbaed work`) plus the texturing switch study, and the usual verify bench; expected faster.
+
+**Implementation notes**
+- Grain strength is baked now: the user's live `grain` of 1.8 went into the recipes (wood 0.2 → 0.36, crafting table 0.1 → 0.18).
+- The 8-color cap on noise is gone (it was the shader table's limit).
+- A shader read spread along a glancing face that lands in the next boxel of a merged quad uses that boxel's variant.
+- Tests: `cargo test --workspace` all pass, clippy clean; the game starts with no shader errors.
+
+**Done when**
+1. Each boxel shows one of N baked variants; the shader works out no noise.
+2. The variants setting changes among 1, 4, 8, 16 while playing.
+3. Distance degrades looks only through the mips; no fade sliders left.
+4. The user has judged seams at 1.5–2 texel speckle: fine, or Wang cubes next.
+5. The bench shows no surprises.
+6. The design doc's Looks decision and the Terminology table's Look entry are updated; the "Skip mip reads on noise texels" backlog entry is removed.
+
+**Verify** (2026-11-14)
+1. Each boxel shows one of N baked variants; the shader works out no noise (`look_noise.wgsl`, the `generated` buffer and the detail byte are gone). Met.
+2. The `variants` setting changes live, 1 to 16. Met.
+3. Distance degrades looks only through the mips; no fade sliders. Met.
+4. Seams: the user, after playing: "works now good job". Met; Wang cubes not needed for now.
+5. Quick bench (`tools/bench.sh --quick 92bbaed master work`), Iris Xe, 1080×1080, no throttling worth noting:
+
+   | spot | 92bbaed ms | master ms | work ms | work vs master |
+   |---|---|---|---|---|
+   | recorded | 22.4 | 22.7 | 22.6 | -0% |
+   | overlook | 24.5 | 25.8 | 26.0 | +1% |
+   | lake | 20.0 | 20.8 | 20.2 | -3% |
+
+   Level with master, not the ~3 ms faster the plan expected: that 3 ms was measured (2026-11-11) before noise faded into the mip blend, and since `fix-noise-mip-mix` most far pixels already skipped the noise. The overlook rows a little slower than 92bbaed (Grass depth plus the mip fix) are within the run-to-run spread seen before (92bbaed's own 1% low there was 24.3, an outlier). Screenshots look the same as master's, with speckle kept a little farther out.
+
+   Looks study (`tools/bench/looks.txt`, work): `shipped` 22.6 / 26.0 / 20.2 ms (recorded / overlook / lake); `variants_1` 22.1 / 25.9 / 20.5 (the variant hash costs at most ~0.5 ms); `no_mips` 20.8 / 24.2 / 19.8 (mip reads ~1.8 ms); `aniso_1` 22.3 / 23.8 / 18.5 (extra anisotropic reads up to ~2 ms on glancing ground).
+6. Design doc Looks decision and Terminology Look entry updated; "Skip mip reads on noise texels" removed from the backlog. Met.
+
+- *Decisions:* the game draws only baked volumes; noise and grain are bake-time tools (`data_mods::look_noise`); a look that doesn't turn holds 16 variants, one picked per boxel in the shader by a hash of its world cell (also per anisotropic read, so merged quads stay right); loose items, models and far terrain show the first variant; looks that turn bake once; `api::LookDef::rgba` holds 1 to `MAX_VARIANTS` cubes back to back.
+- *Deferred:* Wang cubes (only if seams start to bother); large-scale patches (the Octave noise and patch tint entry, now a bake-time idea plus a world-position tint).
+- *API debt:* none. `api::look` is gone, so the API is smaller.
+
 #### Grass depth (`toy-grass-depth`)
 
 **Stage:** Done (2026-11-14). Data only.

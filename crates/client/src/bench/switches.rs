@@ -31,7 +31,6 @@ pub fn set(world: &mut World, key: &str, on: bool) -> bool {
         "shading.sky" => &mut shading.parts.sky,
         "shading.stored" => &mut shading.parts.stored,
         "shading.ao" => &mut shading.parts.ao,
-        "shading.detail" => &mut shading.parts.detail,
         "shading.mips" => &mut shading.parts.mips,
         "shadows.maps" => &mut shadows.switches.maps,
         "shadows.far" => &mut shadows.switches.far,
@@ -65,9 +64,9 @@ mod tests {
         assert!(!world.resource::<ShadowTuning>().switches.maps);
         assert!(world.resource::<ShadowTuning>().switches.far);
         assert!(!world.resource::<ShadingTuning>().parts.fog);
-        assert!(set(&mut world, "shading.detail", false) && set(&mut world, "shading.mips", false));
+        assert!(!set(&mut world, "shading.detail", false) && set(&mut world, "shading.mips", false));
         let parts = world.resource::<ShadingTuning>().parts;
-        assert!(!parts.detail && !parts.mips);
+        assert!(!parts.mips);
         assert!(set(&mut world, "view.msaa", false) && set(&mut world, "view.depth_prepass", true));
         assert!(set(&mut world, "view.merge_faces", false));
         assert!(set(&mut world, "view.far_terrain", false));

@@ -444,16 +444,17 @@ impl LookRegistry {
         if self.by_name.contains_key(&def.name) {
             return Err(ApiError::DuplicateName(def.name));
         }
-        let expected = LookDef::VOLUME * 4;
-        if def.rgba.len() != expected {
+        let cube = LookDef::VOLUME * 4;
+        let variants = def.rgba.len() / cube;
+        if !def.rgba.len().is_multiple_of(cube) || !(1..=LookDef::MAX_VARIANTS).contains(&variants) {
             let size = LookDef::SIZE;
             return Err(ApiError::InvalidDef(format!(
-                "look {:?} has {} bytes, expected {expected} for {size}×{size}×{size} texels",
+                "look {:?} has {} bytes, expected 1 to {} variants of {cube} for {size}×{size}×{size} texels",
                 def.name,
-                def.rgba.len()
+                def.rgba.len(),
+                LookDef::MAX_VARIANTS
             )));
         }
-        def.detail.check().map_err(|e| ApiError::InvalidDef(format!("look {:?}: {e}", def.name)))?;
         self.by_name.insert(def.name.clone(), self.defs.len());
         self.defs.push(def);
         Ok(())
@@ -619,7 +620,7 @@ mod tests {
     }
 
     fn look(name: &str) -> LookDef {
-        LookDef { name: name.into(), turns: false, rgba: vec![255; LookDef::VOLUME * 4], sheen: None, glow: 0.0, detail: Default::default() }
+        LookDef { name: name.into(), turns: false, rgba: vec![255; LookDef::VOLUME * 4], sheen: None, glow: 0.0 }
     }
 
     #[test]
@@ -632,8 +633,12 @@ mod tests {
         assert_eq!(reg.register(look("stone")), Err(ApiError::InvalidName("stone".into())));
         let short = LookDef { rgba: vec![0; 7], ..look("test:short") };
         assert!(matches!(reg.register(short), Err(ApiError::InvalidDef(_))));
-        let detail = api::look::LookDetail { texels: vec![1; 3], ..Default::default() };
-        assert!(matches!(reg.register(LookDef { detail, ..look("test:odd") }), Err(ApiError::InvalidDef(_))));
+        let empty = LookDef { rgba: vec![], ..look("test:empty") };
+        assert!(matches!(reg.register(empty), Err(ApiError::InvalidDef(_))));
+        let many = LookDef { rgba: vec![255; LookDef::VOLUME * 4 * (LookDef::MAX_VARIANTS + 1)], ..look("test:many") };
+        assert!(matches!(reg.register(many), Err(ApiError::InvalidDef(_))));
+        reg.register(LookDef { rgba: vec![255; LookDef::VOLUME * 4 * 3], ..look("test:three") }).unwrap();
+        assert_eq!(reg.get("test:three").unwrap().variants(), 3);
     }
 
     #[test]

@@ -2,14 +2,17 @@
 //!
 //! A recipe has one base pattern (`noise`, `bricks`, `planks` or `rings`) and may add a `top`
 //! cover. Every pattern repeats exactly at the volume's edges, so blocks side by side meet
-//! without seams, and the same recipe always makes the same volume.
+//! without seams, and the same recipe always makes the same volume. A look that doesn't turn
+//! is baked as several variants (see [`Recipe::bake`]): its noise and grain taken from
+//! different windows of an endless field (see [`crate::look_noise`]), so a field of blocks
+//! doesn't repeat every block. Where two variants meet, the noise may show a seam.
 //!
 //! Faces show the layer just inside them, so a full block's faces show layers 0 and 15 and a
 //! slab's cut shows 7 or 8. Lines like mortar and seams stay off those layers by default:
 //! a whole face of mortar looks broken, not built.
 
 use api::LookDef;
-use api::look::{Grain, LookDetail, NoiseLayer, detail_byte, hash, pick, smooth, unit};
+use crate::look_noise::{Grain, LookDetail, NoiseLayer, detail_byte, hash, pick, smooth, unit};
 use serde::Deserialize;
 use std::collections::{HashMap, HashSet};
 
@@ -128,12 +131,11 @@ struct Planks {
     cross: bool,
     #[serde(default)]
     seed: u32,
-    /// Grain drawn over the boards from where they are in the world, so it differs from block
-    /// to block.
+    /// Grain over the boards, taken from the field, so it differs from variant to variant.
     grain: Option<GrainRecipe>,
 }
 
-/// Streaks along each board: see [`api::look::Grain`].
+/// Streaks along each board: see [`crate::look_noise::Grain`].
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct GrainRecipe {
@@ -259,17 +261,27 @@ impl Recipe {
         Ok(texels.iter().flat_map(|&[r, g, b]| [r, g, b, 255]).collect())
     }
 
-    /// What the look generates as it's drawn: its noise (the base and the top cover) from the
-    /// world position, and grain over planks. Nothing for a look that turns, as its texels
-    /// aren't where they stand in the world. Call after [`Recipe::generate`] has checked it.
+    /// Every variant of the look, one after another, four bytes a texel (see
+    /// [`api::LookDef::rgba`]): [`VARIANTS`] of them if it takes anything from the field, else
+    /// just the one [`Recipe::generate`] makes.
+    pub fn bake(&self) -> Result<Vec<u8>, String> {
+        let base = self.generate()?;
+        let detail = self.detail()?;
+        if detail.texels.is_empty() {
+            return Ok(base);
+        }
+        Ok((0..VARIANTS).flat_map(|k| detail.bake(&base, window(k))).collect())
+    }
+
+    /// What the look takes from the field: its noise (the base and the top cover), and grain
+    /// over planks. Nothing for a look that turns: a turned block shows its texels turned,
+    /// so its noise would run differently from its neighbors' anyway. Call after
+    /// [`Recipe::generate`] has checked it.
     pub fn detail(&self) -> Result<LookDetail, String> {
         if self.turns {
             return Ok(LookDetail::default());
         }
         let layer = |colors: &[[u8; 3]], scale: Scale, seed: u32| -> Result<NoiseLayer, String> {
-            if colors.len() > api::look::MAX_COLORS {
-                return Err(format!("noise takes at most {} colors, not {}", api::look::MAX_COLORS, colors.len()));
-            }
             Ok(NoiseLayer { colors: colors.to_vec(), scale: scale.axes(), seed })
         };
         let mut detail = LookDetail::default();
@@ -304,6 +316,16 @@ impl Recipe {
         }
         Ok(detail)
     }
+}
+
+/// How many variants a look that takes from the field is baked as.
+pub const VARIANTS: usize = LookDef::MAX_VARIANTS;
+
+/// The lowest corner of variant `k`'s window on the field: blocks well apart, so no two
+/// variants share any texels.
+fn window(k: usize) -> [u32; 3] {
+    let k = k as i64 * SIZE as i64;
+    crate::look_noise::world_texel([k * 7, k * 13, k * 5])
 }
 
 /// Every texel's index and position, X fastest.
@@ -593,7 +615,7 @@ impl Planks {
                 if id == MORTAR {
                     0
                 } else {
-                    let direction = if along == 0 { api::look::GRAIN_X } else { api::look::GRAIN_Y };
+                    let direction = if along == 0 { crate::look_noise::GRAIN_X } else { crate::look_noise::GRAIN_Y };
                     // Boards side by side differ by 2, so they never share a number.
                     detail_byte(0, direction, (id % 16) as u8)
                 }
@@ -1171,7 +1193,7 @@ mod tests {
         for (i, [x, y, z]) in positions() {
             let [r, g, _] = texel(&v, x, y, z);
             let green = g > r + 30;
-            let layer = api::look::detail_layer(d.texels[i]);
+            let layer = crate::look_noise::detail_layer(d.texels[i]);
             assert_eq!(layer, if green { 2 } else { 1 }, "texel {x} {y} {z}");
         }
     }
@@ -1186,7 +1208,7 @@ mod tests {
         assert!(d.noise.is_empty());
         assert_eq!(d.grain.map(|g| g.strength), Some(0.1));
         let at = |x, y, z| d.texels[LookDef::index(x, y, z)];
-        use api::look::{GRAIN_X, GRAIN_Y, detail_board, detail_grain};
+        use crate::look_noise::{GRAIN_X, GRAIN_Y, detail_board, detail_grain};
         // Layers alternate X and Y, two texels thick, the first starting a texel down.
         assert_eq!(detail_grain(at(5, 5, 0)), detail_grain(at(5, 5, 15)));
         let (low, high) = (detail_grain(at(5, 5, 1)), detail_grain(at(5, 5, 3)));
@@ -1211,10 +1233,68 @@ mod tests {
     #[test]
     fn bad_detail_says_what_is_wrong() {
         let err = |toml: &str| recipe(toml).detail().unwrap_err();
-        let nine = ["[1, 1, 1]"; 9].join(", ");
-        assert!(err(&format!("noise = {{ colors = [{nine}] }}")).contains("at most 8"));
         let grain = |g: &str| format!("planks = {{ width = 4, colors = [[1, 1, 1]], grain = {{ {g} }} }}");
         assert!(err(&grain("scale = [12, 1, 1], strength = 0.9")).contains("strength"));
         assert!(err(&grain("scale = [12, 0, 1], strength = 0.1")).contains("scale"));
+    }
+
+    #[test]
+    fn noise_looks_bake_as_variants_that_differ() {
+        let r = recipe(&format!("{STONE}\ntop = {{ colors = [[60, 140, 40], [70, 150, 50]], depth = 2, seed = 3 }}"));
+        let all = r.bake().unwrap();
+        assert_eq!(all, r.bake().unwrap(), "the same recipe bakes the same variants");
+        assert_eq!(all.len(), 4 * LookDef::VOLUME * VARIANTS);
+        let variants: Vec<&[u8]> = all.chunks(4 * LookDef::VOLUME).collect();
+        for i in 0..VARIANTS {
+            for j in i + 1..VARIANTS {
+                assert_ne!(variants[i], variants[j], "variants {i} and {j} match");
+            }
+        }
+        // Only the recipe's colors, and the top stays on top in every variant.
+        let base = r.generate().unwrap();
+        let mut allowed = colors(&base);
+        allowed.extend([[100, 100, 100], [120, 120, 120], [140, 140, 140], [60, 140, 40], [70, 150, 50]]);
+        for v in &variants {
+            assert!(colors(v).is_subset(&allowed), "{:?}", colors(v));
+            for (_, [x, y, z]) in positions() {
+                let green = |rgba: &[u8]| texel(rgba, x, y, z)[1] >= 140 && texel(rgba, x, y, z)[0] < 100;
+                assert_eq!(green(v), green(&base), "texel {x} {y} {z}");
+            }
+        }
+    }
+
+    #[test]
+    fn grain_varies_but_the_boards_stay() {
+        let r = recipe(
+            "planks = { width = 4, thickness = 2, colors = [[120, 90, 60], [140, 100, 70]], cross = true, \
+             seam = [20, 20, 20], grain = { scale = [12, 1, 1], strength = 0.2, seed = 3 } }",
+        );
+        let base = r.generate().unwrap();
+        let all = r.bake().unwrap();
+        let variants: Vec<&[u8]> = all.chunks(4 * LookDef::VOLUME).collect();
+        assert_eq!(variants.len(), VARIANTS);
+        assert_ne!(variants[0], variants[1], "grain differs between variants");
+        for v in &variants {
+            for (i, _) in positions() {
+                let (b, t) = (&base[4 * i..4 * i + 3], &v[4 * i..4 * i + 3]);
+                if b == [20, 20, 20] {
+                    assert_eq!(t, b, "seams aren't grained");
+                } else {
+                    // Grain shades a board's own color, within its strength (and the mean).
+                    for c in 0..3 {
+                        let ratio = t[c] as f32 / b[c] as f32;
+                        assert!((0.7..1.35).contains(&ratio), "texel {i}: {b:?} became {t:?}");
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn looks_without_field_detail_bake_once() {
+        for toml in [BRICKS, "turns = true\nrings = { colors = [[1, 1, 1]], spacing = 2, bark = [[2, 2, 2]] }"] {
+            let r = recipe(toml);
+            assert_eq!(r.bake().unwrap(), r.generate().unwrap(), "{toml}");
+        }
     }
 }

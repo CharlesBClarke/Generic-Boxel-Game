@@ -18,6 +18,7 @@
 mod crafting;
 mod inventory;
 mod glb;
+mod look_noise;
 mod looks;
 mod sounds;
 mod targets;
@@ -282,11 +283,10 @@ pub fn load(dir: &Path) -> Result<DataMod, LoadError> {
                 return Err(file.error_at(recipe, message));
             }
             let error = |e: String| file.error_at(recipe, format!("look {short:?}: {e}"));
-            let rgba = recipe.get_ref().generate().map_err(error)?;
+            let rgba = recipe.get_ref().bake().map_err(error)?;
             let sheen = recipe.get_ref().sheen().map_err(error)?;
             let glow = recipe.get_ref().glow().map_err(error)?;
-            let detail = recipe.get_ref().detail().map_err(error)?;
-            looks.push(LookDef { name, turns: recipe.get_ref().turns, rgba, sheen, glow, detail });
+            looks.push(LookDef { name, turns: recipe.get_ref().turns, rgba, sheen, glow });
         }
         let blocks = entries
             .block
@@ -515,7 +515,8 @@ mod tests {
         assert_eq!(m.version(), "0.1.0");
         let names: Vec<_> = m.looks().iter().map(|l| l.name.as_str()).collect();
         assert_eq!(names, ["test:grass", "test:stone"]);
-        assert_eq!(m.looks()[1].rgba, [100, 100, 100, 255].repeat(LookDef::VOLUME));
+        assert_eq!(m.looks()[1].variants(), LookDef::MAX_VARIANTS, "noise is baked as variants");
+        assert_eq!(m.looks()[1].rgba, [100, 100, 100, 255].repeat(LookDef::VOLUME * LookDef::MAX_VARIANTS));
         assert_eq!(m.looks()[0].texel(0, 0, LookDef::SIZE - 1), [60, 140, 40, 255], "grass on top");
         assert!(m.looks().iter().all(|l| !l.turns), "looks stay lined up with the world by default");
 

@@ -1,8 +1,7 @@
 //! The material every block is drawn with: each fragment colored from its block's look (see
-//! `solid.wgsl`): the look's face slices, their mip levels farther away, and the detail it
-//! generates from the world position. Times the vertex color, ambient occlusion and a tint,
-//! then lit and
-//! fogged from the atmosphere (see `crate::shading`). The sun's shadow is in `sun.wgsl`, which
+//! `solid.wgsl`): the face slices of the look's variant its boxel shows, their mip levels
+//! farther away. Times the vertex color, ambient occlusion and a tint, then lit and fogged
+//! from the atmosphere (see `crate::shading`). The sun's shadow is in `sun.wgsl`, which
 //! models share (see `crate::model`).
 
 use bevy::asset::{AssetPath, RenderAssetUsages, embedded_asset, embedded_path};
@@ -11,14 +10,11 @@ use bevy::mesh::{MeshVertexAttribute, MeshVertexBufferLayoutRef};
 use bevy::pbr::{MaterialPipeline, MaterialPipelineKey};
 use bevy::prelude::*;
 use bevy::render::render_resource::{
-    AsBindGroup, Extent3d, RenderPipelineDescriptor, ShaderType, SpecializedMeshPipelineError, TextureDimension,
+    AsBindGroup, Extent3d, RenderPipelineDescriptor, SpecializedMeshPipelineError, TextureDimension,
     TextureFormat, VertexFormat,
 };
-use bevy::render::storage::ShaderStorageBuffer;
 use bevy::shader::ShaderDefVal;
 use bevy::shader::ShaderRef;
-
-use api::LookDef;
 
 use crate::shading::Atmosphere;
 use crate::volumes::Volumes;
@@ -57,16 +53,14 @@ pub struct SolidMaterial {
     /// as its mesh carries none (see `crate::items`). Zero for the world's meshes.
     #[uniform(5)]
     pub light: Vec4,
-    /// Where generated detail is read from: the render origin's cell in texels, as the noise
-    /// takes positions (see [`api::look::world_texel`]), then 1 for meshes drawn where they
-    /// stand in the world (chunks, the ghost) or 0 for ones that aren't (loose items), which
-    /// read it as if at the world's middle, or 2 for far terrain, drawn plainly (see
-    /// [`crate::far::FAR_PLACE`]). Kept up to date by `crate::shading`.
+    /// Which variants a mesh's boxels show: the render origin's cell (as `u32`s, wrapping),
+    /// then 1 for meshes drawn where they stand in the world (chunks, the ghost), whose boxels
+    /// each show the variant picked for where they are (see [`crate::volumes::variant_of`]),
+    /// 0 for ones that aren't (loose items), or 2 for far terrain (see
+    /// [`crate::far::FAR_PLACE`]); both of those show the first variant. Kept up to date by
+    /// `crate::shading`.
     #[uniform(6)]
     pub place: UVec4,
-    /// What each look generates: [`look_table`].
-    #[storage(7, read_only)]
-    pub generated: Handle<ShaderStorageBuffer>,
     /// For far terrain (see [`crate::far`]): how much of the darkness ambient occlusion puts
     /// on a staircase's steps its faces take (see [`crate::view::ViewTuning::far_crease`]),
     /// then unused. Zero for everything else.
@@ -76,65 +70,11 @@ pub struct SolidMaterial {
 }
 
 /// `place` for meshes away from the world.
-pub const AWAY: UVec4 = UVec4::new(api::look::WORLD_OFFSET, api::look::WORLD_OFFSET, api::look::WORLD_OFFSET, 0);
+pub const AWAY: UVec4 = UVec4::new(0, 0, 0, 0);
 
 /// `place` for meshes in the world, with the render origin at `origin`.
 pub fn in_world(origin: api::I64Vec3) -> UVec4 {
-    let [x, y, z] = api::look::world_texel((origin * LookDef::SIZE as i64).to_array());
-    UVec4::new(x, y, z, 1)
-}
-
-/// One noise layer as the shader reads it. Matches `Noise` in `solid.wgsl`.
-#[derive(Clone, Copy, Debug, Default, ShaderType)]
-pub struct NoiseGpu {
-    /// Linear RGB.
-    pub colors: [Vec4; api::look::MAX_COLORS],
-    /// In sixteenths of a texel (see [`api::look::scale_units`]), then how many colors.
-    pub scale: UVec4,
-    /// The seed, the rest unused.
-    pub seed: UVec4,
-}
-
-/// What one look generates, as the shader reads it. Matches `Generated` in `solid.wgsl`.
-#[derive(Clone, Copy, Debug, Default, ShaderType)]
-pub struct LookGpu {
-    pub noise: [NoiseGpu; api::look::MAX_LAYERS],
-    /// Along, across and through the board, in sixteenths of a texel, then the seed.
-    pub grain_scale: UVec4,
-    /// The grain's strength and its noise's average value (see
-    /// [`api::look::Grain::mean_value`]), the rest unused.
-    pub grain: Vec4,
-}
-
-/// Every volume's generated detail, by volume.
-pub fn look_table(volumes: &Volumes) -> Vec<LookGpu> {
-    use api::look::{scale_units, srgb_to_linear};
-    volumes
-        .details
-        .iter()
-        .map(|d| {
-            let mut look = LookGpu::default();
-            for (gpu, layer) in look.noise.iter_mut().zip(&d.noise) {
-                for (c, rgb) in gpu.colors.iter_mut().zip(&layer.colors) {
-                    *c = Vec4::new(srgb_to_linear(rgb[0]), srgb_to_linear(rgb[1]), srgb_to_linear(rgb[2]), 1.0);
-                }
-                let [x, y, z] = layer.scale.map(scale_units);
-                gpu.scale = UVec4::new(x, y, z, layer.colors.len() as u32);
-                gpu.seed = UVec4::new(layer.seed, 0, 0, 0);
-            }
-            if let Some(g) = &d.grain {
-                let [x, y, z] = g.scale.map(scale_units);
-                look.grain_scale = UVec4::new(x, y, z, g.seed);
-                look.grain = Vec4::new(g.strength, g.mean_value(), 0.0, 0.0);
-            }
-            look
-        })
-        .collect()
-}
-
-/// [`look_table`] as a storage buffer.
-pub fn look_buffer(volumes: &Volumes) -> ShaderStorageBuffer {
-    ShaderStorageBuffer::from(look_table(volumes))
+    UVec4::new(origin.x as u32, origin.y as u32, origin.z as u32, 1)
 }
 
 impl Material for SolidMaterial {
@@ -187,7 +127,6 @@ pub struct SolidPlugin;
 impl Plugin for SolidPlugin {
     fn build(&self, app: &mut App) {
         bevy::shader::load_shader_library!(app, "sun.wgsl");
-        bevy::shader::load_shader_library!(app, "look_noise.wgsl");
         embedded_asset!(app, "solid.wgsl");
         app.add_plugins(MaterialPlugin::<SolidMaterial>::default());
     }

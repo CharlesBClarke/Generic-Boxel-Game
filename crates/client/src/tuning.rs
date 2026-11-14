@@ -313,7 +313,6 @@ pub fn tuning_panel(
                             ui.checkbox(&mut parts.sky, "sky");
                             ui.checkbox(&mut parts.stored, "stored light");
                             ui.checkbox(&mut parts.ao, "ambient occlusion");
-                            ui.checkbox(&mut parts.detail, "generated detail");
                             ui.checkbox(&mut parts.mips, "mipmaps");
                         });
                     }

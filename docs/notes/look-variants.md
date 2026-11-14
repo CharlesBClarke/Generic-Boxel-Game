@@ -1,6 +1,6 @@
 # Look variants
 
-*Notes for the Look variants backlog entry in `SLICES.md`. Written 2026-11-14, at the close of Grass depth, from a talk after `fix-noise-mip-mix`.*
+*Notes for the Look variants backlog entry in `SLICES.md`. Written 2026-11-14, at the close of Grass depth, from a talk after `fix-noise-mip-mix`. The lazy version was built and closed the same day (`docs/done-toys.md`); seams were judged fine, so Wang cubes stay here as the fallback.*
 
 ## Why
 

@@ -1,0 +1,11 @@
+# A study of what looks cost to draw (2026-11-14, Look variants): `tools/bench.sh --study
+# tools/bench/looks.txt`. Variants against one repeating cube (the hash per read), mip reads
+# off, and anisotropic reads cut to one.
+
+[set shipped]
+[set variants_1]
+shading.variants = 1
+[set no_mips]
+shading.mips = 0
+[set aniso_1]
+shading.anisotropy = 1
