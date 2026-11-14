@@ -824,9 +824,11 @@ fn build(job: &FarJob) -> Result<Option<Column>, ApiError> {
     Ok(Some((out, mixes)))
 }
 
-/// Finds what each solid cell of `data` is made of by filling the generator `depth` levels
-/// finer over it (see [`Reach::mix`]), the terrain's center at `center`: the material most of the finer cells are becomes the cell's own, the
-/// next its second (see [`Mix`]). Cells `touched` by edits are left as the edits made them,
+/// Finds what each solid cell of `data` shows by filling the generator `depth` levels finer
+/// over it (see [`Reach::mix`]), the terrain's center at `center`: of the finer cells that
+/// face air, as full detail would show them, the material most are becomes the cell's own,
+/// the next its second (see [`Mix`]). Buried finer cells don't count: the dirt under a
+/// grass top isn't seen from above. Cells `touched` by edits are left as the edits made them,
 /// as are cleared ones. `false` if the generator can't fill coarsely.
 fn mix_finer(
     generator: &dyn api::Generator,
@@ -881,9 +883,35 @@ fn mix_finer(
                 let ids: Vec<Option<crate::BlockId>> = std::iter::once(None)
                     .chain(fill.palette.iter().map(|name| blocks.id(name)))
                     .collect();
+                // Whether the finer cell at `p` (in this finer chunk) faces air: past the finer
+                // chunk, as the cell there says, open over the top, closed on the sides and under.
+                let empty = |x: i64, y: i64, z: i64| -> bool {
+                    if (0..size).contains(&x) && (0..size).contains(&y) && (0..size).contains(&z) {
+                        let e = fill.cells[LocalPos::new(x as u8, y as u8, z as u8).index()] as usize;
+                        return ids.get(e).copied().flatten().is_none();
+                    }
+                    let (px, py, pz) = (base.x + x.div_euclid(per), base.y + y.div_euclid(per), base.z + z.div_euclid(per));
+                    if pz >= size {
+                        return true;
+                    }
+                    if pz < 0 || !(0..size).contains(&px) || !(0..size).contains(&py) {
+                        return false;
+                    }
+                    !filled(px, py, pz)
+                };
                 for i in 0..api::CHUNK_VOLUME {
                     let Some(block) = ids.get(fill.cells[i] as usize).copied().flatten() else { continue };
                     let p = LocalPos::from_index(i);
+                    let (x, y, z) = (p.x as i64, p.y as i64, p.z as i64);
+                    let faces_air = empty(x, y, z + 1)
+                        || empty(x, y, z - 1)
+                        || empty(x + 1, y, z)
+                        || empty(x - 1, y, z)
+                        || empty(x, y + 1, z)
+                        || empty(x, y - 1, z);
+                    if !faces_air {
+                        continue;
+                    }
                     let cell = LocalPos::new(
                         (base.x + p.x as i64 / per) as u8,
                         (base.y + p.y as i64 / per) as u8,
@@ -1353,9 +1381,11 @@ mod tests {
         assert_eq!(mix.at(3), None);
     }
 
-    /// Stone below z 0, with grass making up the top `grass` boxels of it.
+    /// Stone below z 0, with grass making up the top `grass` boxels of it west of `bare`;
+    /// bare stone from `bare` east.
     struct Layers {
         grass: i64,
+        bare: i64,
     }
 
     impl api::Tunables for Layers {
@@ -1377,8 +1407,9 @@ mod tests {
             for i in 0..api::CHUNK_VOLUME {
                 let p = LocalPos::from_index(i);
                 // The cell's middle, sampled.
+                let x = origin.x + p.x as i64 * s + s / 2;
                 let z = origin.z + p.z as i64 * s + s / 2;
-                out.cells[i] = if z >= 0 { 0 } else if z >= -self.grass { grass } else { stone };
+                out.cells[i] = if z >= 0 { 0 } else if z >= -self.grass && x < self.bare { grass } else { stone };
             }
             true
         }
@@ -1387,31 +1418,36 @@ mod tests {
         }
     }
 
-    #[test]
-    fn finer_cells_give_a_cell_its_mix() {
+    /// The level-2 chunk under the ground of `generator` at the origin, its cells given their
+    /// mix from level 1, and the main and second materials of the top cell at `x`.
+    fn mixed_top(generator: &Layers, blocks: &BlockRegistry, x: u8) -> (crate::BlockId, Option<(crate::BlockId, f32)>) {
         use api::Generator;
-        let (blocks, stone, grass) = stone_and_grass();
-        let generator = Layers { grass: 2 };
-        // Level 2, cells 4 a side: the cell from -4 to 0 samples stone at its middle (-2 is
-        // grass's lowest, so grass by the sample), and at level 1 its halves are grass over
-        // stone.
         let column = FarColumn { terrain: 0, level: 2, x: 0, y: 0 };
         let pos = ChunkPos(I64Vec3::new(0, 0, -1));
         let mut fill = ChunkFill::default();
         assert!(generator.fill_coarse(pos.0 * column.span(), 4, &mut fill));
-        let mut data = crate::terrain::to_chunk(pos, &fill, &blocks).unwrap();
+        let mut data = crate::terrain::to_chunk(pos, &fill, blocks).unwrap();
         let mut mix = Mix::default();
         let untouched = vec![false; api::CHUNK_VOLUME];
-        assert!(mix_finer(&generator, &mut data, &mut mix, column, (I64Vec3::ZERO, 1, &blocks), &untouched, &mut fill).unwrap());
-        let top = LocalPos::new(0, 0, 31).index();
-        let main = data.lists[data.cells.at(top) as usize][0].block;
-        let (second, share) = mix.at(top).expect("mixed");
-        assert_eq!([main, second].iter().filter(|&&b| b == grass).count(), 1);
-        assert_eq!([main, second].iter().filter(|&&b| b == stone).count(), 1);
+        assert!(mix_finer(generator, &mut data, &mut mix, column, (I64Vec3::ZERO, 1, blocks), &untouched, &mut fill).unwrap());
+        let top = LocalPos::new(x, 0, 31).index();
+        (data.lists[data.cells.at(top) as usize][0].block, mix.at(top))
+    }
+
+    #[test]
+    fn a_cell_shows_only_what_faces_the_air() {
+        let (blocks, stone, grass) = stone_and_grass();
+        // Grass 2 deep over stone: the top cell (4 boxels, from -4 to 0) samples stone at its
+        // middle, but only its grass top shows from above.
+        let (main, second) = mixed_top(&Layers { grass: 2, bare: i64::MAX }, &blocks, 0);
+        assert_eq!(main, grass);
+        assert_eq!(second, None, "the stone under the grass isn't seen");
+        // Bare rock from x 2: the cell from x 0 to 4 shows half grass, half rock.
+        let (main, second) = mixed_top(&Layers { grass: 2, bare: 2 }, &blocks, 0);
+        let (other, share) = second.expect("mixed");
+        assert!([main, other] == [grass, stone] || [main, other] == [stone, grass]);
         assert!((share - 0.5).abs() < 0.01, "{share}");
-        // Deeper, all stone: no mix.
-        let deep = LocalPos::new(0, 0, 20).index();
-        assert_eq!(mix.at(deep), None);
-        assert_eq!(data.lists[data.cells.at(deep) as usize][0].block, stone);
+        // Past it, all rock.
+        assert_eq!(mixed_top(&Layers { grass: 2, bare: 2 }, &blocks, 3), (stone, None));
     }
 }
