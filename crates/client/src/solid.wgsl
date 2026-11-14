@@ -4,7 +4,7 @@
 // `client::volumes::Volumes::atlas`): exact up close, blended between mip levels as they
 // shrink on screen, with a few reads along faces seen at a glance (anisotropic filtering).
 // Where the look generates detail (see `api::look`), the texel's color comes from noise on
-// its world position instead, or grain shades it, each octave fading toward its average as
+// its world position instead, or grain shades it, each octave fading into the mip blend as
 // its blobs shrink to about a pixel. Ambient occlusion is worked out here from how
 // full the space in front of the quad is around its corners (see `client::mesher::ao_lit`,
 // which this matches). Then light and air (see `client::shading`):
@@ -51,7 +51,6 @@ const LEVELS: i32 = 5;
 
 struct Noise {
     colors: array<vec4<f32>, 8>,
-    average: vec4<f32>,
     // In sixteenths of a texel, then how many colors.
     scale: vec4<u32>,
     seed: vec4<u32>,
@@ -266,17 +265,20 @@ fn look_color(in: VertexOutput, volume: i32) -> vec3<f32> {
         corner = vec3<i32>(round(at - solid / f32(SIZE)));
     }
     let p = place.xyz + bitcast<vec3<u32>>(corner * SIZE + cell);
+    // Detail fades into `far`, the texels' mip blend: a noise texel's baked color is its
+    // noise's average (see `client::volumes`), so far off a face shows every texel under the
+    // pixel mixed (a grass side's green rim with the dirt under it), never just the one at
+    // the pixel's middle.
     if layer > 0u {
         let scale = generated[volume].noise[layer - 1u].scale;
-        let average = generated[volume].noise[layer - 1u].average.rgb;
         let fades = octave_fades(scale.xyz, footprint, start, end);
         if fades.x >= 1.0 {
-            return average;
+            return far;
         }
         let seed = generated[volume].noise[layer - 1u].seed.x;
         let at = pick(value_fading(scale.xyz, seed, p, fades.y), scale.w);
         let near = generated[volume].noise[layer - 1u].colors[at].rgb;
-        return mix(near, average, fades.x);
+        return mix(near, far, fades.x);
     }
     var color = far;
     if grain > 0u {
@@ -285,7 +287,9 @@ fn look_color(in: VertexOutput, volume: i32) -> vec3<f32> {
         if fades.x < 1.0 {
             let strength = generated[volume].grain.x * atmosphere.looks.z;
             let factor = grain_factor(g.xyz, g.w, strength, grain, detail >> 4u, p, fades.y);
-            color *= mix(factor, 1.0, fades.x);
+            // Divided by its average, so grain never shifts a texel's color on average.
+            let mean = 1.0 + strength * (2.0 * generated[volume].grain.y - 1.0);
+            color *= mix(factor / mean, 1.0, fades.x);
         }
     }
     return color;

@@ -160,6 +160,31 @@ impl Grain {
         let v = value(scale, self.seed.wrapping_add(board as u32 * 7919), p);
         1.0 + self.strength * (2.0 * v - 1.0)
     }
+
+    /// The grain's noise value on average over the world, every direction and board alike.
+    /// Drawing divides [`Grain::factor`] by the factor this value gives, so grain shades
+    /// around a texel's own color and never shifts it on average.
+    pub fn mean_value(&self) -> f32 {
+        let mut sum = 0.0f64;
+        let mut count = 0u32;
+        for direction in [GRAIN_X, GRAIN_Y, GRAIN_UP] {
+            for board in 0..16u8 {
+                for i in 0..400u32 {
+                    // Spread out, so many streaks are counted.
+                    let p = [i % 20 * 13, i / 20 * 11, i * 7].map(|c| c.wrapping_add(WORLD_OFFSET));
+                    let factor = self.factor(direction, board, p);
+                    sum += ((factor - 1.0) / self.strength.max(1e-6) + 1.0) as f64 / 2.0;
+                    count += 1;
+                }
+            }
+        }
+        (sum / count as f64) as f32
+    }
+
+    /// [`Grain::factor`] on average at strength `strength`: drawing divides by it.
+    pub fn mean_factor(strength: f32, mean_value: f32) -> f32 {
+        1.0 + strength * (2.0 * mean_value - 1.0)
+    }
 }
 
 /// Smooth value noise at world texel `p`, from 0 to 1: two octaves of random values on a
