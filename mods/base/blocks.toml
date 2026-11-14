@@ -92,7 +92,7 @@ noise = { colors = [[98, 67, 44], [112, 78, 52], [126, 89, 60], [139, 100, 68]],
 # Grass is a full block only for now: what a cut through it should show is in the backlog.
 [looks.grass]
 noise = { colors = [[98, 67, 44], [112, 78, 52], [126, 89, 60], [139, 100, 68]], scale = 1.5, seed = 2 }
-top = { colors = [[76, 124, 44], [88, 140, 50], [101, 156, 58]], depth = 2, ragged = 2, scale = 2, seed = 3 }
+top = { colors = [[76, 124, 44], [88, 140, 50], [101, 156, 58]], depth = 16, ragged = 0, scale = 2, seed = 3 }
 
 [looks.brick]
 bricks = { pattern = "staggered", length = 8, height = 4, colors = [[150, 66, 52], [188, 94, 72], [112, 46, 36], [158, 104, 80]], speckle = 0.06, seed = 4 }
