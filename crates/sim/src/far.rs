@@ -8,8 +8,9 @@
 //!
 //! Which level is drawn where is an octree over far chunks ([`Reach::pick`]): a far chunk
 //! splits into its eight children of the level below when its middle is near enough in 3D,
-//! and only once all eight can be drawn, so nothing is drawn twice and nothing goes missing
-//! while levels load. Levels split by size on screen: where a level's cells would look wider
+//! and only once all eight can be drawn, so no far chunk lies over another and nothing goes
+//! missing while levels load; ordinary chunks that are in are drawn all the same, the far
+//! chunk still waiting left out where they are. Levels split by size on screen: where a level's cells would look wider
 //! than a pixel target (see [`Reach`]). The server builds every far chunk the octree may want
 //! around the player ([`Reach::wanted`]) on the terrain threads, from the generator's coarse
 //! fill ([`api::Generator::fill_coarse`]), with the edited chunks in it shrunk in, and sends
@@ -274,10 +275,13 @@ impl Reach {
         out
     }
 
-    /// The far chunks of `terrain` to draw from `pos`, any level: each spot within reach once
-    /// at most, as fine as what's `ready` to draw allows. A far chunk splits only once all its
-    /// children can be drawn; until then it's drawn whole if it's ready, or else its ready
-    /// children are (leaving holes where nothing is ready).
+    /// The far chunks of `terrain` to draw from `pos`, any level, as fine as what's `ready` to
+    /// draw allows. A far chunk splits only once all its children can be drawn; until then
+    /// it's drawn whole if it's ready, or else its ready children are (leaving holes where
+    /// nothing is ready). So no far chunk (level 1 and up) lies over another. Ordinary chunks
+    /// (level 0) that are ready are always drawn, under a far chunk still waiting too: full
+    /// detail that's in is never hidden, and whoever draws leaves the far chunk out where they
+    /// are (see `client::far`'s mask).
     pub fn pick(&self, terrain: usize, pos: WorldPos, ready: &dyn Fn(FarChunk) -> bool) -> Vec<FarChunk> {
         let mut out = Vec::new();
         for top in self.tops(terrain, pos) {
@@ -303,7 +307,10 @@ impl Reach {
                 return (all, true);
             }
             if ready(chunk) {
-                return (vec![chunk], true);
+                // It stands in for its far chunks; the ordinary chunks under it stay.
+                all.retain(|c| c.level == 0);
+                all.push(chunk);
+                return (all, true);
             }
             return (all, false);
         }
@@ -1284,13 +1291,42 @@ mod tests {
         let picked = reach.pick(0, pos, &|c| c != missing);
         let parent = missing.parent();
         assert!(picked.contains(&parent), "its level-1 far chunk drawn instead");
-        assert!(!picked.iter().any(|p| p.level == 0 && p.parent() == parent));
+        // The seven that are ready stay drawn under it, and no far chunk lies over another.
+        assert_eq!(picked.iter().filter(|p| p.level == 0 && p.parent() == parent).count(), 7);
         let center = pos.boxel().chunk().0;
-        assert!(coverage(&picked, center, 16).values().all(|&n| n == 1));
+        let far_only: Vec<FarChunk> = picked.iter().copied().filter(|p| p.level > 0).collect();
+        assert!(coverage(&far_only, center, 16).values().all(|&n| n == 1));
+        let ordinary: Vec<FarChunk> = picked.iter().copied().filter(|p| p.level == 0).collect();
+        assert!(coverage(&ordinary, center, 16).values().all(|&n| n == 1));
         // Nothing far ready: the ordinary chunks that are, with holes elsewhere.
         let picked = reach.pick(0, pos, &|c| c.level == 0);
         assert!(!picked.is_empty() && picked.iter().all(|p| p.level == 0));
         assert!(coverage(&picked, center, 16).values().all(|&n| n == 1));
+    }
+
+    #[test]
+    fn ordinary_chunks_stay_drawn_under_a_far_chunk_still_waiting() {
+        // As after spawning somewhere new: the ordinary chunks around the player are in, and
+        // of far terrain only the coarsest far chunks, whose finer levels are still coming.
+        let reach = reach(256.0, 2048.0);
+        let pos = at3(16.0, 16.0, 16.0);
+        let center = pos.boxel().chunk().0;
+        let near = |c: FarChunk| (c.pos - center).abs().max_element() <= 2;
+        let picked = reach.pick(0, pos, &|c| if c.level == 0 { near(c) } else { c.level == reach.top() });
+        // Every ordinary chunk that's in is drawn, once.
+        for z in -2..=2 {
+            for y in -2..=2 {
+                for x in -2..=2 {
+                    let c = far(0, center.x + x, center.y + y, center.z + z);
+                    assert_eq!(picked.iter().filter(|&&p| p == c).count(), 1, "{c:?} drawn once");
+                }
+            }
+        }
+        // The coarsest far chunk over them is drawn too (the client leaves it out where they
+        // are), and no far chunk lies over another.
+        let far_only: Vec<FarChunk> = picked.iter().copied().filter(|p| p.level > 0).collect();
+        assert!(far_only.iter().any(|p| p.level == reach.top() && p.holds(ChunkPos(center))));
+        assert!(coverage(&far_only, center, 16).values().all(|&n| n == 1));
     }
 
     #[test]

@@ -311,6 +311,8 @@ fn spawn_chunk_meshes(
     let sheens = images.add(solid::sheen_image(&volumes));
     // Replaced by the real height map once it's built (see `heights`).
     let heights = images.add(heights::height_image(&[heights::NOTHING; 2], 2, 1));
+    // Far terrain's own material gets the real one (see `far::pick_far`).
+    let mask = images.add(far::mask_image(vec![0], 1));
     let solid = |tint: Color, alpha_mode: AlphaMode| SolidMaterial {
         tint: tint.into(),
         looks: image.clone(),
@@ -321,6 +323,7 @@ fn spawn_chunk_meshes(
         light: Vec4::ZERO,
         place: solid::in_world(origin.cell),
         far: Vec4::ZERO,
+        mask: mask.clone(),
         alpha_mode,
     };
     let material = materials.add(solid(Color::WHITE, AlphaMode::Opaque));

@@ -32,6 +32,7 @@ pub const ATTRIBUTE_LIGHT: MeshVertexAttribute = MeshVertexAttribute::new("Light
 pub const ATTRIBUTE_AO: MeshVertexAttribute = MeshVertexAttribute::new("Ao", 517_093_615, VertexFormat::Uint32x4);
 
 #[derive(Asset, TypePath, AsBindGroup, Clone, Debug)]
+#[bind_group_data(SolidKey)]
 pub struct SolidMaterial {
     /// Multiplied with everything, alpha included: white for blocks, see-through for the ghost.
     #[uniform(0)]
@@ -63,10 +64,29 @@ pub struct SolidMaterial {
     pub place: UVec4,
     /// For far terrain (see [`crate::far`]): how much of the darkness ambient occlusion puts
     /// on a staircase's steps its faces take (see [`crate::view::ViewTuning::far_crease`]),
-    /// then unused. Zero for everything else.
+    /// then where the render origin's cell is in its chunk, in boxels (see
+    /// [`crate::far::mask_offset`]). Zero for everything else.
     #[uniform(8)]
     pub far: Vec4,
+    /// For far terrain: which ordinary chunks around the render origin are drawn, where far
+    /// terrain is left out (see [`crate::far::mask_image`]). An empty one for everything else.
+    #[texture(7, dimension = "3d", sample_type = "float", filterable = false)]
+    pub mask: Handle<Image>,
     pub alpha_mode: AlphaMode,
+}
+
+/// What of a material picks its pipeline: far terrain's shader leaves fragments out (see
+/// `far_hidden` in `solid.wgsl`), which the others' never does, so theirs keeps its early
+/// depth test.
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+pub struct SolidKey {
+    far: bool,
+}
+
+impl From<&SolidMaterial> for SolidKey {
+    fn from(material: &SolidMaterial) -> Self {
+        SolidKey { far: material.place.w == crate::far::FAR_PLACE.w }
+    }
 }
 
 /// `place` for meshes away from the world.
@@ -94,7 +114,7 @@ impl Material for SolidMaterial {
         _pipeline: &MaterialPipeline,
         descriptor: &mut RenderPipelineDescriptor,
         layout: &MeshVertexBufferLayoutRef,
-        _key: MaterialPipelineKey<Self>,
+        key: MaterialPipelineKey<Self>,
     ) -> Result<(), SpecializedMeshPipelineError> {
         // The shadow pass draws with Bevy's own prepass shader, which needs only positions
         // (and colors, which it is given), as Bevy laid them out.
@@ -112,6 +132,11 @@ impl Material for SolidMaterial {
             ATTRIBUTE_AO.at_shader_location(7),
         ])?;
         descriptor.vertex.buffers = vec![vertex_layout];
+        if key.bind_group_data.far
+            && let Some(fragment) = &mut descriptor.fragment
+        {
+            fragment.shader_defs.push("FAR_TERRAIN".into());
+        }
         Ok(())
     }
 }

@@ -36,8 +36,17 @@ const FACE_SCALE: f32 = 512.0;
 // loose items or 2 for far terrain: see `client::solid::SolidMaterial::place`.
 @group(#{MATERIAL_BIND_GROUP}) @binding(6) var<uniform> place: vec4<u32>;
 // Far terrain: how much of the darkness ambient occlusion puts on a staircase's steps its
-// faces take, then unused: see `client::solid::SolidMaterial::far`.
+// faces take, then where the render origin's cell is in its chunk, in boxels: see
+// `client::solid::SolidMaterial::far`.
 @group(#{MATERIAL_BIND_GROUP}) @binding(8) var<uniform> far_terrain: vec4<f32>;
+// Far terrain: which ordinary chunks around the render origin's are drawn, a texel a chunk,
+// the origin's chunk in the middle: see `client::far::mask_image`.
+@group(#{MATERIAL_BIND_GROUP}) @binding(7) var far_mask: texture_3d<f32>;
+
+// Chunks along each side of the mask; matches `client::far::MASK_SIDE`.
+const FAR_MASK_SIDE: i32 = 64;
+// Boxels along each side of a chunk; matches `api::CHUNK_SIZE`.
+const CHUNK: f32 = 32.0;
 
 // What a far face's vertex alpha packs its second material's volume by: `client::far::MIX_PACK`.
 const FAR_MIX_PACK: f32 = 32.0;
@@ -292,6 +301,21 @@ fn far_slope(packed: vec2<f32>) -> vec3<f32> {
     return vec3<f32>(n.x, n.z, -n.y);
 }
 
+// Whether a far fragment at `position` (render space) on a face facing `normal` is in an
+// ordinary chunk that's drawn: full detail is there, so far terrain is left out (a coarse far
+// chunk still stands in around it while finer ones load). Judged just behind the face, so one
+// on a chunk's border goes by the cell it's a face of.
+fn far_hidden(position: vec3<f32>, normal: vec3<f32>) -> bool {
+    let p = position - normal * 0.01;
+    // The world's axes (east, north, up), in boxels from the corner of the origin's chunk.
+    let at = vec3<f32>(p.x, -p.z, p.y) + far_terrain.yzw;
+    let chunk = vec3<i32>(floor(at / CHUNK)) + vec3<i32>(FAR_MASK_SIDE / 2);
+    if any(chunk < vec3<i32>(0)) || any(chunk >= vec3<i32>(FAR_MASK_SIDE)) {
+        return false;
+    }
+    return textureLoad(far_mask, chunk, 0).r > 0.5;
+}
+
 // A far face's color: its look's alone, then lit; and how much of the sun reaches it.
 struct Far {
     own: vec3<f32>,
@@ -365,6 +389,11 @@ fn fragment(in: VertexOutput) -> @location(0) vec4<f32> {
     var rgb: vec3<f32>;
     var sun: f32;
     if place.w == 2u {
+#ifdef FAR_TERRAIN
+        if far_hidden(in.world_position, normal) {
+            discard;
+        }
+#endif
         // Far terrain: drawn as the slope it's part of (see `far_shade`), with no ambient
         // occlusion or edges, which are a boxel's, not a cell's. Its stored light holds only
         // the sky's; red and green carry the slope. It looks its shadow up a cell higher

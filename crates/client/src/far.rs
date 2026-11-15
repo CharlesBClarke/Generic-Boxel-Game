@@ -6,14 +6,19 @@
 //! made of, mixed with its cell's second material, no AO or edges, its shadow looked up a cell
 //! higher); and which level is drawn where, picked by the octree from the camera as far
 //! chunks become ready, which also says which ordinary chunks are drawn (see
-//! [`crate::view::apply_render_distance`]).
+//! [`crate::view::apply_render_distance`]). Ordinary chunks that are in are drawn even under a
+//! far chunk still waiting for its finer levels; the far material is told where they are (the
+//! mask, see [`mask_of`]) and leaves itself out there, so full detail is never hidden.
 
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 use api::{BoxelPos, ChunkPos, I64Vec3, WorldPos};
+use bevy::asset::RenderAssetUsages;
+use bevy::image::ImageSampler;
 use bevy::light::NotShadowCaster;
 use bevy::prelude::*;
+use bevy::render::render_resource::{Extent3d, TextureDimension, TextureFormat};
 use sim::far::{FarBuilt, FarCells, FarChunk, Mix, Reach};
 use sim::{BlockRegistry, Grid};
 
@@ -88,6 +93,8 @@ pub(crate) struct FarTerrain {
     drawn: HashSet<FarChunk>,
     /// The ordinary chunks drawn, where far terrain is on.
     pub ordinary: HashSet<ChunkPos>,
+    /// The mask the far material has, and the render origin it was made around.
+    mask: Option<(Vec<u8>, I64Vec3)>,
     pub stats: FarViewStats,
 }
 
@@ -307,6 +314,47 @@ pub(crate) fn set_mixes(mesh: &mut MeshData, mix: Option<&Mix>, volumes: &Volume
     }
 }
 
+/// Chunks along each side of the mask: the render origin's chunk and 32 before it, 31 after,
+/// every way. The camera stays within about 8 chunks of the origin, so the mask covers the
+/// ordinary chunks within some 700 m of it; past that far terrain isn't left out (only seen
+/// with a render distance that long, while far chunks over full detail still load).
+pub const MASK_SIDE: i64 = 64;
+
+/// Which of the `ordinary` chunks drawn are where, for the far material: a byte a chunk, by X,
+/// then Y, then Z, the chunk of the render origin's cell `origin` in the middle; 255 where an
+/// ordinary chunk is drawn, 0 elsewhere. Far terrain leaves itself out in those chunks (see
+/// `far_hidden` in `solid.wgsl`), as full detail is there.
+pub(crate) fn mask_of(ordinary: &HashSet<ChunkPos>, origin: I64Vec3) -> Vec<u8> {
+    let middle = BoxelPos(origin).chunk().0;
+    let mut mask = vec![0; (MASK_SIDE * MASK_SIDE * MASK_SIDE) as usize];
+    for chunk in ordinary {
+        let at = chunk.0 - middle + I64Vec3::splat(MASK_SIDE / 2);
+        if at.min_element() >= 0 && at.max_element() < MASK_SIDE {
+            mask[(at.x + MASK_SIDE * (at.y + MASK_SIDE * at.z)) as usize] = 255;
+        }
+    }
+    mask
+}
+
+/// Where the render origin's cell is in its chunk, in boxels: what the far material adds to a
+/// fragment's place from the origin to find its chunk in the mask.
+pub(crate) fn mask_offset(origin: I64Vec3) -> Vec3 {
+    origin.rem_euclid(I64Vec3::splat(api::CHUNK_SIZE)).as_vec3()
+}
+
+/// A mask (see [`mask_of`]) as a texture, `side` chunks each way.
+pub fn mask_image(mask: Vec<u8>, side: u32) -> Image {
+    let mut image = Image::new(
+        Extent3d { width: side, height: side, depth_or_array_layers: side },
+        TextureDimension::D3,
+        mask,
+        TextureFormat::R8Unorm,
+        RenderAssetUsages::RENDER_WORLD,
+    );
+    image.sampler = ImageSampler::nearest();
+    image
+}
+
 /// How far the view reaches, as tuned, far terrain on or not.
 pub fn reach_of(view: &ViewTuning) -> Reach {
     Reach {
@@ -333,27 +381,30 @@ pub(crate) fn sync_far_material(
     mut far: ResMut<FarTerrain>,
     mut materials: ResMut<Assets<SolidMaterial>>,
 ) {
-    let crease = Vec4::new(view.far_crease, 0.0, 0.0, 0.0);
+    let crease = view.far_crease;
     match &far.material {
         Some(handle) => {
-            if materials.get(handle).is_some_and(|m| m.far != crease)
+            if materials.get(handle).is_some_and(|m| m.far.x != crease)
                 && let Some(m) = materials.get_mut(handle)
             {
-                m.far = crease;
+                m.far.x = crease;
             }
         }
         None => {
             let Some(chunks) = chunks else { return };
             let Some(mut material) = materials.get(&chunks.material).cloned() else { return };
             material.place = FAR_PLACE;
-            material.far = crease;
+            material.far = Vec4::new(crease, 0.0, 0.0, 0.0);
             far.material = Some(materials.add(material));
+            // Its mask comes with the next pick.
+            far.mask = None;
         }
     }
 }
 
-/// Picks which far and ordinary chunks are drawn, from the camera, and shows and hides the far
-/// meshes to match (see [`pick`]).
+/// Picks which far and ordinary chunks are drawn, from the camera, shows and hides the far
+/// meshes to match (see [`pick`]), and gives the far material the mask of the ordinary chunks
+/// drawn whenever those or the render origin change.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn pick_far(
     view: Res<ViewTuning>,
@@ -364,6 +415,8 @@ pub(crate) fn pick_far(
     world: Res<ClientWorld>,
     mut far: ResMut<FarTerrain>,
     mut meshes: Query<(&FarMesh, &mut Visibility)>,
+    mut images: ResMut<Assets<Image>>,
+    mut materials: ResMut<Assets<SolidMaterial>>,
 ) {
     let Some(reach) = reach(&view, &switches) else {
         if far.active {
@@ -382,6 +435,20 @@ pub(crate) fn pick_far(
     let cell = eye.floor();
     let eye = WorldPos::new(origin.cell + cell.as_i64vec3(), eye - cell);
     let (drawn, ordinary) = pick(&reach, eye, &far, &|p| bg.is_shown(p) || world.is_air(p));
+    let moved = far.mask.as_ref().is_none_or(|m| m.1 != origin.cell);
+    if (moved || ordinary != far.ordinary)
+        && let Some(handle) = far.material.clone()
+    {
+        let mask = mask_of(&ordinary, origin.cell);
+        if (moved || far.mask.as_ref().is_none_or(|m| m.0 != mask))
+            && let Some(m) = materials.get_mut(&handle)
+        {
+            m.mask = images.add(mask_image(mask.clone(), MASK_SIDE as u32));
+            let offset = mask_offset(origin.cell);
+            m.far = Vec4::new(m.far.x, offset.x, offset.y, offset.z);
+            far.mask = Some((mask, origin.cell));
+        }
+    }
     far.ordinary = ordinary;
     if drawn != far.drawn {
         for (mesh, mut v) in &mut meshes {
@@ -479,9 +546,11 @@ mod tests {
         let (drawn, ordinary) = pick(&reach, eye, &terrain, &|_| true);
         assert!(ordinary.contains(&floor), "the floor is drawn");
         assert!(!drawn.contains(&far(1, 0, 0, 0)), "not the empty far chunk over it");
-        // Over terrain, a chunk not sent yet is still waited for: the far chunk stands in.
+        // Over terrain, a chunk not sent yet is still waited for: the far chunk stands in, and
+        // the floor, which is in, stays drawn (the far chunk is left out there, by the mask).
         let (drawn, ordinary) = pick(&reach, eye, &terrain, &|p| p == floor);
-        assert!(drawn.contains(&far(1, 0, 0, 0)) && !ordinary.contains(&floor));
+        assert!(drawn.contains(&far(1, 0, 0, 0)));
+        assert_eq!(ordinary, HashSet::from([floor]));
     }
 
     #[test]
@@ -509,6 +578,37 @@ mod tests {
     fn the_shader_knows_how_mixes_are_packed() {
         let shader = include_str!("solid.wgsl");
         assert!(shader.contains(&format!("const FAR_MIX_PACK: f32 = {MIX_PACK:.1};")), "solid.wgsl's FAR_MIX_PACK should be {MIX_PACK}");
+    }
+
+    #[test]
+    fn the_shader_knows_the_masks_size() {
+        let shader = include_str!("solid.wgsl");
+        assert!(shader.contains(&format!("const FAR_MASK_SIDE: i32 = {MASK_SIDE};")), "solid.wgsl's FAR_MASK_SIDE should be {MASK_SIDE}");
+        assert!(shader.contains(&format!("const CHUNK: f32 = {:.1};", api::CHUNK_SIZE as f32)));
+    }
+
+    #[test]
+    fn the_mask_marks_the_ordinary_chunks_drawn_around_the_origins_chunk() {
+        // The origin's cell is in chunk (-1, 2, 0), 5 boxels in along X.
+        let origin = I64Vec3::new(-27, 64, 31);
+        assert_eq!(mask_offset(origin), Vec3::new(5.0, 0.0, 31.0));
+        let texel = |x: i64, y: i64, z: i64| (x + MASK_SIDE * (y + MASK_SIDE * z)) as usize;
+        let half = MASK_SIDE / 2;
+        let chunks = [
+            // The origin's own chunk: the middle texel.
+            (I64Vec3::new(-1, 2, 0), Some(texel(half, half, half))),
+            // The first and last chunks the mask reaches, and the first it doesn't.
+            (I64Vec3::new(-1 - half, 2, 0), Some(texel(0, half, half))),
+            (I64Vec3::new(-1, 2 + half - 1, 0), Some(texel(half, MASK_SIDE - 1, half))),
+            (I64Vec3::new(-1, 2, half), None),
+            (I64Vec3::new(-2 - half, 2, 0), None),
+            (I64Vec3::new(0, 1, -3), Some(texel(half + 1, half - 1, half - 3))),
+        ];
+        let ordinary: HashSet<ChunkPos> = chunks.iter().map(|c| ChunkPos(c.0)).collect();
+        let mask = mask_of(&ordinary, origin);
+        let marked: HashSet<usize> = (0..mask.len()).filter(|&i| mask[i] != 0).collect();
+        assert_eq!(marked, chunks.iter().filter_map(|c| c.1).collect());
+        assert!(marked.iter().all(|&i| mask[i] == 255));
     }
 
     #[test]
