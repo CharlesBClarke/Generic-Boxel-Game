@@ -1,0 +1,9 @@
+Receipt for clean-room Voxy answers (committed before the answers were read by the implementing side).
+
+9b648b61d9aba7b0faccecbb6ed87565daf82175a882f72c1cc2a70a0016d98e  2026-11-14-voxy-answers.md
+
+Answers to: docs/notes/voxy-questions.md as committed in 7722ae299c44ad0f4ca18bd8b7a9378b4dd9d1cd
+  (brief SHA-256 3f00b998dbe4d955d0f564bcddd256aa99b396b22d151e799439175a567aa098)
+Source read: Voxy commit 5bf33350a1cc7bb7e2b5d947b236c56d878b8a7d (0.2.20-beta),
+  tree hash a5631a740ed77dff7d5c746c8bc55d4d87a86399fa7b7429564673f7b9039545
+Clean-room log kept outside this repo: ~/Projects/boxel-cleanroom/2026-11-14-cleanroom-log.md
