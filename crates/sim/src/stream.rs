@@ -10,7 +10,9 @@
 //! simulation's where it has them, or else the stored ones, or else the generator's.
 //!
 //! No terrain is made within [`CLEAR_DISTANCE`] of a chunk the mods built, so the test areas
-//! stand apart from it.
+//! stand apart from it. Chunks there within the radius that nothing was built in are known air:
+//! not generated or put in the world, only noted, so a client can tell they'll never come
+//! (see [`Stream::note_air`]).
 
 use std::collections::{HashMap, HashSet};
 use std::sync::mpsc::{Receiver, Sender, channel};
@@ -246,6 +248,13 @@ pub struct Stream {
     wanted: Vec<ChunkPos>,
     wanted_distance: Vec<f32>,
     wanted_set: HashSet<ChunkPos>,
+    /// Chunks within the radius of a center where terrain is kept away, as last worked out.
+    wanted_air: Vec<ChunkPos>,
+    /// Chunks known to be air (see [`Stream::note_air`]), and those that became or stopped
+    /// being so since the server last asked.
+    air: HashSet<ChunkPos>,
+    air_now: Vec<ChunkPos>,
+    air_gone: Vec<ChunkPos>,
     /// How many of `wanted` from the start are all loaded: where looking for missing ones
     /// starts, so it isn't the whole list for every chunk brought in.
     loaded_up_to: usize,
@@ -302,6 +311,10 @@ impl Stream {
             wanted: Vec::new(),
             wanted_distance: Vec::new(),
             wanted_set: HashSet::new(),
+            wanted_air: Vec::new(),
+            air: HashSet::new(),
+            air_now: Vec::new(),
+            air_gone: Vec::new(),
             loaded_up_to: 0,
             wanted_for: None,
             store: Arc::new(MemoryStore::default()),
@@ -378,17 +391,21 @@ impl Stream {
         if self.wanted_for.as_ref() != Some(&key) {
             let reach = (self.radius / CHUNK_SIZE as f32).ceil() as i64 + 1;
             let mut wanted: HashMap<ChunkPos, f32> = HashMap::new();
+            let mut air: HashSet<ChunkPos> = HashSet::new();
             for &center in centers {
                 let chunk = center.boxel().chunk().0;
                 for y in chunk.y - reach..=chunk.y + reach {
                     for x in chunk.x - reach..=chunk.x + reach {
-                        if self.cleared(x, y) {
-                            continue;
-                        }
+                        let cleared = self.cleared(x, y);
                         for z in chunk.z - reach..=chunk.z + reach {
                             let pos = ChunkPos(I64Vec3::new(x, y, z));
                             let d = chunk_distance(pos, center);
-                            if d <= self.radius {
+                            if d > self.radius {
+                                continue;
+                            }
+                            if cleared {
+                                air.insert(pos);
+                            } else {
                                 let nearest = wanted.entry(pos).or_insert(d);
                                 *nearest = nearest.min(d);
                             }
@@ -396,6 +413,7 @@ impl Stream {
                     }
                 }
             }
+            self.wanted_air = air.into_iter().collect();
             let mut wanted: Vec<(f32, ChunkPos)> = wanted.into_iter().map(|(pos, d)| (d, pos)).collect();
             wanted.sort_by(|a, b| a.0.total_cmp(&b.0).then(a.1.0.to_array().cmp(&b.1.0.to_array())));
             self.wanted_distance = wanted.iter().map(|(d, _)| *d).collect();
@@ -563,6 +581,47 @@ impl Stream {
     pub fn take_unloaded(&mut self) -> Vec<ChunkPos> {
         std::mem::take(&mut self.unloaded_now)
     }
+
+    /// Notes which chunks are known air from `centers`: within the radius (as last
+    /// [`Stream::wanted`]), where terrain is kept away, and not `built` (in the world). They
+    /// stop being air once past the radius and its margin, once built in, or once terrain
+    /// may come there. Call after [`Stream::wanted`].
+    pub fn note_air(&mut self, centers: &[WorldPos], built: &dyn Fn(ChunkPos) -> bool) {
+        let (radius, built_columns) = (self.radius, &self.built);
+        let mut gone: Vec<ChunkPos> = self
+            .air
+            .iter()
+            .copied()
+            .filter(|&p| built(p) || nearest(p, centers) > radius + UNLOAD_MARGIN || !cleared_by(built_columns, p.0.x, p.0.y))
+            .collect();
+        gone.sort_unstable_by_key(|p| p.0.to_array());
+        for p in &gone {
+            self.air.remove(p);
+        }
+        self.air_gone.extend(gone);
+        let mut came: Vec<ChunkPos> = self.wanted_air.iter().copied().filter(|&p| !built(p) && !self.air.contains(&p)).collect();
+        came.sort_unstable_by_key(|p| p.0.to_array());
+        self.air.extend(came.iter().copied());
+        self.air_now.extend(came);
+    }
+
+    /// The chunks known to be air now (see [`Stream::note_air`]), in no particular order.
+    pub fn air(&self) -> impl Iterator<Item = ChunkPos> + '_ {
+        self.air.iter().copied()
+    }
+
+    /// Chunks that are known air now and weren't at the last call, and the other way round.
+    pub fn take_air(&mut self) -> (Vec<ChunkPos>, Vec<ChunkPos>) {
+        let mut came = std::mem::take(&mut self.air_now);
+        let mut gone = std::mem::take(&mut self.air_gone);
+        // One that came and went (or went and came back) since is told only as it is now.
+        let both: HashSet<ChunkPos> = came.iter().copied().filter(|p| gone.contains(p)).collect();
+        came.retain(|p| !both.contains(p) || self.air.contains(p));
+        gone.retain(|p| !both.contains(p) || !self.air.contains(p));
+        came.dedup();
+        gone.dedup();
+        (came, gone)
+    }
 }
 
 #[cfg(test)]
@@ -626,6 +685,39 @@ mod tests {
         assert!(stream.too_far(&[at(80.0, 16.0, 16.0)]).is_empty());
         assert_eq!(stream.too_far(&[at(16.0 + 48.0 + UNLOAD_MARGIN + 1.0, 16.0, 16.0)]), [pos]);
         assert_eq!(stream.too_far(&[at(16.0, 16.0, 16.0 - 48.0 - UNLOAD_MARGIN - 1.0)]), [pos], "straight down counts too");
+    }
+
+    #[test]
+    fn where_terrain_is_kept_away_unbuilt_chunks_are_known_air() {
+        let mut blocks = BlockRegistry::default();
+        let stone = blocks.register(api::BlockDef::new("t:stone", true, [0; 3])).unwrap();
+        let mut grid = crate::Grid::default();
+        grid.set_block(BoxelPos::new(5, 5, 5), stone);
+        let mut stream = Stream::new(48.0);
+        stream.set_built(&grid);
+        let built = |p: ChunkPos| grid.chunk(p).is_some();
+        let here = [at(16.0, 16.0, 16.0)];
+        stream.wanted(&here);
+        stream.note_air(&here, &built);
+        let (came, gone) = stream.take_air();
+        assert!(gone.is_empty());
+        assert!(came.contains(&ChunkPos::new(0, 0, 1)) && came.contains(&ChunkPos::new(0, 0, -1)), "over and under the build");
+        assert!(!came.contains(&ChunkPos::new(0, 0, 0)), "not what was built");
+        assert!(!came.contains(&ChunkPos::new(3, 0, 0)), "not past the radius");
+        // Nothing new while standing still.
+        stream.note_air(&here, &built);
+        assert_eq!(stream.take_air(), (Vec::new(), Vec::new()));
+        // Building in one: no longer air.
+        grid.set_block(BoxelPos::new(5, 5, 40), stone);
+        let built = |p: ChunkPos| grid.chunk(p).is_some();
+        stream.note_air(&here, &built);
+        assert_eq!(stream.take_air(), (Vec::new(), vec![ChunkPos::new(0, 0, 1)]));
+        // Going away, past the margin: all of it goes.
+        let away = [at(16.0, 16.0, 16.0 + 48.0 + UNLOAD_MARGIN + 64.0)];
+        stream.wanted(&away);
+        stream.note_air(&away, &built);
+        let (_, gone) = stream.take_air();
+        assert!(gone.contains(&ChunkPos::new(0, 0, -1)));
     }
 
     #[test]

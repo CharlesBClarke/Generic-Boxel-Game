@@ -94,6 +94,7 @@ impl Server {
         self.sim.take_changed_chunks();
         self.sim.take_loaded_chunks();
         self.sim.take_unloaded_chunks();
+        self.sim.take_air_chunks();
         self.sim.take_tops();
         // Far terrain comes after, built afresh for this client.
         self.sim.reset_far();
@@ -116,6 +117,7 @@ impl Server {
             defs: self.defs(),
             chunks,
             tops,
+            air: self.sim.air_chunks().collect(),
             spawn: self.sim.spawn(),
             waypoints: self.sim.waypoints().to_vec(),
             snapshot,
@@ -191,6 +193,7 @@ impl Server {
         let changed = self.sim.take_changed_chunks();
         let far_gone = self.sim.take_far_unloaded();
         let far = self.sim.take_far_loaded();
+        let (air, not_air) = self.sim.take_air_chunks();
         let grid = self.sim.universe().main();
         let mut out = Vec::new();
         if !tops.is_empty() {
@@ -209,6 +212,9 @@ impl Server {
         if !arrived.is_empty() {
             self.has.extend(fresh.iter().copied());
             out.push(ServerMsg::ChunksLoaded(arrived));
+        }
+        if !air.is_empty() || !not_air.is_empty() {
+            out.push(ServerMsg::AirChunks { came: air, gone: not_air });
         }
         if !far_gone.is_empty() {
             out.push(ServerMsg::FarUnloaded(far_gone));

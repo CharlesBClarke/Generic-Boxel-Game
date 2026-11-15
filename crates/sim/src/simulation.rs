@@ -388,6 +388,8 @@ impl Simulation {
             // Again each time round: a body lifted out of ground that came in has moved.
             centers = self.stream_centers();
             self.stream.wanted(&centers);
+            let grid = self.universe.main();
+            self.stream.note_air(&centers, &|p| grid.chunk(p).is_some());
             self.stream.request(&generator, &terrain, &self.blocks, &self.universe.main().tops);
             let waiting = wait.is_some_and(|r| self.stream.missing_within(r));
             let Some(done) = self.stream.next_finished(waiting) else {
@@ -589,6 +591,18 @@ impl Simulation {
     /// Chunks dropped by streaming since the last call.
     pub fn take_unloaded_chunks(&mut self) -> Vec<ChunkPos> {
         self.stream.take_unloaded()
+    }
+
+    /// Chunks that became known air since the last call (near what the mods built, where no
+    /// terrain comes and nothing is built: see [`crate::stream::Stream::note_air`]), and those
+    /// that stopped being so.
+    pub fn take_air_chunks(&mut self) -> (Vec<ChunkPos>, Vec<ChunkPos>) {
+        self.stream.take_air()
+    }
+
+    /// The chunks known to be air now, in no particular order.
+    pub fn air_chunks(&self) -> impl Iterator<Item = ChunkPos> + '_ {
+        self.stream.air()
     }
 
     /// Whether the chunk at `pos` is where terrain goes, loaded or not: away from what the

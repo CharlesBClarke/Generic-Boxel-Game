@@ -23,7 +23,7 @@ use crate::mesher::{AoTuning, MeshData};
 use crate::solid::SolidMaterial;
 use crate::view::{ViewSwitches, ViewTuning};
 use crate::volumes::Volumes;
-use crate::world::FarNews;
+use crate::world::{ClientWorld, FarNews};
 use crate::{PlayerCamera, RenderOrigin, coords};
 
 /// `SolidMaterial::place` for far meshes: the shader's sign to draw them plainly.
@@ -353,8 +353,7 @@ pub(crate) fn sync_far_material(
 }
 
 /// Picks which far and ordinary chunks are drawn, from the camera, and shows and hides the far
-/// meshes to match. An ordinary chunk is ready to draw once it's been meshed (see
-/// [`BackgroundMesher::is_shown`]), a far chunk once its mesh is in.
+/// meshes to match (see [`pick`]).
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn pick_far(
     view: Res<ViewTuning>,
@@ -362,6 +361,7 @@ pub(crate) fn pick_far(
     origin: Res<RenderOrigin>,
     camera: Single<&Transform, With<PlayerCamera>>,
     bg: Res<BackgroundMesher>,
+    world: Res<ClientWorld>,
     mut far: ResMut<FarTerrain>,
     mut meshes: Query<(&FarMesh, &mut Visibility)>,
 ) {
@@ -381,24 +381,7 @@ pub(crate) fn pick_far(
     let eye = coords::from_render(camera.translation);
     let cell = eye.floor();
     let eye = WorldPos::new(origin.cell + cell.as_i64vec3(), eye - cell);
-    let mut terrains: Vec<usize> = far.chunks.keys().map(|c| c.terrain).collect();
-    terrains.push(0);
-    terrains.sort_unstable();
-    terrains.dedup();
-    let ready = |c: FarChunk| {
-        if c.level == 0 { bg.is_shown(ChunkPos(c.pos)) } else { far.chunks.get(&c).is_some_and(|e| e.meshed) }
-    };
-    let mut drawn = HashSet::new();
-    let mut ordinary = HashSet::new();
-    for terrain in terrains {
-        for c in reach.pick(terrain, eye, &ready) {
-            if c.level == 0 {
-                ordinary.insert(ChunkPos(c.pos));
-            } else {
-                drawn.insert(c);
-            }
-        }
-    }
+    let (drawn, ordinary) = pick(&reach, eye, &far, &|p| bg.is_shown(p) || world.is_air(p));
     far.ordinary = ordinary;
     if drawn != far.drawn {
         for (mesh, mut v) in &mut meshes {
@@ -410,6 +393,30 @@ pub(crate) fn pick_far(
     let triangles = drawn.iter().map(|e| e.quads * 2).sum();
     let chunks = drawn.iter().filter(|e| e.entity.is_some()).count();
     far.stats = FarViewStats { far: far.drawn.len(), ordinary: far.ordinary.len(), chunks, triangles };
+}
+
+/// The far and ordinary chunks to draw from `eye`, picked by the octree (see [`Reach::pick`]).
+/// A far chunk is ready to draw once its mesh is in; an ordinary chunk once it's `ready`: its
+/// mesh is back, or it's known air (see [`ClientWorld::is_air`]), which is never sent and
+/// mustn't keep the far chunk holding it from giving way.
+fn pick(reach: &Reach, eye: WorldPos, far: &FarTerrain, ready: &dyn Fn(ChunkPos) -> bool) -> (HashSet<FarChunk>, HashSet<ChunkPos>) {
+    let mut terrains: Vec<usize> = far.chunks.keys().map(|c| c.terrain).collect();
+    terrains.push(0);
+    terrains.sort_unstable();
+    terrains.dedup();
+    let ready = |c: FarChunk| if c.level == 0 { ready(ChunkPos(c.pos)) } else { far.chunks.get(&c).is_some_and(|e| e.meshed) };
+    let mut drawn = HashSet::new();
+    let mut ordinary = HashSet::new();
+    for terrain in terrains {
+        for c in reach.pick(terrain, eye, &ready) {
+            if c.level == 0 {
+                ordinary.insert(ChunkPos(c.pos));
+            } else {
+                drawn.insert(c);
+            }
+        }
+    }
+    (drawn, ordinary)
 }
 
 /// Keeps far meshes where they belong as the render origin moves.
@@ -457,6 +464,24 @@ mod tests {
         blocks.register(api::BlockDef::new("t:stone", true, [0; 3])).unwrap();
         let volumes = Volumes::build(&sim::LookRegistry::default(), &blocks);
         (blocks, volumes)
+    }
+
+    #[test]
+    fn a_built_floor_with_no_air_sent_around_it_is_drawn_at_full_detail() {
+        // The test area: only the floor chunk exists, no terrain near it, so the air around it
+        // is never sent. The far chunk holding it is ready, but empty (its terrain cleared).
+        let mut terrain = FarTerrain::default();
+        terrain.chunks.insert(far(1, 0, 0, 0), Entry { version: 1, meshed: true, cells: None, entity: None, quads: 0 });
+        let floor = ChunkPos(I64Vec3::ZERO);
+        let eye = WorldPos::new(I64Vec3::new(16, 16, 18), Vec3::splat(0.5));
+        let reach = Reach::default();
+        // The air around it is known air (see `ClientWorld::is_air`): ready, as nothing comes.
+        let (drawn, ordinary) = pick(&reach, eye, &terrain, &|_| true);
+        assert!(ordinary.contains(&floor), "the floor is drawn");
+        assert!(!drawn.contains(&far(1, 0, 0, 0)), "not the empty far chunk over it");
+        // Over terrain, a chunk not sent yet is still waited for: the far chunk stands in.
+        let (drawn, ordinary) = pick(&reach, eye, &terrain, &|p| p == floor);
+        assert!(drawn.contains(&far(1, 0, 0, 0)) && !ordinary.contains(&floor));
     }
 
     #[test]

@@ -67,6 +67,7 @@ impl Copy {
             }
             ServerMsg::Blocks(blocks) => self.blocks = blocks.len(),
             ServerMsg::Tick(_)
+            | ServerMsg::AirChunks { .. }
             | ServerMsg::FarLoaded(_)
             | ServerMsg::FarUnloaded(_)
             | ServerMsg::Blueprints(_)
@@ -258,6 +259,40 @@ fn the_copy_follows_terrain_streaming_in_and_out_as_the_player_moves() {
         assert_eq!(ours.chunk(pos).unwrap().light, chunk.light, "light in {pos:?}");
     }
     assert!(!theirs.tops.is_empty() && ours.tops == theirs.tops, "and the same tops, with those left behind dropped");
+}
+
+#[test]
+fn the_air_around_the_test_area_is_told_and_follows_the_player() {
+    // At spawn, in the test area: no terrain near, so the air around the floor never comes.
+    let mut sim = base_sim();
+    sim.set_view_distance(64.0, 0.0);
+    sim.generate_terrain().unwrap();
+    let mut server = Server::new(sim);
+    let mut air: std::collections::HashSet<api::ChunkPos> = server.welcome().air.into_iter().collect();
+    let step = |server: &mut Server, air: &mut std::collections::HashSet<api::ChunkPos>| {
+        for m in server.handle(input(PlayerInput::default())) {
+            if let ServerMsg::AirChunks { came, gone } = m {
+                for p in &gone {
+                    assert!(air.remove(p), "only what was air goes: {p:?}");
+                }
+                for p in came {
+                    assert!(air.insert(p), "told once: {p:?}");
+                }
+            }
+        }
+    };
+    step(&mut server, &mut air);
+    let grid = server.simulation().universe().main();
+    assert!(air.contains(&api::ChunkPos::new(0, 0, 1)), "over the floor");
+    assert!(air.iter().all(|&p| grid.chunk(p).is_none()), "never what was built");
+    // Off to the far copy: what was air here goes, the same around the far copy comes.
+    server.handle(ClientMsg::Command(Command::TeleportPlayer(WorldPos::at_boxel(base::FAR_ORIGIN.offset(I64Vec3::new(0, 0, 2))))));
+    step(&mut server, &mut air);
+    let far = base::FAR_ORIGIN.0 / 32;
+    assert!(!air.contains(&api::ChunkPos::new(0, 0, 1)));
+    assert!(air.contains(&api::ChunkPos(far + I64Vec3::new(0, 0, 1))), "over the far copy's floor");
+    let expected: std::collections::HashSet<api::ChunkPos> = server.simulation().air_chunks().collect();
+    assert_eq!(air, expected, "the client knows what the server does");
 }
 
 /// Whether two games' worlds hold the same blocks everywhere, by name: separate games may
