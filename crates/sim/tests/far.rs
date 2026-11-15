@@ -57,10 +57,14 @@ fn far_terrain_is_built_out_to_the_far_distance() {
     // The ground shows in every column: each has a chunk with something in it.
     for (column, built) in &have {
         assert!(!built.chunks.is_empty(), "{column:?} has ground");
+        assert_eq!(built.mixes.len(), built.chunks.len(), "a mix for each chunk");
         for chunk in &built.chunks {
             assert_eq!((chunk.pos.0.x, chunk.pos.0.y), (column.x, column.y));
         }
     }
+    // Some surface cells are of two materials, and say so.
+    let mixed = have.values().flat_map(|b| &b.mixes).filter(|m| (0..api::CHUNK_VOLUME).any(|i| m.at(i).is_some())).count();
+    assert!(mixed > 0, "some cells mixed");
 }
 
 #[test]
@@ -178,4 +182,52 @@ fn far_terrain_is_as_tall_as_the_land() {
     let peak = (-1000..1000).step_by(25).flat_map(|y| (-1000..1000).step_by(25).map(move |x| (x, y))).map(|(x, y)| tall.ground(x, y)).max().unwrap();
     assert!(peak > 300, "the land rises past the old limit within 1 km: {peak}");
     assert!(highest > 300, "and far terrain with it: {highest}");
+}
+
+#[test]
+fn a_one_boxel_wall_shows_in_far_terrain_at_every_level() {
+    let mut sim = seeing(2048.0);
+    sim.teleport_player(over(0, 0));
+    sim.generate_terrain().unwrap();
+    // A chunk of air well over the ground 900 m east, with a stone wall one boxel thick, 4
+    // tall and 8 long in it, stored as if built: far shorter than the cells out there.
+    let center = base::TERRAIN_CENTER.0 / api::CHUNK_SIZE;
+    let high = (base::terrain::Hills::default().surface(900, 0) + 200).div_euclid(api::CHUNK_SIZE);
+    let pos = ChunkPos(center + I64Vec3::new(900 / api::CHUNK_SIZE, 0, high));
+    let mut cells = sim::Layer::Uniform(0);
+    for i in 0..api::CHUNK_VOLUME {
+        let p = LocalPos::from_index(i);
+        if p.x == 5 && p.y < 8 && p.z < 4 {
+            cells.set_at(i, 1);
+        }
+    }
+    let stone = (base::STONE.to_owned(), api::Orientation::IDENTITY);
+    let saved = sim::save::SavedChunk { pos, lists: vec![Vec::new(), vec![stone]], cells, records: Vec::new() };
+    sim.chunk_store().put(vec![(pos, saved.to_bytes())]);
+    sim.reset_far();
+    sim.far_all();
+    assert!(sim.far_error().is_none(), "{:?}", sim.far_error());
+    let mut have = HashMap::new();
+    gather(&mut sim, &mut have);
+    let mut levels = Vec::new();
+    for (column, built) in &have {
+        let (xs, ys) = column.under();
+        if !xs.contains(&pos.0.x) || !ys.contains(&pos.0.y) {
+            continue;
+        }
+        let step = column.step();
+        // The wall's boxel at the chunk's lowest corner, as a cell of this level.
+        let boxel = pos.0 * api::CHUNK_SIZE + I64Vec3::new(5, 0, 0);
+        let far = boxel.div_euclid(I64Vec3::splat(column.span()));
+        let local = (boxel - far * column.span()) / step;
+        let chunk = built.chunks.iter().find(|c| c.pos.0 == far).unwrap_or_else(|| panic!("level {}: the wall's chunk", column.level));
+        let filled = chunk.cells.get(LocalPos::new(local.x as u8, local.y as u8, local.z as u8)) != 0;
+        assert!(filled, "level {}: the wall shows", column.level);
+        levels.push(column.level);
+    }
+    levels.sort_unstable();
+    // Built there out to 2 km: levels 3 to 5, each with cells taller than the wall. (The
+    // level-6 column over it holds the player, so it's always split and never built; the unit
+    // tests in `sim::far` hold level 6.)
+    assert!(levels.len() >= 3, "seen at levels {levels:?}");
 }

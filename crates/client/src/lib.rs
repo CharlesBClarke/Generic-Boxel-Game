@@ -155,7 +155,7 @@ pub fn run(connection: Box<dyn Connection>) {
                 (dev::dev_keys, dev::show_dev_text).chain(),
                 (double_tap_sprint, sprint_toggle),
                 drill::drill_keys,
-                (editing::remesh_changed_chunks, far::sync_far_material, meshing::stream_meshes, view::send_view_distance).chain(),
+                (editing::remesh_changed_chunks, far::sync_far_material, meshing::stream_meshes, view::update_screen_scale, view::send_view_distance).chain(),
                 // Strikes first: a broken target bursts from where its view was drawn.
                 (combat::play_strikes, combat::play_slams, blast::play_blasts, hurt::play_player_hurts, combat::update_hit_stop).chain(),
                 blast::update_beams,

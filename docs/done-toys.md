@@ -3,6 +3,39 @@
 Moved out of `SLICES.md` on 2026-11-03 so the roadmap stays short. Each toy's full write-up, newest first, as it stood when it closed. `SLICES.md` keeps a one-line summary of each.
 
 
+#### Far terrain by cube (`toy-far-terrain-by-cube`)
+
+**Stage:** Done (2026-11-14). Criterion 3 met: the user, asked to check that a short one-boxel wall stays visible out to the edge of the far distance: "yes"; on the blockier horizon (`far_pixels`): "understood". Earlier: "level switches are ok,colors good", then "a flat 1 block thik wall defnently disapeers too early" under the plane rule. *Plan changed 2026-11-14* (the user: "do what you think is better", then engage): from the clean-room Voxy answers (`docs/notes/voxy-questions.md`, 3, 4 and 26), `far_hold` is now a mode: 2 (default) any built boxel keeps its cell, like Voxy's "any solid child wins", so pillars and single blocks stay too and builds get as thick as the cell far away; 1 the old plane count; 0 off. Generator terrain keeps the more-than-half rule. Tests: `cargo test --workspace` 897 passed, 0 failed; clippy clean. Building far terrain with mixes takes about 4× as long (6.1 s against 1.6 s for 268 columns around the center; `client::far` timing test); drawing cost barely moves (+2% merged quads).
+Quick bench 2026-11-14 (master e85ca7d against the working tree, the whole toy):
+
+| spot | master ms | toy ms | change |
+|---|---|---|---|
+| recorded | 21.8 | 19.0 | −13% (faster) |
+| overlook | 25.0 | 22.8 | −9% |
+| lake | 19.7 | 17.0 | −14% (faster) |
+
+Faster from levels by size on screen (the 8 px target draws coarser levels sooner than master's fixed reaches); the wall fix only changes cells under edited chunks, so it should barely show here. Screenshots: far hills blockier at the horizon than master's, mountains show more rock.
+
+**Goal:** far terrain that keeps its colors, pops less, and keeps builds: items 1–3 of `docs/notes/lod.md`'s ranking. The octree (cubes instead of columns, item 4) and the "how full" score (5) are the next toy, which pays off the far terrain stand-in debt. The name stays, as the backlog entry's; the cube part comes next.
+
+**Plan** (approved 2026-11-14; the user's "ok" took the recommended answers: split as here, and the hold keeps planes, not lone pillars)
+- *Average colors per cell* (`sim::far`, `client::far`, `solid.wgsl`): each far cell keeps a main and a second material with a share (`sim::far::Mix`, sent beside each far chunk). Found by sampling the generator one level finer over the cell (engine side, no API change, so mod generators get it for free); edits give theirs from their tally. The far mesher packs the second material and share into the vertex color's alpha; `far_shade` mixes the two looks per facing way. Tunable `far_mix` (0 off, 1 on).
+- *Levels by size on screen* (`sim::far::Reach`): `level_reach` is replaced by a pixel target, `far_pixels`; a level-*k* column splits once its 2^*k* m cells would look wider than that, from the window's height and the field of view at rest (sent to the server with the reach, so server and client agree). Level 1 still meets full detail at the render distance.
+- *Builds stay visible* (`sim::far::shrink_edits`): edits shrink into every level, level 6's cells (wider than a chunk) included, the rest of such a cell counted as generated. A cell is solid if more than half filled, or if what was built (boxels differing from the generator's) fills `far_hold` boxel-thick planes across it (1: one-boxel walls and floors stay, lone pillars don't). *Changed 2026-11-14, see Stage: any built boxel now holds its cell (`far_hold` 2).* Generated ground in edited chunks doesn't count as built.
+- *Tests*: split distances from the pixel target, field of view and height; a mixed cell from finer samples; a one-boxel wall kept at every level (level 6 across four edited chunks), a pillar and generated ground not; an edited cell's mix; mix packing and the shader's constant; the base terrain integration tests. Plus the quick bench.
+
+**Done when**
+1. Distant hills keep their mix of rock, dirt and grass, with no flat green.
+2. Level switches while walking and flying don't bother the user (carried over from Far terrain).
+3. A one-boxel-thick build is still visible at the edge of the far distance.
+4. The bench shows no surprising slowdown, or any slowdown is explained and accepted.
+
+**Close (2026-11-14)**
+- *Decisions:* builds hold far cells by any built boxel (see Phase 2 decisions). Generated terrain keeps the more-than-half rule, so hills don't fatten. Each level is still shrunk from raw boxels, not from the level below: with an OR rule the result is the same.
+- *Deferred:* builds fatten to the cell's size far away (4–64 m); accepted. The level-6 column holding the player is never built, so level 6 is covered by unit tests only. The octree and the "how full" score go to the next toy. The user's dislike of far shading goes to the backlog (Far terrain looks).
+- *API debt:* none new; the far terrain stand-in stays until the octree.
+
+
 #### Look variants (`toy-look-variants`)
 
 **Stage:** Done (2026-11-14).
