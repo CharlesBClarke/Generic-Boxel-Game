@@ -6,13 +6,15 @@
 
 - Seven levels, each doubling the cell: level *k* cells are 2^*k* boxels a side, a level chunk still 32³ cells. At the defaults (256 m full detail, 2 km far, `level_reach` 1.6): level 0 to 256 m, 1 to ~410 m, 2 to ~655 m, 3 to ~1,050 m, 4 to ~1,680 m, 5 to 2 km, 6 only at the edge. Switch lines are jagged (the quadtree splits a whole column, judged by its middle).
 - A coarse cell is one block: solid or empty, the material filling most of it, drawn as that material's look averaged to one pixel per facing way, mixed by slope (`far_shade`, `client/src/solid.wgsl`). Minority materials are dropped.
-- Builds are shrunk in (`sim::far::shrink_into`): a cell is solid only if edits fill more than half of it, so a one-boxel wall is gone from level 2 (~410 m); levels with cells over 32 boxels (level 6) skip edits.
+- Builds are shrunk into every level (`sim::far::shrink_edits`): since 2026-11-14 (Far terrain by cube) any built boxel holds its cell (`far_hold` 2), so builds never vanish, they fatten to the cell's size.
 
 ## What the user has seen
 
 At Far terrain's Verify: "the color is the biggest issue, the distant hills look just green. and they instantly pop with the color with that Moiré Aliasing probplem. and the shape seems worse then minecraft voxy mod. so I get the sense there are better ways to combine cubes". On 2026-11-13 the user asked "I thought our LOD system didnt take into acount player build strucutures?" (it does, with the limits above).
 
 ## Highest value additions, ranked (2026-11-13)
+
+*1–3 done in Far terrain by cube (2026-11-14); 4 and 5 are next.*
 
 Ranked by what the user notices in play. A suggestion for the planner, not agreed: the next session decides with the user.
 
