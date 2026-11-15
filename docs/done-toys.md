@@ -3,6 +3,54 @@
 Moved out of `SLICES.md` on 2026-11-03 so the roadmap stays short. Each toy's full write-up, newest first, as it stood when it closed. `SLICES.md` keeps a one-line summary of each.
 
 
+#### Far terrain octree (`toy-far-octree`)
+
+**Stage:** Done (2026-11-15). Play check: "done". Quick bench rerun after the first flagged the lake (+13%): +4%, noise. A bug found in Verify (the test area floor not drawn) was fixed in the toy with known air, cubes only.
+
+**Goal:** far terrain picks levels per cube, by 3D distance, and all column logic goes (the user: "ok lets start using cuges insted of colubs"). Pays off the far terrain stand-in in the API debt list. The octree part of the Infrastructure entry Far terrain by cube.
+
+**Plan** (approved 2026-11-14; the user's "souds good" took the recommended answers: the "how full" score stays out, a little more build time is fine if frame time holds, measured on the bench)
+- *The unit* (`sim::far`): a far chunk, one level-*k* chunk at a 3D position, replaces `FarColumn` (level 0 is an ordinary chunk). "Far chunk" goes in the Terminology table.
+- *Picking levels* (`Reach::wanted`, `Reach::pick`): an octree instead of the quadtree. A far chunk splits into its 8 children when its middle is within the split distance in 3D (the size-on-screen rule kept); a parent gives way only once every non-empty child is ready, as Voxy does.
+- *Empty and buried cubes*: sent as a tiny empty or solid marker with no data, ready at once, and something for neighbors to hide faces against. The generator's tops only skip filling cubes plainly air or deep rock; they no longer decide what's drawn.
+- *Full detail* (`client::view`, `client::meshing`): ordinary chunks are drawn where the octree reaches level 0, chunk by chunk. `surface_rows`, `surface_drawable`, `shows_surface`, the per-column `far.ordinary` and "chunks under and over the surface always drawn" go.
+- *Meshing* (`client::far`): each far chunk is meshed with the touching slices of its same-level neighbors, border faces hidden against them; a neighbor arriving remeshes that chunk.
+- *Edits and network*: an edited chunk marks stale the far chunk holding it at each level; `protocol` carries far chunks instead of columns.
+- *Not in it*: the "how full" score, the far shadow's height map, Far terrain looks.
+- *Tests*: 3D split (high up the ground goes coarse, a deep pit below stays fine), all-children-ready swap, empty and solid markers, no faces on a buried border, remesh on a neighbor arriving, stale per level, `sim/tests/far.rs` moved to cubes. Plus the quick bench.
+
+**Implementation notes**
+- No separate "solid" marker: a far chunk solid all through is a uniform `ChunkData`, already tiny. `FarBuilt.cells` is `None` for empty ones. Deep far chunks are filled from the generator, not assumed solid (caves stay possible); only those over every top are skipped.
+- Found in testing: `Reach::widened` now widens the size-on-screen split distances too (`screen` × 1.25). Without that, a player moving within one chunk (falling, say) dropped far chunks just built on a split line, which were then asked for again forever. Columns hid this, since only sideways moves counted.
+- A far chunk is meshed again only when one beside it arrives that's solid across their shared face, or one beside it is built again. `merge_far` now closes T-junctions on every border (neighbors every way now).
+- Release timings (`client::far` timing test, 8 px, against master): build 9.2 s on threads against 8.0 s (1,888 far chunks, 976 with cells, against 268 columns); meshing, slopes and merging 6.3 s against 7.9 s; far quads drawn 289k against 274k (+5%, from the seams closed on the sides).
+- Found in Verify (2026-11-15, the user: "the test world is semingly never loading the nautrual blocks", meaning the test area floor): the octree waited on every child, so the test area's air chunks (never sent: no terrain near built chunks) kept the empty far chunk over it drawn in place of the floor. Now the server names those chunks as known air (`Stream::note_air`; in the welcome and `ServerMsg::AirChunks`), nothing put in its world, and the client counts known air as ready, as the plan's "every non-empty child" meant. A first fix by columns near what was built was dropped (the user: "where not using colums for anything right?"): picking stays cubes only. Tests 900 passed, 0 failed; clippy clean.
+- Tests: `cargo test --workspace` 897 passed, 0 failed; clippy clean. The game runs for a minute with no errors.
+
+**Done when**
+1. Levels follow 3D distance: flying a few hundred meters up turns the ground below coarser, and terrain far below or above isn't pinned to full detail.
+2. No holes or doubled terrain flying fast any way, up and down included.
+3. In a deep shaft or tunnel everything around is full detail, no far terrain cutting in.
+4. No column logic left in LOD picking or drawing; the stand-in debt entry removed.
+5. The bench shows no surprising slowdown, or it's explained.
+
+**Verification** (2026-11-15)
+- (1)–(3) and the test area floor: met (the user's play check: "done").
+- (5) Quick bench, `master` (ae3ce04) against `work` (f6dfe8d); screenshots the same:
+
+  | spot | A ms | B ms | change | A 1% | B 1% |
+  | --- | --- | --- | --- | --- | --- |
+  | recorded | 18.9 | 18.3 | −3% | 40.5 | 42.3 |
+  | overlook | 21.7 | 22.4 | +3% | 41.4 | 39.6 |
+  | lake | 16.3 | 18.4 | +13% (flagged) | 44.2 | 42.2 |
+
+  Rerun (same day, `work` with only `SLICES.md` edited): recorded 19.0 → 18.1 (−5%), overlook 22.8 → 22.0 (−4%), lake 17.3 → 18.1 (+4%, not flagged). The lake's first +13% was noise: master's own lake moved a millisecond between runs.
+- (4) met: picking and drawing use far chunks and ordinary chunks only; the clear zone's column rule stays in terrain streaming, as before the toy. The stand-in debt entry is removed.
+
+**Decisions:** far terrain is an octree of far chunks (Phase 2 decisions); chunks near what the mods built are known air, named to the client and never sent. "Far chunk" and "Known air" are in the Terminology table.
+**Deferred:** the "how full" score; the far shadow's height map (still per column, as sky light is); Far terrain looks (next).
+**New API debt:** none.
+
 #### Far terrain by cube (`toy-far-terrain-by-cube`)
 
 **Stage:** Done (2026-11-14). Criterion 3 met: the user, asked to check that a short one-boxel wall stays visible out to the edge of the far distance: "yes"; on the blockier horizon (`far_pixels`): "understood". Earlier: "level switches are ok,colors good", then "a flat 1 block thik wall defnently disapeers too early" under the plane rule. *Plan changed 2026-11-14* (the user: "do what you think is better", then engage): from the clean-room Voxy answers (`docs/notes/voxy-questions.md`, 3, 4 and 26), `far_hold` is now a mode: 2 (default) any built boxel keeps its cell, like Voxy's "any solid child wins", so pillars and single blocks stay too and builds get as thick as the cell far away; 1 the old plane count; 0 off. Generator terrain keeps the more-than-half rule. Tests: `cargo test --workspace` 897 passed, 0 failed; clippy clean. Building far terrain with mixes takes about 4× as long (6.1 s against 1.6 s for 268 columns around the center; `client::far` timing test); drawing cost barely moves (+2% merged quads).
