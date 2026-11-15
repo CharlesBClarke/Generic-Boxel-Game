@@ -10,7 +10,7 @@ use crate::shadows::ShadowTuning;
 use crate::view::ViewSwitches;
 
 /// Whether the world around the player is still loading: terrain or far terrain the server
-/// hasn't brought in yet, or chunks or far columns still being meshed in the background.
+/// hasn't brought in yet, or chunks or far chunks still being meshed in the background.
 pub fn loading(world: &World) -> bool {
     let waiting = world.get_resource::<crate::world::ClientWorld>().is_some_and(|w| w.terrain().waiting > 0 || w.far().waiting > 0);
     let meshing = world.get_resource::<crate::meshing::BackgroundMesher>().is_some_and(|m| m.pending() > 0);

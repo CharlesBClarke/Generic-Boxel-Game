@@ -4,7 +4,7 @@
 use std::collections::{HashMap, HashSet};
 
 use api::{ChunkPos, I64Vec3, LocalPos, Vec3, WorldPos};
-use sim::far::{FarChunks, FarColumn};
+use sim::far::{FarBuilt, FarChunk};
 use sim::Simulation;
 
 fn base() -> Simulation {
@@ -27,13 +27,13 @@ fn over(x: i64, y: i64) -> WorldPos {
     WorldPos::new(base::TERRAIN_CENTER.0 + I64Vec3::new(x, y, ground + 2), Vec3::new(0.5, 0.5, 0.0))
 }
 
-/// Every far column sent and not dropped since, from the start.
-fn gather(sim: &mut Simulation, have: &mut HashMap<FarColumn, FarChunks>) {
+/// Every far chunk sent and not dropped since, from the start.
+fn gather(sim: &mut Simulation, have: &mut HashMap<FarChunk, FarBuilt>) {
     for gone in sim.take_far_unloaded() {
         have.remove(&gone);
     }
     for built in sim.take_far_loaded() {
-        have.insert(built.column, built);
+        have.insert(built.chunk, built);
     }
 }
 
@@ -48,22 +48,31 @@ fn far_terrain_is_built_out_to_the_far_distance() {
     let mut have = HashMap::new();
     gather(&mut sim, &mut have);
     let pos = sim.player().unwrap().pos();
-    let wanted: HashSet<FarColumn> = sim.reach().wanted(0, pos).into_iter().collect();
+    let wanted: HashSet<FarChunk> = sim.reach().wanted(0, pos).into_iter().collect();
     assert!(!wanted.is_empty());
-    let got: HashSet<FarColumn> = have.keys().copied().collect();
-    assert_eq!(got, wanted, "every far column wanted, and only those");
+    let got: HashSet<FarChunk> = have.keys().copied().collect();
+    assert_eq!(got, wanted, "every far chunk wanted, and only those");
     assert_eq!(sim.far_stats().waiting, 0);
     assert!(got.iter().all(|c| c.level >= 1));
-    // The ground shows in every column: each has a chunk with something in it.
-    for (column, built) in &have {
-        assert!(!built.chunks.is_empty(), "{column:?} has ground");
-        assert_eq!(built.mixes.len(), built.chunks.len(), "a mix for each chunk");
-        for chunk in &built.chunks {
-            assert_eq!((chunk.pos.0.x, chunk.pos.0.y), (column.x, column.y));
+    // Far chunks over and under the player are built too, not only around.
+    assert!(got.iter().any(|c| c.nearest(pos) > 0.0 && c.pos.z * c.span() > pos.cell().z + 100), "some far over the player");
+    assert!(got.iter().any(|c| (c.pos.z + 1) * c.span() < pos.cell().z - 100), "some far under the player");
+    for (chunk, built) in &have {
+        if let Some(cells) = &built.cells {
+            assert_eq!(cells.data.pos.0, chunk.pos, "cells at their far chunk");
         }
     }
+    // Over the highest ground around they're empty, deep under it solid, with ground between.
+    let center_z = base::TERRAIN_CENTER.0.z;
+    let hills = base::terrain::Hills::default();
+    let ground: Vec<i64> = (-700..700).step_by(16).flat_map(|y| (-700..700).step_by(16).map(move |x| (x, y))).map(|(x, y)| hills.surface(x, y)).collect();
+    let (peak, low) = (*ground.iter().max().unwrap(), *ground.iter().min().unwrap());
+    let high = have.values().filter(|b| b.chunk.pos.z * b.chunk.span() > center_z + peak + 64);
+    assert!(high.clone().count() > 0 && high.clone().all(|b| b.cells.is_none()), "sky is empty");
+    let deep = have.values().filter(|b| (b.chunk.pos.z + 1) * b.chunk.span() < center_z + low - 64).collect::<Vec<_>>();
+    assert!(!deep.is_empty() && deep.iter().all(|b| b.cells.as_ref().is_some_and(|c| c.data.cells.uniform().is_some_and(|e| e != 0))), "deep rock is solid");
     // Some surface cells are of two materials, and say so.
-    let mixed = have.values().flat_map(|b| &b.mixes).filter(|m| (0..api::CHUNK_VOLUME).any(|i| m.at(i).is_some())).count();
+    let mixed = have.values().filter_map(|b| b.cells.as_ref()).filter(|c| (0..api::CHUNK_VOLUME).any(|i| c.mix.at(i).is_some())).count();
     assert!(mixed > 0, "some cells mixed");
 }
 
@@ -75,14 +84,14 @@ fn far_terrain_follows_the_player() {
     sim.far_all();
     let mut have = HashMap::new();
     gather(&mut sim, &mut have);
-    let before: HashSet<FarColumn> = have.keys().copied().collect();
+    let before: HashSet<FarChunk> = have.keys().copied().collect();
     sim.teleport_player(over(3000, 0));
     sim.stream_all();
     sim.far_all();
     gather(&mut sim, &mut have);
     let pos = sim.player().unwrap().pos();
-    let now: HashSet<FarColumn> = have.keys().copied().collect();
-    let wanted: HashSet<FarColumn> = sim.reach().wanted(0, pos).into_iter().collect();
+    let now: HashSet<FarChunk> = have.keys().copied().collect();
+    let wanted: HashSet<FarChunk> = sim.reach().wanted(0, pos).into_iter().collect();
     assert!(wanted.is_subset(&now), "everything wanted where the player went");
     assert!(before.is_disjoint(&now), "what was left 3 km behind is dropped");
 }
@@ -99,7 +108,7 @@ fn without_far_distance_nothing_is_built() {
 #[test]
 fn stored_edits_are_shrunk_into_far_terrain() {
     let mut sim = seeing(512.0);
-    // In the middle of a level-2 column, which splits: its level-1 columns are wanted.
+    // Near the player: the level-1 far chunks around are wanted.
     sim.teleport_player(over(64, 64));
     sim.generate_terrain().unwrap();
     // A deep chunk of solid stone just past what's loaded, dug out whole and stored as if
@@ -115,11 +124,12 @@ fn stored_edits_are_shrunk_into_far_terrain() {
     assert!(sim.far_error().is_none(), "{:?}", sim.far_error());
     let mut have = HashMap::new();
     gather(&mut sim, &mut have);
-    let column = FarColumn::holding(0, 1, dug.0.x, dug.0.y);
-    let built = have.get(&column).expect("the level-1 column over it");
-    // Level-1 chunk z -4 holds ordinary rows -8 and -7; the dug chunk is its lower half, in
-    // the cells over chunk X 3 and Y 128 (the column's east and south halves).
-    let deep = built.chunks.iter().find(|c| c.pos.0.z == center.z / 2 - 4).expect("the deep chunk");
+    let chunk = FarChunk::holding(0, 1, dug);
+    let built = have.get(&chunk).expect("the level-1 far chunk holding it");
+    // The dug chunk is its lower half, in the cells over chunk X 3 and Y 128 (its east and
+    // south halves).
+    let deep = &built.cells.as_ref().expect("stone around it").data;
+    assert_eq!(deep.pos.0.z, center.z / 2 - 4);
     let entry = |x: u8, y: u8, z: u8| deep.cells.get(LocalPos::new(x, y, z));
     assert_eq!(entry(16, 0, 0), 0, "dug out");
     assert_eq!(entry(31, 15, 15), 0, "dug out");
@@ -128,7 +138,7 @@ fn stored_edits_are_shrunk_into_far_terrain() {
 }
 
 #[test]
-fn far_columns_over_an_edit_are_built_again_once_it_drops() {
+fn far_chunks_holding_an_edit_are_built_again_once_it_drops() {
     let mut sim = seeing(512.0);
     sim.teleport_player(over(0, 0));
     sim.generate_terrain().unwrap();
@@ -144,14 +154,14 @@ fn far_columns_over_an_edit_are_built_again_once_it_drops() {
     let dug = below.split().0;
     sim.far_all();
     sim.take_far_loaded();
-    // Far away, the dug chunk's column drops and goes to the store.
+    // Far away, the dug chunk drops and goes to the store.
     sim.teleport_player(over(150, 0));
     sim.stream_all();
     assert!(sim.universe().main().chunk(dug).is_none(), "dropped");
     sim.far_all();
-    let again: Vec<FarColumn> = sim.take_far_loaded().into_iter().map(|b| b.column).collect();
-    let over_it: Vec<FarColumn> = again.iter().copied().filter(|c| c.under().0.contains(&dug.0.x) && c.under().1.contains(&dug.0.y)).collect();
-    assert!(!over_it.is_empty(), "built again: {again:?}");
+    let again: Vec<FarChunk> = sim.take_far_loaded().into_iter().map(|b| b.chunk).collect();
+    let holding: Vec<FarChunk> = again.iter().copied().filter(|c| c.holds(dug)).collect();
+    assert!(!holding.is_empty(), "built again: {again:?}");
 }
 
 #[test]
@@ -169,11 +179,11 @@ fn far_terrain_is_as_tall_as_the_land() {
     let center_z = base::TERRAIN_CENTER.0.z;
     let mut highest = i64::MIN;
     for built in have.values() {
-        let (step, span) = (built.column.step(), built.column.span());
-        for chunk in &built.chunks {
+        let (step, span) = (built.chunk.step(), built.chunk.span());
+        if let Some(cells) = &built.cells {
             for i in 0..api::CHUNK_VOLUME {
-                if chunk.cells.at(i) != 0 {
-                    highest = highest.max(chunk.pos.0.z * span + LocalPos::from_index(i).z as i64 * step + step / 2 - center_z);
+                if cells.data.cells.at(i) != 0 {
+                    highest = highest.max(built.chunk.pos.z * span + LocalPos::from_index(i).z as i64 * step + step / 2 - center_z);
                 }
             }
         }
@@ -210,24 +220,22 @@ fn a_one_boxel_wall_shows_in_far_terrain_at_every_level() {
     let mut have = HashMap::new();
     gather(&mut sim, &mut have);
     let mut levels = Vec::new();
-    for (column, built) in &have {
-        let (xs, ys) = column.under();
-        if !xs.contains(&pos.0.x) || !ys.contains(&pos.0.y) {
+    for (chunk, built) in &have {
+        if !chunk.holds(pos) {
             continue;
         }
-        let step = column.step();
+        let step = chunk.step();
         // The wall's boxel at the chunk's lowest corner, as a cell of this level.
         let boxel = pos.0 * api::CHUNK_SIZE + I64Vec3::new(5, 0, 0);
-        let far = boxel.div_euclid(I64Vec3::splat(column.span()));
-        let local = (boxel - far * column.span()) / step;
-        let chunk = built.chunks.iter().find(|c| c.pos.0 == far).unwrap_or_else(|| panic!("level {}: the wall's chunk", column.level));
-        let filled = chunk.cells.get(LocalPos::new(local.x as u8, local.y as u8, local.z as u8)) != 0;
-        assert!(filled, "level {}: the wall shows", column.level);
-        levels.push(column.level);
+        let local = (boxel - chunk.pos * chunk.span()) / step;
+        let cells = built.cells.as_ref().unwrap_or_else(|| panic!("level {}: the wall's far chunk has cells", chunk.level));
+        let filled = cells.data.cells.get(LocalPos::new(local.x as u8, local.y as u8, local.z as u8)) != 0;
+        assert!(filled, "level {}: the wall shows", chunk.level);
+        levels.push(chunk.level);
     }
     levels.sort_unstable();
     // Built there out to 2 km: levels 3 to 5, each with cells taller than the wall. (The
-    // level-6 column over it holds the player, so it's always split and never built; the unit
-    // tests in `sim::far` hold level 6.)
+    // coarsest far chunk holding it holds the player too, so it's always split and never
+    // built; the unit tests in `sim::far` hold level 6.)
     assert!(levels.len() >= 3, "seen at levels {levels:?}");
 }

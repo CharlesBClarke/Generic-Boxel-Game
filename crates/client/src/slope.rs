@@ -4,14 +4,14 @@
 //! face as the staircase of full-detail faces such a slope is, so a coarse step's top and
 //! side come out alike and a hillside shades as one surface.
 //!
-//! A far column is meshed alone, so cells past its sides aren't known. There the ground is
-//! taken to carry on evenly: an unknown cell is the opposite of the known one straight across
-//! the face from it, which is exact wherever the surface is a plane through the face. Up and
-//! down everything is known: the server leaves out only chunks that are empty, or solid all
-//! through under solid (see [`sim::far`]).
+//! A far chunk is meshed with the far chunks of its level beside it, so the cells near a face
+//! are known out to [`REACH`] past its sides where those are loaded. Where they aren't, the
+//! ground is taken to carry on evenly: an unknown cell is the opposite of the known one
+//! straight across the face from it, which is exact wherever the surface is a plane through
+//! the face.
 
-use api::{CHUNK_SIZE, CHUNK_VOLUME, ChunkPos};
-use sim::{Grid, Layer};
+use api::{CHUNK_SIZE, ChunkPos, I64Vec3, LocalPos};
+use sim::Grid;
 
 use crate::mesher::MeshData;
 
@@ -24,77 +24,61 @@ const STEPS: f32 = 62.0;
 
 const SIZE: i32 = CHUNK_SIZE as i32;
 
-/// Which cells of one far column are solid, as far as its chunks say.
+/// Which cells around one far chunk are solid, as far as its grid says: the far chunk and
+/// [`REACH`] cells past it every way.
 pub struct Cells {
-    /// Cells up the column, from the floor of its lowest chunk.
-    height: i32,
-    /// By X, then Y, then Z: 0 empty, 1 solid.
+    /// The lowest corner of the box kept, in cells from the far chunk's lowest corner.
+    lo: [i32; 3],
+    /// Cells across the box, each way.
+    size: [i32; 3],
+    /// By X, then Y, then Z: 0 empty, 1 solid, 2 not known.
     cells: Vec<u8>,
-    /// The lowest chunk's Z.
-    bottom: i64,
-    /// Whether it's solid under the lowest chunk.
-    under: bool,
 }
 
 impl Cells {
-    /// The cells of the column whose chunks are at `positions` in `grid`.
-    pub fn of(grid: &Grid, positions: &[ChunkPos]) -> Self {
-        let bottom = positions.iter().map(|p| p.0.z).min().unwrap_or(0);
-        let top = positions.iter().map(|p| p.0.z).max().unwrap_or(0);
-        let height = (top - bottom + 1) as i32 * SIZE;
-        let mut cells = vec![0u8; (SIZE * SIZE * height) as usize];
-        // From the top down: a chunk left out is solid if the one over it is solid along its
-        // floor, as only a buried one is left out full, and empty otherwise.
-        let mut covered = false;
-        for z in (bottom..=top).rev() {
-            let from = (z - bottom) as usize * CHUNK_VOLUME;
-            let out = &mut cells[from..from + CHUNK_VOLUME];
-            let chunk = positions.iter().find(|p| p.0.z == z).and_then(|&p| grid.chunk(p));
-            match chunk.map(|c| &c.cells) {
-                None => out.fill(covered as u8),
-                Some(Layer::Uniform(id)) => out.fill(!id.is_empty() as u8),
-                Some(Layer::Dense(ids)) => {
-                    for (cell, id) in out.iter_mut().zip(ids.iter()) {
-                        *cell = !id.is_empty() as u8;
-                    }
-                }
-            }
-            covered = out[..(SIZE * SIZE) as usize].iter().all(|&c| c == 1);
-        }
-        Cells { height, cells, bottom, under: covered }
+    /// The cells around the far chunk at `pos` in `grid`, which holds it and the far chunks of
+    /// its level beside it that are loaded: cells in a chunk `grid` doesn't have aren't known.
+    pub fn of(grid: &Grid, pos: ChunkPos) -> Self {
+        let lo = [-REACH; 3];
+        let side = SIZE + 2 * REACH;
+        // The 27 chunks the box reaches into, looked up once.
+        let near: Vec<Option<&sim::Chunk>> = (0..27).map(|i| grid.chunk(ChunkPos(pos.0 + I64Vec3::new(i % 3 - 1, i / 3 % 3 - 1, i / 9 - 1)))).collect();
+        Self::from_fn(lo, [side; 3], |x, y, z| {
+            let (cx, cy, cz) = (x.div_euclid(SIZE), y.div_euclid(SIZE), z.div_euclid(SIZE));
+            let chunk = near[((cx + 1) + 3 * (cy + 1) + 9 * (cz + 1)) as usize]?;
+            let local = LocalPos::new((x - cx * SIZE) as u8, (y - cy * SIZE) as u8, (z - cz * SIZE) as u8);
+            Some(!chunk.cells.get(local).is_empty())
+        })
     }
 
-    /// A column `height` cells tall, solid where `solid` says.
-    #[cfg(test)]
-    fn from_fn(height: i32, solid: impl Fn(i32, i32, i32) -> bool) -> Self {
-        let mut cells = Vec::new();
-        for z in 0..height {
-            for y in 0..SIZE {
-                for x in 0..SIZE {
-                    cells.push(solid(x, y, z) as u8);
+    /// A box of cells `size` across from `lo`, solid, empty or not known as `solid` says.
+    fn from_fn(lo: [i32; 3], size: [i32; 3], solid: impl Fn(i32, i32, i32) -> Option<bool>) -> Self {
+        let mut cells = Vec::with_capacity((size[0] * size[1] * size[2]) as usize);
+        for z in lo[2]..lo[2] + size[2] {
+            for y in lo[1]..lo[1] + size[1] {
+                for x in lo[0]..lo[0] + size[0] {
+                    cells.push(solid(x, y, z).map_or(2, |s| s as u8));
                 }
             }
         }
-        let under = cells[..(SIZE * SIZE) as usize].iter().all(|&c| c == 1);
-        Cells { height, cells, bottom: 0, under }
+        Cells { lo, size, cells }
     }
 
-    /// Whether the cell is solid, if it's known: not past the column's sides.
+    /// Whether the cell is solid, if it's known.
     #[inline]
     fn at(&self, x: i32, y: i32, z: i32) -> Option<bool> {
-        if x < 0 || y < 0 || x >= SIZE || y >= SIZE {
+        let (x, y, z) = (x - self.lo[0], y - self.lo[1], z - self.lo[2]);
+        if x < 0 || y < 0 || z < 0 || x >= self.size[0] || y >= self.size[1] || z >= self.size[2] {
             return None;
         }
-        if z < 0 {
-            return Some(self.under);
+        match self.cells[(x + self.size[0] * (y + self.size[1] * z)) as usize] {
+            0 => Some(false),
+            1 => Some(true),
+            _ => None,
         }
-        if z >= self.height {
-            return Some(false);
-        }
-        Some(self.cells[(x + SIZE * (y + SIZE * z)) as usize] == 1)
     }
 
-    /// Which way the surface faces around a face at `center` (in cells from the column's
+    /// Which way the surface faces around a face at `center` (in cells from the far chunk's
     /// lowest corner) facing along `axis`, forward if `sign` is 1 and backward if -1: the way
     /// the cells within [`REACH`] thin out, weighted toward the near ones. The face's own
     /// direction where that says nothing.
@@ -184,14 +168,13 @@ pub fn unpack(packed: [u8; 2]) -> [f32; 3] {
     [x / length, y / length, z / length]
 }
 
-/// Gives every quad of the far chunk at `pos`, meshed from `cells`' column, its slope (see the
-/// module), packed into its stored light's red and green. A face that isn't open to the air
-/// as far as the column knows, as on its sides, keeps its own direction.
-pub fn set_slopes(mesh: &mut MeshData, cells: &Cells, pos: ChunkPos) {
+/// Gives every quad of a far chunk's mesh its slope from `cells`, the cells around it (see
+/// the module), packed into its stored light's red and green. A face that isn't open to the
+/// air as far as `cells` knows keeps its own direction.
+pub fn set_slopes(mesh: &mut MeshData, cells: &Cells) {
     if mesh.light.len() != mesh.positions.len() {
         mesh.light = vec![crate::mesher::OPEN_SKY; mesh.positions.len()];
     }
-    let lift = (pos.0.z - cells.bottom) as f32 * SIZE as f32;
     for q in 0..mesh.positions.len() / 4 {
         let i = 4 * q;
         let normal = mesh.normals[i];
@@ -201,7 +184,6 @@ pub fn set_slopes(mesh: &mut MeshData, cells: &Cells, pos: ChunkPos) {
                 center[k] += p[k] / 4.0;
             }
         }
-        center[2] += lift;
         let facing = (0..3).find(|&k| normal[k].abs() == 1.0 && normal[(k + 1) % 3] == 0.0 && normal[(k + 2) % 3] == 0.0);
         let slope = match facing {
             Some(axis) => {
@@ -231,9 +213,15 @@ mod tests {
         (dot / (len(a) * len(b))).clamp(-1.0, 1.0).acos().to_degrees()
     }
 
-    /// Ground rising `rise` cells every `run` cells east, 16 high at the west side.
+    /// Ground rising `rise` cells every `run` cells east, 16 high at the west side, known
+    /// only over the far chunk (96 cells tall here), not past its sides.
     fn hillside(rise: i32, run: i32) -> Cells {
-        Cells::from_fn(96, move |x, _, z| z < 16 + x.div_euclid(run) * rise)
+        Cells::from_fn([0, 0, -REACH], [SIZE, SIZE, 96 + 2 * REACH], move |x, _, z| Some(z < 16 + x.div_euclid(run) * rise))
+    }
+
+    /// The far chunk's own cells, `height` tall, solid where `solid` says; nothing past it known.
+    fn alone(height: i32, solid: impl Fn(i32, i32, i32) -> bool) -> Cells {
+        Cells::from_fn([0; 3], [SIZE, SIZE, height], move |x, y, z| Some(solid(x, y, z)))
     }
 
     /// The top face of the ground's highest cell at `x`, and the riser facing west there if
@@ -248,7 +236,7 @@ mod tests {
 
     #[test]
     fn flat_ground_faces_straight_up() {
-        let cells = Cells::from_fn(32, |_, _, z| z < 10);
+        let cells = alone(32, |_, _, z| z < 10);
         for (x, y) in [(16, 16), (0, 0), (31, 7)] {
             assert_eq!(cells.slope([x as f32 + 0.5, y as f32 + 0.5, 10.0], 2, 1.0), [0.0, 0.0, 1.0]);
         }
@@ -273,8 +261,8 @@ mod tests {
     }
 
     #[test]
-    fn the_ground_carries_on_past_the_column_s_sides() {
-        // The same hillside, read at the column's west and east sides and in its middle.
+    fn the_ground_carries_on_past_what_s_known() {
+        // The same hillside, read at the far chunk's west and east sides and in its middle.
         for (rise, run) in [(1, 1), (1, 2)] {
             let cells = hillside(rise, run);
             let expected = [-(rise as f32), 0.0, run as f32];
@@ -292,48 +280,40 @@ mod tests {
 
     #[test]
     fn an_overhang_s_underside_faces_down() {
-        let cells = Cells::from_fn(64, |_, _, z| z >= 40);
+        let cells = alone(64, |_, _, z| z >= 40);
         assert_eq!(cells.slope([16.5, 16.5, 40.0], 2, -1.0), [0.0, 0.0, -1.0]);
     }
 
     #[test]
-    fn chunks_left_out_are_solid_under_a_solid_floor_and_empty_otherwise() {
+    fn cells_past_the_sides_come_from_the_far_chunks_beside_it() {
         let mut blocks = sim::BlockRegistry::default();
         let stone = blocks.register(api::BlockDef::new("t:stone", true, [0; 3])).unwrap();
-        // A chunk at Z 2 with a slab on its floor, and one at Z 0 with a slab halfway up.
-        let slab = |z: i64, from: u8| {
+        // A far chunk with a slab on its floor, and the one over it solid all through.
+        let chunk = |z: i64, solid: &dyn Fn(LocalPos) -> bool| {
             let mut chunk = sim::ChunkData {
-                pos: ChunkPos(api::I64Vec3::new(0, 0, z)),
+                pos: ChunkPos(I64Vec3::new(0, 0, z)),
                 lists: vec![Vec::new(), vec![sim::Occupant::new(stone)]],
-                cells: Layer::Uniform(0),
-                light: Layer::Uniform(sim::Light::SKY),
+                cells: sim::Layer::Uniform(0),
+                light: sim::Layer::Uniform(sim::Light::SKY),
                 records: Vec::new(),
             };
-            for i in 0..CHUNK_VOLUME {
-                if (from..from + 2).contains(&api::LocalPos::from_index(i).z) {
+            for i in 0..api::CHUNK_VOLUME {
+                if solid(LocalPos::from_index(i)) {
                     chunk.cells.set_at(i, 1);
                 }
             }
             chunk
         };
         let mut grid = Grid::default();
-        let chunks = [slab(2, 0), slab(0, 16)];
-        for chunk in &chunks {
-            grid.import_chunk(chunk);
-        }
-        let cells = Cells::of(&grid, &[chunks[0].pos, chunks[1].pos]);
-        // Over the top chunk: empty. The chunk left out between the two, under a solid floor:
-        // solid. Under the lowest, whose floor is empty: empty.
-        assert_eq!(cells.at(5, 5, 96), Some(false));
-        assert_eq!(cells.at(5, 5, 64), Some(true));
-        assert_eq!(cells.at(5, 5, 66), Some(false));
-        assert_eq!(cells.at(5, 5, 40), Some(true));
-        assert_eq!(cells.at(5, 5, 17), Some(true));
-        assert_eq!(cells.at(5, 5, 3), Some(false));
-        assert_eq!(cells.at(5, 5, -1), Some(false));
-        // Past its sides: not known.
-        assert_eq!(cells.at(-1, 5, 17), None);
-        assert_eq!(cells.at(5, 32, 17), None);
+        grid.import_chunk(&chunk(0, &|p| p.z < 2));
+        grid.import_chunk(&chunk(1, &|_| true));
+        let cells = Cells::of(&grid, ChunkPos(I64Vec3::ZERO));
+        assert_eq!(cells.at(5, 5, 0), Some(true));
+        assert_eq!(cells.at(5, 5, 2), Some(false));
+        assert_eq!(cells.at(5, 5, 32), Some(true), "from the one over it");
+        assert_eq!(cells.at(5, 5, 32 + REACH), None, "past what's kept");
+        assert_eq!(cells.at(-1, 5, 1), None, "no far chunk west of it");
+        assert_eq!(cells.at(5, 5, -1), None, "nor under it");
     }
 
     #[test]
@@ -357,10 +337,10 @@ mod tests {
             mesh.light.extend([[9, 9, 9, 200]; 4]);
         };
         let mut mesh = MeshData::default();
-        // The top at x 16 (the ground there is 32 high), then the column's west wall.
+        // The top at x 16 (the ground there is 32 high), then the far chunk's west wall.
         quad([[16.0, 16.0, 32.0], [17.0, 16.0, 32.0], [17.0, 17.0, 32.0], [16.0, 17.0, 32.0]], [0.0, 0.0, 1.0], &mut mesh);
         quad([[0.0, 16.0, 3.0], [0.0, 17.0, 3.0], [0.0, 17.0, 4.0], [0.0, 16.0, 4.0]], [-1.0, 0.0, 0.0], &mut mesh);
-        set_slopes(&mut mesh, &cells, ChunkPos(api::I64Vec3::ZERO));
+        set_slopes(&mut mesh, &cells);
         let top = mesh.light[0];
         assert!(mesh.light[..4].iter().all(|l| *l == top));
         assert!(angle(unpack([top[0], top[1]]), [-1.0, 0.0, 1.0]) < 5.0);

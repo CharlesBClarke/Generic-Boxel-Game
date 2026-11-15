@@ -182,7 +182,7 @@ impl Server {
     }
 
     /// What changed in the chunks since last time, for the client: the tops that moved, chunks
-    /// dropped, then chunks brought in, far columns dropped and built, then changed chunks the
+    /// dropped, then chunks brought in, far chunks dropped and built, then changed chunks the
     /// client has, or that are new to the world.
     fn chunk_news(&mut self) -> Vec<ServerMsg> {
         let tops = self.sim.take_tops();

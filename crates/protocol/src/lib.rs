@@ -89,11 +89,11 @@ pub enum ServerMsg {
     /// Chunks of terrain dropped far from the player, for the client to forget. Comes before
     /// the tick they went.
     ChunksUnloaded(Vec<ChunkPos>),
-    /// Far columns built around the player (see [`sim::far`]): new ones, or ones built again
-    /// since an edit under them, to replace the old. Comes before the tick they came in.
-    FarLoaded(Vec<sim::far::FarChunks>),
-    /// Far columns dropped, for the client to forget.
-    FarUnloaded(Vec<sim::far::FarColumn>),
+    /// Far chunks built around the player (see [`sim::far`]): new ones, or ones built again
+    /// since an edit in them, to replace the old. Comes before the tick they came in.
+    FarLoaded(Vec<sim::far::FarBuilt>),
+    /// Far chunks dropped, for the client to forget.
+    FarUnloaded(Vec<sim::far::FarChunk>),
     /// Blocks were added, by crafting a new shape. Comes before the tick they were added in.
     Blocks(Box<BlockRegistry>),
     /// The player's blueprints changed, by an edit or a load. Comes before the tick they

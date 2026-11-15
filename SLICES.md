@@ -104,7 +104,35 @@ A run of small toy slices. Each one takes a single game-feel feature that doesn'
 
 ### Current toy
 
-*None. Suggested next: the octree part of Far terrain by cube (see Infrastructure), or Far terrain looks (backlog).*
+#### Far terrain octree (`toy-far-octree`)
+
+**Stage:** Verify (2026-11-14): implemented and tested; waiting on the user's play check and the bench.
+
+**Goal:** far terrain picks levels per cube, by 3D distance, and all column logic goes (the user: "ok lets start using cuges insted of colubs"). Pays off the far terrain stand-in in the API debt list. The octree part of the Infrastructure entry Far terrain by cube.
+
+**Plan** (approved 2026-11-14; the user's "souds good" took the recommended answers: the "how full" score stays out, a little more build time is fine if frame time holds, measured on the bench)
+- *The unit* (`sim::far`): a far chunk, one level-*k* chunk at a 3D position, replaces `FarColumn` (level 0 is an ordinary chunk). "Far chunk" goes in the Terminology table.
+- *Picking levels* (`Reach::wanted`, `Reach::pick`): an octree instead of the quadtree. A far chunk splits into its 8 children when its middle is within the split distance in 3D (the size-on-screen rule kept); a parent gives way only once every non-empty child is ready, as Voxy does.
+- *Empty and buried cubes*: sent as a tiny empty or solid marker with no data, ready at once, and something for neighbors to hide faces against. The generator's tops only skip filling cubes plainly air or deep rock; they no longer decide what's drawn.
+- *Full detail* (`client::view`, `client::meshing`): ordinary chunks are drawn where the octree reaches level 0, chunk by chunk. `surface_rows`, `surface_drawable`, `shows_surface`, the per-column `far.ordinary` and "chunks under and over the surface always drawn" go.
+- *Meshing* (`client::far`): each far chunk is meshed with the touching slices of its same-level neighbors, border faces hidden against them; a neighbor arriving remeshes that chunk.
+- *Edits and network*: an edited chunk marks stale the far chunk holding it at each level; `protocol` carries far chunks instead of columns.
+- *Not in it*: the "how full" score, the far shadow's height map, Far terrain looks.
+- *Tests*: 3D split (high up the ground goes coarse, a deep pit below stays fine), all-children-ready swap, empty and solid markers, no faces on a buried border, remesh on a neighbor arriving, stale per level, `sim/tests/far.rs` moved to cubes. Plus the quick bench.
+
+**Implementation notes**
+- No separate "solid" marker: a far chunk solid all through is a uniform `ChunkData`, already tiny. `FarBuilt.cells` is `None` for empty ones. Deep far chunks are filled from the generator, not assumed solid (caves stay possible); only those over every top are skipped.
+- Found in testing: `Reach::widened` now widens the size-on-screen split distances too (`screen` × 1.25). Without that, a player moving within one chunk (falling, say) dropped far chunks just built on a split line, which were then asked for again forever. Columns hid this, since only sideways moves counted.
+- A far chunk is meshed again only when one beside it arrives that's solid across their shared face, or one beside it is built again. `merge_far` now closes T-junctions on every border (neighbors every way now).
+- Release timings (`client::far` timing test, 8 px, against master): build 9.2 s on threads against 8.0 s (1,888 far chunks, 976 with cells, against 268 columns); meshing, slopes and merging 6.3 s against 7.9 s; far quads drawn 289k against 274k (+5%, from the seams closed on the sides).
+- Tests: `cargo test --workspace` 897 passed, 0 failed; clippy clean. The game runs for a minute with no errors.
+
+**Done when**
+1. Levels follow 3D distance: flying a few hundred meters up turns the ground below coarser, and terrain far below or above isn't pinned to full detail.
+2. No holes or doubled terrain flying fast any way, up and down included.
+3. In a deep shaft or tunnel everything around is full detail, no far terrain cutting in.
+4. No column logic left in LOD picking or drawing; the stand-in debt entry removed.
+5. The bench shows no surprising slowdown, or it's explained.
 
 **Waiting for a play check** (remind the user at the start of every session, and at good moments during one, until they confirm; then delete the line):
 - Loading by cube (3), deferred 2026-11-13: dig a shaft straight down 50–100 m. Light should come only from the sky straight above and the walls should darken with depth; no daylight in the rock beside the shaft, or near the bottom where chunks below haven't loaded.

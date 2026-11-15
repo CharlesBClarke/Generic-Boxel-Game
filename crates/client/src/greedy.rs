@@ -80,10 +80,10 @@ pub fn merge(mesh: &MeshData) -> MeshData {
     close_t_junctions(&merge_quads(mesh))
 }
 
-/// [`merge`] for a chunk of a far column (see [`crate::far`]), which has neighbors only above
-/// and below.
+/// [`merge`] for a far chunk (see [`crate::far`]): the same, as far chunks of its level may be
+/// beside it every way.
 pub fn merge_far(mesh: &MeshData) -> MeshData {
-    close_t_junctions_on(&merge_quads(mesh), [false, false, true])
+    merge(mesh)
 }
 
 /// Closes T-junctions: where a corner of one quad sits partway along another's edge, the GPU
@@ -104,8 +104,7 @@ pub fn close_t_junctions(mesh: &MeshData) -> MeshData {
 }
 
 /// [`close_t_junctions`] for a chunk with neighbors only across its borders on the axes
-/// `borders` marks: edges on its other borders split only where its own corners are, as for
-/// a far column's chunks (see [`crate::far`]), which have neighbors only above and below.
+/// `borders` marks: edges on its other borders split only where its own corners are.
 pub fn close_t_junctions_on(mesh: &MeshData, borders: [bool; 3]) -> MeshData {
     let key = |p: [f32; 3]| p.map(f32::to_bits);
     let corners: std::collections::HashSet<[u32; 3]> = mesh.positions.iter().map(|&p| key(p)).collect();

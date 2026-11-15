@@ -28,16 +28,16 @@ pub struct ChunkNews {
     /// The whole world came anew (a welcome): a copy kept elsewhere starts again from
     /// [`ClientWorld::universe`].
     pub restart: bool,
-    /// Far columns built and dropped (see [`sim::far`]), in the order they came.
+    /// Far chunks built and dropped (see [`sim::far`]), in the order they came.
     pub far: Vec<FarNews>,
     /// The tops (see [`sim::tops`]) that came, moved or were dropped, to pass on as they came.
     pub tops: Vec<sim::TopsNews>,
 }
 
-/// A far column built (new, or built again to replace the one before) or dropped.
+/// A far chunk built (new, or built again to replace the one before) or dropped.
 pub enum FarNews {
-    Built(sim::far::FarChunks),
-    Gone(sim::far::FarColumn),
+    Built(sim::far::FarBuilt),
+    Gone(sim::far::FarChunk),
 }
 
 #[derive(Resource)]

@@ -111,7 +111,7 @@ pub(crate) struct Done {
     pub seconds: f32,
 }
 
-/// Work for the terrain threads: generating a column, or a far column (see [`crate::far`]).
+/// Work for the terrain threads: generating a chunk, or a far chunk (see [`crate::far`]).
 /// Each job sends its own result back.
 pub(crate) type Task = Box<dyn FnOnce() + Send>;
 
@@ -539,7 +539,7 @@ impl Stream {
         }
     }
 
-    /// The terrain threads, started if they aren't, for far columns to share.
+    /// The terrain threads, started if they aren't, for far chunks to share.
     pub(crate) fn workers(&mut self) -> &Workers {
         self.workers.get_or_insert_with(Workers::start)
     }

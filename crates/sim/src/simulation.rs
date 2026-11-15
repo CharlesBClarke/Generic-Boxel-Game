@@ -405,7 +405,7 @@ impl Simulation {
         self.stream_far(&generator, false);
     }
 
-    /// Far terrain one step, or until every wanted far column is in with `wait`.
+    /// Far terrain one step, or until every wanted far chunk is in with `wait`.
     fn stream_far(&mut self, generator: &SharedGenerator, wait: bool) {
         if self.terrains.is_empty() {
             return;
@@ -432,20 +432,20 @@ impl Simulation {
         self.stream_terrain(Some(self.stream.radius));
     }
 
-    /// Builds every far column wanted around the player before returning, for tests and tools.
+    /// Builds every far chunk wanted around the player before returning, for tests and tools.
     pub fn far_all(&mut self) {
         if let Some((generator, _)) = self.terrain() {
             self.stream_far(&generator, true);
         }
     }
 
-    /// Far columns built since the last call (see [`crate::far`]).
-    pub fn take_far_loaded(&mut self) -> Vec<crate::far::FarChunks> {
+    /// Far chunks built since the last call (see [`crate::far`]).
+    pub fn take_far_loaded(&mut self) -> Vec<crate::far::FarBuilt> {
         self.far.take_loaded()
     }
 
-    /// Far columns dropped since the last call.
-    pub fn take_far_unloaded(&mut self) -> Vec<crate::far::FarColumn> {
+    /// Far chunks dropped since the last call.
+    pub fn take_far_unloaded(&mut self) -> Vec<crate::far::FarChunk> {
         self.far.take_unloaded()
     }
 
@@ -459,7 +459,7 @@ impl Simulation {
         self.far.error.as_ref()
     }
 
-    /// Forgets every far column, so they're all built and sent again.
+    /// Forgets every far chunk, so they're all built and sent again.
     pub fn reset_far(&mut self) {
         self.far.reset();
     }
