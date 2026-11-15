@@ -301,6 +301,7 @@ mod tests {
             light: Vec4::ZERO,
             place: UVec4::ZERO,
             far: Vec4::ZERO,
+            mask: Handle::default(),
             alpha_mode: AlphaMode::Opaque,
         });
         app.insert_resource(world)
