@@ -24,8 +24,8 @@ pub struct ViewTuning {
     /// How many pixels wide far terrain's cells may look before a finer level takes over (see
     /// [`sim::far::Reach::pixels`]): lower is finer, for more triangles.
     pub far_pixels: f32,
-    /// How much a build must fill a far cell to keep it (see [`sim::far::Reach::hold`]).
-    pub far_hold: f32,
+    /// How a build keeps a far cell solid (see [`sim::far::Reach::hold`]).
+    pub far_hold: u8,
     /// How many levels finer far cells are sampled for their mix of materials (see
     /// [`sim::far::Reach::mix`]).
     pub far_mix: u8,
@@ -48,7 +48,7 @@ pub struct ViewTuning {
 impl Default for ViewTuning {
     fn default() -> Self {
         // Full detail to 256 m: the user's pick for far terrain (2026-11-12).
-        Self { render_distance: 256.0, far_distance: 2048.0, far_pixels: sim::far::DEFAULT_PIXELS, far_hold: 1.0, far_mix: 1, screen: sim::far::Reach::default().screen, far_crease: 1.0, tone_mapper: ToneMapper::Aces, resolution: Resolution::Native, upscale: Upscale::Smooth }
+        Self { render_distance: 256.0, far_distance: 2048.0, far_pixels: sim::far::DEFAULT_PIXELS, far_hold: sim::far::HOLD_ANY, far_mix: 1, screen: sim::far::Reach::default().screen, far_crease: 1.0, tone_mapper: ToneMapper::Aces, resolution: Resolution::Native, upscale: Upscale::Smooth }
     }
 }
 
@@ -61,7 +61,7 @@ const VIEW_HELP: &[(&str, &str)] = &[
     ("far_distance", "Far terrain reaches this far, meters, coarser the farther; none if no farther than the render distance."),
     ("far_crease", "How dark far terrain's slopes are next to full detail's, whose steps ambient occlusion darkens: 1 is worked out from the AO tuning, 0 is no darkening. Tune it at the edge of full detail on a hillside."),
     ("far_pixels", "How many pixels wide far terrain's cells may look before a finer level takes over: lower is finer and pops less, but draws more triangles."),
-    ("far_hold", "How much of a far cell a build must fill to keep it, in boxel-thick planes right across it: 1 keeps one-boxel walls and floors far away, 0 only builds filling more than half a cell. Rebuilds far terrain."),
+    ("far_hold", "How builds keep far cells: 2 any built boxel keeps its cell, so nothing built vanishes far away (it gets as thick as the cell); 1 only a boxel-thick plane right across the cell; 0 only builds filling more than half a cell. Rebuilds far terrain."),
     ("far_mix", "How many levels finer far cells are sampled to mix their materials' colors: 0 off, 1 on (far terrain takes about four times as long to build). Rebuilds far terrain."),
     ("tone_mapper", "How the frame's light is fitted to the screen. Switching rebuilds the shaders, a moment's stall."),
     ("resolution", "How big the world is drawn, stretched to fill the window; lower buys frame rate. Menus and text stay sharp."),
@@ -75,7 +75,7 @@ impl Tunables for ViewTuning {
             Tunable::new("far_distance", self.far_distance, 0.0, 8192.0),
             Tunable::new("far_crease", self.far_crease, 0.0, 2.0),
             Tunable::new("far_pixels", self.far_pixels, *sim::far::PIXELS.start(), *sim::far::PIXELS.end()),
-            Tunable::new("far_hold", self.far_hold, 0.0, 4.0),
+            Tunable::new("far_hold", self.far_hold as f32, 0.0, sim::far::MAX_HOLD as f32),
             Tunable::new("far_mix", self.far_mix as f32, 0.0, sim::far::MAX_MIX as f32),
             Tunable::new("tone_mapper", self.tone_mapper.index() as f32, 0.0, (ToneMapper::ALL.len() - 1) as f32),
             Tunable::new("resolution", self.resolution.index() as f32, 0.0, (Resolution::ALL.len() - 1) as f32),
@@ -89,7 +89,7 @@ impl Tunables for ViewTuning {
             "far_distance" => self.far_distance = value.max(0.0),
             "far_crease" => self.far_crease = value.clamp(0.0, 2.0),
             "far_pixels" => self.far_pixels = value.clamp(*sim::far::PIXELS.start(), *sim::far::PIXELS.end()),
-            "far_hold" => self.far_hold = value.clamp(0.0, 4.0),
+            "far_hold" => self.far_hold = value.round().clamp(0.0, sim::far::MAX_HOLD as f32) as u8,
             "far_mix" => self.far_mix = value.round().clamp(0.0, sim::far::MAX_MIX as f32) as u8,
             "tone_mapper" => self.tone_mapper = ToneMapper::from_index(value),
             "resolution" => self.resolution = Resolution::from_index(value),

@@ -22,8 +22,9 @@
 //!
 //! A far cell is solid or empty, of one main material, with a second one and its share
 //! beside it (a [`Mix`]), found by sampling the generator a level finer, so a hillside of
-//! grass and rock is drawn as their mix. Builds shrink into every level, and a cell holds
-//! what was built in it if that fills a boxel-thick plane across it ([`Reach::hold`]).
+//! grass and rock is drawn as their mix. Builds shrink into every level, and by default a
+//! cell holds what was built in it however little that is ([`Reach::hold`]), so builds never
+//! vanish far away: a one-boxel wall gets as thick as the cell instead.
 //! Far chunks are data only: no light worked out (open sky everywhere), never simulated.
 
 use std::collections::{HashMap, HashSet};
@@ -135,11 +136,10 @@ pub struct Reach {
     pub far: f32,
     pub pixels: f32,
     pub screen: f32,
-    /// A cell under edits stays solid, however empty, if what was built in it (boxels that
-    /// differ from what the generator makes there) fills `hold` boxel-thick planes across it:
-    /// at 1 a one-boxel wall or floor right through the cell keeps it, a lone pillar doesn't.
-    /// 0 keeps only cells more than half filled, as every other cell is.
-    pub hold: f32,
+    /// How a cell under edits is kept solid by what was built in it (boxels that differ from
+    /// what the generator makes there), however empty it is otherwise: [`HOLD_OFF`],
+    /// [`HOLD_PLANE`] or [`HOLD_ANY`].
+    pub hold: u8,
     /// How many levels finer the generator is sampled to find what a cell is made of besides
     /// its main material (see [`Mix`]): 0 none, up to [`MAX_MIX`].
     pub mix: u8,
@@ -147,7 +147,7 @@ pub struct Reach {
 
 impl Default for Reach {
     fn default() -> Self {
-        Self { detail: 256.0, far: 2048.0, pixels: DEFAULT_PIXELS, screen: Reach::screen_scale(1080.0, 80.0), hold: 1.0, mix: 1 }
+        Self { detail: 256.0, far: 2048.0, pixels: DEFAULT_PIXELS, screen: Reach::screen_scale(1080.0, 80.0), hold: HOLD_ANY, mix: 1 }
     }
 }
 
@@ -157,6 +157,22 @@ pub const DEFAULT_PIXELS: f32 = 8.0;
 
 /// The range [`Reach::pixels`] is kept in.
 pub const PIXELS: std::ops::RangeInclusive<f32> = 1.0..=64.0;
+
+/// [`Reach::hold`]: builds keep a cell only by filling more than half of it, as every other
+/// cell is kept.
+pub const HOLD_OFF: u8 = 0;
+
+/// [`Reach::hold`]: a build keeps a cell if it adds up to a boxel-thick plane right across it,
+/// so a one-boxel wall needs to be as tall and as wide as the cell.
+pub const HOLD_PLANE: u8 = 1;
+
+/// [`Reach::hold`]: any built boxel keeps a cell, as Voxy's "any solid child wins" does (see
+/// `docs/notes/voxy-questions.md`, answers 3, 4 and 26). Nothing built vanishes far away; it
+/// gets as thick as the cell.
+pub const HOLD_ANY: u8 = 2;
+
+/// The most [`Reach::hold`] goes to.
+pub const MAX_HOLD: u8 = HOLD_ANY;
 
 /// The most [`Reach::mix`] goes to. A level finer makes far terrain about four times as slow
 /// to build; two levels finer, sixteen (2026-11-14), for little to see.
@@ -391,7 +407,7 @@ struct FarJob {
     /// [`crate::stream::CLEAR_DISTANCE`]), x fastest; empty if none is.
     cleared: Vec<bool>,
     /// [`Reach::hold`] and [`Reach::mix`].
-    hold: f32,
+    hold: u8,
     mix: u8,
 }
 
@@ -760,7 +776,7 @@ fn build(job: &FarJob) -> Result<Option<Column>, ApiError> {
     // What the generator makes under each edit, only needed to hold built cells.
     let mut edits = Vec::with_capacity(edited.len());
     for data in edited {
-        let generated = if job.hold > 0.0 {
+        let generated = if job.hold != HOLD_OFF {
             let p = data.pos.0;
             let (n, (xs, ys)) = (1i64 << column.level, column.under());
             let (bx, by) = (p.x - xs.start, p.y - ys.start);
@@ -990,10 +1006,10 @@ fn top(list: &[(crate::BlockId, f32)]) -> Option<(crate::BlockId, f32)> {
 
 /// Writes the cells of `data` (a far chunk of `column`'s level) that `edits` lie under,
 /// shrunk, and their mix: a cell is solid if more than half filled, or if what was built in it
-/// fills `hold` planes across it (see [`Reach::hold`]), and takes the material filling most
+/// is enough to hold it (see [`Reach::hold`]), and takes the material filling most
 /// of it, or of what was built; else it's emptied. A cell wider than a chunk counts what's
 /// outside the edited chunks as it was generated. Returns which cells the edits touched.
-fn shrink_edits(data: &mut ChunkData, mix: &mut Mix, column: FarColumn, edits: &[Edit], blocks: &BlockRegistry, hold: f32) -> Vec<bool> {
+fn shrink_edits(data: &mut ChunkData, mix: &mut Mix, column: FarColumn, edits: &[Edit], blocks: &BlockRegistry, hold: u8) -> Vec<bool> {
     let mut touched = vec![false; api::CHUNK_VOLUME];
     let n = 1i64 << column.level;
     let s = column.step();
@@ -1044,7 +1060,12 @@ fn shrink_edits(data: &mut ChunkData, mix: &mut Mix, column: FarColumn, edits: &
         }
     }
     let volume = (s * s * s) as f32;
-    let planes = hold * (s * s) as f32;
+    // How much must be built to hold a cell: none past "something" for any, a plane's worth.
+    let holds = |built: f32| match hold {
+        HOLD_OFF => false,
+        HOLD_PLANE => built >= (s * s) as f32,
+        _ => built > 0.0,
+    };
     let mut cells: Vec<(usize, Tally)> = tallies.into_iter().collect();
     cells.sort_by_key(|c| c.0);
     for (cell, mut t) in cells {
@@ -1058,7 +1079,7 @@ fn shrink_edits(data: &mut ChunkData, mix: &mut Mix, column: FarColumn, edits: &
         }
         let main = if t.total > volume / 2.0 {
             top(&t.kinds)
-        } else if hold > 0.0 && t.built > 0.0 && t.built >= planes {
+        } else if holds(t.built) {
             top(&t.built_kinds)
         } else {
             None
@@ -1123,7 +1144,7 @@ mod tests {
         // 1080 pixels tall, 90° up and down: a meter one meter away is 540 pixels.
         let screen = Reach::screen_scale(1080.0, 90.0);
         assert!((screen - 540.0).abs() < 0.01);
-        let reach = Reach { detail: 300.0, far: 4096.0, pixels: 6.0, screen, hold: 1.0, mix: 1 };
+        let reach = Reach { detail: 300.0, far: 4096.0, pixels: 6.0, screen, hold: HOLD_PLANE, mix: 1 };
         // Level 1 meets full detail; level 3's 8 m cells are 6 pixels at 720 m.
         assert_eq!(reach.split_distance(1), 300.0);
         assert!((reach.split_distance(3) - 720.0).abs() < 0.01);
@@ -1286,7 +1307,7 @@ mod tests {
         // An edited chunk at ordinary chunk (1, 0, 0): stone in its lowest 5 boxels.
         let edit = chunk(I64Vec3::new(1, 0, 0), vec![Vec::new(), vec![Occupant::new(stone)]], |p| (p.z < 5) as u16);
         let mut mix = Mix::default();
-        shrink_edits(&mut data, &mut mix, column, &[Edit { data: edit, generated: None }], &blocks, 0.0);
+        shrink_edits(&mut data, &mut mix, column, &[Edit { data: edit, generated: None }], &blocks, HOLD_OFF);
         // It lands in cells 16..32 in X; boxels 0..4 fill cells 0 and 1 whole, cell 2 half
         // (boxel 4 of 4..6): not more than half, so empty.
         assert_eq!(cell(&data, 16, 0, 0), Some(stone));
@@ -1304,7 +1325,7 @@ mod tests {
     }
 
     /// Shrinks `edits` into the far chunk at the origin of `level`, empty, holding `hold`.
-    fn shrunk(level: u8, edits: &[Edit], blocks: &BlockRegistry, hold: f32) -> ChunkData {
+    fn shrunk(level: u8, edits: &[Edit], blocks: &BlockRegistry, hold: u8) -> ChunkData {
         let column = FarColumn { terrain: 0, level, x: 0, y: 0 };
         let mut data = chunk(I64Vec3::ZERO, vec![Vec::new()], |_| 0);
         let mut mix = Mix::default();
@@ -1312,40 +1333,80 @@ mod tests {
         data
     }
 
+    /// An edit at `pos` of stone where `solid` says, on empty generated ground.
+    fn built(pos: I64Vec3, stone: crate::BlockId, solid: impl Fn(LocalPos) -> bool) -> Edit {
+        let data = chunk(pos, vec![Vec::new(), vec![Occupant::new(stone)]], |p| solid(p) as u16);
+        Edit { data, generated: Some(chunk(pos, vec![Vec::new()], |_| 0)) }
+    }
+
     #[test]
-    fn a_one_boxel_wall_stays_at_every_level() {
+    fn any_built_boxel_keeps_its_cell_at_every_level() {
+        let (blocks, stone, _) = stone_and_grass();
+        type Build = (&'static str, Box<dyn Fn(LocalPos) -> bool>);
+        let builds: [Build; 4] = [
+            // A wall 3 boxels tall and 6 long: far shorter than most cells.
+            ("short wall", Box::new(|p: LocalPos| p.x == 5 && p.y < 6 && p.z < 3)),
+            // The same wall standing across the line between cells of every level, at 15 and 16.
+            ("wall across cells", Box::new(|p: LocalPos| p.x == 5 && p.y < 6 && (14..18).contains(&p.z))),
+            ("pillar", Box::new(|p: LocalPos| p.x == 5 && p.y == 5)),
+            ("single block", Box::new(|p: LocalPos| p.x == 5 && p.y == 0 && p.z == 16)),
+        ];
+        for (name, solid) in &builds {
+            for level in 1..=MAX_LEVEL {
+                let data = shrunk(level, &[built(I64Vec3::ZERO, stone, solid)], &blocks, HOLD_ANY);
+                // The cells the build's boxels fall in, and only those, are solid.
+                let mut want = HashSet::new();
+                for i in 0..api::CHUNK_VOLUME {
+                    let b = LocalPos::from_index(i);
+                    if solid(b) {
+                        want.insert(LocalPos::new(b.x >> level, b.y >> level, b.z >> level).index());
+                    }
+                }
+                assert!(!want.is_empty());
+                for i in 0..api::CHUNK_VOLUME {
+                    assert_eq!(data.cells.at(i) != 0, want.contains(&i), "{name}, level {level}, cell {:?}", LocalPos::from_index(i));
+                }
+                // None of them is a plane right across a cell 4 boxels or more a side.
+                if level >= 2 {
+                    let plane = shrunk(level, &[built(I64Vec3::ZERO, stone, solid)], &blocks, HOLD_PLANE);
+                    assert_eq!(plane.cells.uniform(), Some(0), "{name}, level {level}: not held as a plane");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn a_one_boxel_wall_held_as_a_plane_needs_the_whole_cell() {
         let (blocks, stone, _) = stone_and_grass();
         for level in 1..=5 {
-            let data = shrunk(level, &[wall(I64Vec3::ZERO, stone, 32)], &blocks, 1.0);
+            let data = shrunk(level, &[wall(I64Vec3::ZERO, stone, 32)], &blocks, HOLD_PLANE);
             let x = (5 >> level) as u8;
             assert_eq!(cell(&data, x, 0, 0), Some(stone), "level {level}");
             assert_eq!(cell(&data, x + 1, 0, 0), None, "level {level}: only the wall's cells");
             // Held off, a thin wall goes.
-            assert_eq!(cell(&shrunk(level, &[wall(I64Vec3::ZERO, stone, 32)], &blocks, 0.0), x, 0, 0), None, "level {level}");
+            assert_eq!(cell(&shrunk(level, &[wall(I64Vec3::ZERO, stone, 32)], &blocks, HOLD_OFF), x, 0, 0), None, "level {level}");
         }
         // At level 6 a cell is 2 chunks a side: a wall through all of it, made of four
-        // edited chunks, holds it; a wall through a quarter of it doesn't.
+        // edited chunks, holds it; a wall through a quarter of it doesn't, but any build does.
         let four: Vec<Edit> = [(0, 0), (1, 0), (0, 1), (1, 1)].iter().map(|&(y, z)| wall(I64Vec3::new(0, y, z), stone, 32)).collect();
-        assert_eq!(cell(&shrunk(6, &four, &blocks, 1.0), 0, 0, 0), Some(stone));
-        assert_eq!(cell(&shrunk(6, &four[..1], &blocks, 1.0), 0, 0, 0), None);
+        assert_eq!(cell(&shrunk(6, &four, &blocks, HOLD_PLANE), 0, 0, 0), Some(stone));
+        assert_eq!(cell(&shrunk(6, &four[..1], &blocks, HOLD_PLANE), 0, 0, 0), None);
+        assert_eq!(cell(&shrunk(6, &four[..1], &blocks, HOLD_ANY), 0, 0, 0), Some(stone));
     }
 
     #[test]
-    fn a_lone_pillar_and_generated_ground_are_not_held() {
+    fn generated_ground_and_dug_out_space_are_not_held() {
         let (blocks, stone, _) = stone_and_grass();
         let pos = I64Vec3::ZERO;
-        // A pillar one boxel across, all the way up the chunk.
-        let pillar = Edit {
-            data: chunk(pos, vec![Vec::new(), vec![Occupant::new(stone)]], |p| (p.x == 5 && p.y == 5) as u16),
-            generated: Some(chunk(pos, vec![Vec::new()], |_| 0)),
-        };
-        assert_eq!(cell(&shrunk(3, &[pillar], &blocks, 1.0), 0, 0, 0), None);
+        let lists = vec![Vec::new(), vec![Occupant::new(stone)]];
         // Ground 3 boxels deep that the generator made itself: not built, so cells 8 a side
         // stay empty under 3/8 of it, as they do where nothing was edited.
         let ground = |p: LocalPos| (p.z < 3) as u16;
-        let lists = vec![Vec::new(), vec![Occupant::new(stone)]];
-        let edit = Edit { data: chunk(pos, lists.clone(), ground), generated: Some(chunk(pos, lists, ground)) };
-        assert_eq!(cell(&shrunk(3, &[edit], &blocks, 1.0), 0, 0, 0), None);
+        let edit = Edit { data: chunk(pos, lists.clone(), ground), generated: Some(chunk(pos, lists.clone(), ground)) };
+        assert_eq!(cell(&shrunk(3, &[edit], &blocks, HOLD_ANY), 0, 0, 0), None);
+        // Ground 8 deep dug down to 3: what's left was generated, what's gone is nothing built.
+        let dug = Edit { data: chunk(pos, lists.clone(), ground), generated: Some(chunk(pos, lists, |p| (p.z < 8) as u16)) };
+        assert_eq!(cell(&shrunk(3, &[dug], &blocks, HOLD_ANY), 0, 0, 0), None);
     }
 
     #[test]
@@ -1358,7 +1419,7 @@ mod tests {
         let column = FarColumn { terrain: 0, level: 3, x: 0, y: 0 };
         let mut data = chunk(I64Vec3::ZERO, vec![Vec::new()], |_| 0);
         let mut mix = Mix::default();
-        let touched = shrink_edits(&mut data, &mut mix, column, &[Edit { data: edit, generated: None }], &blocks, 1.0);
+        let touched = shrink_edits(&mut data, &mut mix, column, &[Edit { data: edit, generated: None }], &blocks, HOLD_PLANE);
         assert_eq!(cell(&data, 0, 0, 0), Some(stone));
         let (second, share) = mix.at(LocalPos::new(0, 0, 0).index()).expect("a second material");
         assert_eq!(second, grass);
