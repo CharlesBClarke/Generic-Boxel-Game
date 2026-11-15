@@ -104,10 +104,38 @@ A run of small toy slices. Each one takes a single game-feel feature that doesn'
 
 ### Current toy
 
-No toy in progress. Next: **Far terrain looks** (the user's pick, 2026-11-15), planned in a new session.
+#### Far terrain looks (`toy-far-terrain-looks`)
 
-**Waiting for a play check** (remind the user at the start of every session, and at good moments during one, until they confirm; then delete the line):
-- Loading by cube (3), deferred 2026-11-13: dig a shaft straight down 50–100 m. Light should come only from the sky straight above and the walls should darken with depth; no daylight in the rock beside the shaft, or near the bottom where chunks below haven't loaded.
+**Stage:** Plan approved (2026-11-15); not started. Two fixes come first, each on its own branch and play-checked before the toy starts: `fix-far-takeover`, then `fix-far-seam-holes`.
+
+**Goal:** far terrain looks like full detail seen from far away, so the seam at 256 m and the level switches stop drawing the eye.
+
+**The user's issues** (2026-11-15, from play and two screenshots)
+1. Lamps flush in the lake turn into cubes far away: "I have lights embeaded in the lake and the lit area turns into a cube", "the lamps are flush with the ice not sitting on top". Cause (`sim::far::shrink_edits`): a lamp in place of ice counts as built, any built boxel holds its cell, and a cell with the lake's surface low in it is drawn whole, as lumite.
+2. Lamp light is missing far away (the lit patch around the lamps goes).
+3. "when I spawn in a new area the terrain I spawn on, for second I see the full deatil blocks but then it gets taken over by min quailty LODS imidetly". Cause (`Reach::pick_in`): a ready coarse far chunk is drawn whole until all 8 children are ready, hiding ordinary chunks already drawn. A bug from Far terrain octree: `fix-far-takeover`.
+4. "I see holes in the LOD border". Cause not confirmed; suspected: no side faces at the edge of loaded full detail, against a far surface up to a cell lower. `fix-far-seam-holes`.
+5. "the shading diffrence between the fartest full detail and first level lod is too extreme, because of how you sade them as if there where smooth it makes a huge diffrence"; and the user's idea: "would interpliation be hard? maybe fade out AO, and the fake shadding too, because that stuff causes the morrere".
+
+**Fixes first**
+- `fix-far-takeover` (3): a coarse far chunk gives way piece by piece, no longer drawing the parts whose finer chunks are ready, so full detail on screen is never hidden. Test first: ready ordinary chunks under an unfinished coarse far chunk stay drawn, no spot drawn twice.
+- `fix-far-seam-holes` (4): confirm the cause, then a failing test and the fix. If the cause is something else, stop and say so.
+
+**Plan** (approved 2026-11-15, the user's "engage")
+1. *Flush builds stay flat* (issue 1, `sim::far::shrink_edits`): a boxel built where the generator had ground only joins its cell's mix; only boxels built in the generator's air hold a cell. Revises the Phase 2 decision "Builds hold far cells by any built boxel".
+2. *Shading across the seam* (issue 5, `solid.wgsl`): full detail fades AO and edge lines out before the seam; far faces are lit per face at the seam and ease to the slope's smooth shading as steps shrink on screen (by pixels, not meters); `far_crease` goes. The fade distances and the pixel size where smooth takes over are tunable, set by the user by eye.
+3. *Stored sky light far away* (`sim::far`): far chunks get sky light from the tops at their cell size, joined at faces as chunks are; a face takes the light of the cell in front of it (clean-room answer 9).
+4. *Lamp light far away* (issue 2): far cells carry block light too. The slope moves out of the light's red and green; expected into the AO and edge slots far faces leave empty, to be checked.
+5. *Finer cells, measured*: bench `far_pixels` at 8, 4 and 2 with screenshots; the user picks the default.
+- *Not in it*: a texture per far face (at small cells it shows only its average, which the mix already gives), the far shadow's height map, the "how full" score.
+- *Tests*: a flush build doesn't hold a cell and a wall in the air still does at every level; far light dark under an overhang, lit in the open, agreeing across far chunk faces; a lamp lights the far cells around it; the slope packing matches the shader; the quick bench.
+
+**Done when**
+1. The lake lamps are flat and the ice around them is lit from far away.
+2. A hillside across the seam doesn't jump in shade, and the user has set the fades by eye.
+3. A cave mouth or overhang is dark from far away.
+4. A one-boxel wall is still visible at the edge of the far distance.
+5. The pixel target is picked and its bench cost stated.
 
 **Low-priority play checks** (don't remind every session; check only when a toy makes it convenient, such as one that puts the player among moving cows; delete the line once seen):
 - Cow herd (1): a cow shoved well away from the herd walks back to it on its own.
