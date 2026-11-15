@@ -9,6 +9,10 @@
 //! [`crate::view::apply_render_distance`]). Ordinary chunks that are in are drawn even under a
 //! far chunk still waiting for its finer levels; the far material is told where they are (the
 //! mask, see [`mask_of`]) and leaves itself out there, so full detail is never hidden.
+//!
+//! The faces a far chunk leaves out toward a solid far chunk beside it are kept apart, as that
+//! side's wall, and drawn only while the one beside it isn't drawn at its level (finer or
+//! coarser terrain is there instead, whose ground can sit lower and would leave a hole).
 
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
@@ -48,12 +52,16 @@ pub(crate) struct FarMeshed {
     pub chunk: FarChunk,
     pub version: u64,
     pub mesh: Option<MeshData>,
+    /// Its wall on each side, in [`FarChunk::beside`]'s order: the faces left out of `mesh`
+    /// as the far chunk beside it there is solid across them. `None` where there are none.
+    pub walls: [Option<MeshData>; 6],
 }
 
-/// One far chunk's mesh.
+/// One far chunk's mesh, or its wall on one side (in [`FarChunk::beside`]'s order).
 #[derive(Component)]
 pub(crate) struct FarMesh {
     chunk: FarChunk,
+    wall: Option<u8>,
 }
 
 /// A far chunk the server sent.
@@ -67,6 +75,30 @@ struct Entry {
     cells: Option<Arc<FarCells>>,
     entity: Option<Entity>,
     quads: usize,
+    /// Its walls (see [`FarMeshed::walls`]) and how many quads each has.
+    walls: [Option<Entity>; 6],
+    wall_quads: [usize; 6],
+}
+
+impl Entry {
+    fn new(version: u64, meshed: bool) -> Self {
+        Entry { version, meshed, cells: None, entity: None, quads: 0, walls: [None; 6], wall_quads: [0; 6] }
+    }
+
+    /// Takes its meshes out of the world.
+    fn despawn(&mut self, commands: &mut Commands) {
+        for e in self.entity.take().into_iter().chain(self.walls.iter_mut().filter_map(Option::take)) {
+            commands.entity(e).despawn();
+        }
+        self.quads = 0;
+        self.wall_quads = [0; 6];
+    }
+}
+
+/// Whether a far chunk's mesh is shown, or its wall on side `wall`, given the far chunks
+/// `drawn`: the mesh if it's drawn; a wall only while the far chunk beside it there isn't.
+fn shown(drawn: &HashSet<FarChunk>, chunk: FarChunk, wall: Option<u8>) -> bool {
+    drawn.contains(&chunk) && wall.is_none_or(|side| !drawn.contains(&chunk.beside()[side as usize]))
 }
 
 /// What far terrain draws, for the readout.
@@ -101,10 +133,8 @@ pub(crate) struct FarTerrain {
 impl FarTerrain {
     /// Forgets every far chunk, as when the world comes anew.
     pub fn clear(&mut self, commands: &mut Commands) {
-        for (_, entry) in self.chunks.drain() {
-            if let Some(e) = entry.entity {
-                commands.entity(e).despawn();
-            }
+        for (_, mut entry) in self.chunks.drain() {
+            entry.despawn(commands);
         }
         self.drawn.clear();
     }
@@ -123,17 +153,15 @@ impl FarTerrain {
             match n {
                 FarNews::Gone(chunk) => {
                     again.remove(&chunk);
-                    if let Some(entry) = self.chunks.remove(&chunk)
-                        && let Some(e) = entry.entity
-                    {
-                        commands.entity(e).despawn();
+                    if let Some(mut entry) = self.chunks.remove(&chunk) {
+                        entry.despawn(commands);
                     }
                 }
                 FarNews::Built(FarBuilt { chunk, cells }) => {
                     self.next_version += 1;
                     let version = self.next_version;
                     // One built again keeps drawing the old mesh until the new one is in.
-                    let entry = self.chunks.entry(chunk).or_insert(Entry { version, meshed: false, cells: None, entity: None, quads: 0 });
+                    let entry = self.chunks.entry(chunk).or_insert(Entry::new(version, false));
                     let had = entry.cells.is_some();
                     entry.version = version;
                     entry.cells = cells.map(Arc::new);
@@ -141,11 +169,8 @@ impl FarTerrain {
                         again.insert(chunk);
                     } else {
                         again.remove(&chunk);
-                        if let Some(e) = entry.entity.take() {
-                            commands.entity(e).despawn();
-                        }
+                        entry.despawn(commands);
                         entry.meshed = true;
-                        entry.quads = 0;
                     }
                     // The ones beside it whose faces toward it go: those solid where it's solid
                     // across the face between them. Built again (after an edit), all of them.
@@ -175,28 +200,35 @@ impl FarTerrain {
     /// Puts in meshes that came back, replacing a far chunk's old one.
     pub fn put(&mut self, batch: Vec<FarMeshed>, commands: &mut Commands, meshes: &mut Assets<Mesh>, origin: I64Vec3) {
         let Some(material) = self.material.clone() else { return };
-        for FarMeshed { chunk, version, mesh } in batch {
+        for FarMeshed { chunk, version, mesh, walls } in batch {
             let Some(entry) = self.chunks.get_mut(&chunk) else { continue };
             if entry.version != version {
                 continue;
             }
-            if let Some(e) = entry.entity.take() {
-                commands.entity(e).despawn();
-            }
-            entry.quads = mesh.as_ref().map_or(0, |m| m.quad_count());
-            let shown = if self.drawn.contains(&chunk) { Visibility::Inherited } else { Visibility::Hidden };
-            if let Some(data) = mesh {
-                let entity = commands
+            entry.despawn(commands);
+            let drawn = &self.drawn;
+            let mut spawn = |data: MeshData, wall: Option<u8>| {
+                let visibility = if shown(drawn, chunk, wall) { Visibility::Inherited } else { Visibility::Hidden };
+                commands
                     .spawn((
                         Mesh3d(meshes.add(crate::to_bevy_mesh(data))),
                         MeshMaterial3d(material.clone()),
                         far_transform(chunk, origin),
-                        FarMesh { chunk },
+                        FarMesh { chunk, wall },
                         NotShadowCaster,
-                        shown,
+                        visibility,
                     ))
-                    .id();
-                entry.entity = Some(entity);
+                    .id()
+            };
+            if let Some(data) = mesh {
+                entry.quads = data.quad_count();
+                entry.entity = Some(spawn(data, None));
+            }
+            for (side, wall) in walls.into_iter().enumerate() {
+                if let Some(data) = wall {
+                    entry.wall_quads[side] = data.quad_count();
+                    entry.walls[side] = Some(spawn(data, Some(side as u8)));
+                }
             }
             entry.meshed = true;
         }
@@ -229,8 +261,9 @@ fn far_transform(chunk: FarChunk, origin: I64Vec3) -> Transform {
 }
 
 /// Meshes far chunks, each with the far chunks beside it it was asked with (faces toward
-/// them left out where they're solid, faces toward a missing one kept, as walls that plug the
-/// cracks between levels), every face given the slope of the ground around it (see
+/// them left out where they're solid and kept apart as that side's wall, see
+/// [`FarMeshed::walls`]; faces toward a missing one kept in the mesh: both plug the cracks
+/// between levels), every face given the slope of the ground around it (see
 /// [`crate::slope`]) and its cell's mix of materials (see [`set_mixes`]), spread over
 /// `threads` threads.
 pub(crate) fn mesh_far(list: Vec<Asked>, blocks: &BlockRegistry, volumes: &Volumes, merge: bool, threads: usize) -> Vec<FarMeshed> {
@@ -242,13 +275,33 @@ pub(crate) fn mesh_far(list: Vec<Asked>, blocks: &BlockRegistry, volumes: &Volum
             grid.import_chunk(&b.data);
         }
         let pos = cells.data.pos;
-        let mut mesh = crate::mesher::mesh_chunks_on(&grid, &[pos], blocks, volumes, &ao, false, 1).pop().unwrap_or_default();
-        let mesh = (!mesh.is_empty()).then(|| {
-            crate::slope::set_slopes(&mut mesh, &crate::slope::Cells::of(&grid, pos));
-            set_mixes(&mut mesh, Some(&cells.mix), volumes);
-            if merge { crate::greedy::merge_far(&mesh) } else { mesh }
-        });
-        FarMeshed { chunk, version, mesh }
+        let mesh = crate::mesher::mesh_chunks_on(&grid, &[pos], blocks, volumes, &ao, false, 1).pop().unwrap_or_default();
+        // The faces left out toward the far chunks beside it: those it has alone that it
+        // doesn't have among them.
+        let mut walls: [MeshData; 6] = Default::default();
+        if !beside.is_empty() {
+            let mut alone = Grid::default();
+            alone.import_chunk(&cells.data);
+            let all = crate::mesher::mesh_chunks_on(&alone, &[pos], blocks, volumes, &ao, false, 1).pop().unwrap_or_default();
+            let key = |m: &MeshData, q: usize| std::array::from_fn::<[u32; 3], 4, _>(|k| m.positions[4 * q + k].map(f32::to_bits));
+            let kept: HashSet<[[u32; 3]; 4]> = (0..mesh.quad_count()).map(|q| key(&mesh, q)).collect();
+            for q in 0..all.quad_count() {
+                if let Some(side) = border_side(&all, q)
+                    && !kept.contains(&key(&all, q))
+                {
+                    crate::greedy::copy(&all, q, &mut walls[side]);
+                }
+            }
+        }
+        let slopes = crate::slope::Cells::of(&grid, pos);
+        let finish = |mut mesh: MeshData| {
+            (!mesh.is_empty()).then(|| {
+                crate::slope::set_slopes(&mut mesh, &slopes);
+                set_mixes(&mut mesh, Some(&cells.mix), volumes);
+                if merge { crate::greedy::merge_far(&mesh) } else { mesh }
+            })
+        };
+        FarMeshed { chunk, version, mesh: finish(mesh), walls: walls.map(finish) }
     };
     let threads = threads.clamp(1, list.len().max(1));
     if threads == 1 {
@@ -262,6 +315,16 @@ pub(crate) fn mesh_far(list: Vec<Asked>, blocks: &BlockRegistry, volumes: &Volum
         let handles: Vec<_> = parts.into_iter().map(|part| s.spawn(move || part.into_iter().map(one).collect::<Vec<_>>())).collect();
         handles.into_iter().flat_map(|h| h.join().expect("meshing a far chunk")).collect()
     })
+}
+
+/// Which side of its far chunk (in [`FarChunk::beside`]'s order) quad `q` of `mesh` lies on,
+/// facing out, if any: a face on the chunk's border, toward the far chunk beside it there.
+fn border_side(mesh: &MeshData, q: usize) -> Option<usize> {
+    let normal = mesh.normals[4 * q];
+    let axis = normal.iter().position(|&c| c != 0.0)?;
+    let forward = normal[axis] > 0.0;
+    let border = if forward { api::CHUNK_SIZE as f32 } else { 0.0 };
+    mesh.positions[4 * q..4 * q + 4].iter().all(|p| p[axis] == border).then_some(2 * axis + usize::from(!forward))
 }
 
 /// Every far chunk in `built` with something in it, to mesh with the others beside it, as
@@ -452,13 +515,14 @@ pub(crate) fn pick_far(
     far.ordinary = ordinary;
     if drawn != far.drawn {
         for (mesh, mut v) in &mut meshes {
-            v.set_if_neq(if drawn.contains(&mesh.chunk) { Visibility::Inherited } else { Visibility::Hidden });
+            v.set_if_neq(if shown(&drawn, mesh.chunk, mesh.wall) { Visibility::Inherited } else { Visibility::Hidden });
         }
         far.drawn = drawn;
     }
-    let drawn: Vec<&Entry> = far.drawn.iter().filter_map(|c| far.chunks.get(c)).collect();
-    let triangles = drawn.iter().map(|e| e.quads * 2).sum();
-    let chunks = drawn.iter().filter(|e| e.entity.is_some()).count();
+    let drawn: Vec<(FarChunk, &Entry)> = far.drawn.iter().filter_map(|&c| Some((c, far.chunks.get(&c)?))).collect();
+    let walls = |c: FarChunk, e: &Entry| (0..6).filter(|&side| shown(&far.drawn, c, Some(side as u8))).map(|side| e.wall_quads[side]).sum::<usize>();
+    let triangles = drawn.iter().map(|&(c, e)| (e.quads + walls(c, e)) * 2).sum();
+    let chunks = drawn.iter().filter(|(_, e)| e.entity.is_some()).count();
     far.stats = FarViewStats { far: far.drawn.len(), ordinary: far.ordinary.len(), chunks, triangles };
 }
 
@@ -538,7 +602,7 @@ mod tests {
         // The test area: only the floor chunk exists, no terrain near it, so the air around it
         // is never sent. The far chunk holding it is ready, but empty (its terrain cleared).
         let mut terrain = FarTerrain::default();
-        terrain.chunks.insert(far(1, 0, 0, 0), Entry { version: 1, meshed: true, cells: None, entity: None, quads: 0 });
+        terrain.chunks.insert(far(1, 0, 0, 0), Entry::new(1, true));
         let floor = ChunkPos(I64Vec3::ZERO);
         let eye = WorldPos::new(I64Vec3::new(16, 16, 18), Vec3::splat(0.5));
         let reach = Reach::default();
@@ -565,7 +629,7 @@ mod tests {
     fn the_bench_waits_for_far_chunks_still_being_meshed() {
         let chunk = far(1, 0, 0, 0);
         let mut terrain = FarTerrain::default();
-        terrain.chunks.insert(chunk, Entry { version: 1, meshed: false, cells: None, entity: None, quads: 0 });
+        terrain.chunks.insert(chunk, Entry::new(1, false));
         assert_eq!(terrain.unmeshed(), 1);
         let mut world = World::new();
         world.insert_resource(terrain);
@@ -664,6 +728,52 @@ mod tests {
     }
 
     #[test]
+    fn faces_left_out_toward_a_far_chunk_beside_are_kept_as_that_sides_wall() {
+        let (blocks, volumes) = stone();
+        // Ground filling the lower half, with the same east of it and nothing else around.
+        let chunk = far(2, 0, 0, 0);
+        let ground = |c: FarChunk| Arc::new(stone_cells(&blocks, c, |p| p.z < 16));
+        let east = chunk.beside()[0];
+        let meshed = mesh_far(vec![Asked { version: 1, chunk, cells: ground(chunk), beside: vec![ground(east)] }], &blocks, &volumes, true, 1).pop().unwrap();
+        // Its own mesh has no face toward the one east of it; that side's wall has them all,
+        // the lower half of the border, and the other sides have no wall.
+        let mesh = meshed.mesh.as_ref().unwrap();
+        assert!(!facing(mesh).contains(&[1, 0, 0]));
+        let wall = meshed.walls[0].as_ref().expect("a wall east");
+        assert_eq!(facing(wall), HashSet::from([[1, 0, 0]]));
+        assert!(wall.positions.iter().all(|p| p[0] == 32.0 && p[2] <= 16.0));
+        let area = |m: &MeshData| {
+            (0..m.indices.len() / 3)
+                .map(|t| {
+                    let [a, b, c] = std::array::from_fn(|k| Vec3::from_array(m.positions[m.indices[3 * t + k] as usize]));
+                    (b - a).cross(c - a).length() / 2.0
+                })
+                .sum::<f32>()
+        };
+        assert_eq!(area(wall), 32.0 * 16.0);
+        assert!(meshed.walls[1..].iter().all(Option::is_none));
+        // Alone, the same faces are in its own mesh and it has no walls.
+        let alone = mesh_far(vec![Asked { version: 1, chunk, cells: ground(chunk), beside: Vec::new() }], &blocks, &volumes, true, 1).pop().unwrap();
+        assert!(facing(alone.mesh.as_ref().unwrap()).contains(&[1, 0, 0]));
+        assert!(alone.walls.iter().all(Option::is_none));
+    }
+
+    #[test]
+    fn a_wall_is_shown_only_while_the_far_chunk_beside_it_isnt_drawn() {
+        let (a, east) = (far(2, 0, 0, 0), far(2, 1, 0, 0));
+        // Both drawn at their level: the ground carries on, no wall.
+        let both = HashSet::from([a, east]);
+        assert!(shown(&both, a, None) && !shown(&both, a, Some(0)));
+        // The one east gave way to finer far chunks (or a coarser one stands in): the wall plugs
+        // the gap its lower ground would leave. The other sides' walls likewise.
+        let finer: HashSet<FarChunk> = east.children().into_iter().chain([a]).collect();
+        assert!(shown(&finer, a, None) && shown(&finer, a, Some(0)) && shown(&finer, a, Some(3)));
+        // Not drawn itself: nothing of it shows.
+        let gone = HashSet::from([east]);
+        assert!(!shown(&gone, a, None) && !shown(&gone, a, Some(0)));
+    }
+
+    #[test]
     fn a_far_chunk_is_meshed_again_when_one_beside_it_comes() {
         let (blocks, _) = stone();
         let mut world = World::new();
@@ -695,7 +805,7 @@ mod tests {
         // A mesh asked for before is thrown away: its version is old.
         let old = terrain.chunks[&a].version - 1;
         terrain.material = Some(Handle::default());
-        terrain.put(vec![FarMeshed { chunk: a, version: old, mesh: None }], &mut commands, &mut Assets::default(), I64Vec3::ZERO);
+        terrain.put(vec![FarMeshed { chunk: a, version: old, mesh: None, walls: Default::default() }], &mut commands, &mut Assets::default(), I64Vec3::ZERO);
         assert!(!terrain.chunks[&a].meshed);
         queue.apply(&mut world);
     }
