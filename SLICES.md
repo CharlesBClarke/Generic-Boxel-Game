@@ -106,7 +106,7 @@ A run of small toy slices. Each one takes a single game-feel feature that doesn'
 
 #### Far terrain looks (`toy-far-terrain-looks`)
 
-**Stage:** Plan approved (2026-11-15); not started. Two fixes come first, each on its own branch and play-checked before the toy starts: `fix-far-takeover`, then `fix-far-seam-holes`.
+**Stage:** Plan approved (2026-11-15); not started. Two fixes come first, each on its own branch and play-checked before the toy starts: `fix-far-takeover` (done 2026-11-15, the user: "ok it works"), then `fix-far-seam-holes`.
 
 **Goal:** far terrain looks like full detail seen from far away, so the seam at 256 m and the level switches stop drawing the eye.
 
@@ -274,6 +274,8 @@ Bugs found in already-merged code, each fixed on its own `fix-` branch (see the 
 - 2026-11-11, `fix-greedy-sparkles`: merged quads met smaller ones at T-junctions, leaving pixel gaps that sparkled. A merged quad with another's corner on its edge is now a fan from its middle, its edges split there (on chunk borders, at every boxel). Costs up to ~4 ms at the bench's spots; see Shadow speed.
 - 2026-11-11, `fix-msaa-edge-values`: with 4× MSAA, pixels on a triangle's edge were shaded off the triangle, so stored light ran below 0 where a lamp's light ends (NaN in `pow`: dark and colored specks) and the look position's centroid derivatives picked the wrong slice or mip along quads' diagonals (dashed lines). Light, position and face are now centroid, the derivatives come from a non-centroid copy, and light is clamped. Also MSAA is off by default (the user's call, from Shadow speed); bench runs before this commit had it on.
 - 2026-11-14, `fix-noise-mip-mix`: full detail chose a noise texel's layer from the one texel under the pixel's middle and faded to that layer's own average, ignoring the mip blend, so far off a grass side showed pure green or pure brown per pixel instead of the rim mixed with the dirt; and the atlas mipped baked noise colors that averaged 4–7 sRGB units off the world noise (copper, phasite, crystals, ice, lumite, cachite), so far terrain and faded full detail disagreed. Noise texels are now baked as their noise's world average before mipping, detail fades into the mip blend, and grain is divided by its measured average.
+
+- 2026-11-15, `fix-far-takeover`: a ready coarse far chunk was drawn whole until all 8 of its children were ready, hiding ordinary chunks already drawn, so after spawning somewhere new full detail showed for a moment and was then covered by the coarsest level until every level had loaded. Ready ordinary chunks are now always drawn, and far terrain leaves itself out where they are (a mask of the ordinary chunks drawn within about 700 m, read per pixel in far terrain's own pipeline; clean-room answer 14). Between far levels the all-8 rule stands. Not benched yet.
 
 ### Done toys
 
