@@ -94,21 +94,6 @@ impl Tops {
 /// A chunk column and the four beside it, as offsets.
 pub const AROUND: [(i64, i64); 5] = [(0, 0), (1, 0), (-1, 0), (0, 1), (0, -1)];
 
-/// The chunk rows (Z) holding most of a column's tops: from the chunk of a low top to the chunk
-/// of a high one, leaving out the lowest and highest hundredth so one shaft or tower doesn't
-/// stretch it. `None` if nothing in the column stops the sky. Far terrain's stand-in for "the
-/// chunks that show the surface here", until it picks by cube.
-pub fn surface_rows(tops: &TopsArray) -> Option<(i64, i64)> {
-    let mut known: Vec<i64> = tops.iter().copied().filter(|&t| t != NO_TOP).collect();
-    if known.is_empty() {
-        return None;
-    }
-    known.sort_unstable();
-    let skip = known.len() / 100;
-    let (low, high) = (known[skip], known[known.len() - 1 - skip]);
-    Some((low.div_euclid(CHUNK_SIZE), high.div_euclid(CHUNK_SIZE)))
-}
-
 /// The chunk row no chunk is at, where a column's tops are kept in the chunk store.
 const STORE_ROW: i64 = i64::MIN;
 
@@ -215,20 +200,6 @@ mod tests {
         assert!(to_bytes(&near).len() < to_bytes(&apart).len());
         assert!(from_bytes(&[9, 0, 0]).is_err());
         assert!(from_bytes(&[]).is_err());
-    }
-
-    #[test]
-    fn surface_rows_leave_out_a_shaft_and_a_tower() {
-        let mut tops = [40; TOPS_LEN];
-        assert_eq!(surface_rows(&tops), Some((1, 1)));
-        tops[0] = -900;
-        tops[1] = 5000;
-        assert_eq!(surface_rows(&tops), Some((1, 1)), "one shaft and one tower");
-        for t in tops.iter_mut().take(200) {
-            *t = -40;
-        }
-        assert_eq!(surface_rows(&tops), Some((-2, 1)), "a pit is part of the surface");
-        assert_eq!(surface_rows(&[NO_TOP; TOPS_LEN]), None);
     }
 
     #[test]

@@ -1,24 +1,20 @@
-//! Far terrain: generated terrain drawn coarsely past the full-detail columns, so the view
-//! reaches far without loading the world there.
+//! Far terrain: generated terrain drawn coarsely past full detail, so the view reaches far
+//! without loading the world there.
 //!
-//! A level-*k* chunk is a chunk's 32³ cells, each standing for 2^*k* boxels a side, so the same
-//! [`ChunkData`] carries it; positions are in level-*k* chunks (a level-*k* chunk at `p` spans
-//! boxels `p * 32 * 2^k` on). A far column is the terrain's level-*k* chunks at one X and Y,
-//! from the lowest of its tops to the highest (see [`api::Generator::tops`]) and wherever
-//! edits reach. Level 0 is the ordinary chunks [`crate::stream`] loads, taken a column at a
-//! time.
+//! A far chunk ([`FarChunk`]) is a level-*k* chunk: a chunk's 32³ cells, each standing for
+//! 2^*k* boxels a side, so the same [`ChunkData`] carries it; positions are in level-*k*
+//! chunks (a level-*k* chunk at `p` spans boxels `p * 32 * 2^k` on). Level 0 is the ordinary
+//! chunks [`crate::stream`] loads.
 //!
-//! Far terrain is still in columns, while the chunks near the player load by cube: a stand-in
-//! until it picks its levels by cube too.
-//!
-//! Which level is drawn where is a quadtree over columns ([`Reach::pick`]): a column splits into
-//! its four children of the level below when it's near enough, and only once all four can be
-//! drawn, so nothing is drawn twice and nothing goes missing while levels load. The server
-//! builds every column the quadtree may want around the player ([`Reach::wanted`]) on the
-//! terrain threads, from the generator's coarse fill ([`api::Generator::fill_coarse`]), with
-//! the edited chunks under it shrunk in, and sends them; the client picks what to draw.
-//! Levels split by size on screen: where a level's cells would look wider than a pixel
-//! target (see [`Reach`]).
+//! Which level is drawn where is an octree over far chunks ([`Reach::pick`]): a far chunk
+//! splits into its eight children of the level below when its middle is near enough in 3D,
+//! and only once all eight can be drawn, so nothing is drawn twice and nothing goes missing
+//! while levels load. Levels split by size on screen: where a level's cells would look wider
+//! than a pixel target (see [`Reach`]). The server builds every far chunk the octree may want
+//! around the player ([`Reach::wanted`]) on the terrain threads, from the generator's coarse
+//! fill ([`api::Generator::fill_coarse`]), with the edited chunks in it shrunk in, and sends
+//! them; the client picks what to draw. One over all the generator's tops with no edits in it
+//! is known empty without filling.
 //!
 //! A far cell is solid or empty, of one main material, with a second one and its share
 //! beside it (a [`Mix`]), found by sampling the generator a level finer, so a hillside of
@@ -40,91 +36,98 @@ use crate::store::ChunkStore;
 use crate::stream::{SharedGenerator, Stream};
 use crate::{BlockRegistry, ChunkData, Occupant};
 
-/// The coarsest level: cells 64 boxels a side, columns 2 km across.
+/// The coarsest level: cells 64 boxels a side, far chunks 2 km across.
 pub const MAX_LEVEL: u8 = 6;
 
-/// One terrain's level-`level` chunks at one X and Y, in level-`level` chunks. Level 0 is an
-/// ordinary column.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
-pub struct FarColumn {
+/// One terrain's level-`level` chunk at `pos`, in level-`level` chunks. Level 0 is an
+/// ordinary chunk.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct FarChunk {
     pub terrain: usize,
     pub level: u8,
-    pub x: i64,
-    pub y: i64,
+    pub pos: I64Vec3,
 }
 
-impl FarColumn {
+impl Ord for FarChunk {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        (self.terrain, self.level, self.pos.to_array()).cmp(&(other.terrain, other.level, other.pos.to_array()))
+    }
+}
+
+impl PartialOrd for FarChunk {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl FarChunk {
     /// Boxels each cell stands for, a side.
     pub fn step(self) -> i64 {
         1 << self.level
     }
 
-    /// Boxels across the column.
+    /// Boxels across the far chunk.
     pub fn span(self) -> i64 {
         CHUNK_SIZE << self.level
     }
 
-    /// The level-`level` column holding the ordinary column at chunk `x, y`.
-    pub fn holding(terrain: usize, level: u8, x: i64, y: i64) -> Self {
+    /// The level-`level` far chunk holding the ordinary chunk at `chunk`.
+    pub fn holding(terrain: usize, level: u8, chunk: ChunkPos) -> Self {
         let n = 1i64 << level;
-        Self { terrain, level, x: x.div_euclid(n), y: y.div_euclid(n) }
+        Self { terrain, level, pos: chunk.0.div_euclid(I64Vec3::splat(n)) }
     }
 
-    /// The column of the level above holding this one.
+    /// The far chunk of the level above holding this one.
     pub fn parent(self) -> Self {
-        Self { terrain: self.terrain, level: self.level + 1, x: self.x.div_euclid(2), y: self.y.div_euclid(2) }
+        Self { terrain: self.terrain, level: self.level + 1, pos: self.pos.div_euclid(I64Vec3::splat(2)) }
     }
 
-    /// The four columns of the level below that make this one up.
-    pub fn children(self) -> [Self; 4] {
-        let (x, y, level) = (self.x * 2, self.y * 2, self.level.saturating_sub(1));
-        let c = |dx, dy| Self { terrain: self.terrain, level, x: x + dx, y: y + dy };
-        [c(0, 0), c(1, 0), c(0, 1), c(1, 1)]
+    /// The eight far chunks of the level below that make this one up.
+    pub fn children(self) -> [Self; 8] {
+        let (base, level) = (self.pos * 2, self.level.saturating_sub(1));
+        std::array::from_fn(|i| {
+            let i = i as i64;
+            Self { terrain: self.terrain, level, pos: base + I64Vec3::new(i & 1, (i >> 1) & 1, (i >> 2) & 1) }
+        })
     }
 
-    /// The ordinary columns under it, as chunk X and Y ranges.
-    pub fn under(self) -> (Range<i64>, Range<i64>) {
+    /// The six far chunks of its level that share a face with it.
+    pub fn beside(self) -> [Self; 6] {
+        let o = [I64Vec3::X, I64Vec3::NEG_X, I64Vec3::Y, I64Vec3::NEG_Y, I64Vec3::Z, I64Vec3::NEG_Z];
+        o.map(|o| Self { pos: self.pos + o, ..self })
+    }
+
+    /// The ordinary chunks in it, as chunk X, Y and Z ranges.
+    pub fn under(self) -> [Range<i64>; 3] {
         let n = 1i64 << self.level;
-        (self.x * n..(self.x + 1) * n, self.y * n..(self.y + 1) * n)
+        [0, 1, 2].map(|k| self.pos[k] * n..(self.pos[k] + 1) * n)
     }
 
-    /// Horizontal meters from `pos` to the column's middle.
+    /// Whether the ordinary chunk at `chunk` is in it.
+    pub fn holds(self, chunk: ChunkPos) -> bool {
+        Self::holding(self.terrain, self.level, chunk) == self
+    }
+
+    /// Meters from `pos` to the far chunk's middle.
     pub fn distance(self, pos: WorldPos) -> f32 {
         let span = self.span();
-        let middle = I64Vec3::new(self.x * span + span / 2, self.y * span + span / 2, 0);
-        let d = (middle - pos.cell()).as_vec3() - pos.offset();
-        d.truncate().length()
+        let middle = self.pos * span + I64Vec3::splat(span / 2);
+        ((middle - pos.cell()).as_vec3() - pos.offset()).length()
     }
 
-    /// Horizontal meters from `pos` to the nearest point of the column; 0 inside it.
+    /// Meters from `pos` to the nearest point of the far chunk; 0 inside it.
     pub fn nearest(self, pos: WorldPos) -> f32 {
-        let span = self.span();
-        let lo = I64Vec3::new(self.x * span, self.y * span, 0);
-        let rel = (pos.cell() - lo).as_vec3() + pos.offset();
-        let out = |v: f32| if v < 0.0 { -v } else if v > span as f32 { v - span as f32 } else { 0.0 };
-        (out(rel.x).powi(2) + out(rel.y).powi(2)).sqrt()
-    }
-
-    /// Its chunk rows (Z, in level-`level` chunks) for a terrain whose ordinary rows are `rows`:
-    /// every level chunk any of them is in.
-    pub fn rows(self, rows: &Range<i64>) -> Range<i64> {
-        if rows.is_empty() {
-            return 0..0;
-        }
-        let n = 1i64 << self.level;
-        rows.start.div_euclid(n)..(rows.end - 1).div_euclid(n) + 1
-    }
-
-    /// Every chunk in the column, in level chunks, top first.
-    pub fn chunks(self, rows: &Range<i64>) -> impl Iterator<Item = ChunkPos> {
-        self.rows(rows).rev().map(move |z| ChunkPos(I64Vec3::new(self.x, self.y, z)))
+        let span = self.span() as f32;
+        let rel = (pos.cell() - self.pos * self.span()).as_vec3() + pos.offset();
+        let out = |v: f32| if v < 0.0 { -v } else if v > span { v - span } else { 0.0 };
+        (out(rel.x).powi(2) + out(rel.y).powi(2) + out(rel.z).powi(2)).sqrt()
     }
 }
 
 /// How far the view reaches and how far terrain is built: full detail out to `detail` meters,
 /// coarser and coarser out to `far`. A level's cells are kept no wider on screen than
-/// `pixels`: a level-*k* column splits once its cells, 2^*k* meters a side, would look wider
-/// than that from the player, seen at `screen` pixels for a meter one meter away (the
+/// `pixels`: a level-*k* far chunk splits once its cells, 2^*k* meters a side, would look
+/// wider than that from the player, seen at `screen` pixels for a meter one meter away (the
 /// client's window height and field of view, see [`Reach::screen_scale`]). So switching
 /// levels changes about the same few pixels everywhere, and `pixels` is the quality slider:
 /// lower is finer, for more triangles.
@@ -185,7 +188,7 @@ impl Reach {
         height.max(1.0) / (2.0 * (fov.clamp(1.0, 179.0).to_radians() * 0.5).tan())
     }
 
-    /// The coarsest level used: the first whose columns never split at the far distance.
+    /// The coarsest level used: the first whose far chunks never split at the far distance.
     pub fn top(&self) -> u8 {
         let mut level = 1u8;
         while level < MAX_LEVEL && self.split_distance(level) < self.far {
@@ -194,9 +197,10 @@ impl Reach {
         level
     }
 
-    /// Meters within which a level-`level` column's middle must be for it to split: level 1
-    /// at the full-detail distance, coarser ones where their cells would look `pixels` wide,
-    /// never nearer than that; and never less than the column's width, so the column the
+    /// Meters within which a level-`level` far chunk's middle must be for it to split: level
+    /// 1 at the full-detail distance (so the ordinary chunks it splits into are all within the
+    /// load distance, a chunk past it), coarser ones where their cells would look `pixels`
+    /// wide, never nearer than that; and never less than the far chunk's width, so the one the
     /// player is in always splits however short full detail is.
     pub fn split_distance(&self, level: u8) -> f32 {
         if level == 0 {
@@ -218,39 +222,41 @@ impl Reach {
         self.far > self.detail
     }
 
-    /// Whether `column` splits into its children, seen from `pos`.
-    pub fn splits(&self, column: FarColumn, pos: WorldPos) -> bool {
-        column.level > 0 && column.distance(pos) < self.split_distance(column.level)
+    /// Whether `chunk` splits into its children, seen from `pos`.
+    pub fn splits(&self, chunk: FarChunk, pos: WorldPos) -> bool {
+        chunk.level > 0 && chunk.distance(pos) < self.split_distance(chunk.level)
     }
 
-    /// Whether any of `column` is within the far distance of `pos`.
-    pub fn reaches(&self, column: FarColumn, pos: WorldPos) -> bool {
-        column.nearest(pos) < self.far
+    /// Whether any of `chunk` is within the far distance of `pos`.
+    pub fn reaches(&self, chunk: FarChunk, pos: WorldPos) -> bool {
+        chunk.nearest(pos) < self.far
     }
 
-    /// The coarsest columns of `terrain` within reach of `pos`.
-    fn tops(&self, terrain: usize, pos: WorldPos) -> Vec<FarColumn> {
+    /// The coarsest far chunks of `terrain` within reach of `pos`, every way.
+    fn tops(&self, terrain: usize, pos: WorldPos) -> Vec<FarChunk> {
         let level = self.top();
         let span = (CHUNK_SIZE << level) as f32;
-        let (cx, cy) = (pos.cell().x as f32 / span, pos.cell().y as f32 / span);
+        let c = pos.cell().as_vec3() / span;
+        let c = I64Vec3::new(c.x.floor() as i64, c.y.floor() as i64, c.z.floor() as i64);
         let r = (self.far / span).ceil() as i64 + 1;
-        let (cx, cy) = (cx.floor() as i64, cy.floor() as i64);
         let mut out = Vec::new();
-        for y in cy - r..=cy + r {
-            for x in cx - r..=cx + r {
-                let c = FarColumn { terrain, level, x, y };
-                if self.reaches(c, pos) {
-                    out.push(c);
+        for z in c.z - r..=c.z + r {
+            for y in c.y - r..=c.y + r {
+                for x in c.x - r..=c.x + r {
+                    let f = FarChunk { terrain, level, pos: I64Vec3::new(x, y, z) };
+                    if self.reaches(f, pos) {
+                        out.push(f);
+                    }
                 }
             }
         }
         out
     }
 
-    /// Every far column (level 1 and up) of `terrain` the quadtree may draw from `pos`: those
+    /// Every far chunk (level 1 and up) of `terrain` the octree may draw from `pos`: those
     /// within reach that are the coarsest, or the child of one that splits. Coarse ones near
     /// the player stay wanted under their children, to fall back on as the player moves.
-    pub fn wanted(&self, terrain: usize, pos: WorldPos) -> Vec<FarColumn> {
+    pub fn wanted(&self, terrain: usize, pos: WorldPos) -> Vec<FarChunk> {
         let mut out = Vec::new();
         if !self.has_far() {
             return out;
@@ -268,11 +274,11 @@ impl Reach {
         out
     }
 
-    /// The columns of `terrain` to draw from `pos`, any level: each spot within reach once at
-    /// most, as fine as what's `ready` to draw allows. A column splits only once all its
+    /// The far chunks of `terrain` to draw from `pos`, any level: each spot within reach once
+    /// at most, as fine as what's `ready` to draw allows. A far chunk splits only once all its
     /// children can be drawn; until then it's drawn whole if it's ready, or else its ready
     /// children are (leaving holes where nothing is ready).
-    pub fn pick(&self, terrain: usize, pos: WorldPos, ready: &dyn Fn(FarColumn) -> bool) -> Vec<FarColumn> {
+    pub fn pick(&self, terrain: usize, pos: WorldPos, ready: &dyn Fn(FarChunk) -> bool) -> Vec<FarChunk> {
         let mut out = Vec::new();
         for top in self.tops(terrain, pos) {
             out.extend(self.pick_in(top, pos, ready).0);
@@ -280,15 +286,15 @@ impl Reach {
         out
     }
 
-    /// What to draw of `column`, and whether that covers all of it within reach.
-    fn pick_in(&self, column: FarColumn, pos: WorldPos, ready: &dyn Fn(FarColumn) -> bool) -> (Vec<FarColumn>, bool) {
-        if !self.reaches(column, pos) {
+    /// What to draw of `chunk`, and whether that covers all of it within reach.
+    fn pick_in(&self, chunk: FarChunk, pos: WorldPos, ready: &dyn Fn(FarChunk) -> bool) -> (Vec<FarChunk>, bool) {
+        if !self.reaches(chunk, pos) {
             return (Vec::new(), true);
         }
-        if self.splits(column, pos) {
+        if self.splits(chunk, pos) {
             let mut all = Vec::new();
             let mut whole = true;
-            for child in column.children() {
+            for child in chunk.children() {
                 let (list, covered) = self.pick_in(child, pos, ready);
                 all.extend(list);
                 whole &= covered;
@@ -296,27 +302,35 @@ impl Reach {
             if whole {
                 return (all, true);
             }
-            if ready(column) {
-                return (vec![column], true);
+            if ready(chunk) {
+                return (vec![chunk], true);
             }
             return (all, false);
         }
-        if ready(column) { (vec![column], true) } else { (Vec::new(), false) }
+        if ready(chunk) { (vec![chunk], true) } else { (Vec::new(), false) }
     }
 
-    /// The reach a little wider, for dropping columns only once they're well past wanted.
+    /// The reach a little wider, for dropping far chunks only once they're well past wanted:
+    /// full detail, the far distance and where levels split by size on screen. (What's wanted
+    /// is worked out as the player comes into a chunk, and a player moving within it mustn't
+    /// drop what was just built.)
     pub fn widened(&self) -> Reach {
-        Reach { detail: self.detail * 1.25 + CHUNK_SIZE as f32, far: self.far + 2.0 * CHUNK_SIZE as f32, ..*self }
+        Reach { detail: self.detail * 1.25 + CHUNK_SIZE as f32, far: self.far + 2.0 * CHUNK_SIZE as f32, screen: self.screen * 1.25, ..*self }
     }
 }
 
-/// A far column's chunks, as sent: only those with something in them, and not solid all
-/// through under one whose lowest layer is solid; and each one's [`Mix`], in the same order.
+/// A far chunk's cells and their [`Mix`], with something in them.
 #[derive(Clone, Debug, PartialEq)]
-pub struct FarChunks {
-    pub column: FarColumn,
-    pub chunks: Vec<ChunkData>,
-    pub mixes: Vec<Mix>,
+pub struct FarCells {
+    pub data: ChunkData,
+    pub mix: Mix,
+}
+
+/// A far chunk as sent: its cells, or `None` if nothing in it is solid.
+#[derive(Clone, Debug, PartialEq)]
+pub struct FarBuilt {
+    pub chunk: FarChunk,
+    pub cells: Option<FarCells>,
 }
 
 /// What a far chunk's cells are made of besides their main material (the one in
@@ -371,39 +385,42 @@ impl Mix {
 /// How far terrain has gone, for the client's readout.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct FarStats {
-    /// Far columns loaded now.
-    pub columns: usize,
+    /// Far chunks loaded now.
+    pub chunks: usize,
     /// Wanted and not loaded yet.
     pub waiting: usize,
     /// Seconds the worker threads spent building them, added up.
     pub seconds: f32,
 }
 
-/// A far column's chunks and their mixes, as built.
-type Column = (Vec<ChunkData>, Vec<Mix>);
+/// What building a far chunk made.
+enum Made {
+    /// The generator can't fill coarsely.
+    Cannot,
+    Cells(Option<FarCells>),
+}
 
-/// A far column built on a terrain thread.
+/// A far chunk built on a terrain thread.
 struct Built {
     epoch: u64,
     serial: u64,
-    column: FarColumn,
-    /// `None` if the generator can't fill coarsely.
-    chunks: Result<Option<Column>, ApiError>,
+    chunk: FarChunk,
+    made: Result<Made, ApiError>,
     seconds: f32,
 }
 
-/// What a terrain thread needs to build a far column.
+/// What a terrain thread needs to build a far chunk.
 struct FarJob {
-    column: FarColumn,
+    chunk: FarChunk,
     generator: SharedGenerator,
     center: I64Vec3,
     blocks: Arc<BlockRegistry>,
     store: Arc<dyn ChunkStore>,
-    /// Edited chunks under it that are loaded, as they stand.
+    /// Edited chunks in it that are loaded, as they stand.
     loaded: Vec<ChunkData>,
-    /// Edited chunks under it to read from the store.
+    /// Edited chunks in it to read from the store.
     stored: Vec<ChunkPos>,
-    /// Which ordinary columns under it terrain is kept away from (see
+    /// Which ordinary chunk X and Y under it terrain is kept away from (see
     /// [`crate::stream::CLEAR_DISTANCE`]), x fastest; empty if none is.
     cleared: Vec<bool>,
     /// [`Reach::hold`] and [`Reach::mix`].
@@ -411,20 +428,20 @@ struct FarJob {
     mix: u8,
 }
 
-/// The far columns around the player: which are loaded, wanted and on their way.
+/// The far chunks around the player: which are loaded, wanted and on their way.
 pub struct Far {
     pub reach: Reach,
-    loaded: HashSet<FarColumn>,
+    loaded: HashSet<FarChunk>,
     /// Asked of the workers, by the serial they were asked with.
-    in_flight: HashMap<FarColumn, u64>,
-    /// Loaded or asked-for columns an edit has changed since, by the serial a build must be
+    in_flight: HashMap<FarChunk, u64>,
+    /// Loaded or asked-for far chunks an edit has changed since, by the serial a build must be
     /// newer than to count.
-    stale: HashMap<FarColumn, u64>,
+    stale: HashMap<FarChunk, u64>,
     serial: u64,
     epoch: u64,
-    wanted: Vec<FarColumn>,
-    wanted_for: Option<((i64, i64), Reach, u64)>,
-    /// How the loaded columns were built: their [`Reach::hold`] and [`Reach::mix`].
+    wanted: Vec<FarChunk>,
+    wanted_for: Option<(I64Vec3, Reach, u64)>,
+    /// How the loaded far chunks were built: their [`Reach::hold`] and [`Reach::mix`].
     built_like: Option<Reach>,
     /// Edited chunks in the store, once read from it.
     stored: Option<HashSet<ChunkPos>>,
@@ -434,8 +451,8 @@ pub struct Far {
     done: Receiver<Built>,
     /// The block registry the workers name blocks from, and how many blocks it had.
     blocks: Option<(usize, Arc<BlockRegistry>)>,
-    loaded_now: Vec<FarChunks>,
-    unloaded_now: Vec<FarColumn>,
+    loaded_now: Vec<FarBuilt>,
+    unloaded_now: Vec<FarChunk>,
     pub stats: FarStats,
     pub error: Option<ApiError>,
 }
@@ -479,10 +496,10 @@ pub(crate) struct Around<'a> {
 }
 
 impl Far {
-    /// Forgets every far column, as when the terrain is made again or another world loads.
+    /// Forgets every far chunk, as when the terrain is made again or another world loads.
     pub fn reset(&mut self) {
         self.epoch += 1;
-        let mut gone: Vec<FarColumn> = self.loaded.drain().collect();
+        let mut gone: Vec<FarChunk> = self.loaded.drain().collect();
         gone.sort_unstable();
         self.unloaded_now.extend(gone);
         self.loaded_now.clear();
@@ -495,16 +512,17 @@ impl Far {
         self.error = None;
     }
 
-    /// Notes chunks just put in the store, so far columns over them are built again with them.
+    /// Notes chunks just put in the store, so the far chunks holding them are built again
+    /// with them.
     pub fn edited(&mut self, chunks: &[ChunkPos]) {
         if let Some(stored) = &mut self.stored {
             stored.extend(chunks.iter().copied());
         }
         let terrains: HashSet<usize> = self.loaded.iter().chain(self.in_flight.keys()).map(|c| c.terrain).collect();
-        for pos in chunks {
+        for &pos in chunks {
             for &terrain in &terrains {
                 for level in 1..=MAX_LEVEL {
-                    let c = FarColumn::holding(terrain, level, pos.0.x, pos.0.y);
+                    let c = FarChunk::holding(terrain, level, pos);
                     if self.loaded.contains(&c) || self.in_flight.contains_key(&c) {
                         self.stale.insert(c, self.serial);
                     }
@@ -513,30 +531,30 @@ impl Far {
         }
     }
 
-    /// Whether `column` is loaded.
-    pub fn is_loaded(&self, column: FarColumn) -> bool {
-        self.loaded.contains(&column)
+    /// Whether `chunk` is loaded.
+    pub fn is_loaded(&self, chunk: FarChunk) -> bool {
+        self.loaded.contains(&chunk)
     }
 
-    /// Whether every wanted column is loaded and up to date.
+    /// Whether every wanted far chunk is loaded and up to date.
     pub fn settled(&self) -> bool {
         self.wanted_for.is_some() && self.wanted.iter().all(|c| self.loaded.contains(c) && !self.stale.contains_key(c))
     }
 
-    /// Whether any column is on its way.
+    /// Whether any far chunk is on its way.
     pub fn busy(&self) -> bool {
         !self.in_flight.is_empty()
     }
 
-    /// One step: drops columns well past the reach, asks for wanted ones missing or stale,
+    /// One step: drops far chunks well past the reach, asks for wanted ones missing or stale,
     /// coarse and near first, and takes in what's been built. `cleared` says which ordinary
-    /// columns terrain is kept away from.
+    /// chunk X and Y terrain is kept away from.
     pub(crate) fn step(&mut self, stream: &mut Stream, around: &Around, cleared: &dyn Fn(i64, i64) -> bool) {
         let pos = around.pos;
         // Drop.
         let keep = around.terrains.len();
         let widened = self.reach.widened();
-        let mut far: Vec<FarColumn> = self
+        let mut far: Vec<FarChunk> = self
             .loaded
             .iter()
             .copied()
@@ -550,7 +568,7 @@ impl Far {
         }
         // Want.
         let chunk = pos.boxel().chunk().0;
-        // Built another way than asked now: every column is built again, the old ones drawn
+        // Built another way than asked now: every far chunk is built again, the old ones drawn
         // until then.
         if self.built_like.is_some_and(|r| !r.builds_like(&self.reach)) {
             for &c in self.loaded.iter().chain(self.in_flight.keys()) {
@@ -558,10 +576,10 @@ impl Far {
             }
         }
         self.built_like = Some(self.reach);
-        let key = ((chunk.x, chunk.y), self.reach, self.epoch);
+        let key = (chunk, self.reach, self.epoch);
         if self.wanted_for != Some(key) {
             self.wanted_for = Some(key);
-            let mut wanted: Vec<(f32, FarColumn)> = Vec::new();
+            let mut wanted: Vec<(f32, FarChunk)> = Vec::new();
             for terrain in 0..around.terrains.len() {
                 for c in self.reach.wanted(terrain, pos) {
                     // As big on screen comes first: coarse far ones as soon as fine near ones.
@@ -575,28 +593,28 @@ impl Far {
         self.request(stream, around, cleared);
     }
 
-    /// Whether `column`'s still within what `reach` wants from `pos`: its parent splits there,
+    /// Whether `chunk`'s still within what `reach` wants from `pos`: its parent splits there,
     /// or it's among the coarsest.
-    fn kept(reach: &Reach, column: FarColumn, pos: WorldPos) -> bool {
-        column.level >= reach.top() || reach.splits(column.parent(), pos)
+    fn kept(reach: &Reach, chunk: FarChunk, pos: WorldPos) -> bool {
+        chunk.level >= reach.top() || reach.splits(chunk.parent(), pos)
     }
 
     fn take_built(&mut self) {
-        let wanted: HashSet<FarColumn> = self.wanted.iter().copied().collect();
+        let wanted: HashSet<FarChunk> = self.wanted.iter().copied().collect();
         let came: Vec<Built> = self.done.try_iter().collect();
         for built in came {
             if built.epoch != self.epoch {
                 continue;
             }
-            if self.in_flight.get(&built.column) == Some(&built.serial) {
-                self.in_flight.remove(&built.column);
+            if self.in_flight.get(&built.chunk) == Some(&built.serial) {
+                self.in_flight.remove(&built.chunk);
             }
             self.stats.seconds += built.seconds;
-            let (chunks, mixes) = match built.chunks {
-                Ok(Some(built)) => built,
-                Ok(None) => {
-                    if self.cannot.insert(built.column.terrain) {
-                        eprintln!("terrain {}: its generator can't fill coarsely, so it has no far terrain", built.column.terrain);
+            let cells = match built.made {
+                Ok(Made::Cells(cells)) => cells,
+                Ok(Made::Cannot) => {
+                    if self.cannot.insert(built.chunk.terrain) {
+                        eprintln!("terrain {}: its generator can't fill coarsely, so it has no far terrain", built.chunk.terrain);
                     }
                     continue;
                 }
@@ -605,24 +623,24 @@ impl Far {
                     continue;
                 }
             };
-            if !wanted.contains(&built.column) {
+            if !wanted.contains(&built.chunk) {
                 continue;
             }
-            if let Some(&after) = self.stale.get(&built.column) {
+            if let Some(&after) = self.stale.get(&built.chunk) {
                 if built.serial <= after {
-                    // Built before an edit under it: it's asked for again.
+                    // Built before an edit in it: it's asked for again.
                     continue;
                 }
-                self.stale.remove(&built.column);
+                self.stale.remove(&built.chunk);
             }
-            self.loaded.insert(built.column);
-            self.loaded_now.push(FarChunks { column: built.column, chunks, mixes });
+            self.loaded.insert(built.chunk);
+            self.loaded_now.push(FarBuilt { chunk: built.chunk, cells });
         }
-        self.stats.columns = self.loaded.len();
+        self.stats.chunks = self.loaded.len();
     }
 
     fn request(&mut self, stream: &mut Stream, around: &Around, cleared: &dyn Fn(i64, i64) -> bool) {
-        let missing: Vec<FarColumn> = self
+        let missing: Vec<FarChunk> = self
             .wanted
             .iter()
             .copied()
@@ -634,7 +652,7 @@ impl Far {
         }
         let ordinary = stream.in_flight();
         let count = stream.workers().count;
-        // Ordinary columns come first, but far ones always have one on its way.
+        // Ordinary chunks come first, but far ones always have one on its way.
         let room = (count * 2).saturating_sub(ordinary + self.in_flight.len()).max(1usize.saturating_sub(self.in_flight.len()));
         if room == 0 {
             return;
@@ -659,21 +677,19 @@ impl Far {
         };
         let stored_all = self.stored.as_ref().expect("just read");
         let mut sent = 0;
-        for column in missing {
+        for chunk in missing {
             if sent == room {
                 break;
             }
-            if let Some(&serial) = self.in_flight.get(&column) {
-                let fresh = self.stale.get(&column).is_none_or(|&after| serial > after);
+            if let Some(&serial) = self.in_flight.get(&chunk) {
+                let fresh = self.stale.get(&chunk).is_none_or(|&after| serial > after);
                 if fresh {
                     continue;
                 }
             }
-            let (xs, ys) = column.under();
-            let in_column = |p: &ChunkPos| xs.contains(&p.0.x) && ys.contains(&p.0.y);
-            let loaded: Vec<ChunkData> = around.edited.iter().filter(|p| in_column(p)).map(|&p| around.grid.export_chunk(p)).collect();
-            let stored: Vec<ChunkPos> =
-                stored_all.iter().filter(|p| in_column(p) && !around.edited.contains(p)).copied().collect();
+            let loaded: Vec<ChunkData> = around.edited.iter().filter(|&&p| chunk.holds(p)).map(|&p| around.grid.export_chunk(p)).collect();
+            let stored: Vec<ChunkPos> = stored_all.iter().filter(|&&p| chunk.holds(p) && !around.edited.contains(&p)).copied().collect();
+            let [xs, ys, _] = chunk.under();
             let mut mask: Vec<bool> = Vec::new();
             if (xs.end - xs.start) <= 64 {
                 let any = ys.clone().any(|y| xs.clone().any(|x| cleared(x, y)));
@@ -684,9 +700,9 @@ impl Far {
             self.serial += 1;
             let serial = self.serial;
             let job = FarJob {
-                column,
-                generator: Arc::clone(&around.generators[column.terrain]),
-                center: around.terrains[column.terrain].center.0,
+                chunk,
+                generator: Arc::clone(&around.generators[chunk.terrain]),
+                center: around.terrains[chunk.terrain].center.0,
                 blocks: Arc::clone(&blocks),
                 store: Arc::clone(&store),
                 loaded,
@@ -698,36 +714,36 @@ impl Far {
             let (outbox, epoch) = (self.outbox.clone(), self.epoch);
             let task = Box::new(move || {
                 let start = Instant::now();
-                let chunks = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| build(&job)))
-                    .unwrap_or_else(|_| Err(ApiError::InvalidDef(format!("building far column {:?} panicked", job.column))));
+                let made = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| build(&job)))
+                    .unwrap_or_else(|_| Err(ApiError::InvalidDef(format!("building far chunk {:?} panicked", job.chunk))));
                 let seconds = start.elapsed().as_secs_f32();
-                let _ = outbox.send(Built { epoch, serial, column: job.column, chunks, seconds });
+                let _ = outbox.send(Built { epoch, serial, chunk: job.chunk, made, seconds });
             });
             if !stream.workers().send(task) {
                 break;
             }
-            self.in_flight.insert(column, serial);
+            self.in_flight.insert(chunk, serial);
             sent += 1;
         }
     }
 
-    /// Far columns built since the last call, oldest first. One built again after an edit
+    /// Far chunks built since the last call, oldest first. One built again after an edit
     /// comes again, to replace the one before.
-    pub fn take_loaded(&mut self) -> Vec<FarChunks> {
+    pub fn take_loaded(&mut self) -> Vec<FarBuilt> {
         std::mem::take(&mut self.loaded_now)
     }
 
-    /// Far columns dropped since the last call.
-    pub fn take_unloaded(&mut self) -> Vec<FarColumn> {
+    /// Far chunks dropped since the last call.
+    pub fn take_unloaded(&mut self) -> Vec<FarChunk> {
         std::mem::take(&mut self.unloaded_now)
     }
 
-    /// The loaded far columns, in no particular order.
-    pub fn loaded(&self) -> impl Iterator<Item = FarColumn> + '_ {
+    /// The loaded far chunks, in no particular order.
+    pub fn loaded(&self) -> impl Iterator<Item = FarChunk> + '_ {
         self.loaded.iter().copied()
     }
 
-    /// Waits until every wanted column is in, for tests and tools. Gives up after a minute.
+    /// Waits until every wanted far chunk is in, for tests and tools. Gives up after a minute.
     pub(crate) fn wait(&mut self, stream: &mut Stream, around: &Around, cleared: &dyn Fn(i64, i64) -> bool) {
         let start = Instant::now();
         loop {
@@ -750,20 +766,20 @@ impl Far {
     }
 }
 
-/// An edited chunk under a far column, and what the generator makes there, to tell what was
+/// An edited chunk in a far chunk, and what the generator makes there, to tell what was
 /// built (`None` where nothing is told apart: all of it counts as built).
 struct Edit {
     data: ChunkData,
     generated: Option<ChunkData>,
 }
 
-/// Builds a far column: the generator's coarse fill, cleared where terrain is kept away, with
-/// the edited chunks under it shrunk in, and each kept chunk's [`Mix`]. `None` if the
-/// generator can't fill coarsely.
-fn build(job: &FarJob) -> Result<Option<Column>, ApiError> {
+/// Builds a far chunk: the generator's coarse fill, cleared where terrain is kept away, with
+/// the edited chunks in it shrunk in, and its [`Mix`]. Known empty without filling if it's
+/// over all the generator's tops under it (a cell to spare) and nothing's edited in it.
+fn build(job: &FarJob) -> Result<Made, ApiError> {
     let generator = job.generator.read().map_err(|_| ApiError::InvalidDef("a terrain generator panicked".into()))?;
-    let column = job.column;
-    let step = column.step();
+    let chunk = job.chunk;
+    let step = chunk.step();
     let mut edited: Vec<ChunkData> = job.loaded.clone();
     for &pos in &job.stored {
         if let Some(bytes) = job.store.read(pos).map_err(ApiError::Storage)? {
@@ -772,13 +788,23 @@ fn build(job: &FarJob) -> Result<Option<Column>, ApiError> {
             edited.push(crate::simulation::save::unname_chunk(&job.blocks, &saved, &mut report));
         }
     }
+    let origin = chunk.pos * chunk.span();
+    if edited.is_empty() {
+        let mut tops = [api::NO_TOP; api::TOPS_LEN];
+        generator.tops(origin.x - job.center.x, origin.y - job.center.y, step as u32, &mut tops);
+        let highest = tops.iter().filter(|&&t| t != api::NO_TOP).map(|&t| t + job.center.z).max();
+        if highest.is_none_or(|h| origin.z > h + step) {
+            return Ok(Made::Cells(None));
+        }
+    }
     let mut fill = ChunkFill::default();
+    let [xs, ys, _] = chunk.under();
     // What the generator makes under each edit, only needed to hold built cells.
     let mut edits = Vec::with_capacity(edited.len());
     for data in edited {
         let generated = if job.hold != HOLD_OFF {
             let p = data.pos.0;
-            let (n, (xs, ys)) = (1i64 << column.level, column.under());
+            let n = 1i64 << chunk.level;
             let (bx, by) = (p.x - xs.start, p.y - ys.start);
             let cleared = !job.cleared.is_empty() && xs.contains(&p.x) && ys.contains(&p.y) && job.cleared[(bx + by * n) as usize];
             fill.clear();
@@ -791,53 +817,26 @@ fn build(job: &FarJob) -> Result<Option<Column>, ApiError> {
         };
         edits.push(Edit { data, generated });
     }
-    // The ordinary chunk rows it spans: from under the lowest of the generator's tops to over
-    // the highest, a cell to spare either way, and wherever an edit is.
-    let mut tops = [api::NO_TOP; api::TOPS_LEN];
-    generator.tops(column.x * column.span() - job.center.x, column.y * column.span() - job.center.y, step as u32, &mut tops);
-    let known = || tops.iter().filter(|&&t| t != api::NO_TOP).map(|&t| t + job.center.z);
-    let row = |z: i64| z.div_euclid(CHUNK_SIZE);
-    let edited = || edits.iter().map(|e| e.data.pos.0.z);
-    let low = known().min().map(|z| row(z - step)).into_iter().chain(edited()).min();
-    let high = known().max().map(|z| row(z + step)).into_iter().chain(edited()).max();
-    let (Some(low), Some(high)) = (low, high) else { return Ok(Some((Vec::new(), Vec::new()))) };
-    let rows = low..high + 1;
-    let mut out = Vec::new();
-    let mut mixes = Vec::new();
-    // Whether the chunk above covers this one: solid all through, or its lowest layer is. A
-    // chunk solid all through under one is buried, never seen, and left out.
-    let mut covered = false;
-    for pos in column.chunks(&rows) {
-        fill.clear();
-        let origin = pos.0 * column.span();
-        if !generator.fill_coarse(origin - job.center, step as u32, &mut fill) {
-            return Ok(None);
-        }
-        let mut data = crate::terrain::to_chunk(pos, &fill, &job.blocks)?;
-        if !job.cleared.is_empty() {
-            clear(&mut data, column, &job.cleared);
-        }
-        let mut mix = Mix::default();
-        let touched = shrink_edits(&mut data, &mut mix, column, &edits, &job.blocks, job.hold);
-        data.cells.compact();
-        let uniform = data.cells.uniform();
-        if uniform == Some(0) {
-            covered = false;
-            continue;
-        }
-        if uniform.is_some() && covered {
-            continue;
-        }
-        let n = CHUNK_SIZE as usize;
-        covered = uniform.is_some() || (0..n * n).all(|i| data.cells.at(i) != 0);
-        if job.mix > 0 && uniform.is_none() && !mix_finer(&**generator, &mut data, &mut mix, column, (job.center, job.mix, &job.blocks), &touched, &mut fill)? {
-            return Ok(None);
-        }
-        mix.cells.compact();
-        out.push(data);
-        mixes.push(mix);
+    fill.clear();
+    if !generator.fill_coarse(origin - job.center, step as u32, &mut fill) {
+        return Ok(Made::Cannot);
     }
-    Ok(Some((out, mixes)))
+    let mut data = crate::terrain::to_chunk(ChunkPos(chunk.pos), &fill, &job.blocks)?;
+    if !job.cleared.is_empty() {
+        clear(&mut data, chunk, &job.cleared);
+    }
+    let mut mix = Mix::default();
+    let touched = shrink_edits(&mut data, &mut mix, chunk, &edits, &job.blocks, job.hold);
+    data.cells.compact();
+    let uniform = data.cells.uniform();
+    if uniform == Some(0) {
+        return Ok(Made::Cells(None));
+    }
+    if job.mix > 0 && uniform.is_none() && !mix_finer(&**generator, &mut data, &mut mix, chunk, (job.center, job.mix, &job.blocks), &touched, &mut fill)? {
+        return Ok(Made::Cannot);
+    }
+    mix.cells.compact();
+    Ok(Made::Cells(Some(FarCells { data, mix })))
 }
 
 /// Finds what each solid cell of `data` shows by filling the generator `depth` levels finer
@@ -850,20 +849,20 @@ fn mix_finer(
     generator: &dyn api::Generator,
     data: &mut ChunkData,
     mix: &mut Mix,
-    column: FarColumn,
+    far: FarChunk,
     (center, depth, blocks): (I64Vec3, u8, &BlockRegistry),
     touched: &[bool],
     fill: &mut ChunkFill,
 ) -> Result<bool, ApiError> {
-    let depth = depth.min(column.level) as i64;
+    let depth = depth.min(far.level) as i64;
     let per = 1i64 << depth;
-    let fine = column.step() >> depth;
+    let fine = far.step() >> depth;
     let size = CHUNK_SIZE;
     // Up to four materials and how many finer cells each fills, per cell.
     let mut tally: Vec<[(crate::BlockId, u16); 4]> = vec![[(crate::BlockId::default(), 0); 4]; api::CHUNK_VOLUME];
     // Only cells that can show need a mix: solid ones with air beside them, or under the
-    // chunk's top (what's over it isn't known here). A cell on the column's sides counts by
-    // its neighbors inside; the sides are drawn, but neighboring columns hide them.
+    // chunk's top (what's over it isn't known here). A cell on the far chunk's sides counts by
+    // its neighbors inside: the far chunks beside it hide what it shows there.
     let filled = |x: i64, y: i64, z: i64| data.cells.get(LocalPos::new(x as u8, y as u8, z as u8)) != 0;
     let shows = |p: LocalPos| {
         let (x, y, z) = (p.x as i64, p.y as i64, p.z as i64);
@@ -892,7 +891,7 @@ fn mix_finer(
                     continue;
                 }
                 fill.clear();
-                let origin = data.pos.0 * column.span() + sub * size * fine;
+                let origin = data.pos.0 * far.span() + sub * size * fine;
                 if !generator.fill_coarse(origin - center, fine as u32, fill) {
                     return Ok(false);
                 }
@@ -965,15 +964,15 @@ fn mix_finer(
     Ok(true)
 }
 
-/// Empties the cells of `data` over ordinary columns `cleared` marks.
-fn clear(data: &mut ChunkData, column: FarColumn, cleared: &[bool]) {
-    let n = 1i64 << column.level;
+/// Empties the cells of `data` over the ordinary chunk X and Y `cleared` marks.
+fn clear(data: &mut ChunkData, far: FarChunk, cleared: &[bool]) {
+    let n = 1i64 << far.level;
     let size = CHUNK_SIZE;
     for i in 0..api::CHUNK_VOLUME {
         let p = LocalPos::from_index(i);
-        // The ordinary column the cell's middle is over.
-        let bx = (p.x as i64 * column.step() + column.step() / 2).div_euclid(size);
-        let by = (p.y as i64 * column.step() + column.step() / 2).div_euclid(size);
+        // The ordinary chunk X and Y the cell's middle is over.
+        let bx = (p.x as i64 * far.step() + far.step() / 2).div_euclid(size);
+        let by = (p.y as i64 * far.step() + far.step() / 2).div_euclid(size);
         if bx < n && by < n && cleared[(bx + by * n) as usize] {
             data.cells.set_at(i, 0);
         }
@@ -1004,15 +1003,15 @@ fn top(list: &[(crate::BlockId, f32)]) -> Option<(crate::BlockId, f32)> {
     list.iter().copied().max_by(|a, b| a.1.total_cmp(&b.1).then(b.0.cmp(&a.0)))
 }
 
-/// Writes the cells of `data` (a far chunk of `column`'s level) that `edits` lie under,
+/// Writes the cells of `data` (a far chunk of `far`'s level) that `edits` lie under,
 /// shrunk, and their mix: a cell is solid if more than half filled, or if what was built in it
 /// is enough to hold it (see [`Reach::hold`]), and takes the material filling most
 /// of it, or of what was built; else it's emptied. A cell wider than a chunk counts what's
 /// outside the edited chunks as it was generated. Returns which cells the edits touched.
-fn shrink_edits(data: &mut ChunkData, mix: &mut Mix, column: FarColumn, edits: &[Edit], blocks: &BlockRegistry, hold: u8) -> Vec<bool> {
+fn shrink_edits(data: &mut ChunkData, mix: &mut Mix, far: FarChunk, edits: &[Edit], blocks: &BlockRegistry, hold: u8) -> Vec<bool> {
     let mut touched = vec![false; api::CHUNK_VOLUME];
-    let n = 1i64 << column.level;
-    let s = column.step();
+    let n = 1i64 << far.level;
+    let s = far.step();
     let mut tallies: HashMap<usize, Tally> = HashMap::new();
     let full = crate::FULL_VOLUME as f32;
     for edit in edits {
@@ -1119,24 +1118,34 @@ mod tests {
     use api::Vec3;
 
     fn at(x: f32, y: f32) -> WorldPos {
-        WorldPos::new(I64Vec3::new(x.floor() as i64, y.floor() as i64, 0), Vec3::new(x.fract(), y.fract(), 0.0))
+        at3(x, y, 0.0)
+    }
+
+    fn at3(x: f32, y: f32, z: f32) -> WorldPos {
+        let cell = I64Vec3::new(x.floor() as i64, y.floor() as i64, z.floor() as i64);
+        WorldPos::new(cell, Vec3::new(x, y, z) - cell.as_vec3())
+    }
+
+    fn far(level: u8, x: i64, y: i64, z: i64) -> FarChunk {
+        FarChunk { terrain: 0, level, pos: I64Vec3::new(x, y, z) }
     }
 
     #[test]
-    fn columns_nest_by_halves() {
-        let c = FarColumn { terrain: 0, level: 2, x: -1, y: 3 };
+    fn far_chunks_nest_by_halves() {
+        let c = far(2, -1, 3, 0);
         assert_eq!(c.span(), 128);
-        for child in c.children() {
+        let children = c.children();
+        assert_eq!(children.iter().collect::<HashSet<_>>().len(), 8);
+        for child in children {
             assert_eq!(child.level, 1);
             assert_eq!(child.parent(), c);
         }
-        assert_eq!(FarColumn::holding(0, 2, -1, 13), FarColumn { terrain: 0, level: 2, x: -1, y: 3 });
-        assert_eq!(c.under(), (-4..0, 12..16));
-        // Rows -8..8 at level 2 are -2..2; uneven ones round outward.
-        assert_eq!(c.rows(&(-8..8)), -2..2);
-        assert_eq!(c.rows(&(-3..2)), -1..1);
-        let zs: Vec<i64> = c.chunks(&(-8..8)).map(|p| p.0.z).collect();
-        assert_eq!(zs, [1, 0, -1, -2], "top first");
+        assert_eq!(FarChunk::holding(0, 2, ChunkPos(I64Vec3::new(-1, 13, -1))), far(2, -1, 3, -1));
+        assert_eq!(c.under(), [-4..0, 12..16, 0..4]);
+        assert!(c.holds(ChunkPos(I64Vec3::new(-4, 15, 3))) && !c.holds(ChunkPos(I64Vec3::new(-4, 15, 4))));
+        for b in c.beside() {
+            assert_eq!((b.pos - c.pos).abs().element_sum(), 1);
+        }
     }
 
     #[test]
@@ -1162,11 +1171,14 @@ mod tests {
     }
 
     #[test]
-    fn nearest_is_zero_inside_and_grows_outside() {
-        let c = FarColumn { terrain: 0, level: 1, x: 0, y: 0 };
-        assert_eq!(c.nearest(at(10.0, 60.0)), 0.0);
+    fn nearest_is_zero_inside_and_grows_outside_every_way() {
+        let c = far(1, 0, 0, 0);
+        assert_eq!(c.nearest(at3(10.0, 60.0, 30.0)), 0.0);
         assert!((c.nearest(at(74.0, 10.0)) - 10.0).abs() < 1e-4);
         assert!((c.nearest(at(-3.0, -4.0)) - 5.0).abs() < 1e-4);
+        assert!((c.nearest(at3(10.0, 10.0, 70.0)) - 6.0).abs() < 1e-4, "over it");
+        assert!((c.nearest(at3(10.0, 10.0, -8.0)) - 8.0).abs() < 1e-4, "under it");
+        assert!((c.distance(at3(32.0, 32.0, 132.0)) - 100.0).abs() < 1e-4);
     }
 
     /// Full detail to `detail` meters and far terrain to `far`, otherwise as by default.
@@ -1185,25 +1197,29 @@ mod tests {
     }
 
     #[test]
-    fn the_column_the_player_is_in_splits_however_short_full_detail_is() {
+    fn the_far_chunk_the_player_is_in_splits_however_short_full_detail_is() {
         let reach = reach(8.0, 2048.0);
-        // At a corner of a level-4 column, 362 m from its middle.
-        let pos = at(0.5, 0.5);
-        let mut c = FarColumn { terrain: 0, level: reach.top(), x: 0, y: 0 };
+        // At a corner of a level-5 far chunk, 1.7 km from its middle.
+        let pos = at3(0.5, 0.5, 0.5);
+        let mut c = far(reach.top(), 0, 0, 0);
         while c.level > 0 {
             assert!(reach.splits(c, pos), "{c:?}");
             c = c.children()[0];
         }
     }
 
-    /// The level-0 columns the picked columns cover, each once at most.
-    fn coverage(picked: &[FarColumn]) -> HashMap<(i64, i64), usize> {
+    /// The ordinary chunks the picked far chunks cover, each once at most, within `around`
+    /// chunks of `center`.
+    fn coverage(picked: &[FarChunk], center: I64Vec3, around: i64) -> HashMap<I64Vec3, usize> {
         let mut seen = HashMap::new();
         for c in picked {
-            let (xs, ys) = c.under();
-            for y in ys {
-                for x in xs.clone() {
-                    *seen.entry((x, y)).or_insert(0) += 1;
+            let [xs, ys, zs] = c.under();
+            let clip = |r: Range<i64>, m: i64| r.start.max(m - around)..r.end.min(m + around + 1);
+            for z in clip(zs, center.z) {
+                for y in clip(ys.clone(), center.y) {
+                    for x in clip(xs.clone(), center.x) {
+                        *seen.entry(I64Vec3::new(x, y, z)).or_insert(0) += 1;
+                    }
                 }
             }
         }
@@ -1213,57 +1229,82 @@ mod tests {
     #[test]
     fn with_everything_ready_each_spot_is_drawn_once_finer_nearer() {
         let reach = reach(256.0, 2048.0);
-        for pos in [at(16.0, 16.0), at(-700.5, 333.25), at(5000.0, -12000.0)] {
+        for pos in [at3(16.0, 16.0, 16.0), at3(-700.5, 333.25, 90.0), at3(5000.0, -12000.0, -400.0)] {
             let picked = reach.pick(0, pos, &|_| true);
-            let seen = coverage(&picked);
-            assert!(seen.values().all(|&n| n == 1), "nothing drawn twice at {pos:?}");
-            // Everything within the far distance is covered.
             let c = pos.boxel().chunk().0;
-            for dy in -60..=60 {
-                for dx in -60..=60 {
-                    let col = FarColumn { terrain: 0, level: 0, x: c.x + dx, y: c.y + dy };
-                    if col.nearest(pos) < reach.far - 1024.0 {
-                        assert!(seen.contains_key(&(col.x, col.y)), "{col:?} covered from {pos:?}");
+            let seen = coverage(&picked, c, 24);
+            assert!(seen.values().all(|&n| n == 1), "nothing drawn twice at {pos:?}");
+            // Everything near is covered, every way.
+            for dz in -24..=24 {
+                for dy in -24..=24 {
+                    for dx in -24..=24 {
+                        let o = I64Vec3::new(dx, dy, dz);
+                        if (o.as_vec3() * CHUNK_SIZE as f32).length() < 700.0 {
+                            assert!(seen.contains_key(&(c + o)), "{o:?} covered from {pos:?}");
+                        }
                     }
                 }
             }
-            // Full detail underfoot, coarser out at the edge.
+            // Full detail around, above and below too, and coarser out at the edge.
             assert!(picked.iter().any(|p| p.level == 0 && p.distance(pos) < 40.0));
             for p in &picked {
                 if p.level == 0 {
                     assert!(p.distance(pos) < reach.detail + 50.0, "{p:?}");
                 }
             }
-            // Far columns the server builds are all those drawn, at level 1 and up.
-            let wanted: HashSet<FarColumn> = reach.wanted(0, pos).into_iter().collect();
+            // Far chunks the server builds are all those drawn, at level 1 and up.
+            let wanted: HashSet<FarChunk> = reach.wanted(0, pos).into_iter().collect();
             assert!(picked.iter().filter(|p| p.level > 0).all(|p| wanted.contains(p)));
         }
     }
 
     #[test]
-    fn a_column_splits_only_once_its_children_are_ready() {
+    fn levels_follow_distance_up_and_down() {
         let reach = reach(256.0, 2048.0);
-        let pos = at(16.0, 16.0);
-        // Everything but one ordinary column near the player.
-        let missing = FarColumn { terrain: 0, level: 0, x: 1, y: 0 };
-        let picked = reach.pick(0, pos, &|c| c != missing);
-        let parent = missing.parent();
-        assert!(picked.contains(&parent), "its level-1 column drawn instead");
-        assert!(!picked.iter().any(|p| p.level == 0 && p.parent() == parent));
-        assert!(coverage(&picked).values().all(|&n| n == 1));
-        // Nothing far ready: the ordinary columns that are, with holes elsewhere.
-        let picked = reach.pick(0, pos, &|c| c.level == 0);
-        assert!(!picked.is_empty() && picked.iter().all(|p| p.level == 0));
-        assert!(coverage(&picked).values().all(|&n| n == 1));
+        let level_at = |pos: WorldPos, chunk: I64Vec3| {
+            let picked = reach.pick(0, pos, &|_| true);
+            picked.into_iter().find(|p| p.holds(ChunkPos(chunk))).map(|p| p.level)
+        };
+        let ground = I64Vec3::new(0, 0, 0);
+        // On the ground: full detail. 600 m up: the ground under is coarse.
+        assert_eq!(level_at(at3(16.0, 16.0, 16.0), ground), Some(0));
+        let high = level_at(at3(16.0, 16.0, 600.0), ground).unwrap();
+        assert!(high >= 2, "level {high} under a player 600 m up");
+        // A pit 200 m straight down stays full detail; ground 200 m away sideways too.
+        assert_eq!(level_at(at3(16.0, 16.0, 16.0), I64Vec3::new(0, 0, -6)), Some(0));
+        assert_eq!(level_at(at3(16.0, 16.0, 16.0), I64Vec3::new(6, 0, 0)), Some(0));
     }
 
     #[test]
-    fn widened_keeps_what_was_wanted() {
+    fn a_far_chunk_splits_only_once_its_children_are_ready() {
         let reach = reach(256.0, 2048.0);
-        let wide = reach.widened();
-        for pos in [at(16.0, 16.0), at(400.0, -90.0)] {
-            for c in reach.wanted(0, pos) {
-                assert!(wide.reaches(c, pos) && Far::kept(&wide, c, pos), "{c:?}");
+        let pos = at3(16.0, 16.0, 16.0);
+        // Everything but one ordinary chunk near the player.
+        let missing = far(0, 1, 0, 0);
+        let picked = reach.pick(0, pos, &|c| c != missing);
+        let parent = missing.parent();
+        assert!(picked.contains(&parent), "its level-1 far chunk drawn instead");
+        assert!(!picked.iter().any(|p| p.level == 0 && p.parent() == parent));
+        let center = pos.boxel().chunk().0;
+        assert!(coverage(&picked, center, 16).values().all(|&n| n == 1));
+        // Nothing far ready: the ordinary chunks that are, with holes elsewhere.
+        let picked = reach.pick(0, pos, &|c| c.level == 0);
+        assert!(!picked.is_empty() && picked.iter().all(|p| p.level == 0));
+        assert!(coverage(&picked, center, 16).values().all(|&n| n == 1));
+    }
+
+    #[test]
+    fn widened_keeps_what_was_wanted_from_anywhere_in_the_same_chunk() {
+        // What's wanted is worked out as the player comes into a chunk; moving about in it
+        // (falling, say) mustn't drop any of it, or it's built and dropped over and over.
+        for reach in [reach(256.0, 2048.0), reach(32.0, 512.0), Reach { pixels: 1.0, ..reach(64.0, 2048.0) }] {
+            let wide = reach.widened();
+            for (from, to) in [((0.5, 0.5, 0.5), (31.5, 31.5, 31.5)), ((31.5, 0.5, 31.5), (0.5, 31.5, 0.5)), ((400.0, -90.0, 300.0), (415.0, -65.0, 319.0))] {
+                let (from, to) = (at3(from.0, from.1, from.2), at3(to.0, to.1, to.2));
+                assert_eq!(from.boxel().chunk(), to.boxel().chunk());
+                for c in reach.wanted(0, from) {
+                    assert!(wide.reaches(c, to) && Far::kept(&wide, c, to), "{c:?} wanted from {from:?}, dropped at {to:?}");
+                }
             }
         }
     }
@@ -1302,12 +1343,12 @@ mod tests {
     fn shrinking_an_edit_fills_cells_mostly_filled() {
         let (blocks, stone, _) = stone_and_grass();
         // A far chunk at level 1 (cells 2 boxels a side), empty.
-        let column = FarColumn { terrain: 0, level: 1, x: 0, y: 0 };
+        let cube = far(1, 0, 0, 0);
         let mut data = chunk(I64Vec3::ZERO, vec![Vec::new()], |_| 0);
         // An edited chunk at ordinary chunk (1, 0, 0): stone in its lowest 5 boxels.
         let edit = chunk(I64Vec3::new(1, 0, 0), vec![Vec::new(), vec![Occupant::new(stone)]], |p| (p.z < 5) as u16);
         let mut mix = Mix::default();
-        shrink_edits(&mut data, &mut mix, column, &[Edit { data: edit, generated: None }], &blocks, HOLD_OFF);
+        shrink_edits(&mut data, &mut mix, cube, &[Edit { data: edit, generated: None }], &blocks, HOLD_OFF);
         // It lands in cells 16..32 in X; boxels 0..4 fill cells 0 and 1 whole, cell 2 half
         // (boxel 4 of 4..6): not more than half, so empty.
         assert_eq!(cell(&data, 16, 0, 0), Some(stone));
@@ -1326,10 +1367,10 @@ mod tests {
 
     /// Shrinks `edits` into the far chunk at the origin of `level`, empty, holding `hold`.
     fn shrunk(level: u8, edits: &[Edit], blocks: &BlockRegistry, hold: u8) -> ChunkData {
-        let column = FarColumn { terrain: 0, level, x: 0, y: 0 };
+        let cube = far(level, 0, 0, 0);
         let mut data = chunk(I64Vec3::ZERO, vec![Vec::new()], |_| 0);
         let mut mix = Mix::default();
-        shrink_edits(&mut data, &mut mix, column, edits, blocks, hold);
+        shrink_edits(&mut data, &mut mix, cube, edits, blocks, hold);
         data
     }
 
@@ -1416,10 +1457,10 @@ mod tests {
         // 3/8 grass.
         let lists = vec![Vec::new(), vec![Occupant::new(stone)], vec![Occupant::new(grass)]];
         let edit = chunk(I64Vec3::ZERO, lists, |p| if p.z < 5 { 1 } else if p.z < 8 { 2 } else { 0 });
-        let column = FarColumn { terrain: 0, level: 3, x: 0, y: 0 };
+        let cube = far(3, 0, 0, 0);
         let mut data = chunk(I64Vec3::ZERO, vec![Vec::new()], |_| 0);
         let mut mix = Mix::default();
-        let touched = shrink_edits(&mut data, &mut mix, column, &[Edit { data: edit, generated: None }], &blocks, HOLD_PLANE);
+        let touched = shrink_edits(&mut data, &mut mix, cube, &[Edit { data: edit, generated: None }], &blocks, HOLD_PLANE);
         assert_eq!(cell(&data, 0, 0, 0), Some(stone));
         let (second, share) = mix.at(LocalPos::new(0, 0, 0).index()).expect("a second material");
         assert_eq!(second, grass);
@@ -1483,14 +1524,14 @@ mod tests {
     /// mix from level 1, and the main and second materials of the top cell at `x`.
     fn mixed_top(generator: &Layers, blocks: &BlockRegistry, x: u8) -> (crate::BlockId, Option<(crate::BlockId, f32)>) {
         use api::Generator;
-        let column = FarColumn { terrain: 0, level: 2, x: 0, y: 0 };
+        let cube = far(2, 0, 0, -1);
         let pos = ChunkPos(I64Vec3::new(0, 0, -1));
         let mut fill = ChunkFill::default();
-        assert!(generator.fill_coarse(pos.0 * column.span(), 4, &mut fill));
+        assert!(generator.fill_coarse(pos.0 * cube.span(), 4, &mut fill));
         let mut data = crate::terrain::to_chunk(pos, &fill, blocks).unwrap();
         let mut mix = Mix::default();
         let untouched = vec![false; api::CHUNK_VOLUME];
-        assert!(mix_finer(generator, &mut data, &mut mix, column, (I64Vec3::ZERO, 1, blocks), &untouched, &mut fill).unwrap());
+        assert!(mix_finer(generator, &mut data, &mut mix, cube, (I64Vec3::ZERO, 1, blocks), &untouched, &mut fill).unwrap());
         let top = LocalPos::new(x, 0, 31).index();
         (data.lists[data.cells.at(top) as usize][0].block, mix.at(top))
     }

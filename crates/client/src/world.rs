@@ -6,6 +6,7 @@
 //! hit-stop, when the shown one holds still while the simulation carries on; when the freeze
 //! ends the view snaps to the latest.
 
+use std::collections::HashSet;
 use std::sync::Mutex;
 
 use api::{ChunkPos, HealthDef, InteractionDef, InventoryDef, ItemDropDef, ModelDef, SoundDef, TargetDef, ToolDef, WorldPos};
@@ -28,20 +29,22 @@ pub struct ChunkNews {
     /// The whole world came anew (a welcome): a copy kept elsewhere starts again from
     /// [`ClientWorld::universe`].
     pub restart: bool,
-    /// Far columns built and dropped (see [`sim::far`]), in the order they came.
+    /// Far chunks built and dropped (see [`sim::far`]), in the order they came.
     pub far: Vec<FarNews>,
     /// The tops (see [`sim::tops`]) that came, moved or were dropped, to pass on as they came.
     pub tops: Vec<sim::TopsNews>,
 }
 
-/// A far column built (new, or built again to replace the one before) or dropped.
+/// A far chunk built (new, or built again to replace the one before) or dropped.
 pub enum FarNews {
-    Built(sim::far::FarChunks),
-    Gone(sim::far::FarColumn),
+    Built(sim::far::FarBuilt),
+    Gone(sim::far::FarChunk),
 }
 
 #[derive(Resource)]
 pub struct ClientWorld {
+    /// Chunks known to be air, never sent (see [`Welcome::air`]).
+    air: HashSet<ChunkPos>,
     looks: LookRegistry,
     models: Vec<ModelDef>,
     sounds: Vec<SoundDef>,
@@ -89,6 +92,7 @@ impl ClientWorld {
         }
         universe.main_mut().tops = welcome.tops;
         let mut world = Self {
+            air: welcome.air.into_iter().collect(),
             looks: welcome.content.looks,
             models: welcome.content.models,
             sounds: welcome.content.sounds,
@@ -149,6 +153,12 @@ impl ClientWorld {
                     self.news.arrived.push(chunk.pos);
                     self.news.data.push(chunk);
                 }
+            }
+            ServerMsg::AirChunks { came, gone } => {
+                for p in &gone {
+                    self.air.remove(p);
+                }
+                self.air.extend(came);
             }
             ServerMsg::ChunksUnloaded(gone) => {
                 for &pos in &gone {
@@ -266,6 +276,12 @@ impl ClientWorld {
 
     pub fn defs(&self) -> &Defs {
         &self.defs
+    }
+
+    /// Whether the chunk at `pos` is known to be air: never sent, as nothing will be there
+    /// (see [`Welcome::air`]).
+    pub fn is_air(&self, pos: ChunkPos) -> bool {
+        self.air.contains(&pos)
     }
 
     pub fn universe(&self) -> &Universe {

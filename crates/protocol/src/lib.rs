@@ -89,11 +89,13 @@ pub enum ServerMsg {
     /// Chunks of terrain dropped far from the player, for the client to forget. Comes before
     /// the tick they went.
     ChunksUnloaded(Vec<ChunkPos>),
-    /// Far columns built around the player (see [`sim::far`]): new ones, or ones built again
-    /// since an edit under them, to replace the old. Comes before the tick they came in.
-    FarLoaded(Vec<sim::far::FarChunks>),
-    /// Far columns dropped, for the client to forget.
-    FarUnloaded(Vec<sim::far::FarColumn>),
+    /// Chunks that became known air (see [`Welcome::air`]), and those that stopped being so.
+    AirChunks { came: Vec<ChunkPos>, gone: Vec<ChunkPos> },
+    /// Far chunks built around the player (see [`sim::far`]): new ones, or ones built again
+    /// since an edit in them, to replace the old. Comes before the tick they came in.
+    FarLoaded(Vec<sim::far::FarBuilt>),
+    /// Far chunks dropped, for the client to forget.
+    FarUnloaded(Vec<sim::far::FarChunk>),
     /// Blocks were added, by crafting a new shape. Comes before the tick they were added in.
     Blocks(Box<BlockRegistry>),
     /// The player's blueprints changed, by an edit or a load. Comes before the tick they
@@ -132,6 +134,9 @@ pub struct Welcome {
     pub chunks: Vec<ChunkData>,
     /// Where the open sky starts over every column of terrain loaded (see [`sim::tops`]).
     pub tops: sim::Tops,
+    /// Chunks known to be air: near what the mods built, where no terrain comes, with nothing
+    /// built in them (see [`sim::stream::Stream::note_air`]). They're never sent.
+    pub air: Vec<ChunkPos>,
     pub spawn: WorldPos,
     /// Named spots in the world, in the order the mods made them.
     pub waypoints: Vec<(String, WorldPos)>,

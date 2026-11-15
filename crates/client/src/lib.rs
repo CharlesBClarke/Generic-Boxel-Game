@@ -765,8 +765,8 @@ fn world_cost(
     let f = world.far();
     let far_line = if far.active {
         format!(
-            "\nfar terrain {} columns, {} waiting, built in {:.1} s on the workers | {} far columns and {} ordinary drawn, {:.2}M far triangles | far {:.0} m",
-            f.columns,
+            "\nfar terrain {} far chunks, {} waiting, built in {:.1} s on the workers | {} far chunks and {} ordinary drawn, {:.2}M far triangles | far {:.0} m",
+            f.chunks,
             f.waiting,
             f.seconds,
             far.stats.far,
