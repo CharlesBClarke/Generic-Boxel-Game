@@ -25,3 +25,6 @@ Ranked by what the user notices in play. A suggestion for the planner, not agree
 Probably not worth it yet: fading between levels (2 may make it unneeded), the far shadow past the render distance, compressing far messages, merging far faces of different slopes, ores and anti-xray for far data.
 
 Suggested split: Far terrain by cube becomes 1 + 2 + 3, with 4 as its own toy after. This turns the current order around (the octree was planned first).
+
+
+Clean-room questions on how Voxy does LOD (thin builds, colors, level picking, storage), with answers once they're back: `docs/notes/voxy-questions.md` (2026-11-14).

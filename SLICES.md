@@ -106,7 +106,7 @@ A run of small toy slices. Each one takes a single game-feel feature that doesn'
 
 #### Far terrain by cube (`toy-far-terrain-by-cube`)
 
-**Stage:** Verify (2026-11-14). Tests: `cargo test --workspace` all pass, clippy clean. Building far terrain with mixes takes about 4× as long (6.1 s against 1.6 s for 268 columns around the center; `client::far` timing test); drawing cost barely moves (+2% merged quads).
+**Stage:** Verify (2026-11-14), paused: the user: "level switches are ok,colors good", but "a flat 1 block thik wall defnently disapeers too early" (the hold rule needs a wall as tall as the cell). The user is having a model read Voxy's source with the clean-room brief in `docs/notes/voxy-questions.md` before deciding how builds should hold. Tests: `cargo test --workspace` all pass, clippy clean. Building far terrain with mixes takes about 4× as long (6.1 s against 1.6 s for 268 columns around the center; `client::far` timing test); drawing cost barely moves (+2% merged quads).
 
 **Goal:** far terrain that keeps its colors, pops less, and keeps builds: items 1–3 of `docs/notes/lod.md`'s ranking. The octree (cubes instead of columns, item 4) and the "how full" score (5) are the next toy, which pays off the far terrain stand-in debt. The name stays, as the backlog entry's; the cube part comes next.
 
