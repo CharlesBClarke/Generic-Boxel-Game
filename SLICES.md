@@ -106,7 +106,7 @@ A run of small toy slices. Each one takes a single game-feel feature that doesn'
 
 #### Far terrain looks (`toy-far-terrain-looks`)
 
-**Stage:** Plan approved (2026-11-15); not started. Two fixes come first, each on its own branch and play-checked before the toy starts: `fix-far-takeover` (done 2026-11-15, the user: "ok it works"), then `fix-far-seam-holes`.
+**Stage:** Implement (2026-11-15). The two fixes that came first are merged: `fix-far-takeover` (the user: "ok it works") and `fix-far-seam-holes` (the user on loading speed: "speed is good now"; whether the holes are gone is still to hear, see the play checks).
 
 **Goal:** far terrain looks like full detail seen from far away, so the seam at 256 m and the level switches stop drawing the eye.
 
@@ -136,6 +136,9 @@ A run of small toy slices. Each one takes a single game-feel feature that doesn'
 3. A cave mouth or overhang is dark from far away.
 4. A one-boxel wall is still visible at the edge of the far distance.
 5. The pixel target is picked and its bench cost stated.
+
+**Waiting for a play check** (remind the user at the start of every session, and at good moments during one, until they confirm; then delete the line):
+- `fix-far-seam-holes`, 2026-11-15: once loading has settled, no holes along the border between full detail and far terrain, or between far levels farther out. Merged on the user's "speed is good now", which didn't say.
 
 **Low-priority play checks** (don't remind every session; check only when a toy makes it convenient, such as one that puts the player among moving cows; delete the line once seen):
 - Cow herd (1): a cow shoved well away from the herd walks back to it on its own.
@@ -276,6 +279,8 @@ Bugs found in already-merged code, each fixed on its own `fix-` branch (see the 
 - 2026-11-14, `fix-noise-mip-mix`: full detail chose a noise texel's layer from the one texel under the pixel's middle and faded to that layer's own average, ignoring the mip blend, so far off a grass side showed pure green or pure brown per pixel instead of the rim mixed with the dirt; and the atlas mipped baked noise colors that averaged 4–7 sRGB units off the world noise (copper, phasite, crystals, ice, lumite, cachite), so far terrain and faded full detail disagreed. Noise texels are now baked as their noise's world average before mipping, detail fades into the mip blend, and grain is divided by its measured average.
 
 - 2026-11-15, `fix-far-takeover`: a ready coarse far chunk was drawn whole until all 8 of its children were ready, hiding ordinary chunks already drawn, so after spawning somewhere new full detail showed for a moment and was then covered by the coarsest level until every level had loaded. Ready ordinary chunks are now always drawn, and far terrain leaves itself out where they are (a mask of the ordinary chunks drawn within about 700 m, read per pixel in far terrain's own pipeline; clean-room answer 14). Between far levels the all-8 rule stands. Not benched yet.
+
+- 2026-11-15, `fix-far-seam-holes`: a far chunk leaves out its border faces where the far chunk of its level beside it is solid, but that one is often loaded and not drawn (finer or coarser terrain is there instead, its ground up to a cell or two lower), which left holes along level borders. The left-out faces within two cells of the surface are now kept apart as each side's wall, shown only while the far chunk beside it isn't drawn. Far meshing about 5–15% slower (a first version that walled everything was 3.5× slower: the user, "I now notice that loading is far slower"; after the rework, "speed is good now"). Not benched.
 
 ### Done toys
 
