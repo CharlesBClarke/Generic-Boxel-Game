@@ -275,25 +275,33 @@ pub(crate) fn mesh_far(list: Vec<Asked>, blocks: &BlockRegistry, volumes: &Volum
             grid.import_chunk(&b.data);
         }
         let pos = cells.data.pos;
-        let mesh = crate::mesher::mesh_chunks_on(&grid, &[pos], blocks, volumes, &ao, false, 1).pop().unwrap_or_default();
-        // The faces left out toward the far chunks beside it: those it has alone that it
-        // doesn't have among them.
+        let slopes = crate::slope::Cells::of(&grid, pos);
+        // The faces toward the far chunks beside it are left out where those are solid. Near
+        // the surface (see `wall_cells`) they're wanted all the same, apart, as that side's
+        // wall: there the cells across the border are emptied before meshing, so the faces
+        // come, and are then taken out of the mesh.
+        let near = wall_cells(&cells.data, &beside, &slopes);
+        let sides = chunk.beside();
+        for (side, cells) in near.iter().enumerate().filter(|(_, cells)| !cells.is_empty()) {
+            let Some(theirs) = beside.iter().find(|b| b.data.pos.0 == sides[side].pos) else { continue };
+            let mut theirs = theirs.data.clone();
+            for &i in cells {
+                let at = api::LocalPos::from_index(i);
+                let mut p = [at.x, at.y, at.z];
+                p[side / 2] = if side.is_multiple_of(2) { 0 } else { (api::CHUNK_SIZE - 1) as u8 };
+                theirs.cells.set_at(api::LocalPos::new(p[0], p[1], p[2]).index(), 0);
+            }
+            grid.import_chunk(&theirs);
+        }
+        let all = crate::mesher::mesh_chunks_on(&grid, &[pos], blocks, volumes, &ao, false, 1).pop().unwrap_or_default();
+        let mut mesh = MeshData::default();
         let mut walls: [MeshData; 6] = Default::default();
-        if !beside.is_empty() {
-            let mut alone = Grid::default();
-            alone.import_chunk(&cells.data);
-            let all = crate::mesher::mesh_chunks_on(&alone, &[pos], blocks, volumes, &ao, false, 1).pop().unwrap_or_default();
-            let key = |m: &MeshData, q: usize| std::array::from_fn::<[u32; 3], 4, _>(|k| m.positions[4 * q + k].map(f32::to_bits));
-            let kept: HashSet<[[u32; 3]; 4]> = (0..mesh.quad_count()).map(|q| key(&mesh, q)).collect();
-            for q in 0..all.quad_count() {
-                if let Some(side) = border_side(&all, q)
-                    && !kept.contains(&key(&all, q))
-                {
-                    crate::greedy::copy(&all, q, &mut walls[side]);
-                }
+        for q in 0..all.quad_count() {
+            match border_side(&all, q).filter(|&side| near[side].contains(&cell_behind(&all, q))) {
+                Some(side) => crate::greedy::copy(&all, q, &mut walls[side]),
+                None => crate::greedy::copy(&all, q, &mut mesh),
             }
         }
-        let slopes = crate::slope::Cells::of(&grid, pos);
         let finish = |mut mesh: MeshData| {
             (!mesh.is_empty()).then(|| {
                 crate::slope::set_slopes(&mut mesh, &slopes);
@@ -315,6 +323,76 @@ pub(crate) fn mesh_far(list: Vec<Asked>, blocks: &BlockRegistry, volumes: &Volum
         let handles: Vec<_> = parts.into_iter().map(|part| s.spawn(move || part.into_iter().map(one).collect::<Vec<_>>())).collect();
         handles.into_iter().flat_map(|h| h.join().expect("meshing a far chunk")).collect()
     })
+}
+
+/// How many cells from the surface a wall reaches, along the border: the ground of what's
+/// drawn beside a far chunk in place of its neighbor sits within a cell of the neighbor's own
+/// if it's finer, two if it's coarser (twice the cell).
+const WALL_DEPTH: i32 = 2;
+
+/// The cells of far chunk `data` that get a wall on each side (in [`FarChunk::beside`]'s
+/// order), by index: those on its border that are solid, facing a solid cell of the far chunk
+/// `beside` it there, and within [`WALL_DEPTH`] cells along the border of one where either
+/// isn't: near the surface, where a hole could show. Deep in the ground there's no wall, as
+/// nothing drawn beside it could uncover it. Past the border's edges the surface is looked
+/// for in `around` (the cells around the far chunk, as far as they're known): a cell there
+/// that isn't known to be solid counts as open.
+fn wall_cells(data: &sim::ChunkData, beside: &[Arc<FarCells>], around: &crate::slope::Cells) -> [HashSet<usize>; 6] {
+    let mut out: [HashSet<usize>; 6] = Default::default();
+    if data.cells.uniform() == Some(0) {
+        return out;
+    }
+    let size = api::CHUNK_SIZE as i32;
+    let last = (size - 1) as u8;
+    let sides = [I64Vec3::X, I64Vec3::NEG_X, I64Vec3::Y, I64Vec3::NEG_Y, I64Vec3::Z, I64Vec3::NEG_Z];
+    for (side, cells) in out.iter_mut().enumerate() {
+        let Some(theirs) = beside.iter().find(|b| b.data.pos.0 == data.pos.0 + sides[side]) else { continue };
+        if theirs.data.cells.uniform() == Some(0) {
+            continue;
+        }
+        let (axis, forward) = (side / 2, side.is_multiple_of(2));
+        let (mine_at, theirs_at) = if forward { (last, 0) } else { (0, last) };
+        let at = |k: u8, u: i32, v: i32| match axis {
+            0 => api::LocalPos::new(k, u as u8, v as u8),
+            1 => api::LocalPos::new(u as u8, k, v as u8),
+            _ => api::LocalPos::new(u as u8, v as u8, k),
+        };
+        // Across the border: both solid, the face left out.
+        let both: Vec<bool> = (0..size * size).map(|i| data.cells.get(at(mine_at, i % size, i / size)) != 0 && theirs.data.cells.get(at(theirs_at, i % size, i / size)) != 0).collect();
+        if both.iter().all(|&b| b) {
+            continue;
+        }
+        let open = |u: i32, v: i32| {
+            if u < 0 || v < 0 || u >= size || v >= size {
+                let p = at(mine_at, u.rem_euclid(size), v.rem_euclid(size));
+                let mut c = [p.x as i32, p.y as i32, p.z as i32];
+                // Along the border, `u` and `v` run as `at` lays them out.
+                c[[1, 0, 0][axis]] = u;
+                c[[2, 2, 1][axis]] = v;
+                return around.at(c[0], c[1], c[2]) != Some(true);
+            }
+            !both[(u + size * v) as usize]
+        };
+        for v in 0..size {
+            for u in 0..size {
+                if both[(u + size * v) as usize] && (-WALL_DEPTH..=WALL_DEPTH).any(|dv| (-WALL_DEPTH..=WALL_DEPTH).any(|du| open(u + du, v + dv))) {
+                    cells.insert(at(mine_at, u, v).index());
+                }
+            }
+        }
+    }
+    out
+}
+
+/// The index of the cell quad `q` of `mesh` is a face of.
+fn cell_behind(mesh: &MeshData, q: usize) -> usize {
+    let i = 4 * q;
+    let normal = mesh.normals[i];
+    let cell: [u8; 3] = std::array::from_fn(|k| {
+        let center = mesh.positions[i..i + 4].iter().map(|p| p[k]).sum::<f32>() / 4.0;
+        (center - 0.5 * normal[k]).floor().clamp(0.0, (api::CHUNK_SIZE - 1) as f32) as u8
+    });
+    api::LocalPos::new(cell[0], cell[1], cell[2]).index()
 }
 
 /// Which side of its far chunk (in [`FarChunk::beside`]'s order) quad `q` of `mesh` lies on,
@@ -739,9 +817,12 @@ mod tests {
         // the lower half of the border, and the other sides have no wall.
         let mesh = meshed.mesh.as_ref().unwrap();
         assert!(!facing(mesh).contains(&[1, 0, 0]));
+        // Only near the surface, where a hole could show: the top two cells of the ground all
+        // along, and all of it within two cells of the border's edges.
         let wall = meshed.walls[0].as_ref().expect("a wall east");
         assert_eq!(facing(wall), HashSet::from([[1, 0, 0]]));
         assert!(wall.positions.iter().all(|p| p[0] == 32.0 && p[2] <= 16.0));
+        assert!(wall.positions.iter().all(|p| p[2] >= 14.0 || p[1] <= 2.0 || p[1] >= 30.0 || p[2] <= 2.0));
         let area = |m: &MeshData| {
             (0..m.indices.len() / 3)
                 .map(|t| {
@@ -750,12 +831,16 @@ mod tests {
                 })
                 .sum::<f32>()
         };
-        assert_eq!(area(wall), 32.0 * 16.0);
+        assert_eq!(area(wall), 32.0 * 2.0 + 2.0 * 2.0 * 14.0 + 28.0 * 2.0);
         assert!(meshed.walls[1..].iter().all(Option::is_none));
         // Alone, the same faces are in its own mesh and it has no walls.
         let alone = mesh_far(vec![Asked { version: 1, chunk, cells: ground(chunk), beside: Vec::new() }], &blocks, &volumes, true, 1).pop().unwrap();
         assert!(facing(alone.mesh.as_ref().unwrap()).contains(&[1, 0, 0]));
         assert!(alone.walls.iter().all(Option::is_none));
+        // Deep in the ground, solid all across the border: no wall, nothing could uncover it.
+        let rock = |c: FarChunk| Arc::new(stone_cells(&blocks, c, |_| true));
+        let deep = mesh_far(vec![Asked { version: 1, chunk, cells: rock(chunk), beside: vec![rock(east)] }], &blocks, &volumes, true, 1).pop().unwrap();
+        assert!(deep.walls.iter().all(Option::is_none));
     }
 
     #[test]
@@ -828,6 +913,30 @@ mod timing {
         for pixels in only.map_or(vec![5.0, 7.0, 9.0, 12.0], |p| vec![p]) {
             time_far_meshing_at(pixels, mix);
         }
+    }
+
+    /// Times [`mesh_far`] whole, walls and all, on one thread, for the far chunks around the
+    /// terrain's center. Run with `--release --ignored --nocapture`.
+    #[test]
+    #[ignore]
+    fn time_mesh_far() {
+        let pixels: f32 = std::env::var("FAR_PIXELS").ok().and_then(|v| v.parse().ok()).unwrap_or(sim::far::DEFAULT_PIXELS);
+        let mut sim = base_sim();
+        sim.spawn_player().unwrap();
+        sim.teleport_player(WorldPos::at_boxel(base::TERRAIN_CENTER.offset(I64Vec3::new(0, 0, 120))));
+        sim.set_reach(Reach { detail: 256.0, far: 2048.0, pixels, ..Reach::default() });
+        sim.generate_terrain().unwrap();
+        sim.far_all();
+        let volumes = Volumes::build(sim.looks(), sim.blocks());
+        let asked = ask_all(sim.take_far_loaded());
+        let count = asked.len();
+        let clock = Instant::now();
+        let meshed = mesh_far(asked, sim.blocks(), &volumes, true, 1);
+        let seconds = clock.elapsed().as_secs_f32();
+        let quads: usize = meshed.iter().filter_map(|m| m.mesh.as_ref()).map(MeshData::quad_count).sum();
+        let walls: usize = meshed.iter().flat_map(|m| m.walls.iter().flatten()).map(MeshData::quad_count).sum();
+        let wall_meshes = meshed.iter().flat_map(|m| m.walls.iter().flatten()).count();
+        println!("pixels {pixels}: mesh_far of {count} far chunks in {seconds:.2} s | {quads} quads, {walls} in {wall_meshes} walls");
     }
 
     fn time_far_meshing_at(pixels: f32, mix: u8) {
