@@ -90,6 +90,7 @@ The project's words, used the same way in conversation, code and docs. When a ne
 | Engine | The Rust core. Ships with no game content. |
 | Base game | The built-in content, written as a mod on the public API. |
 | Slice, toy, seam | Units of work: a slice is any one of them; a toy is one game-feel feature made playable; a seam pays down API debt or adds one real mod feature. |
+| Pass | One session's piece of a toy that's too big for one focus: its own plan, tests, play check and commits on the toy's branch, which merges only when the whole toy closes. Example: Far terrain looks' pass 2, the moiré before the seam. |
 
 ## Engine and mods
 

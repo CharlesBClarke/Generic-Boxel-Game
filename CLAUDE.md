@@ -18,6 +18,17 @@ We work one vertical slice at a time. Each slice goes through these stages in or
 
 Planning the next slice always happens in a new session, with a fresh context. After closing a slice, don't start planning the next one: at most, leave notes for it (in its notes file, or under its backlog entry if short) for the next session's planner to pick up, then tell the user to start a new session.
 
+### Toys in passes
+
+A toy can be split into passes when it grows past one focus (for example, a toy about how far terrain looks that keeps turning up separate problems). The toy keeps its one branch, and each pass is one session's work on it.
+
+- A pass goes through Plan, Implement, Test and Verify like a slice, with its own "engage", its own play check and its own commits on the toy's branch.
+- `SLICES.md` lists the passes under the toy, each with its stage. The toy's own stage marker names the current pass.
+- Closing a pass is light: write its notes under the pass, commit, and leave notes for the next pass. No merge, and no move to `docs/done-toys.md`.
+- Nothing merges to `master` until the whole toy closes. The full Close (the quick bench, decisions, the archive, the merge) happens once, after the last pass.
+- The next pass is planned in a new session, like the next slice.
+- If something comes up mid-pass that is its own focus, add it as a later pass instead of widening the current one.
+
 ### The go word: "engage"
 
 Don't start writing code or changing project files until the user says **"engage"**. Only that word counts; a casual "go ahead" in conversation does not. Approving a plan, answering a question or agreeing with an idea is not an engage. After proposing something, stop and wait.
@@ -49,7 +60,7 @@ A fix skips the full plan stage: describe the bug and the fix in a sentence or t
 
 ### Git
 
-Each slice or toy gets its own feature branch off `master` (for example `slice-1-minimum-engine`, `toy-movement`). Commit there, and when the slice is closed, merge it into `master` with `--no-ff` so each slice stays visible in the history. Never commit project code (anything under `crates/` or `mods/`) directly to `master`. Commits that only touch bookkeeping (`SLICES.md`, `docs/`, the design doc, `CLAUDE.md`) or helper scripts in `tools/` can go straight to `master`.
+Each slice or toy gets its own feature branch off `master` (for example `slice-1-minimum-engine`, `toy-movement`). Commit there, and when the slice is closed, merge it into `master` with `--no-ff` so each slice stays visible in the history. A toy in passes merges once, when the toy closes. Never commit project code (anything under `crates/` or `mods/`) directly to `master`. Commits that only touch bookkeeping (`SLICES.md`, `docs/`, the design doc, `CLAUDE.md`) or helper scripts in `tools/` can go straight to `master`.
 
 ### At the start of every session
 
