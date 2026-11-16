@@ -66,7 +66,7 @@ impl Cells {
 
     /// Whether the cell is solid, if it's known.
     #[inline]
-    fn at(&self, x: i32, y: i32, z: i32) -> Option<bool> {
+    pub(crate) fn at(&self, x: i32, y: i32, z: i32) -> Option<bool> {
         let (x, y, z) = (x - self.lo[0], y - self.lo[1], z - self.lo[2]);
         if x < 0 || y < 0 || z < 0 || x >= self.size[0] || y >= self.size[1] || z >= self.size[2] {
             return None;

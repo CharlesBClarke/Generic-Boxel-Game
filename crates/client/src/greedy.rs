@@ -300,7 +300,7 @@ fn grow(mesh: &MeshData, cells: &HashMap<[i32; 2], usize>, used: &std::collectio
 }
 
 /// Copies quad `q` of `from` to the end of `to`, as it was.
-fn copy(from: &MeshData, q: usize, to: &mut MeshData) {
+pub(crate) fn copy(from: &MeshData, q: usize, to: &mut MeshData) {
     let first = to.positions.len() as u32;
     let i = 4 * q;
     to.positions.extend_from_slice(&from.positions[i..i + 4]);
